@@ -878,11 +878,15 @@ func savePastActivityMeta(t *testing.T, stateDir, sessionID, name string) {
 // continuation that resumes AFTER the entries it already rendered; following it
 // must deliver every remaining job exactly once, in order, and terminate rather
 // than replaying the page's prefix. Every page must also stay within the
-// activityMaxWorkUnits bound.
+// activityMaxWorkUnits bound, and the walk's revision -- seeded nonzero so a
+// regression that echoes the first page's number but mints later tokens with
+// 0 cannot pass -- must be stable on every page AND inside every minted
+// continuation.
 func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "workbudgetwalkroot"
 	const jobCount = activityMaxWorkUnits + 1
+	const walkRevision = 5
 	events := make([]jobstore.Event, 0, jobCount)
 	for i := range jobCount {
 		ts := time.Unix(int64(1000+i), 0).UTC()
@@ -893,11 +897,10 @@ func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *tes
 		})
 	}
 	s1cov_writeJobLog(t, stateDir, rootID, events...)
-	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", walkRevision)
 
 	var delivered []string
 	seenContinuations := map[string]bool{}
-	var walkRevision uint64
 	continuation := ""
 	pages := 0
 	for {
@@ -912,9 +915,7 @@ func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *tes
 		if len(tree.Root.Entries) > activityMaxWorkUnits {
 			t.Fatalf("page %d returned %d entries, want at most activityMaxWorkUnits=%d", pages, len(tree.Root.Entries), activityMaxWorkUnits)
 		}
-		if pages == 1 {
-			walkRevision = tree.Revision
-		} else if tree.Revision != walkRevision {
+		if tree.Revision != walkRevision {
 			t.Fatalf("page %d reports revision %d, want %d -- a continuation page must report the revision its walk began at, or a revision-fencing client discards valid pages and refetches the root forever", pages, tree.Revision, walkRevision)
 		}
 		for _, entry := range tree.Root.Entries {
@@ -931,6 +932,13 @@ func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *tes
 			t.Fatalf("page %d re-minted a continuation already handed out -- the walk can never advance past it", pages)
 		}
 		seenContinuations[next] = true
+		cont, err := decodeActivityContinuation(next, rootID)
+		if err != nil {
+			t.Fatalf("page %d: decodeActivityContinuation: %v", pages, err)
+		}
+		if cont.Revision != walkRevision {
+			t.Fatalf("page %d minted a continuation carrying revision %d, want %d -- the token must carry the walk's revision, or the next page's echo would fall back to 0", pages, cont.Revision, walkRevision)
+		}
 		continuation = next
 	}
 	if pages < 2 {

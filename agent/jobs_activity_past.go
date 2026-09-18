@@ -339,7 +339,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	snapshot, startDepth, resumeIndex, _, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
+	snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}

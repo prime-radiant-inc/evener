@@ -209,7 +209,7 @@ type activityContinuation struct {
 	// live root, or activitySnapshotPersistedRevision for a historical one —
 	// carried into the continuation too, and echoed back as the resumed page's
 	// own Revision (LoadSessionJobActivityTree). It is checked on resume only
-	// when the root is LIVE (loadActivitySnapshotForParamsWithCache): a live
+	// when the root is LIVE (loadActivitySnapshotForParams): a live
 	// session's JobsEpoch/DelegatesEpoch above are always 0 (it reads neither
 	// fold cache), so they provide no staleness protection at all for a live
 	// continuation — 0 == 0 always passes, even across a real mutation.
@@ -466,38 +466,28 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 // files (checked in loadHistoricalActivityBase). It returns the resumeIndex
 // a continuation's mid-list cutoff carried (0 for a fresh, non-continuation
 // load), for projectBoundedActivityTree to apply against the target
-// session's own entries. A thin wrapper over
-// loadActivitySnapshotForParamsWithCache that discards the cache, for the
-// two (live-session) callers that have no further use for it.
+// session's own entries.
+//
+// The cache is created here and never returned: it lives only for this one
+// load, and every caller discards it. LoadSessionJobActivityTree used to
+// reuse it for a second full-tree walk that recomputed a continuation's
+// revision; that walk is gone (the page now echoes the token's revision), so
+// there is nothing left for a caller to do with the cache.
 func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, error) {
-	snapshot, startDepth, resumeIndex, _, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
-	return snapshot, startDepth, resumeIndex, err
-}
-
-// loadActivitySnapshotForParamsWithCache is loadActivitySnapshotForParams'
-// full form: it also returns the historicalActivityCache the load ran
-// against, so a caller that needs to do MORE loading against the same root
-// afterward — LoadSessionJobActivityTree's revision computation, see below —
-// can reuse the same cache instead of starting a second, independently-fresh
-// one: two independent historicalActivityCache instances for what is one
-// client request would mean two independent work-unit budgets, silently
-// doubling the effective traversal-breadth allowance and letting the two
-// loads visit, and charge for, different session sets.
-func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, *historicalActivityCache, error) {
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
 		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
-		return snapshot, 0, 0, cache, err
+		return snapshot, 0, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
 	if err != nil {
-		return nil, 0, 0, cache, err
+		return nil, 0, 0, err
 	}
 	visited := map[string]bool{root.sessionID: true}
 	snapshot, jobsEpoch, delegatesEpoch, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
 	if err != nil {
-		return nil, 0, 0, cache, err
+		return nil, 0, 0, err
 	}
 	// The generations here are the TARGET session's own — the session whose
 	// journals a resume folds — and a mint carries that same session's, live
@@ -521,7 +511,7 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
 		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent ||
 		cont.DelegatesUnreadable != target.delegatesUnreadable {
-		return nil, 0, 0, cache, activityStaleContinuationError("the underlying journal changed")
+		return nil, 0, 0, activityStaleContinuationError("the underlying journal changed")
 	}
 
 	// A live session has no fold-cache generation at all (jobsEpoch and
@@ -535,10 +525,10 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// single request — is caught here.
 	if root.live != nil {
 		if current := activityCurrentRootRevision(root.live.jobActivityClock); cont.Revision != current {
-			return nil, 0, 0, cache, activityStaleContinuationError("the live session changed")
+			return nil, 0, 0, activityStaleContinuationError("the live session changed")
 		}
 	}
-	return snapshot, -len(cont.Path), cont.ResumeIndex, cache, nil
+	return snapshot, -len(cont.Path), cont.ResumeIndex, nil
 }
 
 // buildActivityFullSnapshot loads loc's full subtree.
@@ -892,7 +882,7 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 // activitySessionEpochs is one session's own fold-cache generations: the
 // generation of its jobs.jsonl and of the delegates.jsonl it folds. A
 // continuation is checked against the generations of the session it TARGETS
-// (loadActivitySnapshotForParamsWithCache), so that is what a mint for that
+// (loadActivitySnapshotForParams), so that is what a mint for that
 // session has to carry — the page root's own are only right for a token
 // naming the page root.
 type activitySessionEpochs struct {
