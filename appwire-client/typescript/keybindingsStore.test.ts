@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
+import { UnreadableDraftError } from "./draftCheckpointPort";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  discardStoredKeybindingDraft,
   fromWireOverrides,
   type KeybindingDraftCheckpoint,
   type KeybindingsStore,
@@ -367,6 +369,15 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
   });
 
+  test("discardStoredKeybindingDraft removes an unreadable record with no store at all", () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.corrupt();
+
+    discardStoredKeybindingDraft(drafts.storage);
+
+    expect(drafts.stored()).toBeNull();
+  });
+
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
@@ -381,7 +392,19 @@ describe("the checkpointed draft editor", () => {
     const store = await readyStore(clientServing(3), {
       drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage,
     });
-    expect(() => store.getState().editDraft(proposed as KeybindingsRule[])).toThrow("Invalid keybinding draft.");
+    let error: unknown;
+    try {
+      store.getState().editDraft(proposed as KeybindingsRule[]);
+    } catch (caught) {
+      error = caught;
+    }
+    // Malformed user input is a plain validation failure, never
+    // UnreadableDraftError: that type is reserved for a stored record this
+    // build cannot read, and conflating the two would make a bad paste look
+    // like a corrupt draft.
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(UnreadableDraftError);
+    expect((error as Error).message).toBe("Invalid keybinding draft.");
     expect(store.getState().draft).toBeNull();
   });
 });

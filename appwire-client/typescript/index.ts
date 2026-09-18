@@ -211,7 +211,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
-  discardStoredDraft as discardStoredKeybindingDraft,
+  discardStoredKeybindingDraft,
   fromWireOverrides,
   keybindingsSupport,
 } from "./keybindingsStore";

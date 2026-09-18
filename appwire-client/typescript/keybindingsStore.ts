@@ -28,7 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { createDraftRepository, UnreadableDraftError } from "./draftCheckpointPort";
+import { createDraftRepository, discardStoredDraft, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -303,29 +303,48 @@ function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: numbe
   return draft !== null && draft.revision !== confirmedRevision;
 }
 
-// discardStoredDraft is re-exported here (not just from draftCheckpointPort
-// directly) so index.ts can re-export it as discardStoredKeybindingDraft
-// alongside this store's other exports.
+// Re-exported under its own generic name too (index.ts does not re-export
+// this one under a keybindings-specific name): a later store built on
+// draftCheckpointPort.ts's shared repository reaches it the same way this
+// one does, through its own store module rather than through this one.
 export { discardStoredDraft } from "./draftCheckpointPort";
+
+/** discardStoredDraft specialized to this store's checkpoint shape: a caller
+ * with no store (no connection, so no client to build one from) still gets a
+ * typed port instead of the generic repository's own `<Checkpoint>`. */
+export function discardStoredKeybindingDraft(storage: KeybindingDraftStorage): void {
+  discardStoredDraft(storage);
+}
 
 function invalidDraft(): never {
   throw new UnreadableDraftError("Invalid keybinding draft.");
 }
 
+/** A user can type or paste malformed rules; that is a plain validation
+ * failure, never UnreadableDraftError - which is reserved for a stored
+ * record this build cannot read. Same message as invalidDraft(): the two
+ * differ only in which exception type the caller must be able to tell apart
+ * from a decode failure, not in what the editor tells the user. */
+function invalidUserRules(): never {
+  throw new Error("Invalid keybinding draft.");
+}
+
 /** The strict rule check the draft editor runs on user input and on a
  * restored checkpoint: an action id and a chord must be non-empty strings
- * (or a null chord for an unbind). Throws on anything else. */
-function keybindingRules(value: unknown): KeybindingsRule[] {
-  if (!Array.isArray(value)) invalidDraft();
+ * (or a null chord for an unbind). Throws via `onInvalid`, which the decode
+ * path (an unreadable stored record) and the user-input path (a plain
+ * validation error) each pass their own error type through. */
+function keybindingRules(value: unknown, onInvalid: () => never = invalidDraft): KeybindingsRule[] {
+  if (!Array.isArray(value)) onInvalid();
   return value.map((item): KeybindingsRule => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) invalidDraft();
+    if (item === null || typeof item !== "object" || Array.isArray(item)) onInvalid();
     const rule = item as Record<string, unknown>;
     if (
       typeof rule.action !== "string" ||
       blank(rule.action) ||
       (rule.chord !== null && (typeof rule.chord !== "string" || blank(rule.chord)))
     )
-      invalidDraft();
+      onInvalid();
     return { action: rule.action, chord: rule.chord };
   });
 }
@@ -1094,7 +1113,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function editDraft(rules: readonly KeybindingsRule[]): void {
     const current = assertEditable();
-    const checked = keybindingRules(rules);
+    const checked = keybindingRules(rules, invalidUserRules);
     const revision = getState().draft?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
     const draft = { version: 1, revision, rules: checked };
@@ -1105,7 +1124,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const current = assertEditable();
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
-    const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
+    const checked = keybindingRules(rules ?? existing?.rules ?? current.rules, invalidUserRules);
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
