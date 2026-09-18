@@ -83,17 +83,17 @@ export interface DraftRepository<Checkpoint> {
  * still hand the port the pre-write bytes, which a byte-aware port compares
  * against what save() already overwrote and refuses to touch.
  *
- * lastClassified keeps the raw value most recently classified - readable or
- * not - named by WHEN it was classified, not by discardClassified's own
+ * `classification` keeps the raw value most recently classified - readable
+ * or not - named by WHEN it was classified, not by discardClassified's own
  * call: another store or a newer app version can replace the record between
  * the two, and a fresh storage.load() at discard time would then name (and
  * remove) whatever is there NOW - never the record the user was actually
- * shown. One field for both cases, because a discard is the same operation
- * either way: remove the classified record, by its own identity, and report
- * whether that succeeded.
+ * shown. Nothing classified yet has no identity to act on, so
+ * discardClassified/replaceClassified refuse rather than classifying blind:
+ * every store restores through load() before a user can reach either.
  *
  * load() is not the only thing that classifies: save() writes a new record
- * too, and if it left lastClassified pointing at the PRE-write bytes, an
+ * too, and if it left `classification` pointing at the PRE-write bytes, an
  * edit immediately followed by a discard would refuse (it would still be
  * naming what the edit just replaced) and silently restore the edit instead
  * of discarding it - the identity must track every write, not only reads. */
@@ -104,10 +104,10 @@ export function createDraftRepository<Checkpoint extends object>(
   const rawFrom = new WeakMap<object, unknown>();
   // What load()/save() most recently classified: nothing yet, the store
   // classified as EMPTY (still a classification - distinct from never having
-  // classified at all, or discardClassified()/replaceClassified() would take
-  // the fresh-reload fallback and act on a record an external writer saved
-  // AFTER this repository classified the store as empty, one it never
-  // classified), or the raw bytes classified from a non-empty store.
+  // classified at all, so discardClassified/replaceClassified refuse rather
+  // than acting on a record an external writer saved AFTER this repository
+  // classified the store as empty, one it never classified), or the raw
+  // bytes classified from a non-empty store.
   let classification: null | "absent" | { raw: unknown } = null;
   return {
     createId: () => storage.createId(),
@@ -138,55 +138,25 @@ export function createDraftRepository<Checkpoint extends object>(
     removeIf(checkpoint: Checkpoint): boolean {
       return storage.removeIf(rawFrom.get(checkpoint as object) ?? decode(checkpoint));
     },
-    /** Removes the record load() most recently classified, readable or not,
-     * by the identity of the bytes it was classified from - never a fresh
-     * reload, which could name a record another writer has since replaced.
-     * A load() that classified the store as EMPTY removes nothing (there is
-     * no record this repository classified to discard) and reports false.
-     * Nothing classified AT ALL (defensive: a store never calls this
-     * without classifying first) has no identity to act on either, so this
-     * classifies NOW via a fresh load() rather than removing blind: a
-     * readable record is not this call's to discard (some writer stored it
-     * without this repository ever showing it to a user) and is left alone;
-     * only an unreadable one - nothing any build could have shown - is
-     * removed, matching discardStoredDraft's own contract. */
+    /** Removes the record load()/save() most recently classified, readable
+     * or not, by the identity of the bytes it was classified from - never a
+     * fresh reload, which could name a record another writer has since
+     * replaced. A load() that classified the store as EMPTY removes nothing
+     * (there is no record this repository classified to discard) and reports
+     * false. load() is this repository's only entry to an identity: nothing
+     * classified yet refuses rather than classifying blind here - a store
+     * always restores through load() before a user can reach discard. */
     discardClassified(): boolean {
-      if (classification === "absent") return false;
-      if (classification !== null) return storage.removeIf(classification.raw);
-      const value = storage.load();
-      if (value === null || value === undefined) return false;
-      try {
-        decode(value);
-        return false;
-      } catch {
-        return storage.removeIf(value);
-      }
+      if (classification === null || classification === "absent") return false;
+      return storage.removeIf(classification.raw);
     },
     /** Settles the classified record onto `next` atomically. Nothing
      * classified yet (or classified as absent) has no identity to be atomic
-     * against - the same case discardClassified treats as nothing-to-act-on
-     * - but rather than overwriting blind, this classifies NOW via a fresh
-     * load(): a readable record found there is not this call's to replace
-     * (refuses, so the caller re-reads/surfaces it, the same posture a
-     * refused replaceIf gets below); only empty or unreadable storage is
-     * fair game to write over unconditionally. */
+     * against, so this refuses rather than writing over storage blind - the
+     * same posture discardClassified takes. */
     replaceClassified(next: Checkpoint): boolean {
+      if (classification === null || classification === "absent") return false;
       const decoded = decode(next);
-      if (classification === null || classification === "absent") {
-        const value = storage.load();
-        if (value !== null && value !== undefined) {
-          try {
-            decode(value);
-            return false;
-          } catch {
-            // Unreadable: nothing readable to lose, fall through to write.
-          }
-        }
-        storage.save(decoded);
-        classification = { raw: decoded };
-        rawFrom.set(next as object, decoded);
-        return true;
-      }
       const replaced = storage.replaceIf(classification.raw, decoded);
       if (replaced) {
         classification = { raw: decoded };
