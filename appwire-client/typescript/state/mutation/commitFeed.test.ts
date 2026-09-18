@@ -66,6 +66,21 @@ describe("wireMutationCommitFeed", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
+  test("a commit alongside named target refs both applies the fast path and refreshes those refs", () => {
+    const store = testPendingTurnsStore();
+    const fence = fakeFence();
+    const feed = fakeFeed();
+    const refresh = vi.fn();
+    wireMutationCommitFeed(store, fence, feed, refresh);
+
+    const record = outboxRecord();
+    feed.emit(["ref-a"], { record });
+
+    expect(store.getState().outbox.get(record.clientMutationId)).toEqual(record);
+    expect(fence.advanceCalls).toEqual([record.targetRef]);
+    expect(refresh).toHaveBeenCalledWith("ref-a");
+  });
+
   test("unsubscribing stops the feed from reaching the store", () => {
     const store = testPendingTurnsStore();
     const feed = fakeFeed();

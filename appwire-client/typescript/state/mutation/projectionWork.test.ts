@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import { createMutationProjectionWorkTracker, type MutationProjectionWorkPorts } from "./projectionWork";
 
-function realPorts(): MutationProjectionWorkPorts {
+function realPorts(): MutationProjectionWorkPorts<ReturnType<typeof setTimeout>> {
   return {
     setTimeout: (callback, milliseconds) => globalThis.setTimeout(callback, milliseconds),
-    clearTimeout: (timerId) => globalThis.clearTimeout(timerId as ReturnType<typeof setTimeout>),
+    clearTimeout: (timerId) => globalThis.clearTimeout(timerId),
     yieldMacrotask: () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)),
   };
 }
@@ -42,7 +42,7 @@ describe("createMutationProjectionWorkTracker", () => {
     try {
       const tracker = createMutationProjectionWorkTracker({
         setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
-        clearTimeout: (timerId) => globalThis.clearTimeout(timerId as ReturnType<typeof setTimeout>),
+        clearTimeout: (timerId) => globalThis.clearTimeout(timerId),
         yieldMacrotask: () => Promise.resolve(),
       });
       tracker.track(new Promise<void>(() => undefined));
