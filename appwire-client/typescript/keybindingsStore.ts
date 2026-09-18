@@ -1200,36 +1200,35 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
   }
 
-  /** Settles a confirmed write against `checkpoint`: applies `payload`
+  /** Settles a confirmed write against `checkpoint`. `payload` applies
    * (never letting a reconciler throw skip the settle - see
-   * applyHubOverridesSettling), then clears the checkpoint it settled -
-   * `newerExternal` re-marks it settled in place (replaceClassified, a
-   * fresh id like every other settle here) instead of removing it, because
-   * the proposal stays for review against a revision that landed while
-   * this write was out. Either way, a refusal (another writer replaced the
-   * SAME checkpoint while this write was out) adopts whatever restoreDraft
-   * finds on disk instead of overwriting it. `settled` is the caller's own
-   * publish alongside the apply: the post-rename caller deliberately omits
-   * draftConflict so applyHubOverrides' own staleDraft check decides it,
-   * while the confirmed-reply caller forces it (true for newerExternal,
-   * false otherwise) - the draft it is judging against has not been
-   * cleared yet at that point, so staleDraft alone would misread the very
-   * revision this write just confirmed as a conflict. Returns the
-   * reconciler's own throw, if any, for the caller to re-throw once this
-   * has run. */
+   * applyHubOverridesSettling) unless it is null: a newer external revision
+   * landed while this write was out, and applying this write's own now-stale
+   * confirmation over it would overwrite what is already current - only
+   * `settled` publishes. `cleanup` decides the checkpoint's fate once the
+   * outcome is settled: "remove" clears it; "remark" re-marks it settled in
+   * place (replaceClassified, a fresh id like every other settle here)
+   * because the proposal stays for review - the usual companion to a null
+   * payload, but not always the same call, since a lost revision race
+   * applies the server's current state AND keeps the proposal for review.
+   * Either way, a refusal (another writer replaced the SAME checkpoint
+   * while this write was out) adopts whatever restoreDraft finds on disk
+   * instead of overwriting it. `settled` is the caller's own publish
+   * alongside the apply. Returns the reconciler's own throw, if any, for
+   * the caller to re-throw once this has run. */
   function settleWrite(
-    payload: KeybindingsOverrides,
+    payload: KeybindingsOverrides | null,
     checkpoint: KeybindingDraftCheckpoint,
-    newerExternal: boolean,
+    cleanup: "remove" | "remark",
     settled: Partial<KeybindingsStoreFields>,
   ): unknown {
     let applyFailure: unknown = null;
-    if (newerExternal) setState(settled);
+    if (payload === null) setState(settled);
     else applyFailure = applyHubOverridesSettling(payload, settled);
     let storageError: string | null = null;
     let refused: Partial<KeybindingsStoreFields> | null = null;
     try {
-      if (newerExternal) {
+      if (cleanup === "remark") {
         const replaced = drafts.replaceClassified({
           id: drafts.createId(),
           baseRevision: checkpoint.baseRevision,
@@ -1245,7 +1244,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
     setState(
       refused ?? {
-        draft: newerExternal || storageError !== null ? getState().draft : null,
+        draft: cleanup === "remark" || storageError !== null ? getState().draft : null,
         storageUnavailable: storageError !== null,
         draftError: storageError,
       },
@@ -1301,11 +1300,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // A newer external revision landing while this write was out keeps
         // the proposal for review instead of reporting it applied.
         const newerExternal = getState().revision > applied.revision;
-        const applyFailure = settleWrite(applied, checkpoint, newerExternal, {
-          saving: false,
-          writeUncertain: false,
-          draftConflict: newerExternal,
-        });
+        const applyFailure = settleWrite(
+          newerExternal ? null : applied,
+          checkpoint,
+          newerExternal ? "remark" : "remove",
+          {
+            saving: false,
+            writeUncertain: false,
+            draftConflict: newerExternal,
+          },
+        );
         if (applyFailure !== null) throw applyFailure;
         return applied;
       }
@@ -1315,22 +1319,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // one, the same rule the direct write follows.
       const conflictState = rejectionPayload(error, "conflict", "current");
       if (conflictState !== undefined) {
-        const applyFailure = applyHubOverridesSettling(conflictState, {
+        const applyFailure = settleWrite(conflictState, checkpoint, "remark", {
           saving: false,
           writeUncertain: false,
           draftConflict: true,
         });
-        try {
-          const replaced = drafts.replaceClassified({
-            id: drafts.createId(),
-            baseRevision: checkpoint.baseRevision,
-            rules: checkpoint.rules,
-            writeUncertain: false,
-          });
-          if (!replaced) setState(restoreDraft(getState()));
-        } catch {
-          setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
-        }
         throw applyFailure ?? error;
       }
       // No reply: the write's outcome is unknown, and that fact is the state
@@ -1375,7 +1368,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       throw new Error(MALFORMED_MESSAGE);
     }
     const newerExternal = getState().revision > value.revision;
-    const applyFailure = settleWrite(value, checkpoint, newerExternal, {
+    const applyFailure = settleWrite(newerExternal ? null : value, checkpoint, newerExternal ? "remark" : "remove", {
       saving: false,
       writeUncertain: false,
       draftConflict: newerExternal,
