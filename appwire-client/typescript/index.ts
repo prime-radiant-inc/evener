@@ -78,6 +78,9 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+// chunkViewBackingForTests is deliberately absent here; the white-box test hook
+// is published through the non-shipped testing/reducerHooks.ts instead.
+export { pendingTextJoined } from "./chunkview";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
@@ -290,10 +293,6 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
-// chunkViewBackingForTests is deliberately absent: it reports the reducer's
-// internal chunk storage so a test can assert the view never copies it, which
-// is a test hook rather than protocol API. It belongs with the package's test
-// support, not the entry point.
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -303,7 +302,6 @@ export {
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,
-  pendingTextJoined,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
