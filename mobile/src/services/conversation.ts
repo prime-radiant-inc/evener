@@ -32,6 +32,7 @@ import type {
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
+  TurnModel,
   TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
 import {
@@ -98,6 +99,11 @@ export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
+    // The page's own turns (TurnModel, carrying usage) - the store merges
+    // these into conversation.turns alongside items, so sessionTokens's
+    // turn-summed fallback covers what's actually loaded, not just the
+    // first page. Optional so existing test doubles need not supply it.
+    turns?: TurnModel[];
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -789,10 +795,12 @@ export function createConversationService(
         throw error;
       }
       // Project the older turns into mobile items by hydrating a minimal
-      // Thread containing just these turns; only the display rows are kept.
-      const items = projectOlderTurns(response, threadId);
+      // Thread containing just these turns; the display rows AND the turns
+      // themselves are kept (the store merges both into the conversation).
+      const { items, turns } = projectOlderTurns(response, threadId);
       return {
         items,
+        turns,
         nextCursor: response.nextCursor,
         hasEarlierItems: response.data.some(
           (turn) => turn.hasEarlierItems === true,
@@ -1214,8 +1222,8 @@ export function createConversationService(
 function projectOlderTurns(
   page: ThreadTurnsListResponse,
   threadId: string | null,
-): MobileTimelineItem[] {
-  if (page.data.length === 0) return [];
+): { items: MobileTimelineItem[]; turns: TurnModel[] } {
+  if (page.data.length === 0) return { items: [], turns: [] };
   const id = threadId ?? "older";
   const thread: Thread = {
     id,
@@ -1256,5 +1264,10 @@ function projectOlderTurns(
   // page-local projection otherwise resurrects settled calls. All other
   // projected page items/order/cursor are preserved — only question rows are
   // omitted.
-  return projectTimeline(model).filter((item) => item.kind !== "question");
+  const items = projectTimeline(model).filter((item) => item.kind !== "question");
+  // model.turns is this page's own turns merged against an empty model (the
+  // fake thread above starts with turns: []), so it is exactly what this page
+  // adds — the store merges it into the real conversation.turns alongside
+  // items, keeping sessionTokens's turn-summed fallback in sync with paging.
+  return { items, turns: model.turns };
 }

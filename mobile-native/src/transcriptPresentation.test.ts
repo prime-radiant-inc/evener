@@ -8,7 +8,7 @@ import type {
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
 import type { TurnModel } from "@evener/appwire-client";
-import { projectNativeTranscript, tokenUnitLabel, usageRows } from "./transcriptPresentation";
+import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
 
 function conversation(
 	items: MobileTimelineItem[],
@@ -672,23 +672,8 @@ it.each([null, undefined])(
 	},
 );
 
-// --- token unit label ---------------------------------------------------
-
-// tokenUnitLabel names what a session's token figure counts, the same
-// wording the web details panel uses for the same scope (detailsAccounting's
-// tokensLabel): the daemon's own whole-session total reads plainly, and a sum
-// scoped to only the turns still loaded says so.
-it("labels a whole-session total plainly", () => {
-	expect(tokenUnitLabel("session")).toBe("tokens");
-});
-
-it("labels a sum truncated to the loaded turns as covering only the loaded turns", () => {
-	expect(tokenUnitLabel("loaded")).toBe("tokens (loaded turns)");
-});
-
-it("labels the absence of any token figure plainly", () => {
-	expect(tokenUnitLabel(undefined)).toBe("tokens");
-});
+// tokenUnitLabel itself moved to appwire-client/typescript/threadUsage.ts
+// (D18 B3 round 3): its tests moved with it, to threadUsage.test.ts.
 
 // --- usage rows ----------------------------------------------------------
 

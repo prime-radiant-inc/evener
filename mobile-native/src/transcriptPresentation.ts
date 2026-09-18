@@ -1,6 +1,7 @@
 import {
 	presetContent,
 	sessionTokens,
+	tokenUnitLabel,
 	type EvenerUsage,
 	type SessionTokens,
 	type TranscriptDisplayConfigV1,
@@ -35,14 +36,6 @@ export interface SessionAccounting {
 		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
 		| null;
 	cost: string | null;
-}
-
-// tokenUnitLabel names what a session's token figure counts, the same
-// wording the web details panel uses for the same scope
-// (detailsAccounting.ts's tokensLabel): the daemon's own whole-session total
-// reads plainly, and a sum scoped to only the turns still loaded says so.
-export function tokenUnitLabel(scope: SessionTokens["scope"] | undefined): string {
-	return scope === "loaded" ? "tokens (loaded turns)" : "tokens";
 }
 
 export interface UsageRow {

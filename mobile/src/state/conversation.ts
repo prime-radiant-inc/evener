@@ -2026,8 +2026,20 @@ export function createConversationStore() {
             // the flag still true offers a load that early-returns "ignored".
             const atCap = merged.length >= RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
+            // D18 B3 round 3: conversation.turns/olderCursor (the ThreadModel
+            // fields sessionTokens reads) must stay in sync with items/the
+            // store's own olderCursor, or a session with no cumulative usage
+            // keeps summing only the first page after older turns load.
+            // result.turns is this page's own turns (deduped against what's
+            // already loaded, by id) and olderCursor mirrors the same cursor
+            // that governs whether there is more history to page in.
+            const existingTurnIds = new Set(currentConv.turns.map((turn) => turn.id));
+            const mergedTurns = [
+              ...(result.turns ?? []).filter((turn) => !existingTurnIds.has(turn.id)),
+              ...currentConv.turns,
+            ];
             set({
-              conversation: { ...currentConv, items: merged },
+              conversation: { ...currentConv, items: merged, turns: mergedTurns, olderCursor: nextCursor ?? undefined },
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false

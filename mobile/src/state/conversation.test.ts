@@ -8,6 +8,7 @@ import {
   QUEUE_UNAVAILABLE,
   SEND_UNAVAILABLE,
   sessionControls,
+  sessionTokens,
   TURN_RUNNING,
   WireError,
 } from "@evener/appwire-client";
@@ -167,6 +168,7 @@ class FakeConversationService implements LiveConversationService {
   olderCursor: string | null = null;
   olderItems: {
     items: MobileConversation["items"];
+    turns?: MobileConversation["turns"];
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -232,6 +234,7 @@ class FakeConversationService implements LiveConversationService {
   }
   async loadOlder(_cursor: string): Promise<{
     items: MobileConversation["items"];
+    turns?: MobileConversation["turns"];
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -3922,6 +3925,72 @@ describe("ConversationStore", () => {
       expect(await store.getState().loadOlder(service)).toEqual({
         status: "ignored",
       });
+    });
+  });
+
+  // D18 B3 round 3: sessionTokens (the shared session-usage derivation) reads
+  // conversation.turns and conversation.olderCursor, but loadOlder only ever
+  // updated conversation.items and the store's OWN olderCursor field. A
+  // session with no thread-level cumulative usage therefore kept summing
+  // just the first page forever, even after older turns loaded.
+  describe("loadOlder keeps conversation.turns/olderCursor in sync with items", () => {
+    it("merges the older page's turns into conversation.turns and advances conversation.olderCursor", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        usage: null,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
+
+      service.olderItems = {
+        items: [],
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      const conv = store.getState().conversation!;
+      // The older turn is prepended, ahead of the page-one turn.
+      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      // conversation.olderCursor mirrors the same cursor that now governs
+      // the store's own paging (there is still more history to load).
+      expect(conv.olderCursor).toBe("cursor-2");
+      // Both turns now count: a session with no cumulative usage must not
+      // keep reporting only the first page's total once a second page loads.
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
+    });
+
+    it("does not duplicate a turn the store already holds, but still adds a new one from the same page", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } }],
+        olderCursor: "cursor-1",
+      });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // A page race can hand back a turn the store already has (the same
+      // dedupe concern F10 already covers for items) alongside a genuinely
+      // new older turn on the same page.
+      service.olderItems = {
+        items: [],
+        turns: [
+          { id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } },
+          { id: "t2", status: "completed", items: [], usage: { inputTokens: 999, outputTokens: 999 } },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      const conv = store.getState().conversation!;
+      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      // The already-held t2 keeps its own version, not the incoming duplicate.
+      expect(conv.turns.find((t) => t.id === "t2")?.usage).toEqual({ inputTokens: 1, outputTokens: 1 });
     });
   });
 
