@@ -329,6 +329,8 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type { SettingsHubGeneration } from "./settingsHubGeneration";
+export { createSettingsHubGeneration } from "./settingsHubGeneration";
 export { canReadSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
