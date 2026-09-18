@@ -22,7 +22,7 @@ func TestCov_HTTPClientWithHeaders_InjectsHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := mcphttp.ClientWithHeaders(nil, map[string]string{
+	client := mcphttp.ClientWithHeaders(nil, srv.URL, map[string]string{
 		"Authorization": "Bearer tok",
 		"X-Custom":      "val",
 	})

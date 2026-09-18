@@ -525,7 +525,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if _, err := (&mcphttp.HeaderRoundTripper{Base: base, Headers: map[string]string{"X-Program": "value"}}).RoundTrip(request); err != nil || base.got == nil || base.got.Header.Get("X-Program") != "value" {
 		t.Fatalf("header round trip = req=%#v err=%v", base.got, err)
 	}
-	if client := mcphttp.ClientWithHeaders(nil, map[string]string{"X-Program": "value"}); client == nil || client.Transport == nil {
+	if client := mcphttp.ClientWithHeaders(nil, "https://invalid.example/mcp", map[string]string{"X-Program": "value"}); client == nil || client.Transport == nil {
 		t.Fatal("ClientWithHeaders returned an unusable client")
 	}
 

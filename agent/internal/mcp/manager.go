@@ -808,7 +808,7 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 		}
 		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
-			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.Headers)
+			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
 		}
 		return t, nil
 
@@ -818,7 +818,7 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 		}
 		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
-			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.Headers)
+			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
 		}
 		return t, nil
 

@@ -5,12 +5,18 @@
 // carrying a private copy of the wrapper and drifting apart.
 package mcphttp
 
-import "net/http"
+import (
+	"net/http"
+	"net/url"
+)
 
-// HeaderRoundTripper wraps an http.RoundTripper to inject Headers into each
-// request before delegating to Base.
+// HeaderRoundTripper wraps an http.RoundTripper to inject Headers into a
+// request before delegating to Base. When Host is non-empty, Headers are
+// injected only into requests whose URL hostname matches it, so a redirect to
+// another host cannot re-add credentials the http.Client would otherwise strip.
 type HeaderRoundTripper struct {
 	Base    http.RoundTripper
+	Host    string // endpoint hostname that scopes injection; empty means every host
 	Headers map[string]string
 }
 
@@ -19,8 +25,10 @@ type HeaderRoundTripper struct {
 // contract requires.
 func (h *HeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
-	for k, v := range h.Headers {
-		clone.Header.Set(k, v)
+	if h.Host == "" || (req.URL != nil && req.URL.Hostname() == h.Host) {
+		for k, v := range h.Headers {
+			clone.Header.Set(k, v)
+		}
 	}
 	return h.Base.RoundTrip(clone)
 }
@@ -35,9 +43,16 @@ func (h *HeaderRoundTripper) CloseIdleConnections() {
 }
 
 // ClientWithHeaders returns a copy of base (a fresh client when base is nil)
-// whose transport injects headers into every request. base is left untouched;
-// when base's transport is nil the wrapper falls back to http.DefaultTransport.
-func ClientWithHeaders(base *http.Client, headers map[string]string) *http.Client {
+// whose transport injects headers into requests for the server identified by
+// endpointURL. base is left untouched; when base's transport is nil the wrapper
+// falls back to http.DefaultTransport.
+//
+// Injection is scoped to endpointURL's hostname so that a redirect to another
+// host does not carry the configured headers: http.Client strips sensitive
+// headers (Authorization, Cookie, ...) on a cross-host redirect, and an
+// unscoped transport would immediately re-add them, leaking credentials to the
+// redirect target.
+func ClientWithHeaders(base *http.Client, endpointURL string, headers map[string]string) *http.Client {
 	client := http.Client{}
 	if base != nil {
 		client = *base
@@ -46,8 +61,13 @@ func ClientWithHeaders(base *http.Client, headers map[string]string) *http.Clien
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
+	var host string
+	if u, err := url.Parse(endpointURL); err == nil {
+		host = u.Hostname()
+	}
 	client.Transport = &HeaderRoundTripper{
 		Base:    transport,
+		Host:    host,
 		Headers: headers,
 	}
 	return &client

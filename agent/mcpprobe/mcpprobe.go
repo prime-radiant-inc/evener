@@ -178,7 +178,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Transport, error) {
 	client := deps.httpClient
 	if len(cfg.Headers) > 0 {
-		client = mcphttp.ClientWithHeaders(client, cfg.Headers)
+		client = mcphttp.ClientWithHeaders(client, cfg.URL, cfg.Headers)
 	}
 
 	switch cfg.Type {

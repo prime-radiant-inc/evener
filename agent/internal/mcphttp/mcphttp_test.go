@@ -20,7 +20,7 @@ func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 // ClientWithHeaders(nil, ...) must return a usable client whose transport
-// injects the configured headers into every request.
+// injects the configured headers into requests to the configured server.
 func TestClientWithHeaders_NilBase_InjectsHeaders(t *testing.T) {
 	var gotAuth, gotCustom string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +30,7 @@ func TestClientWithHeaders_NilBase_InjectsHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := mcphttp.ClientWithHeaders(nil, map[string]string{
+	client := mcphttp.ClientWithHeaders(nil, srv.URL, map[string]string{
 		"Authorization": "Bearer tok",
 		"X-Custom":      "val",
 	})
@@ -57,7 +57,7 @@ func TestClientWithHeaders_BaseCopiedNotMutated(t *testing.T) {
 	}
 	baseTransport := base.Transport
 
-	client := mcphttp.ClientWithHeaders(base, map[string]string{"X-Injected": "yes"})
+	client := mcphttp.ClientWithHeaders(base, "https://example.invalid/", map[string]string{"X-Injected": "yes"})
 	if client == base {
 		t.Fatal("ClientWithHeaders returned the base client, want a copy")
 	}
@@ -123,12 +123,53 @@ func (c *closeTrackingRoundTripper) CloseIdleConnections() { c.closed = true }
 // that supports it, and must be a harmless no-op when it does not.
 func TestClientWithHeaders_ForwardsCloseIdleConnections(t *testing.T) {
 	rec := &closeTrackingRoundTripper{}
-	client := mcphttp.ClientWithHeaders(&http.Client{Transport: rec}, map[string]string{"X": "y"})
+	client := mcphttp.ClientWithHeaders(&http.Client{Transport: rec}, "https://mcp.example/mcp", map[string]string{"X": "y"})
 	client.CloseIdleConnections()
 	if !rec.closed {
 		t.Error("CloseIdleConnections did not reach the wrapped transport")
 	}
 
-	plain := mcphttp.ClientWithHeaders(&http.Client{Transport: &recordingRoundTripper{}}, map[string]string{"X": "y"})
+	plain := mcphttp.ClientWithHeaders(&http.Client{Transport: &recordingRoundTripper{}}, "https://mcp.example/mcp", map[string]string{"X": "y"})
 	plain.CloseIdleConnections() // must not panic when the base lacks the method
+}
+
+// ClientWithHeaders must scope injection to the configured endpoint's
+// hostname. Otherwise a cross-host redirect, which http.Client deliberately
+// sends without sensitive headers, would have its credentials re-added by the
+// transport and leaked to the redirect target.
+func TestClientWithHeaders_HostScopedInjection(t *testing.T) {
+	client := mcphttp.ClientWithHeaders(nil, "https://mcp.example/mcp", map[string]string{"Authorization": "Bearer secret"})
+	rt, ok := client.Transport.(*mcphttp.HeaderRoundTripper)
+	if !ok {
+		t.Fatalf("transport = %T, want *mcphttp.HeaderRoundTripper", client.Transport)
+	}
+	if rt.Host != "mcp.example" {
+		t.Fatalf("scoped host = %q, want %q", rt.Host, "mcp.example")
+	}
+
+	rec := &recordingRoundTripper{}
+	rt.Base = rec
+
+	same, err := http.NewRequest(http.MethodGet, "https://mcp.example/mcp", nil)
+	if err != nil {
+		t.Fatalf("new same-host request: %v", err)
+	}
+	if _, err := rt.RoundTrip(same); err != nil {
+		t.Fatalf("same-host round trip: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer secret" {
+		t.Errorf("same-host Authorization = %q, want injected value", got)
+	}
+
+	rec.got = nil
+	other, err := http.NewRequest(http.MethodGet, "https://evil.example/mcp", nil)
+	if err != nil {
+		t.Fatalf("new cross-host request: %v", err)
+	}
+	if _, err := rt.RoundTrip(other); err != nil {
+		t.Fatalf("cross-host round trip: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "" {
+		t.Errorf("cross-host Authorization = %q, want none (must not leak credentials)", got)
+	}
 }
