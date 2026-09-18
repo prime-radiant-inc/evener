@@ -323,11 +323,8 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	// records and blocks that name for a later rename. The records that must
 	// not be swept are directory sources that live at or beneath the clone.
 	clone := m.marketplaceDir(name)
-	protect, err := m.sweepDestroysSource(mk, clone)
-	if err != nil {
-		return err
-	}
-	if !protect {
+	present, protect := m.sweepDestroysSource(mk, clone)
+	if present && !protect {
 		if err := marketplaceRemoveAll(clone); err != nil {
 			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
 		}
@@ -355,27 +352,30 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // itself is not followed: RemoveAll removes the link, not its target. An
 // ancestor of clone is not deleted by RemoveAll and must not be protected, or
 // its stale clone would survive and hold the name.
-func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, error) {
-	// Nothing at the clone path makes the sweep a no-op, so there is nothing to
-	// protect and no reason to let an unreadable record somewhere else fail the
-	// whole removal or rename.
-	haveClone, err := pathPresentNoFollow(clone)
+//
+// It reports the entry's presence as well as whether a source overlays it, and
+// every inspection failure degrades to protecting the source (a warning, never
+// an error): a path the filesystem will not consider — an over-long legacy name
+// — counts as absent, so the caller must skip the sweep rather than call
+// RemoveAll on a path it would only fail on.
+func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (present, protect bool) {
+	present, err := pathPresentNoFollow(clone)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: checking marketplace clone %s: %v\n", clone, err)
-		return true, nil
+		return false, true
 	}
-	if !haveClone {
-		return false, nil
+	if !present {
+		return false, false
 	}
 	absClone, err := filepath.Abs(clone)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
-		return true, nil
+		return true, true
 	}
 	resolvedClone, err := resolveAncestors(clone)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
-		return true, nil
+		return true, true
 	}
 	underClone := func(path string) bool {
 		return pathWithinDir(absClone, path) || pathWithinDir(resolvedClone, path)
@@ -387,16 +387,15 @@ func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, erro
 		touches, err := sourceTouchesClone(ref.Source.Path, underClone, 0)
 		if err != nil {
 			// A source the walk cannot inspect is one the sweep might still be
-			// the thing that deletes: protect it rather than fail the operation
-			// or run the sweep blind.
+			// the thing that deletes: protect it rather than run the sweep blind.
 			_, _ = fmt.Fprintf(m.stderr(), "warning: checking directory source %s: %v\n", ref.Source.Path, err)
-			return true, nil
+			return true, true
 		}
 		if touches {
-			return true, nil
+			return true, true
 		}
 	}
-	return false, nil
+	return true, false
 }
 
 // resolveAncestors canonicalizes every component of path except the last, so a
@@ -740,10 +739,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 			// marketplace's directory source names it, that move would strip
 			// the source out from under a live record — as a hand-seeded or
 			// pre-refuseSourceInStore store can arrange — so refuse instead.
-			displaced, err := m.sweepDestroysSource(mk, oldDir)
-			if err != nil {
-				return fail(err)
-			}
+			_, displaced := m.sweepDestroysSource(mk, oldDir)
 			if displaced {
 				return fail(fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir))
 			}
@@ -774,11 +770,8 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// live source. Presence is the entry's own, not a stat through a final
 		// symlink: sweeping is what removes it either way, so an unreadable
 		// link must still be cleared rather than block a directory rename.
-		protect, err := m.sweepDestroysSource(mk, oldDir)
-		if err != nil {
-			return fail(err)
-		}
-		if !protect {
+		present, protect := m.sweepDestroysSource(mk, oldDir)
+		if present && !protect {
 			if err := marketplaceRemoveAll(oldDir); err != nil {
 				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
 			}
