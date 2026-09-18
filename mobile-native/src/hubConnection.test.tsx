@@ -151,6 +151,44 @@ it("never returns the previous hub's client once activeId already names a newer 
 	expect(hook.result.current).toEqual({ client: second, state: "ready" });
 });
 
+it("never returns the previous client once a retry has already bumped attempt", async () => {
+	const first = new FakeHubClient();
+	harness.client = first;
+	const setError = vi.fn();
+	const repository = { token: async (id: string) => `tok-${id}` };
+	let attempt = 0;
+	// Same hub throughout - only the retry counter changes - so a guard keyed
+	// on activeId alone (round 2's fix) still matches and would still hand
+	// back hub-a's own PREVIOUS, now-stale connection for this attempt.
+	const renders: { forAttempt: number; result: HubConnection }[] = [];
+	const hook = renderHook(() => {
+		const result = useHubConnection(
+			repository,
+			"hub-a",
+			"https://a.test",
+			true,
+			attempt,
+			setError,
+		);
+		renders.push({ forAttempt: attempt, result });
+		return result;
+	});
+	await act(async () => {});
+	act(() => first.succeed());
+	expect(hook.result.current).toEqual({ client: first, state: "ready" });
+
+	const second = new FakeHubClient();
+	harness.client = second;
+	attempt = 1;
+	renders.length = 0;
+	hook.rerender();
+	for (const { forAttempt, result } of renders)
+		if (forAttempt === 1) expect(result.client).not.toBe(first);
+	await act(async () => {});
+	act(() => second.succeed());
+	expect(hook.result.current).toEqual({ client: second, state: "ready" });
+});
+
 it("a bumped attempt reopens the hub through a fresh client, tearing down the old one first", async () => {
 	const first = new FakeHubClient();
 	harness.client = first;
