@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
+import { collectConfig, type LaunchFormState } from "./launchSchema";
 import { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 import type { LaunchOption } from "./types.gen";
 
@@ -90,6 +91,33 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
       env: { FOO: "bar" },
       mcps: [{ name: "srv", command: "run", args: ["--x"] }],
     });
+  });
+
+  test("delegates its scalar arm to launchSchema.collectScalar (trimmed text, dropped non-numeric integers)", () => {
+    const options = [
+      option({ wireField: "agent", kind: "text" }),
+      option({ wireField: "maxSubagentDepth", kind: "integer" }),
+      option({ wireField: "noProjectPrompts", kind: "boolean" }),
+      option({ wireField: "contextStrategy", kind: "select" }),
+    ];
+    const raw = {
+      agent: "  evener  ",
+      maxSubagentDepth: "12abc",
+      noProjectPrompts: "true",
+      contextStrategy: "   ",
+    };
+    const advanced = collectAdvancedOverrides(options, {
+      agent: { value: raw.agent },
+      maxSubagentDepth: { value: raw.maxSubagentDepth },
+      noProjectPrompts: { value: raw.noProjectPrompts },
+      contextStrategy: { value: raw.contextStrategy },
+    });
+    const state: LaunchFormState = { scalars: raw, lists: {}, envMaps: {}, mcpLists: {}, explicitEmpty: {} };
+    // The spawn pane's advanced collector and the settings form's collectConfig
+    // must agree on every scalar shape - that shared rule is the whole point of
+    // routing both through launchSchema.collectScalar (#1444).
+    expect(advanced).toEqual(collectConfig(options, state));
+    expect(advanced).toEqual({ agent: "evener", noProjectPrompts: true });
   });
 
   test("drops any field flagged invalid by path validation (floor §1.11, data-launch-invalid)", () => {

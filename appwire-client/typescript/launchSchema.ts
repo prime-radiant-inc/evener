@@ -295,7 +295,14 @@ export function buildFormState(options: LaunchOption[], current: LaunchConfigLay
   return state;
 }
 
-function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | null {
+// collectScalar applies the launch-config collect rule to one scalar control's
+// raw form value: a boolean's "" (unset) is dropped, text is trimmed, an
+// empty-after-trim scalar is dropped (never sent as ""), and an integer is
+// trimmed then coerced - a value that does not parse to a finite number is
+// dropped rather than sent as NaN. Exported so the spawn pane's AdvancedValues
+// collector routes its scalar arm through this exact rule too, instead of a
+// second, drifted copy (#1444).
+export function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | null {
   if (opt.kind === "boolean") {
     if (raw === "true") return { value: true };
     if (raw === "false") return { value: false };
@@ -303,7 +310,11 @@ function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | nul
   }
   const trimmed = raw.trim();
   if (trimmed === "") return null; // omit empty-after-trim scalars, never sent as ""
-  return { value: opt.kind === "integer" ? Number(trimmed) : trimmed };
+  if (opt.kind === "integer") {
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? { value: n } : null; // drop unparsable integers, never send NaN
+  }
+  return { value: trimmed };
 }
 
 // collectConfig builds the save payload from `state` alone (never a cached

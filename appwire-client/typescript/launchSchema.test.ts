@@ -441,6 +441,14 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     state.scalars.systemPromptText = "be nice";
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
   });
+
+  test("collectConfig drops an integer that does not parse to a finite number (never sends NaN)", () => {
+    const state = buildFormState(options, {});
+    state.scalars.maxRounds = "12abc";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = " 12 ";
+    expect(collectConfig(options, state).maxRounds).toBe(12);
+  });
 });
 
 describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
