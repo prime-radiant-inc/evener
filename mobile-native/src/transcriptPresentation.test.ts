@@ -8,7 +8,7 @@ import type {
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
 import type { TurnModel } from "@evener/appwire-client";
-import { projectNativeTranscript, tokenUnitLabel } from "./transcriptPresentation";
+import { projectNativeTranscript, tokenUnitLabel, usageRows } from "./transcriptPresentation";
 
 function conversation(
 	items: MobileTimelineItem[],
@@ -309,6 +309,53 @@ it("labels a derived total over a truncated turn window as covering only the loa
 		usage: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
 		cost: null,
 	});
+});
+
+// The wire's EvenerUsage permits a sparse cumulative object: cacheReadTokens
+// or totalTokens alone, with no input/output pair at all. sessionTokens has
+// no per-turn equivalent for either field, so accountingFor must not lose
+// them just because the derived input/output pair came back empty.
+it("keeps a cache-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { cacheReadTokens: 42 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: { cacheReadTokens: 42 }, cost: null });
+});
+
+it("keeps a total-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { totalTokens: 500 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: { totalTokens: 500 }, cost: null });
+});
+
+// A sparse cumulative object (total-only, no input/output) alongside a
+// truncated turn window: sessionTokens sums the turns and scopes the result
+// "loaded", but the cumulative total is a whole-session figure and must
+// carry no scope of its own - it is not itself a loaded-turn sum.
+it("keeps the cumulative breakdown's scope independent of a turn-summed loaded result", () => {
+	const result = projectNativeTranscript(
+		conversation([], {
+			usage: { totalTokens: 500 },
+			turns: [usageTurn("t1", 60, 40)],
+			olderCursor: "cursor_1",
+		}),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 60, outputTokens: 40, scope: "loaded", totalTokens: 500 },
+		cost: null,
+	});
+	// The data alone doesn't show which unit each field renders with - that's
+	// usageRows's job, and it must never stamp the whole-session Total row
+	// with the derived pair's "loaded" scope.
+	expect(usageRows(result.usage!.usage)).toEqual([
+		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
+		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
 });
 
 it("does not mutate clustered members or source items while projecting", () => {
@@ -641,4 +688,27 @@ it("labels a sum truncated to the loaded turns as covering only the loaded turns
 
 it("labels the absence of any token figure plainly", () => {
 	expect(tokenUnitLabel(undefined)).toBe("tokens");
+});
+
+// --- usage rows ----------------------------------------------------------
+
+// usageRows is what TranscriptUsage renders: each row's own unit, never one
+// unit borrowed from a different row's scope.
+it("labels Input/Output with the derived pair's own scope and Cached/Total plainly, even when the derived pair is loaded-scoped", () => {
+	expect(
+		usageRows({ inputTokens: 60, outputTokens: 40, scope: "loaded", cacheReadTokens: 10, totalTokens: 500 }),
+	).toEqual([
+		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
+		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
+		{ label: "Cached", value: 10, unit: "tokens" },
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
+});
+
+it("renders only the cumulative Total row when there is no derived input/output pair", () => {
+	expect(usageRows({ totalTokens: 500 })).toEqual([{ label: "Total", value: 500, unit: "tokens" }]);
+});
+
+it("renders no rows for null usage", () => {
+	expect(usageRows(null)).toEqual([]);
 });

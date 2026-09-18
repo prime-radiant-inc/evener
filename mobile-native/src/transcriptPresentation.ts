@@ -18,13 +18,22 @@ export type ActivityPresentation = {
 
 // The session accounting the transcript footer shows: the conversation's
 // token total (the package's turn-summed sessionTokens derivation, shared
-// with the web details panel) plus cache/total breakdown and cost, each null
-// when the display config hides it or the daemon reported none. The
-// cache/total breakdown only ever comes from the thread's own cumulative
-// usage (EvenerUsage has no per-turn equivalent), so it is absent whenever
-// sessionTokens fell back to summing turns.
+// with the web details panel), the thread's own cumulative cache/total
+// breakdown, and cost - each undefined/null when the display config hides it
+// or the daemon reported none.
+//
+// cacheReadTokens/totalTokens are read independently of inputTokens/
+// outputTokens/scope: the wire's EvenerUsage permits a sparse cumulative
+// object (cache or total alone, with no input/output pair at all), and
+// sessionTokens has no per-turn equivalent for them, so they must survive
+// even when sessionTokens falls back to summing turns or returns null
+// outright. They are always whole-session figures (EvenerThread.Usage is not
+// windowed the way turns are), so they carry no scope of their own and must
+// never inherit whatever scope the derived input/output pair got.
 export interface SessionAccounting {
-	usage: (SessionTokens & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">) | null;
+	usage:
+		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
+		| null;
 	cost: string | null;
 }
 
@@ -34,6 +43,32 @@ export interface SessionAccounting {
 // reads plainly, and a sum scoped to only the turns still loaded says so.
 export function tokenUnitLabel(scope: SessionTokens["scope"] | undefined): string {
 	return scope === "loaded" ? "tokens (loaded turns)" : "tokens";
+}
+
+export interface UsageRow {
+	label: "Input" | "Output" | "Cached" | "Total";
+	value: number;
+	unit: string;
+}
+
+// usageRows picks the footer's visible rows and labels each with what it
+// actually counts. Input/Output take the derived pair's own scope (a
+// truncated turn window says so); Cached/Total are always the thread's whole
+// -session cumulative figures, so they always read plainly, independent of
+// whatever scope the derived pair got.
+export function usageRows(usage: SessionAccounting["usage"]): UsageRow[] {
+	if (!usage) return [];
+	const derivedUnit = tokenUnitLabel(usage.scope);
+	const cumulativeUnit = tokenUnitLabel(undefined);
+	const candidates: [UsageRow["label"], number | undefined, string][] = [
+		["Input", usage.inputTokens, derivedUnit],
+		["Output", usage.outputTokens, derivedUnit],
+		["Cached", usage.cacheReadTokens, cumulativeUnit],
+		["Total", usage.totalTokens, cumulativeUnit],
+	];
+	return candidates
+		.filter((row): row is [UsageRow["label"], number, string] => row[1] !== undefined)
+		.map(([label, value, unit]) => ({ label, value, unit }));
 }
 
 export interface NativeTranscriptPresentation {
@@ -188,14 +223,13 @@ function accountingFor(
 ): SessionAccounting | null {
 	if (!conversation) return null;
 	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
+	const cacheReadTokens = config.advanced.tokenCounts ? conversation.usage?.cacheReadTokens : undefined;
+	const totalTokens = config.advanced.tokenCounts ? conversation.usage?.totalTokens : undefined;
 	return {
-		usage: tokens
-			? {
-					...tokens,
-					cacheReadTokens: conversation.usage?.cacheReadTokens,
-					totalTokens: conversation.usage?.totalTokens,
-				}
-			: null,
+		usage:
+			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
+				? { ...(tokens ?? {}), cacheReadTokens, totalTokens }
+				: null,
 		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};
 }
