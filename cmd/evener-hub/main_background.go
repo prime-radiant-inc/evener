@@ -17,11 +17,11 @@ var (
 		t := time.NewTicker(d)
 		return t.C, t.Stop
 	}
-	hubSeedDefaults = func(ctx context.Context) error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
+	hubSeedDefaults = func(ctx context.Context, mgr *plugins.Manager) error {
+		_, err := mgr.SeedDefaultMarketplaces(ctx)
 		return err
 	}
-	hubPluginGC     = func(ctx context.Context) ([]string, error) { return plugins.NewManager("").Gc(ctx) }
+	hubPluginGC     = func(ctx context.Context, mgr *plugins.Manager) ([]string, error) { return mgr.Gc(ctx) }
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
 		mgr := plugins.NewManager("")
 		wirePluginStoreBroadcast(mgr, web.appRPC)
@@ -69,8 +69,17 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	}
 }
 
-func seedHubMarketplaces(ctx context.Context) {
-	if err := hubSeedDefaults(ctx); err != nil {
+// seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go
+// binds hubListener but does not Serve it until well after this call), so no
+// client could be connected when it runs — but it is wired to web's server
+// anyway, on the same reasoning as every other Manager construction in this
+// package: a write no caller has to remember to pair with a broadcast is the
+// point of OnStoreChanged (#1634), and that only holds if nothing gets to
+// stay a documented exception.
+func seedHubMarketplaces(ctx context.Context, web *WebServer) {
+	mgr := plugins.NewManager("")
+	wirePluginStoreBroadcast(mgr, web.appRPC)
+	if err := hubSeedDefaults(ctx, mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
 	}
 }
@@ -79,7 +88,13 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	if cfg.PluginAutoUpgrade {
 		startBackground(func() { hubStartUpgrade(ctx, cfg, web) })
 	}
-	if removed, err := hubPluginGC(ctx); err != nil {
+	// Also runs before ListenAndServe (see seedHubMarketplaces), and wired
+	// for the same reason: Gc's own lockStore acquisition can run
+	// migrateMarketplaceNames, which writes both store files finishing a
+	// rename an earlier run left half done.
+	gcMgr := plugins.NewManager("")
+	wirePluginStoreBroadcast(gcMgr, web.appRPC)
+	if removed, err := hubPluginGC(ctx, gcMgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
 	} else if len(removed) > 0 {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))

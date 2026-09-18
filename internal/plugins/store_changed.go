@@ -29,6 +29,8 @@ func (c StoreChanged) any() bool {
 // installed just accumulates and discards: reportStoreChanged is always safe
 // to call.
 func (m *Manager) OnStoreChanged(fn func(StoreChanged)) {
+	m.storeChangedMu.Lock()
+	defer m.storeChangedMu.Unlock()
 	m.onStoreChanged = fn
 }
 
@@ -58,20 +60,41 @@ func (m *Manager) OnStoreChanged(fn func(StoreChanged)) {
 // seen, and reporting it is the conservative, correct answer — never the
 // reverse.
 func (m *Manager) markStoreChanged(changed StoreChanged) {
+	m.storeChangedMu.Lock()
+	defer m.storeChangedMu.Unlock()
 	m.pendingStoreChanged.Plugins = m.pendingStoreChanged.Plugins || changed.Plugins
 	m.pendingStoreChanged.Marketplaces = m.pendingStoreChanged.Marketplaces || changed.Marketplaces
 }
 
+// resetStoreChanged clears the Manager's current lock session. lockStore
+// calls this the instant it acquires the file lock — a no-op in production,
+// since captureStoreChanged already clears the same field on the way out of
+// every session, but it defends the one caller that writes outside any
+// lockStore session at all (plantLegacyMarketplace, a test fixture).
+func (m *Manager) resetStoreChanged() {
+	m.storeChangedMu.Lock()
+	defer m.storeChangedMu.Unlock()
+	m.pendingStoreChanged = StoreChanged{}
+}
+
 // captureStoreChanged takes and clears the Manager's current lock session,
-// for lockStore's release to report once the lock itself is let go. Called
-// while the lock is still held — not after — so that the next acquisition's
-// own reset (lockStore) cannot run concurrently with this read: with no lock
-// left between them, two goroutines touching the same unsynchronized field
-// would be a plain data race, and List's registry read (which never takes
-// this lock at all) is proof this field's session boundary really depends on
-// the flock, not on anything else serializing callers.
+// for lockStore's release to report once the lock itself is let go. Guarded
+// by storeChangedMu rather than relying on the file lock: flock's mutual
+// exclusion has no Go happens-before edge, and some of this package's own
+// lockAcquirer test seams stub out the file lock entirely.
 func (m *Manager) captureStoreChanged() StoreChanged {
+	m.storeChangedMu.Lock()
+	defer m.storeChangedMu.Unlock()
 	changed := m.pendingStoreChanged
 	m.pendingStoreChanged = StoreChanged{}
 	return changed
+}
+
+// storeChangedCallback reads the installed OnStoreChanged callback under the
+// same mutex, so a caller that installs it concurrently with an in-flight
+// lock session's release never races the read.
+func (m *Manager) storeChangedCallback() func(StoreChanged) {
+	m.storeChangedMu.Lock()
+	defer m.storeChangedMu.Unlock()
+	return m.onStoreChanged
 }

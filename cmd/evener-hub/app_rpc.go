@@ -1361,15 +1361,14 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
-// to all connected clients. A var, not a plain func, so a test can observe
-// wirePluginStoreBroadcast's wiring without a real connected client.
-var notifyMarketplaceUpdated = func(server *appserver.Server) {
+// to all connected clients.
+func notifyMarketplaceUpdated(server hostNotificationBroadcaster) {
 	server.BroadcastAll(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{})
 }
 
 // notifyPluginUpdated broadcasts a evener/plugin/updated notification to all
-// connected clients. See notifyMarketplaceUpdated for why it is a var.
-var notifyPluginUpdated = func(server *appserver.Server) {
+// connected clients.
+func notifyPluginUpdated(server hostNotificationBroadcaster) {
 	server.BroadcastAll(appwire.NotifyEvenerPluginUpdated, map[string]string{})
 }
 
@@ -1382,7 +1381,12 @@ var notifyPluginUpdated = func(server *appserver.Server) {
 // triggers, the auto-upgrade daemon's own marketplace refresh, a marker
 // recovery — by construction, without any caller needing to know it happened.
 // A handler covered by both simply broadcasts twice, which is harmless.
-func wirePluginStoreBroadcast(mgr *plugins.Manager, server *appserver.Server) {
+//
+// server takes hostNotificationBroadcaster (app_host_admin.go), the same
+// *appserver.Server-shaped seam the host-admin fan-out tests drive with a
+// recorder, rather than *appserver.Server itself, so a test can assert on
+// the real broadcasts this sends without standing up a connection.
+func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroadcaster) {
 	mgr.OnStoreChanged(func(changed plugins.StoreChanged) {
 		if changed.Marketplaces {
 			notifyMarketplaceUpdated(server)
@@ -1451,7 +1455,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors()}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
-		return hubCommandList(ctx, cfg)
+		return hubCommandList(ctx, cfg, server)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSpawnSlashCatalog, func(ctx context.Context, params appwire.SpawnSlashCatalogParams) (appwire.SpawnSlashCatalogResponse, error) {
 		return hubSpawnSlashCatalog(ctx, cfg, params)
@@ -1476,8 +1480,10 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // multi-project: project commands are per-session and must never appear here.
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
-func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(ctx, cfg.PluginDirs, nil)
+func hubCommandList(ctx context.Context, cfg hubcore.WebConfig, server hostNotificationBroadcaster) (appwire.CommandListResponse, error) {
+	mgr := plugins.NewManager(cfg.PluginRoot)
+	wirePluginStoreBroadcast(mgr, server)
+	resolution, err := mgr.ResolveForLaunch(ctx, cfg.PluginDirs, nil)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
 	}

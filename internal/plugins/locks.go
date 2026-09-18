@@ -84,7 +84,13 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	if err != nil {
 		return nil, err
 	}
-	m.pendingStoreChanged = StoreChanged{}
+	// Every save in this package runs inside a lockStore session, and
+	// reportingRelease already clears this on the way out — so in production
+	// this reset is a no-op. It defends the one case that isn't a session: a
+	// caller (today only a test fixture, plantLegacyMarketplace) that calls
+	// saveRegistry/saveMarketplaces directly, outside any lockStore call, and
+	// so leaves a flag this acquisition would otherwise inherit.
+	m.resetStoreChanged()
 	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
@@ -101,8 +107,10 @@ func (m *Manager) reportingRelease(release func()) func() {
 	return func() {
 		changed := m.captureStoreChanged()
 		release()
-		if changed.any() && m.onStoreChanged != nil {
-			m.onStoreChanged(changed)
+		if changed.any() {
+			if cb := m.storeChangedCallback(); cb != nil {
+				cb(changed)
+			}
 		}
 	}
 }

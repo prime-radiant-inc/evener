@@ -3,8 +3,10 @@ package plugins
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -176,7 +178,6 @@ func TestMigrateMarketplaceName_MoveSucceedsThenSaveFailsReportsNoChange(t *test
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
-	m.pendingStoreChanged = StoreChanged{}
 	reports := recordStoreChanges(m)
 
 	orig := installSaveRegistry
@@ -201,7 +202,6 @@ func TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange(t *
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
-	m.pendingStoreChanged = StoreChanged{}
 	reports := recordStoreChanges(m)
 
 	orig := marketplaceAtomicWriteFile
@@ -215,5 +215,57 @@ func TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange(t *
 	}
 	if len(*reports) != 0 {
 		t.Fatalf("a persistently failing migration reported change: %+v", *reports)
+	}
+}
+
+// TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged is RoboRev's Medium
+// 1 on #1733: flock gives real mutual exclusion in wall-clock time, but no Go
+// happens-before edge the race detector can see, and several of this
+// package's own lockAcquirer test seams (installAcquireLock,
+// marketplaceAcquireLock, gcAcquireLock) are stubbed to a no-op release in
+// other tests — so pendingStoreChanged/onStoreChanged need their own
+// synchronization, not just the file lock's. Several goroutines each add a
+// distinct marketplace to the one Manager concurrently; every one of them
+// must be reported, and -race must find nothing.
+func TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+
+	const n = 8
+	dirs := make([]string, n)
+	for i := range dirs {
+		dirs[i] = plantCatalog(t, t.TempDir())
+	}
+
+	var mu sync.Mutex
+	var got []StoreChanged
+	m.OnStoreChanged(func(c StoreChanged) {
+		mu.Lock()
+		got = append(got, c)
+		mu.Unlock()
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("mkt-%d", i)
+			if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceDirectory, Path: dirs[i]}); err != nil {
+				t.Errorf("AddMarketplace %s: %v", name, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != n {
+		t.Fatalf("OnStoreChanged fired %d times, want %d: %+v", len(got), n, got)
+	}
+	for _, c := range got {
+		if !c.Marketplaces {
+			t.Errorf("report %+v missing Marketplaces", c)
+		}
 	}
 }

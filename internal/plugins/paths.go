@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -20,16 +21,18 @@ type Manager struct {
 	Now    func() time.Time // injectable clock; defaults to time.Now
 	Stderr io.Writer        // warnings sink; defaults to os.Stderr
 
-	// pendingStoreChanged accumulates the current lockStore session's writes
-	// (see store_changed.go). Only ever touched while that session's own
-	// flock is held, which is what makes an unsynchronized field safe: flock
-	// serializes every acquisition of the one lock file this accumulates
-	// against, by goroutine as much as by process.
+	// storeChangedMu guards pendingStoreChanged and onStoreChanged
+	// (store_changed.go). flock gives real mutual exclusion between lockStore
+	// sessions in wall-clock time, but no Go happens-before edge — nothing
+	// the race detector can see — and several of this package's own
+	// lockAcquirer test seams (installAcquireLock, marketplaceAcquireLock,
+	// gcAcquireLock) are stubbed to a no-op release in other tests, so these
+	// two fields need their own synchronization regardless of the file lock.
+	// Held only for the instant of a reset, mark, capture, install or read —
+	// never across the file-lock wait itself.
+	storeChangedMu      sync.Mutex
 	pendingStoreChanged StoreChanged
-	// onStoreChanged is installed once, by whoever constructs the Manager
-	// (OnStoreChanged), and never reassigned afterward — so reading it while
-	// a lock session is in flight races nothing.
-	onStoreChanged func(StoreChanged)
+	onStoreChanged      func(StoreChanged)
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
