@@ -341,11 +341,15 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // clone directory clone would delete the marketplace's own directory source.
 // A directory source never lives at the clone path for any record the store
 // wrote since refuseSourceInStore began refusing a source inside it, but a
-// record written before that rule — or seeded by hand — can still name it, and
-// a sweep must not be what finally deletes a live source. A non-directory
-// source never lives there, so it is never protected. Either containment
-// direction counts, because the clone path can be the source, hold it, or sit
-// inside it.
+// record written before that rule — or seeded by hand — can still name it:
+// refuseSourceInStore is enforced only by AddMarketplace and EditMarketplace,
+// and the name migration neither re-checks it nor rewrites Source.Path, so such
+// a record survives every later store write. A sweep must not be what finally
+// deletes a live source. A non-directory source never lives there, so it is
+// never protected. Either containment direction counts, because the clone path
+// can be the source, hold it, or sit inside it — and the resolve below reads
+// symlinks as they are now, so a source that an after-the-fact symlink moved
+// inside the store is caught too.
 func (m *Manager) sweepWouldDeleteSource(ref MarketplaceRef, clone string) (bool, error) {
 	if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
 		return false, nil
