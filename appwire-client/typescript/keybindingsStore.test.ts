@@ -922,22 +922,6 @@ describe("the two write paths serialize through one queue", () => {
     await expect(queued).rejects.toThrow();
     await queuedSettled;
   });
-
-  test("detachHub drains a write queued behind a never-settling request", async () => {
-    const client = clientServing(3);
-    const settlements = gateSettlements(client, patchMethod);
-    const store = await readyStore(client);
-
-    const first = store.getState().patchOverrides([applied]);
-    await vi.waitFor(() => expect(settlements).toHaveLength(1));
-    const second = store.getState().patchOverrides([applied]);
-
-    expect(store.detachHub()).toBe(true);
-    // The queued write drains through its retirement fence instead of waiting
-    // on a request that will never answer.
-    await expect(second).rejects.toThrow();
-    void first;
-  });
 });
 
 describe("payload rules shared by both apps", () => {

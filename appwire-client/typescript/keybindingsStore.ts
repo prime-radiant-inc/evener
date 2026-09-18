@@ -811,10 +811,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // End the generation for the QUEUE too: a write parked behind a request
     // that never settles is fenced now, so release it (and the writes behind
     // it) to drain through their dead-generation fence instead of hanging.
-    // Deliberately NOT done in retirePayload: a support flap retires the
-    // payload but must leave a queued write in place so its row error surfaces
-    // when the in-flight write it queued behind finally settles (see the
-    // settings section's "generation-fenced queued write" case).
+    // Only generation END drains the queue. The two other retirements fence
+    // queued writes through payloadSerial but leave them parked:
+    //  - a support flap must leave a queued write in place so its row error
+    //    surfaces when the in-flight write it queued behind finally settles
+    //    (the settings section's "generation-fenced queued write" case);
+    //  - a hub detach is preceded by endReadyGeneration in the host's rewire
+    //    (frontend stores/keybindings.ts), so the drain happens there, and
+    //    draining ON detach would run a queued write before the replacement
+    //    payload is confirmed - refusing it for the wrong reason and masking
+    //    the serial fence.
     releaseAbandonedHead();
   }
 
@@ -1046,11 +1052,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // (applyHubOverrides clears hubError) or re-fails the reconcile against
       // the same wedge and surfaces its own hubError.
       retirePayload({ hubError: UNAPPLY_ROLLED_BACK_MESSAGE, conflict: null });
-      releaseAbandonedHead();
       return false;
     }
     retirePayload({ overrides: [], rawOverrides: [], warnings: [], loadError: null, hubError: null, conflict: null });
-    releaseAbandonedHead();
     return true;
   }
 
