@@ -1471,7 +1471,7 @@ export function useTranscriptScroll({
     // after the mount's landing (scrollHeight grows while the offset stays
     // pinned - measured 11466 -> 11487 at document.fonts.ready), or the
     // virtualizer adopts newly-measured row heights without moving scrollTop.
-    // The scroll listener's own correction below is the same premise and the
+    // The scroll listener's own correction above is the same premise and the
     // same remedy, but it only runs on a scroll event - neither of these fires
     // one, so without this the reader is left a few pixels short of the true
     // bottom with wasAtBottomRef still true: no pill, nothing to click. Re-pin
