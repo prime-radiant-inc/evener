@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -38,6 +39,8 @@ type embeddedSkillsCacheSnapshot struct {
 	verified               bool
 	lease                  skillsLease
 	dirIdentity            fs.FileInfo
+	failedErr              error
+	failedAt               time.Time
 }
 
 func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
@@ -51,6 +54,8 @@ func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 		verified:    embeddedSkillsCache.verified,
 		lease:       embeddedSkillsCache.lease,
 		dirIdentity: embeddedSkillsCache.dirIdentity,
+		failedErr:   embeddedSkillsCache.failedErr,
+		failedAt:    embeddedSkillsCache.failedAt,
 	}
 }
 
@@ -73,6 +78,8 @@ func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
 	embeddedSkillsCache.lease = s.lease
 	embeddedSkillsCache.leasedDir = s.leasedDir
 	embeddedSkillsCache.dirIdentity = s.dirIdentity
+	embeddedSkillsCache.failedErr = s.failedErr
+	embeddedSkillsCache.failedAt = s.failedAt
 }
 
 // pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the
@@ -96,6 +103,8 @@ func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.lease = nil
 	embeddedSkillsCache.leasedDir = ""
+	embeddedSkillsCache.failedErr = nil
+	embeddedSkillsCache.failedAt = time.Time{}
 	embeddedSkillsCache.mu.Unlock()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	t.Cleanup(func() {
@@ -1096,5 +1105,229 @@ func TestEmbeddedSkillsDir_RepublishesAGuttedCopy(t *testing.T) {
 	ScanSkillsDir(again, skills)
 	if !cacheDirComplete(skills) {
 		t.Fatalf("copy %q is still missing skill files after republishing", again)
+	}
+}
+
+// In a degraded environment the publish path fails on every call, but it must
+// not be re-run on every call: a failed shared resolution is remembered so
+// later calls go straight to the process-lifetime copy, and a call after the
+// remembered failure lapses recovers onto the shared copy once the base is
+// usable again.
+func TestEmbeddedSkillsDir_DoesNotRepeatAFailedPublishPath(t *testing.T) {
+	skipIfProcessCopyRefused(t)
+	missingBase := filepath.Join(t.TempDir(), "missing-base")
+	pointEmbeddedSkillsAtBase(t, missingBase)
+	t.Cleanup(resetProcessSkills)
+
+	// Count how often the publish path resolves a base. A remembered failure
+	// must skip base selection and everything after it.
+	resolutions := 0
+	embeddedSkillsBaseDir = func() (string, error) {
+		resolutions++
+		return missingBase, nil
+	}
+
+	savedInterval := embeddedSkillsRetryInterval
+	embeddedSkillsRetryInterval = time.Hour
+	t.Cleanup(func() { embeddedSkillsRetryInterval = savedInterval })
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (degraded): %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(first), embeddedSkillsPrefix+"process-") {
+		t.Fatalf("degraded copy = %q, want a process-lifetime extraction", first)
+	}
+	if resolutions != 1 {
+		t.Fatalf("first resolution attempted the publish path %d times, want 1", resolutions)
+	}
+	for i := range 5 {
+		again, err := EmbeddedSkillsDir()
+		if err != nil {
+			t.Fatalf("EmbeddedSkillsDir (degraded, %d): %v", i, err)
+		}
+		if again != first {
+			t.Fatalf("degraded copy changed between calls: %q, then %q", first, again)
+		}
+	}
+	if _, err := EmbeddedSkills(); err != nil {
+		t.Fatalf("EmbeddedSkills (degraded): %v", err)
+	}
+	if resolutions != 1 {
+		t.Fatalf("repeated degraded calls resolved the base %d times, want 1", resolutions)
+	}
+
+	// Once the remembered failure lapses and the base is usable, resolution
+	// recovers onto the shared copy.
+	if err := os.MkdirAll(missingBase, 0o700); err != nil {
+		t.Fatalf("make base usable: %v", err)
+	}
+	embeddedSkillsRetryInterval = 0
+	recovered, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (recovered): %v", err)
+	}
+	if recovered == first {
+		t.Fatalf("resolution did not recover onto the shared copy: still %q", recovered)
+	}
+	if got := filepath.Dir(recovered); got != missingBase {
+		t.Fatalf("recovered copy %q is not under the base %q", recovered, missingBase)
+	}
+	if resolutions != 2 {
+		t.Fatalf("recovery resolved the base %d times, want 2", resolutions)
+	}
+}
+
+// A base resolver that cannot name a usable root is a failed resolution too:
+// repeated calls must go straight to the process copy, and a later call retries
+// the resolver once the interval lapses.
+func TestEmbeddedSkillsDir_DoesNotRepeatAnUnnameableBase(t *testing.T) {
+	skipIfProcessCopyRefused(t)
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	resolutions := 0
+	embeddedSkillsBaseDir = func() (string, error) {
+		resolutions++
+		return "", errors.New("no usable base")
+	}
+	savedInterval := embeddedSkillsRetryInterval
+	embeddedSkillsRetryInterval = time.Hour
+	t.Cleanup(func() { embeddedSkillsRetryInterval = savedInterval })
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (unnameable base): %v", err)
+	}
+	if resolutions != 1 {
+		t.Fatalf("first resolution ran the base resolver %d times, want 1", resolutions)
+	}
+	for i := range 5 {
+		again, err := EmbeddedSkillsDir()
+		if err != nil {
+			t.Fatalf("EmbeddedSkillsDir (unnameable base, %d): %v", i, err)
+		}
+		if again != first {
+			t.Fatalf("process copy changed between calls: %q, then %q", first, again)
+		}
+	}
+	if resolutions != 1 {
+		t.Fatalf("repeated calls ran the base resolver %d times, want 1", resolutions)
+	}
+
+	// After the interval lapses the resolver runs again, and a usable base is
+	// published into.
+	embeddedSkillsRetryInterval = 0
+	base := t.TempDir()
+	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
+	recovered, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (recovered): %v", err)
+	}
+	if recovered == first {
+		t.Fatalf("resolution did not recover onto the shared copy: still %q", recovered)
+	}
+	if got := filepath.Dir(recovered); got != base {
+		t.Fatalf("recovered copy %q is not under the base %q", recovered, base)
+	}
+}
+
+// A cleaner that removes a bundled asset which is not a SKILL.md (a reference
+// or runbook a skill body loads) must not leave an intact-looking copy in
+// place: the copy is content-validated, so removing any file re-extracts it.
+func TestEmbeddedSkillsDir_ReExtractsWhenANonSkillAssetDisappears(t *testing.T) {
+	skipIfProcessCopyRefused(t)
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	var asset string
+	if err := filepath.WalkDir(first, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(path) == "SKILL.md" {
+			return err
+		}
+		asset = path
+		return fs.SkipAll
+	}); err != nil {
+		t.Fatalf("find a non-SKILL.md asset in %q: %v", first, err)
+	}
+	if asset == "" {
+		t.Fatalf("process copy %q has no non-SKILL.md asset", first)
+	}
+	if err := os.Remove(asset); err != nil {
+		t.Fatalf("remove %q: %v", asset, err)
+	}
+
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (missing asset): %v", err)
+	}
+	if second == first {
+		t.Fatalf("reused a copy missing %q", asset)
+	}
+	rel, err := filepath.Rel(first, asset)
+	if err != nil {
+		t.Fatalf("rel %q to %q: %v", asset, first, err)
+	}
+	if _, err := os.Stat(filepath.Join(second, rel)); err != nil {
+		t.Fatalf("re-extracted copy %q is missing %q: %v", second, rel, err)
+	}
+}
+
+// Rewriting a regular file in place leaves the directory and every path
+// present, so identity and presence alone would serve altered skill content.
+// The process copy is content-validated, so it is re-extracted.
+func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsModified(t *testing.T) {
+	skipIfProcessCopyRefused(t)
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	var skillFile string
+	if err := filepath.WalkDir(first, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(path) != "SKILL.md" {
+			return err
+		}
+		skillFile = path
+		return fs.SkipAll
+	}); err != nil {
+		t.Fatalf("find a SKILL.md in %q: %v", first, err)
+	}
+	if skillFile == "" {
+		t.Fatalf("process copy %q has no SKILL.md", first)
+	}
+	original, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("read %q: %v", skillFile, err)
+	}
+	// Overwrite in place with different bytes of the same length, so presence and
+	// directory identity are unchanged and only the content differs.
+	if err := os.WriteFile(skillFile, []byte(strings.Repeat("x", len(original))), 0o644); err != nil {
+		t.Fatalf("overwrite %q: %v", skillFile, err)
+	}
+
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (modified content): %v", err)
+	}
+	if second == first {
+		t.Fatalf("reused a process copy with modified content: %q", second)
+	}
+	rel, err := filepath.Rel(first, skillFile)
+	if err != nil {
+		t.Fatalf("rel %q to %q: %v", skillFile, first, err)
+	}
+	restored, err := os.ReadFile(filepath.Join(second, rel))
+	if err != nil {
+		t.Fatalf("re-extracted copy %q is missing %q: %v", second, rel, err)
+	}
+	if !bytes.Equal(restored, original) {
+		t.Fatalf("re-extracted copy did not restore %q", rel)
 	}
 }
