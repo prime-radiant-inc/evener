@@ -13,12 +13,25 @@ import type { AppwireClientLike } from "@evener/appwire-client";
 // Wrapping the handler with the client it was registered for, and running
 // it only while that client is still the current one, makes a stale firing
 // a no-op instead of a wrong-generation refresh.
+//
+// Identity of the CLIENT alone is not enough: a client object rewired away
+// and later back (a reconnect to the same instance) registers a fresh
+// onReady handler for it, and a stale handler from the EARLIER registration
+// would pass a bare `client === currentClient()` check once that client is
+// current again, even though a later registration for the same object has
+// since superseded it. latestToken keys each registration's own token by its
+// client object, so only the MOST RECENT registration for that object - the
+// one whose token is still the value stored - is allowed to fire.
+const latestToken = new WeakMap<AppwireClientLike, symbol>();
+
 export function readyGenerationCallback(
   client: AppwireClientLike,
   currentClient: () => AppwireClientLike | null,
   beginReadyGeneration: () => void,
 ): () => void {
+  const token = Symbol();
+  latestToken.set(client, token);
   return () => {
-    if (client === currentClient()) beginReadyGeneration();
+    if (client === currentClient() && latestToken.get(client) === token) beginReadyGeneration();
   };
 }

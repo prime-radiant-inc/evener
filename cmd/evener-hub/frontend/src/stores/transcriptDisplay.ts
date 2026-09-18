@@ -28,6 +28,7 @@ import {
   readLegacyPreference,
   readTranscriptDisplayLocal,
 } from "./prefs";
+import { readyGenerationCallback } from "./readyGenerationCallback";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
@@ -422,10 +423,16 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
-  unwireReady = client.onReady(() => {
-    const epoch = beginReadyGeneration(client);
-    void refreshFor(client, epoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        const epoch = beginReadyGeneration(client);
+        void refreshFor(client, epoch);
+      },
+    ),
+  );
   if (client.state === "ready") {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
