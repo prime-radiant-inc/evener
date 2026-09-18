@@ -467,11 +467,14 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// above and this gate: RemoveHost drops the registry entry while holding
 	// this same lock, and a remove/re-add of the name swaps in a new entry,
 	// so rechecking the name alone would pass while the re-added name is
-	// live. Compare the full entry: this attach captured one identity, and a
-	// name that now resolves to a different entry must be refused before it
-	// dials — a channel built from the removed entry would be published under
-	// the re-added name. The re-add's own caller attaches the fresh identity.
-	if cur, ok := m.reg.Get(name); !ok || !cur.Equal(host) {
+	// live. Compare the full entry — and its generation: content equality
+	// cannot tell a remove/re-add of a byte-identical entry apart, while the
+	// registry's per-name generation always advances across the cycle. This
+	// attach captured one identity, and a name that now resolves to a
+	// different entry must be refused before it dials — a channel built from
+	// the removed entry would be published under the re-added name. The
+	// re-add's own caller attaches the fresh identity.
+	if cur, ok := m.reg.Get(name); !ok || !cur.Equal(host) || cur.Generation != host.Generation {
 		lock.Unlock()
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
@@ -587,14 +590,16 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		return nil, errChannelDropped(name)
 	}
 	// Recheck the registry under the lock before publishing, on the full
-	// entry: a deregistration that does not pass through this gate (a caller
-	// dropping the registry entry directly, as the hub's host manager does
-	// when no sshconn manager is wired) must not gain a fresh channel for a
-	// host that is gone, and a remove/re-add that swapped the entry mid-attach
-	// must not have the channel built from the removed entry published under
-	// the re-added name. The replacement is reaped and the dropped predecessor
-	// keeps ownership, exactly as a replacement that died in its handshake does.
-	if cur, ok := m.reg.Get(name); !ok || !cur.Equal(host) {
+	// entry and its generation: a deregistration that does not pass through
+	// this gate (a caller dropping the registry entry directly, as the hub's
+	// host manager does when no sshconn manager is wired) must not gain a
+	// fresh channel for a host that is gone, and a remove/re-add that swapped
+	// the entry mid-attach must not have the channel built from the removed
+	// entry published under the re-added name — byte-identical re-adds
+	// included, because the registry assigns the re-add a new generation. The
+	// replacement is reaped and the dropped predecessor keeps ownership,
+	// exactly as a replacement that died in its handshake does.
+	if cur, ok := m.reg.Get(name); !ok || !cur.Equal(host) || cur.Generation != host.Generation {
 		lock.Unlock()
 		_ = ch.Close()
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
@@ -1766,13 +1771,15 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 			return true
 		}
 		// Recheck the registry before publishing, as Ensure does — and on the
-		// full entry, not just the name: a host deregistered while this loop
-		// was reconnecting it (RemoveHost stops parked loops, but this attempt
-		// was already in flight) must not gain a fresh channel, and a
-		// remove/re-add that swapped the entry this loop captured must not
-		// gain a channel built from the removed entry either. Reap the
-		// replacement, report the host honestly disconnected, and stand down.
-		if cur, ok := m.reg.Get(host.Name); !ok || !cur.Equal(host) {
+		// full entry and its generation, not just the name: a host deregistered
+		// while this loop was reconnecting it (RemoveHost stops parked loops,
+		// but this attempt was already in flight) must not gain a fresh
+		// channel, and a remove/re-add that swapped the entry this loop
+		// captured must not gain a channel built from the removed entry
+		// either — byte-identical re-adds included, because the registry
+		// assigns the re-add a new generation. Reap the replacement, report
+		// the host honestly disconnected, and stand down.
+		if cur, ok := m.reg.Get(host.Name); !ok || !cur.Equal(host) || cur.Generation != host.Generation {
 			_ = nch.Close()
 			m.stateEvent(host.Name, StateDisconnected)
 			return false

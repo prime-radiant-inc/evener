@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
-import { HostsSection } from "./hosts";
+import { HOST_ATTACH_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
@@ -152,6 +152,42 @@ test("load failure shows retry", async () => {
   vi.useFakeTimers();
   try {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    let settled = false;
+    fake.on("evener/host/list", () => ({
+      hosts: [
+        settled
+          ? row({ name: "beta", address: "b.example", lastAttachError: "dial tcp: connection refused" })
+          : row({ name: "beta", address: "b.example", midAttach: true }),
+      ],
+    }));
+    render(<HostsSection sectionId="hosts" />);
+    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    const connecting = within(betaRow).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
+    expect(connecting.disabled).toBe(true);
+
+    // The attach settles out-of-band — the SSH supervisor's background
+    // reconnect, another client's Connect — so no local action triggers a
+    // refresh. The mid-attach poll re-reads the row.
+    settled = true;
+    await vi.advanceTimersByTimeAsync(HOST_ATTACH_POLL_MS);
+
+    const settledRow = screen.getByText("beta").closest("li")!;
+    await waitFor(() => {
+      const connect = within(settledRow).getByRole("button", { name: "Connect" }) as HTMLButtonElement;
+      expect(connect.disabled).toBe(false);
+    });
+    expect(screen.getByText("offline")).toBeTruthy();
+    expect(screen.queryByText("connecting")).toBeNull();
+    expect(screen.getByText(/dial tcp: connection refused/)).toBeTruthy();
   } finally {
     vi.useRealTimers();
   }

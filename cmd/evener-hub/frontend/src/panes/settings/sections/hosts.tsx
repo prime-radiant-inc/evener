@@ -1,11 +1,16 @@
 import { friendlyErrorMessage, type HostRow } from "@evener/appwire-client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { hostsStore, useHostsStore } from "../../../stores/hosts";
 import { Button, Chip, ConfirmDialog, Dialog, EmptyState, FormRow, Input, Skeleton, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hosts.module.css";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
+
+// How often the section re-reads host rows while any row reports a
+// server-side attach in flight (the mid-attach poll below). Matches the
+// HubResidents section's poll cadence.
+export const HOST_ATTACH_POLL_MS = 2000;
 
 const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
@@ -68,6 +73,19 @@ export function HostsSection(_props: HostsSectionProps) {
   const [removing, setRemoving] = useState(false);
 
   useConnectedEffect(() => hostsStore.getState().fetch(), []);
+
+  // Re-read while any row reports a server-side attach in flight. An attach
+  // that starts outside this tab — the SSH supervisor's background reconnect,
+  // another client's Connect — settles without a local action to trigger the
+  // refresh, so the row would sit on "connecting" with Connect disabled
+  // forever. The poll is owned by the component like HubResidents' and stops
+  // the moment no row is mid-attach.
+  const anyMidAttach = useHostsStore((s) => s.load.phase === "ready" && s.load.hosts.some((row) => row.midAttach));
+  useEffect(() => {
+    if (!anyMidAttach) return;
+    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_ATTACH_POLL_MS);
+    return () => clearInterval(id);
+  }, [anyMidAttach]);
 
   async function handleAdd(): Promise<void> {
     setAdding(true);

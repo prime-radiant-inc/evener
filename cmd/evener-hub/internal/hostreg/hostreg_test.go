@@ -512,6 +512,40 @@ func TestRemoveThenReAddStartsClean(t *testing.T) {
 	}
 }
 
+// A remove and byte-identical re-add of a name is a new registry entry: the
+// per-name generation advances across the cycle even though every configured
+// field — the content Equal compares — is unchanged. That Equal passes between
+// the two is exactly why an identity recheck must compare the generation
+// alongside it: content equality alone cannot tell them apart (the round-3
+// identity race behind sshconn's attach rechecks).
+func TestRemoveReaddIdenticalAdvancesGeneration(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	first, ok := r.Get("m4")
+	if !ok || first.Generation != 1 {
+		t.Fatalf("Get(m4) = %+v, %v; want the first insert's generation 1", first, ok)
+	}
+	if err := r.Remove("m4"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// The re-add is the byte-identical literal the registry stored.
+	if err := r.Add(host("m4")); err != nil {
+		t.Fatalf("Add after Remove: %v", err)
+	}
+	second, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing after the re-add")
+	}
+	if !first.Equal(second) {
+		t.Fatalf("Equal refused byte-identical entries: %+v vs %+v", first, second)
+	}
+	if second.Generation <= first.Generation {
+		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", second.Generation, first.Generation)
+	}
+}
+
 // Removing a dependent clears its edges, so re-adding it without upstreams
 // succeeds instead of tripping the cycle check on a stale edge entry.
 func TestRemoveClearsDependentEdges(t *testing.T) {

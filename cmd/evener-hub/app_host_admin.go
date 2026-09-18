@@ -374,6 +374,11 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 	if c.sources == nil {
 		return
 	}
+	// The removal hook is installed before the add hook and the enumeration so
+	// no interleaving can launch a fan-out whose removal nobody hears: from
+	// here on, every source the registry observes being added is paired with a
+	// visible removal notification.
+	c.sources.SetOnRemove(func(source appsource.Source) { c.stopFanOut(source.ID()) })
 	c.sources.SetOnAdd(func(source appsource.Source) { c.launchFanOut(ctx, source) })
 	for _, source := range c.sources.All() {
 		c.launchFanOut(ctx, source)
@@ -404,6 +409,32 @@ func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsou
 	go c.fanOut(fanCtx, remote)
 }
 
+// stopFanOut ends host's notification fan-out and drops its per-host state:
+// the shared source registry just removed the host, so its goroutine must not
+// keep polling Online() until shutdown, and churn must not leave one fanOuts
+// slot and one attachWake channel behind per removed name. Mirrors
+// launchFanOut's replace half: the cancelled loop stands down on its next
+// wakeup, or as soon as its current subscription ends.
+func (c *hubHostAdminController) stopFanOut(host string) {
+	c.fanOutMu.Lock()
+	stop, ok := c.fanOuts[host]
+	delete(c.fanOuts, host)
+	c.fanOutMu.Unlock()
+	if ok {
+		stop()
+	}
+	c.clearAttachWake(host)
+}
+
+// clearAttachWake drops host's attach wakeup entry. Both hostAttached and the
+// fan-out's backoff path create the buffered channel on demand, so deleting it
+// can never strand a live waiter: the next wakeup or backoff re-creates it.
+func (c *hubHostAdminController) clearAttachWake(host string) {
+	c.attachWakeMu.Lock()
+	delete(c.attachWake, host)
+	c.attachWakeMu.Unlock()
+}
+
 // fanOut re-emits remote, a host's config notifications to the controller's
 // browser clients, tagged with the host, until ctx ends. It re-subscribes
 // whenever the subscription ends — SubscribeHostNotifications closes its
@@ -431,6 +462,11 @@ func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsou
 // wakeup resolves to SessionUnavailable and the loop backs off again.
 func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
 	host := remote.ID()
+	// The loop's own teardown. Cancellation is asynchronous, so a cancelled loop
+	// (replaced by a re-add, or ended by a removal's stopFanOut) can re-create
+	// the wake entry after stopFanOut cleared it; the exit is the one point
+	// after which no goroutine can touch the entry again.
+	defer c.clearAttachWake(host)
 	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {
 		if !remote.Online() {

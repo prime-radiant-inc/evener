@@ -9,9 +9,10 @@ import (
 )
 
 type Registry struct {
-	mu      sync.RWMutex
-	sources map[string]Source
-	onAdd   func(Source)
+	mu       sync.RWMutex
+	sources  map[string]Source
+	onAdd    func(Source)
+	onRemove func(Source)
 }
 
 func NewRegistry() *Registry {
@@ -30,6 +31,19 @@ func (r *Registry) SetOnAdd(fn func(Source)) {
 	r.onAdd = fn
 }
 
+// SetOnRemove registers a callback invoked once for each source Remove
+// deletes, after the deletion is visible to lookups. It is how a long-lived
+// consumer — the host-notification fan-out — learns about sources removed
+// after it started (the host-management surface's remove), so the per-name
+// state it built for the source can be torn down with it instead of outliving
+// it until shutdown. It mirrors SetOnAdd: the callback runs outside the
+// registry's lock, so it may call back into the registry.
+func (r *Registry) SetOnRemove(fn func(Source)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onRemove = fn
+}
+
 func (r *Registry) Add(source Source) {
 	r.mu.Lock()
 	r.sources[source.ID()] = source
@@ -40,10 +54,20 @@ func (r *Registry) Add(source Source) {
 	}
 }
 
+// Remove deletes the source registered under id, reporting nothing when no
+// such source exists; the on-remove notification fires only for a source that
+// was actually deleted.
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sources, id)
+	source, ok := r.sources[id]
+	if ok {
+		delete(r.sources, id)
+	}
+	onRemove := r.onRemove
+	r.mu.Unlock()
+	if ok && onRemove != nil {
+		onRemove(source)
+	}
 }
 
 func (r *Registry) Source(id string) (Source, bool) {

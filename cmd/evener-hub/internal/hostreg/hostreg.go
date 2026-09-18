@@ -64,6 +64,16 @@ type Host struct {
 	// does); a UI-added sidecar host carries its key here so the one live dial
 	// path — the registry entry this package stores — sees it.
 	KeyPath string
+	// Generation is the per-name registry-entry generation: a counter the
+	// registry assigns on every insert, advancing across remove/re-add cycles,
+	// so a name's re-added entry — even with byte-identical content — is a
+	// different entry from the one an earlier Get handed out. It mirrors the
+	// 08 spec series' per-name generation semantics for attach identity:
+	// callers construct Hosts with it zero, Add (AddWithUpstreams) overwrites
+	// whatever they set, and an attach that captured an entry pins itself to
+	// the generation as much as to the content — content equality alone
+	// cannot tell a removed entry from its re-added twin (see Equal).
+	Generation uint64
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
@@ -118,12 +128,11 @@ func Normalize(entry Host) Host {
 	return entry
 }
 
-// Equal reports whether h and other are the same entry: every field equal,
-// with Roots compared by content. The registry has no generation counter, so
-// this content identity is what an attach pins itself to: a name removed and
-// re-added between an attach's capture and its recheck still resolves, but to
-// a different entry, and a channel built from the removed entry must not be
-// published under the re-added name.
+// Equal reports whether h and other carry the same configured content: every
+// field equal, with Roots compared by content. Generation is deliberately
+// excluded — content equality cannot tell a removed entry from a byte-identical
+// re-add — so an identity recheck compares the generation alongside this
+// (sshconn's Ensure and reconnectOnce), never this alone.
 func (h Host) Equal(other Host) bool {
 	return h.Name == other.Name && h.SSH == other.SSH && h.User == other.User &&
 		h.EvenerPath == other.EvenerPath && h.ConfigPath == other.ConfigPath &&
@@ -164,6 +173,11 @@ type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]Host
 	edges map[string][]string // host name -> names of its upstream hosts
+	// gens records how many times each name has ever been inserted. The
+	// counters outlive Remove on purpose: without a surviving count a
+	// remove/re-add would assign the same generation again, and a byte-identical
+	// re-add would be indistinguishable from the entry it replaced.
+	gens map[string]uint64
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -175,6 +189,7 @@ func New(entries []Host) (*Registry, error) {
 	r := &Registry{
 		hosts: make(map[string]Host, len(entries)),
 		edges: make(map[string][]string, len(entries)),
+		gens:  make(map[string]uint64, len(entries)),
 	}
 	for _, entry := range entries {
 		if err := r.Add(entry); err != nil {
@@ -214,6 +229,11 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
 		return err
 	}
+	// The generation is assigned under the lock, from the per-name counter that
+	// survives removals: a re-add of the same name — byte-identical or not —
+	// always carries a generation the removed entry never had.
+	entry.Generation = r.gens[entry.Name] + 1
+	r.gens[entry.Name] = entry.Generation
 	r.hosts[entry.Name] = entry
 	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
 	return nil
@@ -328,7 +348,10 @@ func (r *Registry) Get(name string) (Host, bool) {
 // A removed host stays removed: Get and All no longer report it, and a later
 // Add of the same name starts clean rather than inheriting the old edges (a
 // stale edges entry under the re-added name would false-positive the cycle
-// check against upstreams that no longer apply).
+// check against upstreams that no longer apply). The name's generation counter
+// is kept on purpose: the re-add's Add assigns the next generation, so the
+// re-added entry stays distinguishable from the one Remove deleted even when
+// every configured byte matches.
 //
 // Edges recorded on other hosts that name the removed host are left alone: the
 // cycle walk already treats an unknown upstream as a leaf, so they dangle

@@ -16,6 +16,16 @@ export type HostsLoadState =
 interface HostsStoreState {
   load: HostsLoadState;
   fetch: () => Promise<void>;
+  /**
+   * Quiet re-read for the section's background poll. Unlike fetch it never
+   * flips the phase to "loading" (the rows stay rendered) and a failure keeps
+   * the last snapshot instead of blanking the section, because the next tick
+   * retries. The mid-attach poll calls it while any row reports a server-side
+   * attach in flight, so a host that settles outside this tab's actions (the
+   * SSH supervisor's background reconnect, another client's Connect) still
+   * converges instead of sitting on "connecting" forever.
+   */
+  refresh: () => Promise<void>;
   add: (params: { name: string; address: string; keyPath?: string }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
@@ -35,6 +45,10 @@ function errorText(err: unknown): string {
   return String(err);
 }
 
+// At most one background refresh runs at a time; concurrent callers join the
+// same promise (mirrors stores/daemonResidents.ts).
+let refreshInflight: Promise<void> | null = null;
+
 export const hostsStore = create<HostsStoreState>((set, get) => ({
   load: { phase: "loading" },
 
@@ -47,6 +61,24 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
     } catch (err) {
       set({ load: { phase: "error", message: errorText(err) } });
     }
+  },
+
+  refresh: async () => {
+    if (refreshInflight) return refreshInflight;
+    refreshInflight = (async () => {
+      try {
+        const res = await requireClient().request("evener/host/list", {});
+        if (res.hosts === undefined) throw new Error("evener/host/list returned no hosts");
+        set({ load: { phase: "ready", hosts: res.hosts } });
+      } catch {
+        // A failed background poll keeps the last rows: blanking the section
+        // on a transient failure would flash the empty state every tick, and
+        // the next tick retries anyway.
+      } finally {
+        refreshInflight = null;
+      }
+    })();
+    return refreshInflight;
   },
 
   add: async (params) => {
@@ -74,7 +106,10 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
     await get().fetch();
   },
 
-  resetForTests: () => set({ load: { phase: "loading" } }),
+  resetForTests: () => {
+    refreshInflight = null;
+    set({ load: { phase: "loading" } });
+  },
 }));
 
 export function useHostsStore<T>(selector: (state: HostsStoreState) => T): T {

@@ -1341,6 +1341,69 @@ func TestHostAdminFanOutStartsForRuntimeAddedSource(t *testing.T) {
 	}
 }
 
+// TestHostAdminFanOutStopsOnSourceRemoval pins the round-3 medium: Remove on
+// the shared source registry used to delete only the map entry, so the removed
+// host's fan-out goroutine kept polling Online() until shutdown and churn
+// leaked one goroutine + RemoteHubSource + fanOuts/attachWake slot per name.
+// The registry's on-remove notification now drives the controller's teardown:
+// subscribers go to zero, fanOuts drops the name, the host's attachWake entry
+// is cleared, and a notification the scripted remote still emits reaches no
+// one.
+func TestHostAdminFanOutStopsOnSourceRemoval(t *testing.T) {
+	client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("runtime-side", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	controller.start(t.Context())
+
+	sources.Add(source)
+	waitHostSubscribers(t, source, 1)
+	emit(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerAuthUpdated)
+
+	// Park a pending attach wakeup under the name first, so the removal's
+	// attachWake cleanup has an entry to clear.
+	controller.hostAttached("runtime-side")
+	controller.fanOutMu.Lock()
+	_, running := controller.fanOuts["runtime-side"]
+	controller.fanOutMu.Unlock()
+	if !running {
+		t.Fatal("the added source gained no fan-out entry")
+	}
+
+	sources.Remove("runtime-side")
+	waitHostSubscribers(t, source, 0)
+	controller.fanOutMu.Lock()
+	_, leakedFanOut := controller.fanOuts["runtime-side"]
+	controller.fanOutMu.Unlock()
+	if leakedFanOut {
+		t.Fatal("fanOuts kept the removed host's cancel entry")
+	}
+	controller.attachWakeMu.Lock()
+	_, leakedWake := controller.attachWake["runtime-side"]
+	controller.attachWakeMu.Unlock()
+	if leakedWake {
+		t.Fatal("attachWake kept the removed host's wakeup channel")
+	}
+	// The cancelled loop is gone: the remote keeps emitting, but nothing is
+	// subscribed to relay it.
+	emit(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{"marketplace": "main"})
+	time.Sleep(100 * time.Millisecond)
+	if got := recorder.broadcasts(); len(got) != 1 {
+		t.Fatalf("broadcasts = %+v, want only the pre-removal fan-out delivery", got)
+	}
+}
+
 // waitHostSubscribers waits until source reports want live host-level
 // subscribers: the observable form of "the fan-out is subscribed" and "the
 // replaced loop stood down".

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -249,6 +250,77 @@ func TestRemoveReaddRacesEnsureAtGate(t *testing.T) {
 	}
 }
 
+// A remove/re-add of a byte-identical entry is still a swap the parked Ensure
+// must refuse: content equality cannot tell the removed entry from its
+// re-added twin — every configured byte matches — so the registry's per-name
+// entry generation is what distinguishes them (the round-3 identity race). The
+// re-add's own caller attaches the fresh identity; the parked attach never
+// dials for it.
+func TestRemoveReaddIdenticalRacesEnsureAtGate(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "/keys/alpha"}
+	reg := testRegistry(t, host)
+	gate := newGateHook()
+	gate.arm()
+	defer gate.open()
+	var mu sync.Mutex
+	var dialed []string
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+			mu.Lock()
+			dialed = append(dialed, strings.Join(argv, " "))
+			mu.Unlock()
+			return goodStartFn(t)(ctx, argv, stderr)
+		},
+	}
+	events := make(chan Event, 64)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:        func(ev Event) { events <- ev },
+		beforeHostGate: func(string) { gate.hook() },
+	})
+	type ensureResult struct {
+		ch  *Channel
+		err error
+	}
+	done := make(chan ensureResult, 1)
+	go func() {
+		ch, err := m.Ensure(context.Background(), "alpha")
+		done <- ensureResult{ch, err}
+	}()
+	gate.wait(t, "the parked Ensure")
+	// Remove and re-add the byte-identical entry while the old attach is parked
+	// before the gate: the swap completes fully and the name resolves again, to
+	// an entry whose content matches the captured one in every field.
+	if err := m.RemoveHost("alpha"); err != nil {
+		t.Fatalf("RemoveHost: %v", err)
+	}
+	if err := m.AddHost(host); err != nil {
+		t.Fatalf("AddHost: %v", err)
+	}
+	gate.open()
+	r := <-done
+	if r.ch != nil {
+		t.Fatal("the parked Ensure returned a channel for the byte-identical re-added name")
+	}
+	if !errors.Is(r.err, ErrHostNotFound) {
+		t.Fatalf("parked Ensure = %v, want ErrHostNotFound (the captured entry is gone even though its content was re-added)", r.err)
+	}
+	if kinds := detachHostKinds(events); len(kinds) != 0 {
+		t.Fatalf("the refused attach emitted %v, want nothing", kinds)
+	}
+	// The re-added identity is a new entry the next Ensure attaches: exactly
+	// one dial, the fresh attach's own.
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure after the identical re-add: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialed) != 1 {
+		t.Fatalf("dialed %d times, want exactly the fresh attach's one dial", len(dialed))
+	}
+}
+
 // A remove/re-add that bypasses the host gate entirely (a caller swapping the
 // registry entry directly, the way the hub's host manager does when no sshconn
 // manager is wired) must not gain the in-flight attach's channel either: the
@@ -307,6 +379,66 @@ func TestEnsureRefusesPublishAfterReplace(t *testing.T) {
 	}
 }
 
+// The pre-publish recheck must refuse a mid-flight attach whose captured entry
+// was swapped for a byte-identical re-add: content equality passes — the
+// round-3 identity race — so the captured registry-entry generation is what
+// marks the channel as built from the removed entry, and it is reaped instead
+// of published under the re-added name.
+func TestEnsureRefusesPublishAfterIdenticalReplace(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "/keys/alpha"}
+	reg := testRegistry(t, host)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+			close(started)
+			<-release
+			return goodStartFn(t)(ctx, argv, stderr)
+		},
+	}
+	m := newTestManager(t, reg, fr, Options{})
+	type ensureResult struct {
+		ch  *Channel
+		err error
+	}
+	done := make(chan ensureResult, 1)
+	go func() {
+		ch, err := m.Ensure(context.Background(), "alpha")
+		done <- ensureResult{ch, err}
+	}()
+	// Park the attach mid-flight: Start blocks until the swap below has
+	// landed, so the pre-publish recheck is the only thing standing between the
+	// attach and a channel published for the removed entry.
+	<-started
+	// Swap the entry for a byte-identical re-add, bypassing the host gate the
+	// way a gate-less caller (the hub's host manager with no sshconn manager
+	// wired) does.
+	if err := reg.Remove("alpha"); err != nil {
+		t.Fatalf("reg.Remove: %v", err)
+	}
+	if err := reg.Add(host); err != nil {
+		t.Fatalf("reg.Add: %v", err)
+	}
+	close(release)
+	r := <-done
+	if r.ch != nil {
+		t.Fatal("Ensure published a channel built from the removed entry behind byte-identical content")
+	}
+	if !errors.Is(r.err, ErrHostNotFound) {
+		t.Fatalf("Ensure = %v, want ErrHostNotFound (the captured entry's generation was replaced)", r.err)
+	}
+	if m.Attached("alpha") {
+		t.Fatal("Attached after the identical-replaced attach = true, want false")
+	}
+	// The refusal reaped the stale channel without tearing the re-added identity
+	// down: the registry keeps the replacement, unattached.
+	cur, ok := reg.Get("alpha")
+	if !ok || cur.SSH != "alpha.example" || cur.KeyPath != "/keys/alpha" {
+		t.Fatalf("registry entry after the refusal = %+v, want the re-added entry intact", cur)
+	}
+}
+
 // A deregistration that bypasses the host gate entirely (a caller dropping the
 // registry entry directly, the way the hub's host manager does when no sshconn
 // manager is wired) must still not gain a channel: Ensure rechecks the registry
@@ -351,5 +483,84 @@ func TestEnsureRefusesPublishAfterDeregistration(t *testing.T) {
 	}
 	if m.Attached("alpha") {
 		t.Fatal("Attached after the deregistered attach = true, want false")
+	}
+}
+
+// A reconnect attempt whose captured entry is swapped for a byte-identical
+// re-add while it is in flight must not publish either (the round-3 identity
+// race at the reconnect recheck): the supervisor reaps the replacement, reports
+// the host honestly disconnected, and stands down; the re-added identity is
+// left intact for its own attach.
+func TestReconnectRefusesPublishAfterIdenticalReplace(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "/keys/alpha"}
+	reg := testRegistry(t, host)
+	var mu sync.Mutex
+	starts := 0
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+			mu.Lock()
+			starts++
+			attempt := starts
+			mu.Unlock()
+			// Park the supervisor's reconnect attempt — the second bridge —
+			// so the swap lands while the attempt is in flight, past the
+			// loop's own cancellation check.
+			if attempt == 2 {
+				close(parked)
+				<-release
+			}
+			return goodStartFn(t)(ctx, argv, stderr)
+		},
+	}
+	events := make(chan Event, 64)
+	supervisorExited := make(chan struct{}, 8)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:         func(ev Event) { events <- ev },
+		superviseExited: func(string) { supervisorExited <- struct{}{} },
+		BackoffBase:     time.Millisecond,
+		BackoffMax:      time.Millisecond,
+		sleep:           func(context.Context, time.Duration) error { return nil },
+		jitter:          func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+	// Drop the link: the supervisor reconnects immediately (the faked backoff
+	// sleeps nothing) and parks inside the second bridge's Start.
+	ch.markLost()
+	waitForEvent(t, events, EventDetached)
+	<-parked
+	// Swap the entry for a byte-identical re-add while the reconnect is in
+	// flight. The supervisor holds the host gate for its attempt, so the swap
+	// bypasses it the way a gate-less caller does.
+	if err := reg.Remove("alpha"); err != nil {
+		t.Fatalf("reg.Remove: %v", err)
+	}
+	if err := reg.Add(host); err != nil {
+		t.Fatalf("reg.Add: %v", err)
+	}
+	close(release)
+	// The supervisor stands down after the one refused attempt.
+	select {
+	case <-supervisorExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reconnect supervisor never stood down after the refusal")
+	}
+	// Nothing was published under the re-added name: no second Attached, and no
+	// live channel.
+	if kinds := detachHostKinds(events); detachHostCount(kinds, EventAttached) != 0 {
+		t.Fatalf("the refused reconnect announced %v, want no Attached for the re-added entry", kinds)
+	}
+	if m.Attached("alpha") {
+		t.Fatal("Attached after the identical-replaced reconnect = true, want false")
+	}
+	// The re-added identity is intact and attachable by its own caller.
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure after the identical re-add: %v", err)
 	}
 }

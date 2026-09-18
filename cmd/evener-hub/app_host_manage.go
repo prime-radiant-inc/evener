@@ -570,8 +570,10 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // through the attached-only lookups and record them as last-known; offline
 // and in-progress rows render the retained attach state (midAttach,
 // lastAttachError) and last-known facts from the record. It never dials:
-// every seam here is attached-only.
-func (m *hubHostManager) hostRow(host hostreg.Host, origin string) appwire.HostRow {
+// every seam here is attached-only. ctx is the caller's handler context — the
+// facts read runs on it, so a caller that goes away cancels the read instead
+// of leaving it running behind the mutation mutex List and Status hold.
+func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin string) appwire.HostRow {
 	row := appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,
@@ -597,7 +599,7 @@ func (m *hubHostManager) hostRow(host hostreg.Host, origin string) appwire.HostR
 				}
 			}
 			if m.cfg.facts != nil {
-				if facts, err := m.cfg.facts(context.Background(), host.Name, client); err == nil {
+				if facts, err := m.cfg.facts(ctx, host.Name, client); err == nil {
 					row.HubVersion = facts.HubVersion
 					row.OS = facts.OS
 					row.Arch = facts.Arch
@@ -640,13 +642,16 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	source.SetHostFacts(m.cfg.facts)
 	source.SetHostHandshake(m.cfg.handshake)
 	// The signal answers from the manager's own attached state, never from
-	// this manager's hostOnline (that reads the source and would recurse);
-	// with no signal wired, a host nothing can attach renders offline.
+	// this manager's hostOnline (that reads the source and would recurse).
+	// With no signal wired (embedders, tests) it fails open exactly like a
+	// startup source in the same configuration — newHubSourceRegistry installs
+	// "cfg.RemoteHostOnline == nil || signal", the pre-06 default — so an
+	// explicitly attached runtime host stays usable by every source-mediated
+	// call that gates on Online(). hostRow never trusts the signal alone: its
+	// attached-client guard still decides Attached, so the fail-open default
+	// cannot render a channel-less row online.
 	source.SetHostOnline(func() bool {
-		if m.cfg.online != nil {
-			return m.cfg.online(entry.Name)
-		}
-		return false
+		return m.cfg.online == nil || m.cfg.online(entry.Name)
 	})
 	m.cfg.sources.Add(source)
 }
@@ -696,7 +701,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	m.cfg.sidecar.add(entry)
 	m.cfg.state.remove(entry.Name) // a re-added name starts with no stale record
 	m.registerSource(entry)
-	return m.hostRow(entry, hostOriginSidecar), nil
+	return m.hostRow(ctx, entry, hostOriginSidecar), nil
 }
 
 // addHostToRegistry inserts entry into the live registry. With the SSH
@@ -756,7 +761,7 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 		if m.cfg.sidecar.isSidecar(host.Name) {
 			origin = hostOriginSidecar
 		}
-		rows = append(rows, m.hostRow(host, origin))
+		rows = append(rows, m.hostRow(ctx, host, origin))
 	}
 	if rows == nil {
 		rows = []appwire.HostRow{}
@@ -782,7 +787,7 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 	if m.cfg.sidecar.isSidecar(host.Name) {
 		origin = hostOriginSidecar
 	}
-	return appwire.HostStatusResponse{Host: m.hostRow(host, origin)}, nil
+	return appwire.HostStatusResponse{Host: m.hostRow(ctx, host, origin)}, nil
 }
 
 // Remove deregisters one sidecar host entry: its sidecar row, its source, its
@@ -836,6 +841,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	return appwire.HostRemoveResponse{Host: appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,
+		KeyPath: host.KeyPath,
 		Origin:  hostOriginSidecar,
 		Removed: true,
 	}}, nil

@@ -218,7 +218,7 @@ func TestHostManageRemoveRefusals(t *testing.T) {
 // and sidecar row are gone, the response renders removed, and re-add works.
 func TestHostManageRemoveThenReAdd(t *testing.T) {
 	m := testHostManager(nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example", KeyPath: "/keys/s"}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	resp, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
@@ -227,6 +227,11 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	}
 	if !resp.Host.Removed || resp.Host.Attached {
 		t.Fatalf("remove row = %+v, want removed + detached", resp.Host)
+	}
+	// HostRemoveResponse documents a removed HostRow, and the row echoes the
+	// entry's key path like every other rendered row does.
+	if resp.Host.KeyPath != "/keys/s" {
+		t.Fatalf("remove row key path = %q, want the removed entry's /keys/s", resp.Host.KeyPath)
 	}
 	if _, ok := m.cfg.hosts.Get("side"); ok {
 		t.Fatal("removed host still in registry")
@@ -621,6 +626,140 @@ func TestHostManageAddWiresAttachableSource(t *testing.T) {
 	}
 	if resp.Host.Attached {
 		t.Fatal("added host renders attached before any attach")
+	}
+}
+
+// TestHostManageRowsThreadTheHandlerContext pins that hostRow's facts read
+// runs on the handler's own context — the context List and Status hold the
+// mutation mutex under — and not a detached context.Background(), so a caller
+// that goes away mid-read cancels the facts call instead of leaving it running
+// behind a mutex nothing else can take.
+func TestHostManageRowsThreadTheHandlerContext(t *testing.T) {
+	live := &appwire.Client{}
+	var gotCtx context.Context
+	cfg := hubcore.WebConfig{
+		RemoteHostOnline:           func(string) bool { return true },
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return live, true },
+		RemoteHostFacts: func(ctx context.Context, _ string, _ *appwire.Client) (appsource.HostFacts, error) {
+			gotCtx = ctx
+			return appsource.HostFacts{}, ctx.Err()
+		},
+	}
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "h", SSH: "h.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, cfg, "", hosts, nil)
+
+	// A canceled handler context must reach the facts read.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp, err := m.Status(ctx, appwire.HostStatusParams{Name: "h"})
+	if err != nil {
+		t.Fatalf("Status = %v", err)
+	}
+	if gotCtx == nil || !errors.Is(gotCtx.Err(), context.Canceled) {
+		t.Fatal("the Status facts read ran on a context other than the handler's: the canceled handler context never reached it")
+	}
+	// A failed facts read is not a detach: the row stays attached.
+	if !resp.Host.Attached {
+		t.Fatalf("row = %+v, want attached despite the failed facts read (the dial is authoritative)", resp.Host)
+	}
+
+	// List threads its handler context the same way.
+	listCtx, listCancel := context.WithCancel(context.Background())
+	listCancel()
+	if _, err := m.List(listCtx, appwire.EmptyParams{}); err != nil {
+		t.Fatalf("List = %v", err)
+	}
+	if gotCtx == nil || !errors.Is(gotCtx.Err(), context.Canceled) {
+		t.Fatal("the List facts read ran on a context other than the handler's: the canceled handler context never reached it")
+	}
+}
+
+// TestHostManageRuntimeSourceMatchesStartupNilOnlineSignal pins the round-3
+// medium: with RemoteHostOnline nil (embedders, tests), every startup source
+// fails open — newHubSourceRegistry installs "cfg.RemoteHostOnline == nil ||
+// signal", the pre-06 default — but the runtime-added source's signal returned
+// false, leaving an explicitly attached runtime host unusable by every
+// source-mediated call (the host admin proxy and the notification fan-out both
+// gate on Online()). The runtime signal must match startup's semantics, while
+// hostRow's attached-client guard keeps status truthful: no live client behind
+// the fail-open signal keeps a row offline.
+func TestHostManageRuntimeSourceMatchesStartupNilOnlineSignal(t *testing.T) {
+	client, calls, _ := newScriptedAdminClient(t, func(method string, _ json.RawMessage) hostAdminReply {
+		if method != appwire.MethodEvenerInstanceList {
+			t.Errorf("forwarded method = %q, want %q", method, appwire.MethodEvenerInstanceList)
+		}
+		return hostAdminReply{result: map[string]any{"ok": true}}
+	})
+	live := false
+	cfg := hubcore.WebConfig{
+		// RemoteHostOnline deliberately nil: the embedder/test shape where
+		// startup sources fail open.
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			if host == "side" && live {
+				return client, true
+			}
+			return nil, false
+		},
+	}
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, cfg, "", hosts, nil)
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+		t.Fatalf("Add = %v", err)
+	}
+
+	// The added source carries the same fail-open signal a startup source gets
+	// in this configuration.
+	src, ok := sources.Source("side")
+	if !ok {
+		t.Fatal("Add registered no source")
+	}
+	online, ok := src.(appsource.OnlineSource)
+	if !ok || !online.Online() {
+		t.Fatal("the runtime-added source reports offline with no online signal wired; startup sources fail open in this configuration")
+	}
+
+	// A channel-less row stays honestly offline: hostRow's attached-client
+	// guard, not the fail-open signal, decides Attached.
+	resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status before the attach = %v", err)
+	}
+	if resp.Host.Attached {
+		t.Fatalf("row = %+v, want offline: no live client backs the fail-open signal", resp.Host)
+	}
+
+	// An explicitly attached runtime host is usable by source-mediated calls:
+	// the host admin proxy gates on Online() and resolves the live
+	// attached-only client behind it.
+	live = true
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	if _, err := controller.Request(context.Background(), appwire.HostRequestParams{
+		Host:   "side",
+		Method: appwire.MethodEvenerInstanceList,
+	}); err != nil {
+		t.Fatalf("host/request over the attached runtime host = %v, want the forwarded call to serve", err)
+	}
+	forwarded := calls()
+	if len(forwarded) != 2 || forwarded[1].method != appwire.MethodEvenerInstanceList {
+		t.Fatalf("remote calls = %+v, want initialize + the one forwarded request", forwarded)
+	}
+
+	// With a live client behind the guard the row renders attached — truthful,
+	// not fail-open fiction.
+	resp, err = m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the attach = %v", err)
+	}
+	if !resp.Host.Attached {
+		t.Fatalf("row = %+v, want attached once the attached-only lookup confirms a live client", resp.Host)
 	}
 }
 
