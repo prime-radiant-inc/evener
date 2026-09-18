@@ -19,15 +19,18 @@ export interface MemoryDraftStorage<Checkpoint> {
   failSave(fail?: boolean): void;
   /** Replace the stored value with something that is not a checkpoint. */
   corrupt(): void;
-  /** The checkpoint the last removeIf() was given, as the port received it. */
-  lastRemoveIf(): Checkpoint | null;
+  /** The value the last removeIf() was given, exactly as the port received
+   * it - unknown, not Checkpoint: discardStoredDraft() deliberately passes a
+   * raw unreadable value through removeIf(), so this can hold bytes outside
+   * Checkpoint too. */
+  lastRemoveIf(): unknown;
 }
 
 export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryDraftStorage<Checkpoint> {
   let stored: unknown = initial;
   let id = 0;
   let saveFails = false;
-  let lastRemoveIf: Checkpoint | null = null;
+  let lastRemoveIf: unknown = null;
   const storage: DraftPort<Checkpoint> = {
     createId: () => `draft-${++id}`,
     load: () => structuredClone(stored),

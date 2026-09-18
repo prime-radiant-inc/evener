@@ -60,6 +60,30 @@ describe("createDraftRepository", () => {
 
     expect(drafts.stored()).toBeNull();
   });
+
+  it("discardClassified is a no-op after load() observes empty storage, even when another writer saves afterward", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    expect(repo.load()).toBeNull();
+    // Another writer saves directly to the port after this repository
+    // classified the store as empty - a record it never classified.
+    drafts.storage.save({ id: "external", value: "x" });
+    repo.discardClassified();
+
+    expect(drafts.stored()).toEqual({ id: "external", value: "x" });
+  });
+
+  it("removeIf after re-saving a loaded checkpoint matches the just-written bytes, not the pre-save raw identity", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    const loaded = repo.load() as Checkpoint;
+    repo.save(loaded);
+    repo.removeIf(loaded);
+
+    expect(drafts.stored()).toBeNull();
+  });
 });
 
 describe("discardStoredDraft", () => {
