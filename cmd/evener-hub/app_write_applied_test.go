@@ -297,7 +297,10 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 // cannot be put back while the record - the layer the instance actually
 // resolves from - is restored. The instance is configured again, so the
 // caller must hear a rollback, not "the removal stands", and the row must be
-// republished by the recovery reload.
+// republished by the recovery reload. The stray key is still gone, though, so
+// the error also answers writeApplied: every other client's credential status
+// for the name is stale against that deletion, and the marker is what makes
+// the RPC layer broadcast it.
 func TestInstances_RemoveRollsBackWhenTheCarryingRecordIsRestored(t *testing.T) {
 	// Load 1 is the fixture's own, load 2 this test's priming reload, load 3
 	// the removal's, and load 4 the rollback's recovery reload.
@@ -324,8 +327,8 @@ func TestInstances_RemoveRollsBackWhenTheCarryingRecordIsRestored(t *testing.T) 
 	if !strings.Contains(err.Error(), "was rolled back") {
 		t.Fatalf("Remove = %v, want the rollback reported", err)
 	}
-	if writeDidApply(err) {
-		t.Fatalf("Remove = %v (%T), want a plain rollback: the instance still resolves", err, err)
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stray key stayed deleted", err, err)
 	}
 	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
 		t.Fatalf("the OAuth record was not restored: %v", statErr)
@@ -374,6 +377,116 @@ func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.
 	if info, statErr := os.Stat(authPath); statErr != nil || !info.IsDir() {
 		t.Fatalf("auth path = %v (err %v), want the record still not restored", info, statErr)
 	}
+}
+
+// partialRollbackFixture serves an RPC hub whose implicit Codex instance can
+// be given both an OAuth record and a stray stored key. failNext makes the
+// next registry load fail and, in the same step, blocks the credentials file:
+// the carrying OAuth record lives under the state root and restores, while the
+// stray key cannot.
+type partialRollbackFixture struct {
+	hub       *httptest.Server
+	reg       *hubcore.ProviderRegistry
+	stateDir  string
+	credsPath string
+	store     *credentials.Store
+	failNext  *atomic.Bool
+}
+
+func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
+	t.Helper()
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	load := testRegistryLoader(stateDir, tomlPath, credsStore, nil)
+	failNext := &atomic.Bool{}
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if failNext.CompareAndSwap(true, false) {
+			// The store writes through <path>.tmp and renames, so a directory
+			// occupying that name refuses the open. The mkdir result is
+			// asserted from the test goroutine, not here.
+			_ = os.Mkdir(credsStore.Path()+".tmp", 0o700)
+			return nil, nil, errors.New("the registry refused to load")
+		}
+		return load(extra...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	return &partialRollbackFixture{
+		hub:       hub,
+		reg:       reg,
+		stateDir:  stateDir,
+		credsPath: credsStore.Path(),
+		store:     credsStore,
+		failNext:  failNext,
+	}
+}
+
+// A credential-only removal whose reload fails can restore the layer that
+// carries the instance while a stray credential stays deleted. The instance is
+// configured again - the caller is told the removal was rolled back, not that
+// it stands - but a credential is gone, so the hub still owes every other
+// client evener/auth/updated. This is the RPC-level proof that the applied
+// marker rides the rollback error into instanceWrite's broadcast.
+func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDeleted(t *testing.T) {
+	f := newPartialRollbackFixture(t)
+	if err := f.store.Set("openai-codex", "sk-stray"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	if inst, ok := f.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("openai-codex = %+v ok=%v, want an OAuth-backed instance", inst, ok)
+	}
+
+	client := dialHubRPC(t, f.hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	f.failNext.Store(true)
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceRemove,
+		appwire.InstanceRemoveParams{Name: "openai-codex"}, &resp)
+	if err == nil {
+		t.Fatal("evener/instance/remove = nil, want the partial rollback reported")
+	}
+	if strings.Contains(err.Error(), "the removal stands") || !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("evener/instance/remove = %v, want a rollback: the carrying record is back", err)
+	}
+	if !strings.Contains(err.Error(), "some credentials were not put back") {
+		t.Fatalf("evener/instance/remove = %v, want the leftover stray key reported", err)
+	}
+	if st, statErr := os.Stat(f.credsPath + ".tmp"); statErr != nil || !st.IsDir() {
+		t.Fatalf("credentials temp path = %v (err %v), want the blocking directory this case needs", st, statErr)
+	}
+	if v, _ := f.store.Get("openai-codex"); v != "" {
+		t.Fatalf("stored key = %q, want the stray key still deleted", v)
+	}
+	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", statErr)
+	}
+	if inst, ok := f.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("after the recovery reload openai-codex = %+v ok=%v, want it resolving again", inst, ok)
+	}
+	waitForAuthUpdatedBroadcast(t, client, "a partial rollback that left the stray key deleted")
 }
 
 // SetLayer persists the layer and then resolves the effective view. The file is

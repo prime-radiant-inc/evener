@@ -1445,10 +1445,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			}
 			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
 			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-				// The carrying layer is back but a stray credential stayed
-				// deleted: a plain rollback, so the caller learns what is
-				// missing without the writeApplied mark.
-				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
+				// Two separate facts, and the error has to carry both. The
+				// instance is configured again - the layer that carries it is
+				// back - so the removal is a rollback and the message says so.
+				// A credential is still gone, though: a deleted layer that
+				// could not be put back is a change every other client's
+				// credential status for this name is stale against, so the
+				// rollback error also carries the applied marker (writeApplied
+				// leaves the message and wire class alone) that makes
+				// instanceWrite broadcast evener/auth/updated.
+				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
 			}
 			if reloadErr := c.reg.Reload(); reloadErr != nil {
 				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", rolledBack, reloadErr)
@@ -1576,13 +1582,13 @@ func supplyOf(inst registry.Instance) removalSupply {
 // cause is the failure that triggered the rollback. On a restore that carries
 // the instance (ok true) it comes back unchanged, unless a stray layer could
 // not be put back - then the returned error names only those leftover layers,
-// a plain (not applied) rollback the caller folds into its own report. On a
-// restore that does not carry the instance, the returned error folds cause,
-// frame, and the layers that could not be put back, and answers writeApplied:
-// the layer the instance resolved from stays deleted, a change every other
-// client's credential status for the name is stale against. frame names that
-// state - whether the entry is still authored or the removal stood - so the
-// message reads as correct English for the failure that produced it. Its
+// which the caller folds into its own rollback report and marks applied: a
+// deleted credential that stays deleted is a change other clients are stale
+// against even though the instance itself is carried again. On a restore that
+// does not carry the instance, the returned error folds cause, frame, and the
+// layers that could not be put back, and answers writeApplied too. frame names
+// the state - whether the entry is still authored or the removal stood - so
+// the message reads as correct English for the failure that produced it. Its
 // callers pass only the layers the failure actually deleted, so this never
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was.
@@ -1629,9 +1635,9 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 
 // removalLeftoversError is the error restoreFailedRemoval returns when the
 // layer that carries the instance is back but a stray other layer could not be
-// put back. It is a plain (not applied) rollback note the caller folds into its
-// own report, distinct from the writeApplied error a non-carried restore
-// returns.
+// put back. The caller folds it into its own rollback report and wraps that in
+// writeApplied: the removal rolled back, but a credential is still gone, and
+// the applied marker is what makes every other client hear about it.
 type removalLeftoversError struct{ problems string }
 
 func (e removalLeftoversError) Error() string { return e.problems }
