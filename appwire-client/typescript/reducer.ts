@@ -710,7 +710,14 @@ function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): It
   });
 }
 
-function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+// Structural, not ItemModel-only: a wire ThreadItem carries the same
+// id/transcriptKey shape, so a caller matching a live wire item against
+// folded ItemModels (the mobile store's findFoldedItem) can call this
+// directly instead of re-implementing the rule.
+export function itemIdentityMatches(
+  left: { id: string; transcriptKey?: string },
+  right: { id: string; transcriptKey?: string },
+): boolean {
   if (left.transcriptKey && right.transcriptKey) {
     return left.transcriptKey === right.transcriptKey;
   }

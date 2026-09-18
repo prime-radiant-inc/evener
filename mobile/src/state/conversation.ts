@@ -24,6 +24,7 @@ import {
   hasWarningText,
   isActiveItem,
   isStaleCursorError,
+  itemIdentityMatches,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -34,7 +35,6 @@ import type {
   ItemModel,
   MutationReceipt,
   ThreadItem,
-  WarningFold,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -756,20 +756,16 @@ function containingTurnStatus(
 // the model held before it — a raw wire item carrying no images field means
 // "unchanged", never "removed" (the same rule imagesToItemImagesForSession
 // documents). Finds that folded ItemModel in conv (already updated by
-// applyThreadNotification before this call) by the reducer's own identity
-// rule: transcriptKey when both sides carry one, else id.
+// applyThreadNotification before this call) using the package's own
+// identity rule (itemIdentityMatches: transcriptKey when both sides carry
+// one, else id) rather than a local copy of it.
 function findFoldedItem(
   conv: MobileConversation,
   item: ThreadItem,
 ): ItemModel | undefined {
   for (const turn of conv.turns) {
-    for (const candidate of turn.items) {
-      if (item.transcriptKey && candidate.transcriptKey) {
-        if (candidate.transcriptKey === item.transcriptKey) return candidate;
-      } else if (candidate.id === item.id) {
-        return candidate;
-      }
-    }
+    const found = turn.items.find((candidate) => itemIdentityMatches(candidate, item));
+    if (found) return found;
   }
   return undefined;
 }
@@ -2840,32 +2836,15 @@ export function createConversationStore() {
 
           case "warning": {
             // The reducer's own "warning" fold (applyThreadNotification,
-            // above) already appended the wire-true item to the active turn
-            // using foldWarningParams — the one validated shape (title/hint/
-            // source as string-or-absent, text with the message/raw-frame
-            // precedence) every warning row reads. It always appends to the
-            // end of that turn's items, and nothing else touches the turn
-            // during this single-notification dispatch, so the last item
-            // there — when its type is "warning" — is the one this fold
-            // just produced.
-            const foldedTurn = conv.activeTurnId
-              ? conv.turns.find((t) => t.id === conv.activeTurnId)
-              : undefined;
-            const foldedItem = foldedTurn?.items.at(-1);
-            const usesFold = foldedItem?.type === "warning";
-            // No active turn: the reducer drops the frame (nowhere wire-true
-            // to put it), so this row is the only place it folds through —
-            // run the SAME validated shape directly on params instead of
-            // copying them into these fields raw.
-            const folded: WarningFold = usesFold
-              ? {
-                  text: foldedItem.text,
-                  title: foldedItem.warning?.title,
-                  hint: foldedItem.warning?.hint,
-                  source: foldedItem.warning?.source,
-                }
-              : foldWarningParams(n.params);
-            const title = hasWarningText(folded.title) ? folded.title : "Warning";
+            // above) computes this from n.params too — foldWarningParams is
+            // a pure function of params alone, so calling it here again
+            // gives the exact value the reducer stored on the model when
+            // there was an active turn to store it on, without reading that
+            // value back off the model. When there's no active turn the
+            // reducer drops the frame (nowhere wire-true to put it), so
+            // this row is the only place it folds through either way.
+            const folded = foldWarningParams(n.params);
+            const title = folded.title ?? "Warning";
             // Compose every non-blank part rather than picking one with ||:
             // a warning carrying both a message and a hint shows both, the
             // same as the web and TUI renderers.

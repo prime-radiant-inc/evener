@@ -289,7 +289,7 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey, WarningFold } from "./reducer";
+export type { NotificationRoutingKey } from "./reducer";
 // chunkViewBackingForTests is deliberately absent: it reports the reducer's
 // internal chunk storage so a test can assert the view never copies it, which
 // is a test hook rather than protocol API. It belongs with the package's test
@@ -301,6 +301,7 @@ export {
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  itemIdentityMatches,
   joinedReasoningParagraphs,
   mergeOlderItemPage,
   notificationRoutingKey,
