@@ -530,23 +530,25 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: item.text || warningFallbackText(item) || item.output },
+        detail: { ...activityDetail(item), output: warningFallbackText(item) || item.text || item.output },
       },
     },
   };
 }
 
-// A message-less warning frame (a title or hint alone, no top-level message)
-// folds to text: "" on the wire side (reducer.ts's warning fold): web's
-// WarningItem.tsx reads item.warning directly, but this generic fallback
-// only ever reads item.text/item.output, so a title/hint-only warning became
-// a blank row here. Joins whatever non-blank parts item.warning carries so
-// the phone shows the same content the web renders, without needing a
-// dedicated warning display path.
+// Composes a warning item's displayable text: message and hint together
+// when there's a message, the same as the web (WarningItem.tsx) and the
+// live warning row (conversation.ts's case "warning") - neither picks one
+// over the other with ||, which would otherwise drop the hint whenever
+// there's a message. A message-less frame (a title or hint alone) folds to
+// text: "" on the wire side (reducer.ts's warning fold), so it falls back
+// to title+hint instead, the same content the web renders via item.warning
+// directly.
 function warningFallbackText(item: ItemModel): string | undefined {
   if (item.type !== "warning" || !item.warning) return undefined;
-  const parts = [item.warning.title, item.warning.hint].filter(hasWarningText);
-  return parts.length > 0 ? parts.join(" — ") : undefined;
+  const parts = hasWarningText(item.text) ? [item.text, item.warning.hint] : [item.warning.title, item.warning.hint];
+  const joined = parts.filter(hasWarningText).join(" — ");
+  return joined === "" ? undefined : joined;
 }
 
 function activityDescription(item: ItemModel): string | undefined {
