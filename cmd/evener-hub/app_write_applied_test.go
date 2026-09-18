@@ -22,6 +22,29 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// writeApplied must not change the message or wire class of what it wraps:
+// only errors.Is(err, hubcore.ErrWriteApplied) should see anything different.
+func TestWriteAppliedKeepsTheInnerMessageAndWireClass(t *testing.T) {
+	plain := errors.New("the previous config could not be restored")
+	wrapped := writeApplied(plain)
+	if got := wrapped.Error(); got != plain.Error() {
+		t.Fatalf("writeApplied(plain).Error() = %q, want %q with no sentinel prefix", got, plain.Error())
+	}
+	if !writeDidApply(wrapped) {
+		t.Fatal("writeApplied(plain) does not answer writeDidApply")
+	}
+
+	wire := appwire.Conflict("stale revision")
+	wrappedWire := writeApplied(wire)
+	if got := wrappedWire.Error(); got != wire.Error() {
+		t.Fatalf("writeApplied(wire).Error() = %q, want %q", got, wire.Error())
+	}
+	got, ok := errors.AsType[appwire.WireError](wrappedWire)
+	if !ok || got.Code != wire.Code {
+		t.Fatalf("writeApplied(wire) = %v, want the WireError still resolvable with code %d", wrappedWire, wire.Code)
+	}
+}
+
 // blockProvidersWrites leaves a directory where WriteConfigFile stages its
 // bytes, so every later write of providers.toml fails on a real filesystem
 // refusal (the technique breakCredentialWrites uses on the credentials file).
