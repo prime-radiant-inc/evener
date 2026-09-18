@@ -2918,9 +2918,6 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// own TurnFailure SteeringCarrier and wrongly resolve an ask on restore.
 	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
 	defer s.setSteeringCarrierClaimDrain("")
-	if fault := sessionLifecycleFault(ctx, "steering_carrier_drain"); fault != nil {
-		panic(fault)
-	}
 	delivered := s.injectDrainedSteering()
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:

@@ -2132,10 +2132,17 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 // recordFailedSteeringSelection could then mistag its own TurnFailure
 // SteeringCarrier and wrongly resolve an ask on restore
 // (steeringSelectionFailureIsCarrierClaim keys purely on the leaked id).
-// Injects a real panic via the sessionLifecycleFaults context seam
-// (the same mechanism session_attention_test.go's panic-unwind test uses) at
-// a new "steering_carrier_drain" fault point placed right before the drain,
-// and asserts the claim reads cleared after recovering from it.
+// Panics from inside steerAppendRefusal.onRefuse
+// (session_drain_as_steer_turn_boundary_test.go), the existing seam for "the
+// steer is popped and its append is about to fail": it fires from inside
+// s.clientMutationTranscriptAppend, i.e. inside consumeSteeringMessage inside
+// injectDrainedSteering, so this drives a REAL mid-drain panic rather than
+// one injected before the drain is ever entered. Measured: nothing between
+// acceptSteeringCarrierInput and the append hook recovers (no recover() in
+// session_queue.go/session_client_mutation.go/session.go other than
+// processOneInput's, which this direct call never reaches), and
+// appendTurnAfterTranscriptWriteLocked calls write() before taking s.mu, so
+// the panic unwinds through attentionMu's defer without ever holding s.mu.
 func TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -2155,15 +2162,16 @@ func TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim(t *testing.
 		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
 	}
 	identity := queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}
-	panicErr := errors.New("injected steering carrier drain panic")
-	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"steering_carrier_drain": panicErr})
+	refusal := refuseSteerAppends(sess, "steer-1")
+	refusal.onRefuse = func() { panic("injected steering carrier drain panic") }
+	refusal.refuse.Store(true)
 	func() {
 		defer func() {
 			if r := recover(); r == nil {
 				t.Error("injected panic did not propagate")
 			}
 		}()
-		_ = sess.acceptSteeringCarrierInput(ctx, identity)
+		_ = sess.acceptSteeringCarrierInput(context.Background(), identity)
 	}()
 	if sess.steeringSelectionFailureIsCarrierClaim("steer-1") {
 		t.Fatal("the claim id leaked across the panic: a later unrelated recordFailedSteeringSelection would mistag its own TurnFailure SteeringCarrier")
