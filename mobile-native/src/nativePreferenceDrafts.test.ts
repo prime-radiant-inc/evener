@@ -30,6 +30,55 @@ describe("nativeKeybindingDrafts", () => {
 		expect(b.store.has("evener.native.keybinding-draft.hub")).toBe(false);
 	});
 
+	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
+		// The real backend (NativePreferencesProvider.tsx) hands back a value
+		// it cannot parse as its RAW bytes rather than throwing, so the shared
+		// store reads it as an unreadable record (draftUnreadable) instead of a
+		// dead port.
+		const raw = new Map<string, string>();
+		const b = {
+			createId: () => "draft-1",
+			get: (key: string) => {
+				const value = raw.get(key);
+				if (value === undefined) return null;
+				try {
+					return JSON.parse(value);
+				} catch {
+					return value;
+				}
+			},
+			set: (key: string, value: unknown) => {
+				raw.set(key, JSON.stringify(value));
+			},
+			delete: (key: string) => {
+				raw.delete(key);
+			},
+			deleteIf: (key: string, value: unknown): boolean => {
+				const stored = raw.get(key);
+				if (stored === undefined) return false;
+				if (stored !== value && stored !== JSON.stringify(value)) return false;
+				raw.delete(key);
+				return true;
+			},
+			replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
+				const stored = raw.get(key);
+				if (stored === undefined) return false;
+				if (stored !== expected && stored !== JSON.stringify(expected)) return false;
+				raw.set(key, JSON.stringify(next));
+				return true;
+			},
+		};
+		const storage = nativeKeybindingDrafts("hub", b);
+		raw.set("evener.native.keybinding-draft.hub", "{not json");
+
+		// Read back as the raw string, which is not a checkpoint.
+		expect(storage.load()).toBe("{not json");
+
+		// And removable by handing those same bytes back.
+		expect(storage.removeIf("{not json" as never)).toBe(true);
+		expect(storage.load()).toBeNull();
+	});
+
 	it("propagates a refused replaceIf as false through replaceIf, leaving the stored record intact", () => {
 		const b = fakeDraftBackend();
 		const someoneElse = { ...checkpoint, id: "someone-else" };

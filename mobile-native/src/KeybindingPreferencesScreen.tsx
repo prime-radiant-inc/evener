@@ -174,6 +174,24 @@ export function KeybindingPreferencesScreen({
 							phone. Check the hub before making another change.
 						</Copy>
 					)}
+					{domain?.draftUnreadable && (
+						<View style={{ gap: 12 }}>
+							<Copy>
+								A saved draft on this phone could not be read. Discard it to
+								continue editing shortcuts.
+							</Copy>
+							<Action
+								disabled={
+									!!domain.loading || !!domain.saving || !!domain.writeUncertain
+								}
+								onPress={() => {
+									if (model) run(() => model.discardKeybindingsDraft());
+								}}
+							>
+								Discard unreadable draft
+							</Action>
+						</View>
+					)}
 					{model && domain?.support === "supported" && (
 						<Action
 							disabled={

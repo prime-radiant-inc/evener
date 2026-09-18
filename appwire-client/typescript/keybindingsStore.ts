@@ -129,6 +129,11 @@ export interface KeybindingsStoreFields {
   /** The draft port threw; edits stay blocked until refreshOverrides can
    * restore the checkpoint again. */
   storageUnavailable: boolean;
+  /** The port answered but what it held could not be read. The RECORD is the
+   * problem, not the port: the section still loads, and discarding is
+   * allowed and is what clears it. A host must offer that discard, or the
+   * section is locked with no way out. */
+  draftUnreadable: boolean;
   /** The draft's base revision is not the confirmed revision (the hub moved
    * under it, or a write's outcome is unknown): saveDraft refuses until
    * rebaseDraft reviews the current rules. */
@@ -229,6 +234,7 @@ function initialState(): KeybindingsStoreFields {
     saving: false,
     writeUncertain: false,
     storageUnavailable: false,
+    draftUnreadable: false,
     draftConflict: false,
     draftError: null,
   };
@@ -641,11 +647,28 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         draft,
         writeUncertain: checkpoint?.writeUncertain ?? false,
         storageUnavailable: false,
+        draftUnreadable: false,
         draftError: null,
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
       };
-    } catch {
-      return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
+    } catch (error) {
+      // An UnreadableDraftError names the RECORD as the problem, not the
+      // port: whatever draft/writeUncertain/draftConflict described before
+      // this call described a record that no longer exists to describe, so
+      // they clear too - otherwise a write left uncertain by an earlier
+      // attempt would stay that way forever, and assertDiscardable's
+      // unconditional writeUncertain check would refuse the one recovery
+      // (discard) an unreadable record is supposed to allow. A genuine port
+      // failure (the read itself failed, not what it read) says nothing
+      // about whether the in-memory state is still accurate, so it is left
+      // alone.
+      const unreadable = error instanceof UnreadableDraftError;
+      return {
+        storageUnavailable: true,
+        draftUnreadable: unreadable,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+        ...(unreadable ? { draft: null, writeUncertain: false, draftConflict: false } : {}),
+      };
     }
   }
 
@@ -996,12 +1019,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   async function refreshOverrides(): Promise<void> {
-    // A draft port that failed gets one more restore attempt per refresh; the
-    // hub read waits until the local proposal is in hand again, so an edit
-    // cannot compose against a confirmed payload with the draft unknown.
+    // A draft port that failed gets one more restore attempt per refresh. The
+    // hub read waits only on a port that could not be READ FROM, so an edit
+    // cannot compose against a confirmed payload with the draft unknown. An
+    // unreadable RECORD is not that: the draft is simply absent, and holding
+    // the section's shortcuts hostage to it would lock a user out of settings
+    // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable) return;
+      if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -1194,6 +1220,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     )
       throw new Error(UNAVAILABLE_MESSAGE);
     return { revision: state.revision, rules: state.rawOverrides };
+  }
+
+  /** discardDraft's own gate, narrower than assertEditable: discarding needs
+   * no confirmed hub state to compose against, so hubSupport/loaded/
+   * loadError never block it. An unreadable record is the one storage
+   * failure discarding can FIX, so it is not a reason to refuse either -
+   * throwing the record away is exactly what the user is asking for. */
+  function assertDiscardable(): void {
+    const state = getState();
+    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
+      throw new Error(UNAVAILABLE_MESSAGE);
   }
 
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
@@ -1407,7 +1444,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function discardDraft(): void {
-    assertEditable();
+    assertDiscardable();
     let removed: boolean;
     try {
       removed = drafts.discardClassified();
@@ -1423,7 +1460,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState(restoreDraft(getState()));
       return;
     }
-    setState({ draft: null, draftConflict: false, draftError: null });
+    setState({
+      draft: null,
+      draftConflict: false,
+      draftError: null,
+      storageUnavailable: false,
+      draftUnreadable: false,
+    });
   }
 
   function rebaseDraft(reviewedRevision: number): void {
