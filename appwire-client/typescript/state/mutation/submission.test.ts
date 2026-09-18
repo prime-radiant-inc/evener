@@ -94,7 +94,7 @@ describe("submitWithPendingTracking", () => {
     expect(onCommitted).toHaveBeenCalledWith({ cleared: true, draftUnchanged: true });
   });
 
-  test("reports the draft as unchanged and uncleared when the stored draft has moved on since the submission started", async () => {
+  test("reports the draft as neither cleared nor unchanged once it has moved on since the submission started", async () => {
     const store = testPendingTurnsStore({
       draft: {
         readDraftRevision: () => 7,
