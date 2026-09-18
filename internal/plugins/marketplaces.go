@@ -263,17 +263,17 @@ func (m *Manager) rollbackFailed(name string, removeErr error) error {
 // saveFailed scrubs a save failure's absolute plugin-store path -
 // atomicWriteFile's own error text names its destination and temp file
 // directly - before it reaches the RPC caller, logging the raw error
-// server-side first.
+// server-side first. The store file name it keeps is not itself sensitive.
 func (m *Manager) saveFailed(name string, saveErr error) error {
 	_, _ = fmt.Fprintf(m.stderr(), "warning: saving marketplace %q failed: %v\n", name, saveErr)
-	return fmt.Errorf("marketplace %q could not be saved; see the hub's log for detail", name)
+	return fmt.Errorf("marketplace %q: saving %s failed; see the hub's log for detail", name, marketplacesFileName)
 }
 
 // storeChangeRollbackFailed reports that an operation on marketplace name
 // failed (cause) and the rollback that tried to undo it also failed
 // (rollbackErr), leaving the store changed rather than back as it was found
-// - the shape AddMarketplace, ensureFetched and EditMarketplace's own fail
-// closure all hit. Both cause's and rollbackErr's own text can carry this
+// - the shape AddMarketplace and EditMarketplace's own fail closure both hit.
+// Both cause's and rollbackErr's own text can carry this
 // machine's absolute plugin-store path (atomicWriteFile, os.RemoveAll and
 // os.Rename all name it directly), so both go to the hub's log instead of
 // the RPC caller.
@@ -499,13 +499,17 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	// new name would be orphaned by the next refresh, which reclones the
 	// recorded source at the recorded path.
 	if renaming {
+		// saveRename's own error can carry the raw save error's absolute
+		// path (marketplacesFileName's or registryFileName's) via %w, so it
+		// is scrubbed here the same way a plain save failure's is, before
+		// fail decides whether the outer rollback also needs reporting.
 		if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
-			return fail(err)
+			return fail(m.saveFailed(name, err))
 		}
 	} else {
 		mk[name] = ref
 		if err := m.saveMarketplaces(mk); err != nil {
-			return fail(err)
+			return fail(m.saveFailed(name, err))
 		}
 	}
 	for _, fn := range afterSave {

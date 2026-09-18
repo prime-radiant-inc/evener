@@ -197,11 +197,10 @@ func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 // RefreshMarketplace's save failure, after a directory-source refresh (which
 // touches no disk beyond LastUpdated), is a plain metadata-save failure.
 func TestRefreshMarketplaceSaveFailureNamesNoPath(t *testing.T) {
-	dir := t.TempDir()
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	ctx := context.Background()
-	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceDirectory, Path: makeMarketplaceRepoDir(t, dir, "market-a")}); err != nil {
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceDirectory, Path: makeMarketplaceRepoDirNoGit(t, "market-a")}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -221,20 +220,44 @@ func TestRefreshMarketplaceSaveFailureNamesNoPath(t *testing.T) {
 	}
 }
 
-// makeMarketplaceRepoDir builds a bare .claude-plugin/marketplace.json under
-// dir (no git repo: a directory source references it in place), for tests
-// that only need a valid, unfetched marketplace source.
-func makeMarketplaceRepoDir(t *testing.T, base, name string) string {
-	t.Helper()
-	dir := base
-	mj := `{"name":"` + name + `","owner":{"name":"o"},"plugins":[]}`
-	if err := os.MkdirAll(dir+"/.claude-plugin", 0o755); err != nil {
-		t.Fatal(err)
+// EditMarketplace's fail closure returns the save error unchanged when the
+// outer rollback (undoSwap/runUndo) succeeds - the common case for a
+// re-source's save failing after the swap-in. saveMarketplaces' error is
+// atomicWriteFile's own *fs.PathError, naming this machine's absolute
+// plugin-store path directly.
+func TestEditMarketplaceSaveFailureRollbackSucceedsNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
 	}
-	if err := os.WriteFile(dir+"/.claude-plugin/marketplace.json", []byte(mj), 0o644); err != nil {
-		t.Fatal(err)
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
 	}
-	return dir
+
+	path := m.marketplacesFile()
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.EditMarketplace(ctx, "acme", "", &Source{Kind: SourceURL, URL: repoB})
+	if err == nil {
+		t.Fatal("expected the save to fail")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "acme") {
+		t.Fatalf("err = %v, want the marketplace named", err)
+	}
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, marketplacesFileName)
+	}
 }
 
 // EditMarketplace's fail closure only scrubs when its own outer rollback
