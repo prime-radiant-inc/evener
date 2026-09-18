@@ -2063,6 +2063,67 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	}
 }
 
+// TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
+// covers RoboRev #1907 round 2's low/medium (session_tools_ask.go:117-122,
+// 374-376 vs session_notes_rpc.go:931-936): origin.steeringKind() only
+// recovers note origin from a recorded kind or a notes/human/set method,
+// unlike isHumanNoteSteer, which ALSO falls back to the write-path text
+// shape (humanNoteSteerPrefix) when neither is available. turnResolvesAskBoundary
+// used steeringKind() directly, so a kindless steering turn with NO reachable
+// provenance -- the sibling case TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn
+// covers has a journal record, this one does not -- read as an ordinary
+// (kindless) answering steer and wrongly resolved a pending ask. This is
+// exactly what happens to an inherited fork prefix: steeringOriginBoundary
+// nils the origins lookup for every turn before divergenceTurn regardless of
+// what the map carries, so a legacy pre-kind-stamping note in that prefix has
+// no provenance left except its own text. Built directly against
+// deriveRestoredAskPending/deriveRestoredState, like the sibling test, with
+// divergenceTurn set so the note turn is entirely inherited.
+func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// A legacy human-note steering turn with NO provenance reachable at all:
+	// kindless, and belonging to an inherited fork prefix -- divergenceTurn
+	// below scopes it out of the origins map entirely, unlike the journal-
+	// backed sibling test. Only the write-path text shape can still mark it a
+	// note.
+	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("human updated their whiteboard: watch the ingest path"))
+	legacyNote.SteeringSource = events.SteeringSourceUser
+	legacyNote.ClientMutationID = "note-legacy-inherited"
+	history := append(append([]schema.Turn{}, sess.history...), legacyNote)
+	divergenceTurn := len(history) + 1 // entirely inherited: steeringOriginBoundary nils origins for it
+	origins := map[string]steeringOrigin{"note-legacy-inherited": {method: clientMutationMethodNotesHumanSet}}
+
+	pending, isAskRound := deriveRestoredAskPending(history, divergenceTurn, origins)
+	if !isAskRound || len(pending) != 1 {
+		t.Fatalf("deriveRestoredAskPending for an inherited kindless note = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
+	}
+	if state := deriveRestoredState(history, divergenceTurn, origins); state != SessionAwaiting {
+		t.Fatalf("deriveRestoredState for an inherited kindless note = %q, want %q", state, SessionAwaiting)
+	}
+}
+
 // TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier covers the case a
 // user steer's OWN turn fails outright before posting anything: processOneInput
 // clears s.askPending unconditionally on entry (session_lifecycle.go's
@@ -2419,6 +2480,91 @@ func TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletio
 	}
 	if got := restored.State(); got != SessionAwaiting {
 		t.Fatalf("restored state = %q, want %q", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_RestoreAccumulatesPendingQuestionsAcrossNonResolvingRounds
+// covers RoboRev #1906/#1907's round-2 Medium (session_tools_ask.go:583-589
+// in the panel's numbering): a human-note carrier preserves ask1 (its entry
+// clear is skipped), but its OWN round can post a second, unrelated
+// ask_user question (ask2) instead of just acknowledging the note --
+// ask_user's live Exec APPENDS to askPending (registerAskTool,
+// "s.askPending = append(s.askPending, parsed...)"), never replaces it, so
+// live askPending ends up [ask1, ask2]. deriveRestoredAskPending's backward
+// scan used to stop at the FIRST ask_user round it found (the newest,
+// ask2's) and return only its questions, silently dropping ask1. The scan
+// now accumulates every non-resolving round's ask_user questions back to
+// the last round whose OWN entry actually resolved the boundary
+// (roundEntryResolvesAskBoundary), matching live's append semantics.
+func TestAskUser_RestoreAccumulatesPendingQuestionsAcrossNonResolvingRounds(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask1 := askUserCall("ask1", askUserArgsValid())
+	ask2Args := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"header":   "Naming",
+				"question": "What should we call the new package?",
+				"options": []any{
+					map[string]any{"label": "short names", "detail": "terse"},
+					map[string]any{"label": "descriptive names", "detail": "verbose"},
+				},
+			},
+		},
+	}
+	ask2 := askUserCall("ask2", ask2Args)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask1) },
+			func(req llm.Request) llm.Response { return toolCallResponse(ask2) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-note pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 2 {
+		t.Fatalf("live pending count after the note's own round posted a second question = %d, want 2 (ask1 and ask2 both pending; the note never answered ask1)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 2 {
+		t.Fatalf("restored askPending = %+v, want 2 questions (ask1 from before the note, ask2 from the note's own round)", restored.askPending)
+	}
+	headers := map[string]bool{}
+	for _, q := range restored.askPending {
+		headers[q.Header] = true
+	}
+	if !headers["DB choice"] || !headers["Naming"] {
+		t.Fatalf("restored askPending headers = %+v, want both %q and %q", restored.askPending, "DB choice", "Naming")
 	}
 }
 

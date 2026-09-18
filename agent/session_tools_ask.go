@@ -385,7 +385,19 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 			return true
 		}
 		origin := steeringOriginForTurn(turn, origins)
-		return steeringSourceAnswersAsk(turn.SteeringSource, origin.steeringKind())
+		// isHumanNoteSteer is origin.steeringKind()'s own fallback chain plus
+		// one more link: when neither a recorded kind nor a notes/human/set
+		// method is reachable (a kindless, provenance-less turn -- exactly an
+		// inherited fork prefix's legacy note, since steeringOriginBoundary
+		// nils the journal lookup for it regardless of what origins carries),
+		// it still reads the write-path text shape (humanNoteSteerPrefix) the
+		// same way escapeNotesHistoryTurns already does. Checked directly
+		// here instead of through steeringKind(), which stops one link short
+		// and would default an unreachable-provenance note to "answers".
+		if origin.isHumanNoteSteer(turn.Message.Text()) {
+			return false
+		}
+		return turn.SteeringSource == events.SteeringSourceUser
 	case schema.TurnFailure:
 		return turn.Error != nil && turn.Error.SteeringCarrier
 	default:
@@ -545,7 +557,17 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 //   - TurnToolResults carrying at least one completed, non-error "ask_user"
 //     result: an ask round. Delegates to questionsFromAskCalls for exactly
 //     those calls, in call order (spec §2's "multiple ask_user calls in the
-//     round: union, in call order").
+//     round: union, in call order"), and accumulates them onto whatever a
+//     LATER (already-scanned) non-resolving round found. Decisive — stops
+//     the scan — only when THIS round's own entry resolves the boundary
+//     (roundEntryResolvesAskBoundary); otherwise the scan keeps going for a
+//     still-earlier pending ask, because ask_user's live Exec APPENDS to
+//     askPending (registerAskTool) rather than replacing it: a human-note
+//     carrier's own round can post a brand-new question without ever
+//     answering one already pending, so live askPending can hold questions
+//     from more than one round at once (RoboRev #1906/#1907 round-2
+//     Medium). Every accumulated round's questions land in call order,
+//     oldest round first, matching that append order.
 //
 // isAskRound tells the caller whether an empty pending slice means "nothing
 // was pending" (false) or "an ask round was found but none of its calls'
@@ -556,6 +578,29 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // exactly as deriveRestoredState does above (steeringOriginBoundary).
 func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
 	inherited := steeringOriginBoundary(divergenceTurn, len(history))
+	// roundsNewestFirst collects each non-resolving round's own ask_user
+	// questions as one element, newest round first (the scan walks
+	// backward); finish flattens them oldest-round-first to match the live
+	// path's own append order (registerAskTool's Exec: "s.askPending =
+	// append(...)", never a replace) — each round's own call-order slice
+	// from questionsFromAskCalls stays intact, only the ROUNDS reverse, not
+	// the calls within one. A human-note carrier's round can post its own
+	// ask_user question without ever answering an earlier one still pending
+	// (its entry clear is skipped), so live askPending can hold questions
+	// from more than one round at once — the scan must keep going past a
+	// round that found questions but did not itself resolve the boundary,
+	// rather than stopping at the first (newest) one (RoboRev #1906/#1907
+	// round-2 Medium).
+	var roundsNewestFirst [][]askQuestion
+	finish := func() (pending []askQuestion, isAskRound bool) {
+		if len(roundsNewestFirst) == 0 {
+			return nil, false
+		}
+		for _, round := range slices.Backward(roundsNewestFirst) {
+			pending = append(pending, round...)
+		}
+		return pending, true
+	}
 	for i := range slices.Backward(history) {
 		turn := history[i]
 		turnOrigins := origins
@@ -563,7 +608,7 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 			turnOrigins = nil
 		}
 		if turnResolvesAskBoundary(turn, turnOrigins) {
-			return nil, false
+			return finish()
 		}
 		switch turn.Kind {
 		case schema.TurnAssistant:
@@ -571,7 +616,7 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
 					continue // this round's entry never cleared askPending live either; not decisive
 				}
-				return nil, false
+				return finish()
 			}
 			// Not decisive; matches deriveRestoredState's scan past an
 			// all-error placeholder round.
@@ -594,12 +639,18 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
 					continue // this round's entry never cleared askPending live either; not decisive
 				}
-				return nil, false // decisive, but a generic completion (e.g. a communicate ack)
+				return finish() // decisive, but a generic completion (e.g. a communicate ack)
 			}
-			return questionsFromAskCalls(history, i, askCallIDs), true
+			roundsNewestFirst = append(roundsNewestFirst, questionsFromAskCalls(history, i, askCallIDs))
+			if roundEntryResolvesAskBoundary(history, i, inherited, origins) {
+				return finish() // this round's own entry resolved everything before it
+			}
+			// This round's entry did not resolve anything (a non-resolving
+			// carrier): an earlier still-pending ask may exist further back.
+			// Keep scanning, accumulating.
 		}
 	}
-	return nil, false
+	return finish()
 }
 
 // questionsFromAskCalls parses the questions for a decisive ask round found
