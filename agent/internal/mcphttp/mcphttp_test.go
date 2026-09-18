@@ -51,8 +51,9 @@ func TestClientWithHeaders_NilBase_InjectsHeaders(t *testing.T) {
 // A non-nil base must be copied, not mutated: its own transport is wrapped and
 // its other fields survive onto the returned client.
 func TestClientWithHeaders_BaseCopiedNotMutated(t *testing.T) {
+	rec := &recordingRoundTripper{}
 	base := &http.Client{
-		Transport: &recordingRoundTripper{},
+		Transport: rec,
 	}
 	baseTransport := base.Transport
 
@@ -74,7 +75,38 @@ func TestClientWithHeaders_BaseCopiedNotMutated(t *testing.T) {
 	if _, err := client.Transport.RoundTrip(req); err != nil {
 		t.Fatalf("round trip: %v", err)
 	}
-	if got := req.Header.Get("X-Injected"); got != "yes" {
-		t.Errorf("X-Injected header = %q, want %q", got, "yes")
+	if rec.got == nil || rec.got.Header.Get("X-Injected") != "yes" {
+		t.Errorf("base transport request = %#v, want injected X-Injected header", rec.got)
+	}
+	if got := req.Header.Get("X-Injected"); got != "" {
+		t.Errorf("original request was mutated: X-Injected = %q", got)
+	}
+}
+
+// RoundTrip must not mutate the caller-owned request; the base transport must
+// receive a distinct clone carrying the injected headers.
+func TestHeaderRoundTripper_DoesNotMutateRequest(t *testing.T) {
+	rec := &recordingRoundTripper{}
+	rt := &mcphttp.HeaderRoundTripper{Base: rec, Headers: map[string]string{"X-Injected": "yes"}}
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.invalid/", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if _, err := rt.RoundTrip(req); err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+
+	if got := req.Header.Get("X-Injected"); got != "" {
+		t.Errorf("original request header = %q, want empty (request must not be mutated)", got)
+	}
+	if rec.got == nil {
+		t.Fatal("base transport received no request")
+	}
+	if rec.got == req {
+		t.Error("base transport received the original request, want a clone")
+	}
+	if got := rec.got.Header.Get("X-Injected"); got != "yes" {
+		t.Errorf("base transport request header = %q, want %q", got, "yes")
 	}
 }

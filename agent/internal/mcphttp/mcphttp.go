@@ -14,12 +14,15 @@ type HeaderRoundTripper struct {
 	Headers map[string]string
 }
 
-// RoundTrip implements http.RoundTripper.
+// RoundTrip implements http.RoundTripper. It injects Headers into a clone of
+// req so the caller-owned request is never mutated, as the RoundTripper
+// contract requires.
 func (h *HeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
 	for k, v := range h.Headers {
-		req.Header.Set(k, v)
+		clone.Header.Set(k, v)
 	}
-	return h.Base.RoundTrip(req)
+	return h.Base.RoundTrip(clone)
 }
 
 // ClientWithHeaders returns a copy of base (a fresh client when base is nil)
