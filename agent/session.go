@@ -571,9 +571,10 @@ type Session struct {
 	// recordFailedSteeringSelection (session_queue.go) that a selection
 	// failure for THIS client mutation id is the carrier's own claimed steer
 	// — whose mere acceptance already cleared askPending, so the TurnFailure
-	// it records must be a resolution boundary too
-	// (turnResolvesAskBoundary, session_tools_ask.go) — as opposed to an
-	// ordinary mid-round drain no accepted turn has cleared anything for.
+	// it records must be tagged schema.TurnFailureInfo.SteeringCarrier too.
+	// That tag is not read yet: the restore scan that treats it as a
+	// resolution boundary (#1806 piece 2) lands in the next change stacked
+	// on this one.
 	// Guarded by mu, like askPending above.
 	steeringCarrierClaimClientMutationID string
 

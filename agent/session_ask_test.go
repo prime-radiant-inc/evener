@@ -1461,6 +1461,270 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 	}
 }
 
+// TestAskUser_SteeringCarrierClaimAnswersAskFailsClosedForUnknownProvenance
+// covers RoboRev #1905 round 1's Low (session_tools_ask.go:117):
+// steeringCarrierClaimAnswersAsk read a MISSING client-mutation journal
+// record the same as a present-but-kindless one and answered true either
+// way, so a carrier claim whose journal entry was lost (or not yet visible)
+// would fail open and wrongly clear a still-unanswered ask. A carrier
+// identity's journal record must exist by construction (SetHumanNote/
+// AcceptClientMutationSteer write it before the entry is ever queued), so an
+// unknown id here is exactly the case with no evidence the steer answers
+// anything -- it must fail closed.
+func TestAskUser_SteeringCarrierClaimAnswersAskFailsClosedForUnknownProvenance(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	identity := queuedClientMutationIdentity{ClientMutationID: "never-written", SteeringCarrier: true}
+	if got := sess.steeringCarrierClaimAnswersAsk(identity); got {
+		t.Fatal("steeringCarrierClaimAnswersAsk = true for a carrier identity with no journal record, want false (fail closed)")
+	}
+}
+
+// TestAskUser_AcceptSteeringCarrierInputTagsSteeringCarrierOnAppendFailureForAnAnsweringSteer
+// covers RoboRev #1905 round 1's Medium (session_ask_test.go:1464 in the
+// panel's numbering): neither TurnFailure tagging shape had a behavioral
+// test exercising the real drain path. This one drives an ANSWERING steer's
+// carrier through the real ProcessPendingUserInput/processOneInput entry
+// point (so the entry clear itself runs, exactly as
+// TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt drives the human-note
+// sibling) with its transcript append forced to fail
+// (acceptSteeringCarrierInput's carrierSteerUndelivered case), and asserts
+// the persisted TurnFailure carries SteeringCarrier=true alongside the live
+// askPendingCount the entry clear already resolved.
+func TestAskUser_AcceptSteeringCarrierInputTagsSteeringCarrierOnAppendFailureForAnAnsweringSteer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "carrier-tag-1",
+		Input:            clientMutationInput("please hold", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	refusal := refuseSteerAppends(sess, "carrier-tag-1")
+	refusal.refuse.Store(true)
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the injected append failure", ran, err)
+	}
+	if got := refusal.refusals.Load(); got != 1 {
+		t.Fatalf("steer append attempts = %d, want 1", got)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after an answering carrier's failed append = %d, want 0 (the entry clear already resolved it)", got)
+	}
+	last := sess.history[len(sess.history)-1]
+	if last.Kind != schema.TurnFailure || last.Error == nil || !last.Error.SteeringCarrier {
+		t.Fatalf("last turn = %+v, want a TurnFailure tagged SteeringCarrier", last)
+	}
+}
+
+// TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringSteer
+// is the append-failure test's selection-failure sibling: an ANSWERING
+// steer's carrier claim whose own skill selection fails to prepare
+// (recordFailedSteeringSelection) must also persist SteeringCarrier=true.
+// Driven through the real ProcessPendingUserInput entry point, like the
+// append-failure test above, so the entry clear itself runs.
+func TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringSteer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "carrier-skill-tag-1",
+		Input:            clientMutationInput("please hold", nil, []string{"no-such-skill"}),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	// errSteeringCarrierStoodDown is swallowed by processOneInput's own
+	// dispatch (session_lifecycle.go:1944) -- a graceful stand-down, not a
+	// visible failure -- so only ran is asserted here.
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); !ran || err != nil {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true err=nil", ran, err)
+	}
+
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after an answering carrier's failed skill selection = %d, want 0 (the entry clear already resolved it)", got)
+	}
+	last := sess.history[len(sess.history)-1]
+	if last.Kind != schema.TurnFailure || last.Error == nil || !last.Error.SteeringCarrier {
+		t.Fatalf("last turn = %+v, want a TurnFailure tagged SteeringCarrier", last)
+	}
+}
+
+// TestAskUser_AcceptSteeringCarrierInputDoesNotTagSteeringCarrierOnAppendFailureForAHumanNote
+// is the append-failure test's human-note sibling: a human-note carrier's
+// entry clear is skipped (steeringCarrierClaimAnswersAsk), so its own
+// append failure must persist SteeringCarrier=false and leave the live
+// pending ask untouched.
+func TestAskUser_AcceptSteeringCarrierInputDoesNotTagSteeringCarrierOnAppendFailureForAHumanNote(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-tag-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued note")
+	}
+	refusal := refuseSteerAppends(sess, "note-tag-1")
+	refusal.refuse.Store(true)
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "note-tag-1", StableTurnID: turnID, SteeringCarrier: true}); err == nil {
+		t.Fatal("acceptSteeringCarrierInput succeeded, want the injected append failure")
+	}
+
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after a human-note carrier's failed append = %d, want 1 (a note update never answers the ask)", got)
+	}
+	last := sess.history[len(sess.history)-1]
+	if last.Kind != schema.TurnFailure || last.Error == nil || last.Error.SteeringCarrier {
+		t.Fatalf("last turn = %+v, want a TurnFailure NOT tagged SteeringCarrier", last)
+	}
+}
+
+// TestAskUser_RecordFailedSteeringSelectionDoesNotTagSteeringCarrierForAHumanNoteClaim
+// is the selection-failure test's human-note sibling: SetHumanNote's own RPC
+// never attaches a skill selection (addPendingSteering posts only a text
+// InputItem), so this drives recordFailedSteeringSelection directly with a
+// synthetic human-note-kinded message over a REAL journal record (SetHumanNote
+// is still the one path that stamps SteeringKindHumanNote) to exercise the
+// shared predicate itself, matching TestAskUser_RecordFailedSteeringSelectionDoesNotTagAHumanNoteClaim's
+// setup but asserting the persisted tag and live count directly instead of
+// through a restore.
+func TestAskUser_RecordFailedSteeringSelectionDoesNotTagSteeringCarrierForAHumanNoteClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-skill-tag-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	sess.setSteeringCarrierClaimDrain("note-skill-tag-1")
+	msg := steeringMessage{
+		ClientMutationID: "note-skill-tag-1",
+		Kind:             events.SteeringKindHumanNote,
+		Text:             "human updated their whiteboard: watch the ingest path",
+	}
+	if !sess.recordFailedSteeringSelection(msg, errors.New(`skill "no-such-skill" not found`)) {
+		t.Fatal("recordFailedSteeringSelection reported the record itself failed to append")
+	}
+	sess.setSteeringCarrierClaimDrain("")
+
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after the tagged failure = %d, want 1 (unaffected either way; the tag governs restore)", got)
+	}
+	last := sess.history[len(sess.history)-1]
+	if last.Kind != schema.TurnFailure || last.Error == nil || last.Error.SteeringCarrier {
+		t.Fatalf("last turn = %+v, want a TurnFailure NOT tagged SteeringCarrier", last)
+	}
+}
+
 // TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt covers RoboRev
 // #1806 round 4's High/Medium: a human-note update is user-sourced
 // (events.SteeringSourceUser) exactly like an answering steer, but it does
@@ -1660,6 +1924,124 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 		if got != 0 {
 			t.Fatalf("askPendingCount immediately before EventSteeringInjected publish #%d = %d, want 0 (the ask facet must never observe the injected steer before the clear)", i, got)
 		}
+	}
+}
+
+// TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning covers
+// RoboRev #1905 round 1's Medium (session_queue.go:1257): round 3's original
+// intent was only to move clearAskPendingForResolvingSteer ahead of
+// EventSteeringInjected, but the change also moved admitPreparedSkillSelection
+// and unparkSteering ahead of the emit, flipping the observable event order
+// from Injected-then-Warn to Warn-then-Injected whenever a skill-bearing
+// steer's own append lands but its admission fails, and exposing parked state
+// before the event that announces the steer landed. This drives the exact
+// production path TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure
+// already exercises for admission-save-failure reconciliation (consumeSteeringMessage
+// with breakSessionMetaPath active) and pins that EventSteeringInjected still
+// publishes strictly before the admission failure's EventWarning.
+func TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning(t *testing.T) {
+	root := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_order_pin")
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	eventsDone := captureSessionEvents(s)
+
+	repair := breakSessionMetaPath(t, s)
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
+		t.Fatal("steering message was not durably consumed (test setup broken)")
+	}
+	repair()
+	s.Close()
+
+	captured := <-eventsDone
+	injectedIdx, warnIdx := -1, -1
+	for i, ev := range captured {
+		switch ev.Kind {
+		case events.EventSteeringInjected:
+			if injectedIdx == -1 {
+				injectedIdx = i
+			}
+		case events.EventWarning:
+			if warnIdx == -1 {
+				warnIdx = i
+			}
+		}
+	}
+	if injectedIdx == -1 || warnIdx == -1 {
+		t.Fatalf("did not observe both events: EventSteeringInjected at %d, EventWarning at %d, captured=%+v", injectedIdx, warnIdx, captured)
+	}
+	if injectedIdx >= warnIdx {
+		t.Fatalf("EventSteeringInjected at %d, EventWarning at %d; want Injected strictly before Warning (admit/unpark must stay after the emit)", injectedIdx, warnIdx)
+	}
+}
+
+// TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
+// covers RoboRev #1907 round 2's Medium (session_lifecycle.go's drain-ladder
+// gate, ~line 1399): the gate's comment used to prove `s.State() ==
+// SessionAwaiting` there is equivalent to `askPendingCount() > 0`, on the
+// premise that processOneInput's entry always cleared askPending
+// unconditionally -- true before this PR, false now for a human-note
+// carrier (steeringCarrierClaimAnswersAsk skips the clear). A note carrier's
+// own round, if it merely acknowledges the note (askedThisRound stays false
+// since nothing NEW was posted), settles deliverIfCommunicated's boundary
+// SessionIdle at this exact capture point -- armAwaitingAtSettle's general
+// upgrade runs later, at the outer loop's own terminal settle -- so reading
+// state alone reported "not awaiting" with ask1 still genuinely unanswered,
+// and the ladder popped and ran a queued FollowUp it should have left
+// intact. Drives the real ProcessPendingUserInput path for the note
+// carrier's round (a real "communicate" tool call, matching
+// TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletion's
+// shape) with a real FollowUp queued beforehand, and asserts the follow-up's
+// own model request never ran within that same call.
+func TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	comm := communicateCall("c1", "noted")
+	var followUpRan bool
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response {
+				followUpRan = true
+				return finalResponse("ran the followup")
+			},
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-note pending count = %d, want 1 (test setup broken)", got)
+	}
+	if err := sess.FollowUp("run the tests"); err != nil {
+		t.Fatalf("FollowUp: %v", err)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+
+	if followUpRan {
+		t.Fatal("the queued follow-up ran while ask1 was still pending; the drain ladder must not pop it")
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after the note's round = %d, want 1 (still unanswered)", got)
 	}
 }
 

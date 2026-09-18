@@ -113,12 +113,21 @@ func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
 // (acceptSteeringCarrierInput's own doc: "already-accepted user steering"),
 // so only the kind can vary. A non-carrier identity, or one with nothing to
 // look up, answers by definition, preserving the entry clear's ordinary
-// unconditional behavior for a genuine user reply.
+// unconditional behavior for a genuine user reply. A carrier identity whose
+// journal record is MISSING entirely (as opposed to present but kindless)
+// fails CLOSED — does not answer — rather than defaulting to "answers": an
+// unknown id is exactly the case where a lost or not-yet-visible record
+// (rather than an ordinary steer that simply never recorded a kind) could
+// silently resolve a still-unanswered human note.
 func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationIdentity) bool {
 	if !identity.SteeringCarrier || identity.ClientMutationID == "" || s.clientMutations == nil {
 		return true
 	}
-	origin := steeringOriginFromJournal(s.clientMutations.snapshot().Journal, identity.ClientMutationID)
+	journal := s.clientMutations.snapshot().Journal
+	if _, ok := journal[identity.ClientMutationID]; !ok {
+		return false
+	}
+	origin := steeringOriginFromJournal(journal, identity.ClientMutationID)
 	return steeringSourceAnswersAsk(events.SteeringSourceUser, origin.steeringKind())
 }
 
@@ -127,10 +136,11 @@ func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationId
 // SteeringSourceUser marks steering as user-sourced in general, but a
 // human-note update (events.SteeringKindHumanNote) is also user-sourced
 // without addressing the question — saving a note while a question is
-// pending must not clear it (RoboRev #1806 member-0 Medium). Shared by
-// clearAskPendingForResolvingSteer (the live mid-round clear) and
-// turnResolvesAskBoundary (restore's backward scan) so the two boundaries
-// cannot independently drift on which kinds count as an answer.
+// pending must not clear it (RoboRev #1806 member-0 Medium). Used by
+// clearAskPendingForResolvingSteer (the live mid-round clear) above; the
+// restore-side backward scan (#1806 piece 2) shares this same predicate
+// once it lands in the next change stacked on this one, so the two
+// boundaries cannot independently drift on which kinds count as an answer.
 func steeringSourceAnswersAsk(source, kind string) bool {
 	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
 }

@@ -153,20 +153,19 @@ type TurnFailureInfo struct {
 	//     failing steer is the one the carrier claim is draining).
 	// Both read the turn's mere ACCEPTANCE as having already cleared
 	// askPending unconditionally on entry, before its steer ever tried to
-	// land (processOneInput's "Pending asks resolve with this accepted turn"),
-	// so restore must read either case as resolving too — but ONLY when the
-	// claimed steer itself answers the ask (steeringCarrierClaimAnswersAsk,
-	// agent/session_tools_ask.go): a human-note carrier's entry clear is
-	// skipped, so its own failure (either shape) leaves this false and
-	// askPending stays live-pending, live and restored alike.
+	// land (processOneInput's "Pending asks resolve with this accepted turn")
+	// — but ONLY when the claimed steer itself answers the ask
+	// (steeringCarrierClaimAnswersAsk, agent/session_tools_ask.go): a
+	// human-note carrier's entry clear is skipped, so its own failure
+	// (either shape) leaves this false and askPending stays live-pending.
 	//
-	// Every OTHER TurnFailure (a retry-budget exhaustion, a non-carrier
-	// (inline) failed steering-selection prepare, a provider error mid-round)
-	// happens to an ALREADY-RUNNING round that may have posted real content —
-	// an ask_user call among it — before failing; that content's own turn is
-	// still ahead in the backward scan and decides the outcome, so an
-	// unmarked TurnFailure must not be treated as decisive on its own
-	// (agent/session_tools_ask.go's deriveRestoredAskPending/deriveRestoredState).
+	// This field is persisted here but not yet read anywhere: the restore
+	// scan (#1806 piece 2, deriveRestoredAskPending/deriveRestoredState via
+	// turnResolvesAskBoundary) that treats it as a resolution boundary on
+	// restore lands in the very next change stacked on this one. Until that
+	// change merges, a restart still re-derives askPending exactly as it did
+	// before this field existed — no worse than main today, since nothing
+	// reads the flag yet.
 	SteeringCarrier bool `json:"steering_carrier,omitempty"`
 }
 

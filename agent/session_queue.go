@@ -1257,28 +1257,32 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
-		s.admitPreparedSkillSelection(selectionBatch)
-		s.unparkSteering()
 		// The clear must land before the event publishes: the server refreshes
 		// its ask facet on EventSteeringInjected (server/thread_envelope.go),
 		// so emitting first lets that refresh read a stale askPending=true
-		// until the next ask change (RoboRev #1806 member-3 Medium).
+		// until the next ask change (RoboRev #1806 member-3 Medium). Only the
+		// clear moves ahead of the emit -- admit/unpark stay after it, their
+		// original order, so a skill-admission failure's own EventWarning
+		// still publishes after EventSteeringInjected rather than before it.
 		s.clearAskPendingForResolvingSteer(t)
 		if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
 			hook()
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.admitPreparedSkillSelection(selectionBatch)
+		s.unparkSteering()
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
-	s.admitPreparedSkillSelection(selectionBatch)
 	// Same ordering requirement as the client-mutation branch above: clear
-	// before the event that triggers the server's ask-facet refresh.
+	// before the event that triggers the server's ask-facet refresh, admit
+	// after it (unchanged order).
 	s.clearAskPendingForResolvingSteer(t)
 	if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
 		hook()
 	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	s.admitPreparedSkillSelection(selectionBatch)
 	return steeringDelivered
 }
 
