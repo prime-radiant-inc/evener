@@ -473,8 +473,8 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	// delegateQuietWindow instead of going dark after one notification. Activity
 	// still rearms through ReportActivityPhase, which clears quietNotified so
 	// this baseline falls back to activityAt. The result is one bounded wake per
-	// window — never a burst — and the watch runaway machinery bounds any loop
-	// the wakes themselves induce.
+	// window — never a burst — because each admission requires a further full
+	// delegateQuietWindow of silence.
 	quietSince := activityAt
 	if live.quietNotified {
 		quietSince = live.quietNotifiedAt
