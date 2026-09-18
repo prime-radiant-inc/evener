@@ -156,7 +156,14 @@ export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
-export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+export {
+  hasErrorText,
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+} from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type { ActionId } from "./keybindingActions";
@@ -291,6 +298,7 @@ export {
   collectAuthoritativeMutationIds,
   hydrateThread,
   imageSessionRouteForSession,
+  joinedReasoningParagraphs,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,

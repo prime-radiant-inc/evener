@@ -20,6 +20,7 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  isActiveItem,
   isStaleCursorError,
   notificationTargetsThread,
   sessionControls,
@@ -40,7 +41,6 @@ import type {
 import {
   activityState,
   clusterActivities,
-  isActiveItem,
   projectItemAttachments,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
