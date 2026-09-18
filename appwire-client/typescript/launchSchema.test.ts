@@ -442,14 +442,22 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
   });
 
-  test("collectConfig drops an integer that does not parse to a finite integer (never sends NaN or a fraction)", () => {
+  test("collectConfig drops an integer that is not a safe integer (NaN, fractions, and unsafe magnitudes)", () => {
     const state = buildFormState(options, {});
     state.scalars.maxRounds = "12abc";
     expect(collectConfig(options, state).maxRounds).toBeUndefined();
     state.scalars.maxRounds = "12.5";
     expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    // 2^53 + 1 is not exactly representable; Number() silently rounds it, so it
+    // must be dropped rather than sent as the wrong integer.
+    state.scalars.maxRounds = "9007199254740993";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = "1e21";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
     state.scalars.maxRounds = " 12 ";
     expect(collectConfig(options, state).maxRounds).toBe(12);
+    state.scalars.maxRounds = "9007199254740991";
+    expect(collectConfig(options, state).maxRounds).toBe(9007199254740991);
   });
 });
 

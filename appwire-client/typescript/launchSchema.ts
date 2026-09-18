@@ -298,11 +298,12 @@ export function buildFormState(options: LaunchOption[], current: LaunchConfigLay
 // collectScalar applies the launch-config collect rule to one scalar control's
 // raw form value: a boolean's "" (unset) is dropped, text is trimmed, an
 // empty-after-trim scalar is dropped (never sent as ""), and an integer is
-// trimmed then coerced - a value that does not parse to a finite integer (NaN,
-// Infinity, or a fraction like "12.5") is dropped, never sent, because the Go
-// wire type is *int and a fraction would fail thread/start's decode. Exported
-// so the spawn pane's AdvancedValues collector routes its scalar arm through
-// this exact rule too, instead of a second, drifted copy (#1444).
+// trimmed then coerced - a value that does not parse to a safe integer (NaN,
+// Infinity, a fraction like "12.5", or a magnitude outside the safe range like
+// "1e21") is dropped, never sent, because the Go wire type is *int and any of
+// those would fail thread/start's decode. Exported so the spawn pane's
+// AdvancedValues collector routes its scalar arm through this exact rule too,
+// instead of a second, drifted copy (#1444).
 export function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | null {
   if (opt.kind === "boolean") {
     if (raw === "true") return { value: true };
@@ -313,7 +314,11 @@ export function collectScalar(opt: LaunchOption, raw: string): { value: unknown 
   if (trimmed === "") return null; // omit empty-after-trim scalars, never sent as ""
   if (opt.kind === "integer") {
     const n = Number(trimmed);
-    return Number.isInteger(n) ? { value: n } : null; // drop non-integers, never send NaN or a fraction
+    // isSafeInteger (not isInteger): it also rejects NaN, Infinity, fractions,
+    // and values outside the safe range (e.g. "1e21", or a literal too large to
+    // represent exactly) that would serialize to something the Go *int wire
+    // field cannot decode.
+    return Number.isSafeInteger(n) ? { value: n } : null; // drop non-integers, never send NaN, a fraction, or an unsafe magnitude
   }
   return { value: trimmed };
 }

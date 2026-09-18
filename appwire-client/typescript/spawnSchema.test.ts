@@ -124,6 +124,24 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
     expect(advanced).toEqual({ agent: "evener", noProjectPrompts: true });
   });
 
+  test("drops an unsafe integer magnitude on both paths (Go wire type is *int)", () => {
+    const options = [option({ wireField: "maxRounds", kind: "integer" })];
+    const unsafe = collectAdvancedOverrides(options, { maxRounds: { value: "1e21" } });
+    const boundary = collectAdvancedOverrides(options, { maxRounds: { value: "9007199254740991" } });
+    const state: LaunchFormState = {
+      scalars: { maxRounds: "1e21" },
+      lists: {},
+      envMaps: {},
+      mcpLists: {},
+      explicitEmpty: {},
+    };
+    expect(unsafe).toEqual({});
+    expect(boundary).toEqual({ maxRounds: 9007199254740991 });
+    expect(unsafe).toEqual(collectConfig(options, state));
+    state.scalars.maxRounds = "9007199254740991";
+    expect(collectConfig(options, state)).toEqual({ maxRounds: 9007199254740991 });
+  });
+
   test("drops any field flagged invalid by path validation (floor §1.11, data-launch-invalid)", () => {
     const options = [option({ wireField: "systemPromptFile", kind: "text", pathKind: "file" })];
     const layer = collectAdvancedOverrides(options, {
