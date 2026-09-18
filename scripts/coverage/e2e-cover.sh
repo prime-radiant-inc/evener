@@ -24,7 +24,11 @@
 # The profile is combinable with the unit profile (union) via --merge-unit.
 set -uo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# CDPATH='' and `--`: an inherited CDPATH makes `cd` ECHO the resolved directory
+# into the command substitution (a multiline repo_root), and `--` keeps a path
+# beginning with `-` from being read as an option.
+repo_root="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" \
+	|| { echo "e2e-cover.sh: cannot resolve the repo root" >&2; exit 1; }
 cd "$repo_root"
 
 merge_unit=false
@@ -159,44 +163,39 @@ if $merge_unit; then
 	unit_prof="$workdir/unit.prof"
 	go test -count=1 -coverpkg=./... -coverprofile="$unit_prof" ./... >/dev/null 2>&1 || true
 	# union the two textfmt profiles: a block is covered if EITHER run hit it.
-	# Concatenating and counting through the Go covstmt primitive does exactly
-	# that — it dedupes blocks by position and unions hits — the same
-	# accounting coverage-floor.sh uses, so this combined number can never
-	# drift from the ratchet's. Missing inputs are skipped, as the Python did.
-	combined="$workdir/combined.prof"
-	if ! : >"$combined"; then
-		echo "e2e-cover: cannot create $combined" >&2
-		exit 1
-	fi
-	# Skip inputs that do not exist (as the Python did), but fail loudly on any
-	# other read or write error: a partially written combined profile would be
-	# counted as if it were whole and print a wrong, successful-looking number.
-	# union_profiles checks each append's status individually (a brace group
-	# would mask a `cat` failure) and separates the profiles with a newline so a
-	# final line lacking one cannot fuse two profiles together.
-	# shellcheck source=../lib/union-profiles.sh
-	. "$repo_root/scripts/lib/union-profiles.sh"
-	if ! union_profiles "$combined" "$unit_prof" "$e2e_prof"; then
-		echo "e2e-cover: cannot build the combined profile $combined" >&2
+	# `covstmt --union` does exactly that — it dedupes blocks by position across
+	# the named profiles and unions hits, the accounting coverage-floor.sh uses —
+	# so this number cannot drift from the ratchet's. It reads the profiles
+	# directly instead of concatenating them, so a profile whose final line lacks
+	# a newline cannot fuse with the next profile's header and drop a block.
+	# Missing inputs are skipped, as the Python did.
+	union_inputs=()
+	for prof in "$unit_prof" "$e2e_prof"; do
+		[ -f "$prof" ] && union_inputs+=("$prof")
+	done
+	if [ "${#union_inputs[@]}" -eq 0 ]; then
+		echo "e2e-cover: no profiles to union for the combined count" >&2
 		exit 1
 	fi
 	# Capture the count and check its status before parsing: a failed `go run`
 	# or covstmt must fail this report loudly, not leave `read` with empty
 	# fields that print as a malformed, successful-looking coverage line.
-	if ! cov_line="$(go run ./cmd/evener-dev/bin dev covstmt "$combined")"; then
-		echo "e2e-cover: covstmt failed on the combined profile $combined" >&2
+	if ! cov_line="$(go run ./cmd/evener-dev/bin dev covstmt --union "${union_inputs[@]}")"; then
+		echo "e2e-cover: covstmt --union failed on ${union_inputs[*]}" >&2
 		exit 1
 	fi
 	read -r cov tot <<<"$cov_line"
 	if ! [[ "$cov" =~ ^[0-9]+$ && "$tot" =~ ^[0-9]+$ ]]; then
-		echo "e2e-cover: covstmt did not print a 'covered total' line for $combined: $cov_line" >&2
+		echo "e2e-cover: covstmt --union did not print a 'covered total' line: $cov_line" >&2
 		exit 1
 	fi
 	# Compute the percentage in a checked step: if awk is missing or fails, an
 	# inline command substitution would print "pct=%" and still exit 0, which
-	# reads as a successful report. Validate the shape too, so a malformed
-	# number fails this report loudly instead of shipping.
-	if ! pct="$(awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')"; then
+	# reads as a successful report. LC_NUMERIC=C keeps the decimal point a point
+	# under a comma-decimal locale, so the numeric shape check below cannot fail
+	# a valid report. Validate the shape too, so a malformed number fails loudly
+	# instead of shipping.
+	if ! pct="$(LC_NUMERIC=C awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')"; then
 		echo "e2e-cover: awk failed computing the combined percentage" >&2
 		exit 1
 	fi

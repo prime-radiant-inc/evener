@@ -246,6 +246,52 @@ func TestCovstmtGapsInMatchesRunesNotBytes(t *testing.T) {
 	}
 }
 
+// TestCovstmtUnionModePrintsOneLine pins the shape the e2e combined report
+// reads: --union prints ONE "covered total" line for the whole set, deduped by
+// position with any-hit coverage, instead of one line per profile.
+func TestCovstmtUnionModePrintsOneLine(t *testing.T) {
+	dir := t.TempDir()
+	test := filepath.Join(dir, "test.cov")
+	fuzz := filepath.Join(dir, "fuzz.cov")
+	writeCovFixture(t, test, "mode: set\npkg/a.go:10.1,20.2 40 1\npkg/a.go:30.1,40.2 60 0\n")
+	writeCovFixture(t, fuzz, "mode: set\npkg/a.go:10.1,20.2 40 0\npkg/a.go:30.1,40.2 60 1\n")
+
+	var out, errOut strings.Builder
+	if code := covstmtRun([]string{"--union", test, fuzz}, &out, &errOut); code != 0 {
+		t.Fatalf("covstmtRun --union exits %d, want 0 (stderr: %q)", code, errOut.String())
+	}
+	if got, want := out.String(), "100 100\n"; got != want {
+		t.Fatalf("covstmtRun --union output = %q, want %q", got, want)
+	}
+}
+
+// TestCovstmtUnionMissingProfileFails: a missing member must fail the whole
+// union (exit 1, no stdout) rather than count a partial set.
+func TestCovstmtUnionMissingProfileFails(t *testing.T) {
+	var out, errOut strings.Builder
+	code := covstmtRun([]string{"--union", filepath.Join(t.TempDir(), "nope.cov")}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("covstmtRun --union on a missing profile exits %d, want 1", code)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("stdout on a missing union member = %q, want empty", got)
+	}
+}
+
+// TestCovstmtRejectsUnionWithGaps: --union counts a set as one; --gaps ranks a
+// single profile. Together they are meaningless, so it is a usage error.
+func TestCovstmtRejectsUnionWithGaps(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+	var out, errOut strings.Builder
+	if code := covstmtRun([]string{"--gaps", "--union", profile}, &out, &errOut); code != 2 {
+		t.Fatalf("covstmtRun --gaps --union exits %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "mutually exclusive") {
+		t.Fatalf("stderr does not explain --union vs --gaps: %q", errOut.String())
+	}
+}
+
 // TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the
 // exit is still 0 (an empty result is information, not a failure).
 func TestCovstmtGapsNoMatch(t *testing.T) {

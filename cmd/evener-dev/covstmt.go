@@ -33,6 +33,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("evener dev covstmt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaps := fs.Bool("gaps", false, "report ranked uncovered-statement gaps for one profile")
+	union := fs.Bool("union", false, "count PROFILE... as ONE profile: per-position dedup, any-hit union")
 	by := fs.String("by", "package", "gaps grouping: package or file")
 	top := fs.Int("top", 25, "gaps: show at most this many rows")
 	zero := fs.Bool("zero", false, "gaps: only wholly-uncovered units")
@@ -40,6 +41,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(stderr, "usage: evener dev covstmt PROFILE [PROFILE ...]")
 		_, _ = fmt.Fprintln(stderr, "  prints \"covered total\" per profile, one line each")
+		_, _ = fmt.Fprintln(stderr, "  --union  print ONE line counting all PROFILEs as a per-position union")
 		_, _ = fmt.Fprintln(stderr, "  --gaps  rank where the profile's uncovered statements are (one PROFILE)")
 		_, _ = fmt.Fprintln(stderr, "          --by package|file  --top N  --zero  --in SUBSTRING")
 	}
@@ -72,7 +74,25 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *gaps {
+		if *union {
+			_, _ = fmt.Fprintln(stderr, "evener dev covstmt: --union and --gaps are mutually exclusive")
+			fs.Usage()
+			return 2
+		}
 		return covstmtGapsRun(profiles[0], *by, *top, *zero, *in, stdout, stderr)
+	}
+	if *union {
+		// One line for the whole set: a block deduped by position across every
+		// profile, covered if ANY hit it. This replaces concatenating the files
+		// and counting the concatenation, so a profile whose last line lacks a
+		// newline cannot fuse with the next profile's header and drop a block.
+		covered, total, err := covstmt.StmtCountsUnion(profiles)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(stdout, "%d %d\n", covered, total)
+		return 0
 	}
 	var lines []string
 	// Count every profile before printing any line: stdout is all-or-nothing,

@@ -50,12 +50,19 @@ done
 [ -f "$profile" ] || { echo "no such profile: $profile" >&2; exit 1; }
 case "$by" in package|file) ;; *) echo "--by must be package or file (got $by)" >&2; exit 2 ;; esac
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# CDPATH='' and `--`: an inherited CDPATH makes `cd` ECHO the resolved directory
+# into the command substitution (a multiline path), and `--` keeps a path
+# beginning with `-` from being read as an option. Each resolution is checked so
+# a failed `cd` aborts with a clear error instead of a empty/garbled path.
+repo_root="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" \
+	|| { echo "coverage-gaps.sh: cannot resolve the repo root" >&2; exit 1; }
 
 # The Go subcommand runs with repo_root as its cwd (so `go run` finds the
 # module), which would reinterpret a relative profile path; make it absolute
 # here, while the caller's cwd is still in effect.
-profile="$(cd "$(dirname "$profile")" && pwd)/$(basename "$profile")"
+profile_dir="$(CDPATH='' cd -- "$(dirname "$profile")" && pwd)" \
+	|| { echo "coverage-gaps.sh: cannot resolve the directory of profile $profile" >&2; exit 1; }
+profile="$profile_dir/$(basename "$profile")"
 
 gaps_args=(--gaps "--by=$by" "--top=$top")
 if $zero_only; then gaps_args+=(--zero); fi

@@ -183,6 +183,52 @@ func TestStmtCountsReaderMatchesFile(t *testing.T) {
 	}
 }
 
+// TestStmtCountsUnionCountsProfilesAsOne pins the union arithmetic the shell
+// scripts used to get by concatenating profiles: a block is deduped by position
+// across the files and counts once, covered if ANY profile hit it.
+func TestStmtCountsUnionCountsProfilesAsOne(t *testing.T) {
+	testTrack := writeProfile(t, "mode: set\n"+
+		"pkg/a.go:10.1,20.2 40 1\n"+ // covered by the test track only
+		"pkg/a.go:30.1,40.2 60 0\n")
+	fuzzTrack := writeProfile(t, "mode: set\n"+
+		"pkg/a.go:10.1,20.2 40 0\n"+
+		"pkg/a.go:30.1,40.2 60 1\n") // covered by the fuzz track only
+	covered, total, err := StmtCountsUnion([]string{testTrack, fuzzTrack})
+	if err != nil {
+		t.Fatalf("StmtCountsUnion: %v", err)
+	}
+	if covered != 100 || total != 100 {
+		t.Fatalf("StmtCountsUnion = (%d, %d), want (100, 100): each block counted once, covered",
+			covered, total)
+	}
+}
+
+// TestStmtCountsUnionHandlesUnterminatedProfile pins the hazard the union avoids
+// by reading profiles instead of concatenating them: a profile whose final block
+// line lacks a trailing newline must still contribute that block, and must not
+// swallow the next profile's header (which concatenation would).
+func TestStmtCountsUnionHandlesUnterminatedProfile(t *testing.T) {
+	a := writeProfile(t, "mode: set\npkg/a.go:10.1,20.2 40 1\npkg/a.go:30.1,40.2 60 0") // no final newline
+	b := writeProfile(t, "mode: set\npkg/b.go:1.1,2.2 5 0\n")
+	covered, total, err := StmtCountsUnion([]string{a, b})
+	if err != nil {
+		t.Fatalf("StmtCountsUnion: %v", err)
+	}
+	if covered != 40 || total != 105 {
+		t.Fatalf("StmtCountsUnion = (%d, %d), want (40, 105): the unterminated block must survive",
+			covered, total)
+	}
+}
+
+// TestStmtCountsUnionMissingFileFails returns an error rather than a partial
+// union, so a caller cannot count a set with a silently missing member.
+func TestStmtCountsUnionMissingFileFails(t *testing.T) {
+	_, _, err := StmtCountsUnion([]string{filepath.Join(t.TempDir(), "nope.out")})
+	if err == nil {
+		t.Fatalf("StmtCountsUnion on a missing file: want error, got nil")
+	}
+}
+
 // TestBlocksKeepsPositionDedupAndAnyHitUnion pins the per-block view's two
 // load-bearing properties against the same fixtures StmtCounts uses: duplicate
 // positions collapse to one block (last-wins stmtCount) and any hit covers.

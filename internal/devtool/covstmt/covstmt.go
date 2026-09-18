@@ -180,6 +180,45 @@ func StmtCountsReader(r io.Reader) (covered, total int, err error) {
 	return covered, total, nil
 }
 
+// StmtCountsUnion counts several profiles as one: a block is deduped by
+// position across all of them and counts as covered if ANY profile hit it —
+// the same arithmetic as concatenating the files, without the concatenation.
+// That matters because a profile whose final line lacks a newline would fuse
+// with the next profile's header under plain concatenation, and the parser
+// would skip both lines and silently drop a block. Profiles are merged in argument
+// order, so a duplicate position's statement count is the LAST profile's, the
+// tie-break the counting contract pins.
+func StmtCountsUnion(paths []string) (covered, total int, err error) {
+	seen := make(map[blockPos]blockEntry)
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			return 0, 0, err
+		}
+		merged, err := parseProfile(f)
+		_ = f.Close()
+		if err != nil {
+			return 0, 0, err
+		}
+		for k, e := range merged {
+			if prev, ok := seen[k]; ok {
+				prev.stmtCount = e.stmtCount
+				prev.covered = prev.covered || e.covered
+				seen[k] = prev
+			} else {
+				seen[k] = e
+			}
+		}
+	}
+	for _, e := range seen {
+		total += e.stmtCount
+		if e.covered {
+			covered += e.stmtCount
+		}
+	}
+	return covered, total, nil
+}
+
 // Blocks opens the coverage profile at path and returns its deduped blocks in
 // a stable (file, start line, end line) order. A missing or unreadable file is
 // an error rather than a silent empty list.
