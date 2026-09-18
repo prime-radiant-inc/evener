@@ -1115,13 +1115,69 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	}
 	records := assertThreadLifecycleRecords(t, string(data))
 	for _, record := range records {
-		if record["operation"] != "resume" || record["session_id"] != requested || record["resolved_session_id"] != target {
-			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s resolved_session_id=%s", record, requested, target)
+		if record["operation"] != "resume" || record["session_id"] != requested {
+			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
 		}
 	}
+	assertThreadLifecycleOutcome(t, records, "request", "success", "none")
+	assertThreadLifecycleOutcome(t, records, "ownership", "success", "none")
+	// Only the stages recorded after resumeOwnership resolves the alias carry the
+	// resolved identity, exactly as the explicit path's post-resolution stages do.
 	for _, stage := range []string{"discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
 		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
+		for _, record := range records {
+			if record["stage"] == stage && record["resolved_session_id"] != target {
+				t.Fatalf("%s lost resolved identity: %#v, want resolved_session_id=%s", stage, record, target)
+			}
+		}
 	}
+}
+
+// TestResumeAfterConfirmedRetirementRecordsAdmissionFailure pins the other half
+// of the same finding: a retirement resume that is refused by an admission
+// fence before it ever reaches resumeThreadLocked must still emit the request
+// pair, or the path stays unobservable exactly when it fails. Before the fix
+// the trace was only consumed by the spawn half, so this returned silently.
+func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
+	requested := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	// An in-flight force stop leaves Stopping > 0, so the admission re-check
+	// refuses the retirement resume. finish(false) is the caller acknowledging
+	// the refused force stop; the fence itself is what the test needs held.
+	finish := locks.BeginForceStop([]string{requested})
+	t.Cleanup(func() { finish(false) })
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      hubcore.NewRoster(runDir, nil),
+		ResumeLocks: locks,
+	}
+
+	original := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stderr = original
+		_ = readEnd.Close()
+	})
+	os.Stderr = writeEnd
+	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	_ = writeEnd.Close()
+	os.Stderr = original
+	data, _ := io.ReadAll(readEnd)
+
+	if resumeErr == nil {
+		t.Fatal("resumeAfterConfirmedRetirement unexpectedly succeeded under an admission fence")
+	}
+	records := assertThreadLifecycleRecords(t, string(data))
+	for _, record := range records {
+		if record["operation"] != "resume" || record["session_id"] != requested {
+			t.Fatalf("lost refused-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
+		}
+	}
+	assertThreadLifecycleOutcome(t, records, "request", "error", "failed")
 }
 
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {

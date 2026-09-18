@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -122,19 +123,25 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 // daemon: retirement remains the daemon's own decision, and force-stop
 // authority is unchanged.
 func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) (resumeErr error) {
+	// A retirement-triggered resume is a resume, so adopt #1390's correlated
+	// lifecycle trace up front with the requested identity. The request pair is
+	// recorded before any outcome, so admission and ownership failures — and the
+	// early returns where a replacement is already live — are observable too;
+	// resumeOwnership may resolve the alias to a different current target, which
+	// is stamped onto the trace below so these records carry the same
+	// session_id/resolved_session_id pair an explicit resume records.
+	sessionID := deletionThreadID(params.Ref, params.ThreadID)
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
+	requestStarted := time.Now()
+	trace.record(ctx, "request", "begin", requestStarted, nil, 0, 0)
+	defer func() { trace.record(ctx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
+
 	if err := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); err != nil {
 		return err
 	}
-	sessionID := deletionThreadID(params.Ref, params.ThreadID)
 	if sessionID == "" || cfg.ResumeLocks == nil || cfg.Roster == nil {
 		return appwire.LifecycleUnavailable("retiring")
 	}
-	// A retirement-triggered resume is a resume, so adopt #1390's correlated
-	// lifecycle trace up front with the requested identity. resumeOwnership may
-	// resolve that alias to a different current target; the target is stamped
-	// onto the trace before the spawn half so these records carry the same
-	// session_id/resolved_session_id pair an explicit resume records.
-	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, params.ThreadID)
 	if err := retirementAdmissionRecoveryError(cfg, sessionID, epoch); err != nil {
 		return err
@@ -144,7 +151,9 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	ownerBefore, hadOwnerBefore := liveDaemonForThread(cfg.Roster, sessionID)
 
+	ownershipDone := trace.stage(ctx, "ownership")
 	target, aliases, err := resumeOwnership(cfg, sessionID, sessionID)
+	ownershipDone(err)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
@@ -249,7 +258,7 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// resumeThreadLocked records its lifecycle stages from the trace in the
 	// context (#1390). Stamp the ownership-resolved target so the stages below
 	// record the resolved_session_id the explicit path records.
-	ctx, _ = trace.resolved(ctx, target)
+	ctx, trace = trace.resolved(ctx, target)
 	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return resumeErr
 }
