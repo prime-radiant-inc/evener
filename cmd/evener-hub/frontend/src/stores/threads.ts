@@ -2844,8 +2844,24 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // beforePublish was evaluated before publication, but reconciliation above
     // runs asynchronously after it. A Stop acknowledged in that window must
     // cancel the dispatch this refresh earned too, exactly as handleReady's
-    // targeted tail rechecks its own fence at the scheduling point.
-    beforePublish?.();
+    // targeted tail rechecks its own fence at the scheduling point. The
+    // rejection lands only after publication, so what the refresh earned on
+    // the way is unwound with it: publication opened the ref's dispatch gate
+    // and reconciliation may have cleared its recovery-blocked obligation,
+    // and a later outbox discovery would dispatch queued mutations on the
+    // strength of both if the fence left them banked.
+    try {
+      beforePublish?.();
+    } catch (error) {
+      // Stop canceled this refresh, so its earned dispatchability goes with
+      // it: close the gate and re-arm recovery (the forceStop tail's own
+      // retention rule) until a fresh snapshot proves it can clear.
+      dispatchableMutationRefs.delete(ref);
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+      }));
+      throw error;
+    }
     const runtime = getMutationRuntime();
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
