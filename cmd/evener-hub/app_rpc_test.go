@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -4247,8 +4248,9 @@ func relayTurnStartedNotification(t *testing.T, threadID, turnID string) appwire
 // hub-authored turn/completed(failed) kata 3h02 synthesizes once a mid-turn
 // daemon stops answering: the same shape TurnFailureEndCap already renders
 // for a real daemon failure (connection-class, so its "Reconnect & retry"
-// button appears).
-func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantTurnID, wantMessageContains string) {
+// button appears). It must name the relay's thread/ref, or a client routes
+// the frame nowhere (the reducer's target guard) and the synthesis is mute.
+func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID, wantMessageContains string) {
 	t.Helper()
 	select {
 	case got := <-notifications:
@@ -4258,6 +4260,9 @@ func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwir
 		var params appwire.TurnCompletedParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal turn/completed: %v", err)
+		}
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("turn/completed target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
 		}
 		if params.Turn.ID != wantTurnID {
 			t.Fatalf("turn.id=%q, want %q", params.Turn.ID, wantTurnID)
@@ -4279,13 +4284,78 @@ func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwir
 	}
 }
 
+// expectRelaySynthesizedIdleStatus asserts the companion status frame the
+// relay now broadcasts right behind the synthesized failure. The session
+// status belongs to thread/status/changed, so without this the reducer keeps
+// the session active (Stop and Steer still showing, Send withheld) after the
+// failure it was just told about. It must carry the relay's target. The action
+// set is the hub's own only for a local (resumable) session; a non-local
+// source must carry none, preserving the masked set it sent.
+func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, wantCapabilities bool) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyThreadStatusChanged)
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal thread/status/changed: %v", err)
+		}
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("thread/status/changed target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
+		}
+		if params.Status.Type != appwire.ThreadStatusIdle {
+			t.Fatalf("status.type=%q, want %q", params.Status.Type, appwire.ThreadStatusIdle)
+		}
+		if !wantCapabilities {
+			if params.Capabilities != nil {
+				t.Fatalf("capabilities present for a non-local source, want absent: %+v", *params.Capabilities)
+			}
+		} else if params.Capabilities == nil {
+			t.Fatal("capabilities absent, want the hub's past-session set")
+		} else if !params.Capabilities.Send {
+			t.Fatal("capabilities.send=false, want true so the reader can resume the session")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the synthesized idle status")
+	}
+}
+
+// relayGaveUpCapabilities decides the action set the synthesized idle status
+// carries: the hub's past-session set for a local thread it can resume, and
+// nothing for a non-local source, whose own masked set must stand (absent
+// means "no update"). A federated source told it could Send or Compact would
+// be offered actions the hub cannot honour.
+func TestRelayGaveUpCapabilitiesOnlyForLocalThreads(t *testing.T) {
+	cfg := hubcore.WebConfig{}
+	local := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:th_caps"}}
+	got := relayGaveUpCapabilities(cfg, "local:th_caps", local)
+	want := pastThreadCapabilities()
+	// No state dir and no past entry: the fork fence floors ForkFromTurn
+	// exactly as applyHubForkCapability does on a past read.
+	want.ForkFromTurn = false
+	if got == nil || *got != want {
+		t.Fatalf("local relay: capabilities=%v, want %+v", got, want)
+	}
+	for _, relayKey := range []string{"codex:th_caps", "host:th_caps"} {
+		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: relayKey}}
+		if nonLocal := relayGaveUpCapabilities(cfg, relayKey, thread); nonLocal != nil {
+			t.Fatalf("relay %q: capabilities=%+v, want nil (source keeps its own set)", relayKey, *nonLocal)
+		}
+	}
+}
+
 // TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures
 // covers kata 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop
 // re-dialing a socket nothing answers, forever, with no diagnostic. After
 // relayGiveUpAfterFailures consecutive re-dial failures while a turn is
 // in-progress, the relay must synthesize a failed turn/completed for that
-// turn (source "hub") instead of retrying in total silence - and must fire
-// it exactly once per stall, not on every subsequent retry.
+// turn (source "hub") instead of retrying in total silence, followed by the
+// thread/status/changed(idle) frame that owns the session status (the status
+// is never turn/completed's) - and must fire the pair exactly once per stall,
+// not on every subsequent retry. Both frames must name the relay's target or
+// a client drops them at the routing guard.
 func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures(t *testing.T) {
 	const threadID = "th_dead_mid_turn"
 	const turnID = "turn_dead"
@@ -4360,18 +4430,19 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	// relay must stop retrying in silence and tell the reader the turn died.
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
-	expectRelaySynthesizedTurnFailure(t, client.Notifications(), turnID, "connection refused (3)")
+	expectRelaySynthesizedTurnFailure(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
+	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
 	retryClock.releaseWait(t, 400*time.Millisecond)
 
 	// The loop keeps retrying afterward (recovery is still worth having if
 	// the reader clicks "Reconnect & retry" and a fresh relay never
 	// replaces this one before it retires) but must not re-broadcast the
-	// same failure it already reported.
+	// same pair it already reported.
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (4)")}
 	select {
 	case got := <-client.Notifications():
-		t.Fatalf("unexpected second notification after give-up: %+v", got)
+		t.Fatalf("unexpected third notification after give-up: %+v", got)
 	case <-time.After(150 * time.Millisecond):
 	}
 	retryClock.expectWait(t, 800*time.Millisecond)
@@ -11778,6 +11849,121 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
+// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
+// from a client that names itself must broadcast an evener/auth/updated
+// carrying that same id, so the originator recognizes its own echo by id
+// instead of treating its own mutation as another client's change and
+// refetching. Every registered instance mutation is covered, each against its
+// own hub so one case's write cannot perturb the next.
+func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params func(origin string) any
+	}{
+		{"create", appwire.MethodEvenerInstanceCreate, func(origin string) any {
+			return appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: origin}
+		}},
+		{"edit", appwire.MethodEvenerInstanceEdit, func(origin string) any {
+			return appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test", OriginClientId: origin}
+		}},
+		{"remove", appwire.MethodEvenerInstanceRemove, func(origin string) any {
+			return appwire.InstanceRemoveParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setDefault", appwire.MethodEvenerInstanceSetDefault, func(origin string) any {
+			return appwire.InstanceSetDefaultParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setModelDisabled", appwire.MethodEvenerInstanceSetModelDisabled, func(origin string) any {
+			return appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-opus-4-6", Disabled: true, OriginClientId: origin}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newAuthOriginTestClient(t)
+
+			var resp appwire.InstanceListResponse
+			if err := client.Request(context.Background(), tc.method, tc.params("tab-a"), &resp); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+
+			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdatedRaw(t, client), "tab-a")
+		})
+	}
+}
+
+// assertInstanceBroadcastShape requires an instance mutation's broadcast to echo
+// wantOrigin and to name no provider or active source. The emptiness is part of
+// the contract, not incidental: the SDK's own-echo correlation keys on the
+// absent provider to tell an instance echo from an auth one, so a stray
+// provider would reroute the notification into its auth fallback.
+func assertInstanceBroadcastShape(t *testing.T, method string, raw json.RawMessage, wantOrigin string) {
+	t.Helper()
+	// Key ABSENCE, not an empty value: a payload carrying `"provider":""` decodes
+	// to the same empty string as an omitted key, but the SDK routes an instance
+	// echo by `provider === undefined`, so an explicit empty provider would send
+	// it looking for a "" marker and read the client's own mutation as foreign.
+	// Only the raw bytes can pin that.
+	if bytes.Contains(raw, []byte("provider")) || bytes.Contains(raw, []byte("activeSource")) {
+		t.Errorf("%s params=%s, want neither the provider nor the activeSource key: an instance broadcast names no auth source",
+			method, raw)
+	}
+	var params appwire.EvenerAuthUpdatedParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("%s: decode params %s: %v", method, raw, err)
+	}
+	if params.OriginClientId != wantOrigin {
+		t.Errorf("%s params=%s: originClientId=%q, want %q", method, raw, params.OriginClientId, wantOrigin)
+	}
+}
+
+// TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId covers the sixth
+// mutation handler, whose success needs a live /models endpoint: its broadcast
+// must echo the caller's id like the other five.
+func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { client.Close() })
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRefreshModels,
+		appwire.InstanceRefreshModelsParams{Name: "gw", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatalf("evener/instance/refreshModels: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "tab-a")
+}
+
+// TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
+// for TestHubRPCInstanceBroadcastEchoesOriginClientId: the identical
+// create with no id must broadcast an empty one, so the id the first test
+// observes is the caller's value rather than one the hub supplies on its own.
+func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "")
+}
+
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
 // of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
 // evener/auth/updated is the right (reused) notification.
@@ -11848,7 +12034,7 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	}
 
 	var resp appwire.InstanceListResponse
-	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
@@ -11858,14 +12044,11 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 		t.Fatal("the rename did not reach providers.toml")
 	}
 
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyEvenerAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
-	}
+	// A rename that persisted before it failed announces as loudly as a clean
+	// one - the error reply is not the only signal every other client's list is
+	// stale - but it names no origin: the caller's mutation errored, so its echo
+	// must not be consumable as that client's own success.
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdatedRaw(t, client), "")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows

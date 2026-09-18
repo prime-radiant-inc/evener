@@ -495,8 +495,8 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_jobs.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                        1,
 	{filename: "status.go", function: "(*Session).DetailedStatus", kind: "lifecycle method", symbol: "Snapshot"}:                                                                       1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                                1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "Reconcile"}:                                                1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }
 
 type delegateControllerDormancyViolation struct {

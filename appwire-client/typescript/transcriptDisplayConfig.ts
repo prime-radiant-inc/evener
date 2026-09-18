@@ -20,9 +20,7 @@ import type {
 } from "./types.gen";
 
 export type ContentLevel = "chat" | "intent" | "tools" | "activity" | "full";
-export type TranscriptLevel = ContentLevel;
 export type HookExitDetail = "none" | "successful" | "all";
-export type TranscriptHookExitDetail = HookExitDetail;
 export type TranscriptViewportClass = "desktop" | "mobile";
 export type ViewportClass = TranscriptViewportClass;
 
@@ -51,8 +49,6 @@ export interface TranscriptDisplayConfigV1 {
   readonly content: ContentSelection;
   readonly advanced: Readonly<TranscriptDisplayAdvancedV1>;
 }
-
-export type TranscriptDisplayConfig = TranscriptDisplayConfigV1;
 
 export interface HubTranscriptDisplayDefault {
   readonly revision: number;
@@ -211,14 +207,11 @@ export const shippedMobileConfig: TranscriptDisplayConfigV1 = makeTranscriptDisp
   kind: "preset",
   level: "intent",
 });
-export const SHIPPED_DESKTOP_CONFIG = shippedDesktopConfig;
-export const SHIPPED_MOBILE_CONFIG = shippedMobileConfig;
 
 export const shippedDefaults: Readonly<Record<TranscriptViewportClass, HubTranscriptDisplayDefault>> = {
   desktop: { revision: 0, config: shippedDesktopConfig },
   mobile: { revision: 0, config: shippedMobileConfig },
 };
-export const SHIPPED_DEFAULTS = shippedDefaults;
 
 export function shippedConfig(layout: TranscriptViewportClass = "desktop"): TranscriptDisplayConfigV1 {
   return cloneConfig(shippedDefaults[layout].config);
@@ -368,11 +361,6 @@ export function fromWireConfig(value: unknown): TranscriptDisplayConfigV1 | unde
   return normalizeConfig({ version: 1, content, advanced });
 }
 
-export const wireToConfig = fromWireConfig;
-export const configToWire = toWireConfig;
-export const fromWireTranscriptDisplayConfig = fromWireConfig;
-export const toWireTranscriptDisplayConfig = toWireConfig;
-
 export function toWireDefault(value: HubTranscriptDisplayDefault): WireDefault {
   if (!Number.isSafeInteger(value.revision) || value.revision < 0)
     throw new Error("invalid transcript display revision");
@@ -407,11 +395,6 @@ export function fromWireDefaults(
   return desktop === undefined || mobile === undefined ? undefined : { desktop, mobile };
 }
 
-export const wireToDefault = fromWireDefault;
-export const defaultToWire = toWireDefault;
-export const wireToDefaults = fromWireDefaults;
-export const defaultsToWire = toWireDefaults;
-
 export function encodeLocalConfig(config: TranscriptDisplayConfigV1): string {
   return JSON.stringify(toWireConfig(config));
 }
@@ -425,17 +408,9 @@ export function decodeLocalConfig(raw: unknown): TranscriptDisplayConfigV1 | und
   }
 }
 
-export const encodeConfig = encodeLocalConfig;
-export const decodeConfig = decodeLocalConfig;
-export const parseLocalConfig = decodeLocalConfig;
-export const encodeLocal = encodeLocalConfig;
-export const decodeLocal = decodeLocalConfig;
-
 export function configFingerprint(config: TranscriptDisplayConfigV1): string {
   return encodeLocalConfig(config);
 }
-
-export const fingerprintConfig = configFingerprint;
 
 const CONTENT_LABELS: Record<ContentLevel, string> = {
   chat: "Chat",
@@ -528,8 +503,6 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   return { visible, hidden };
 }
 
-export const categoryInventory = visibleCategoryInventory;
-
 export const LEGACY_PREF_KEYS = [
   "transcriptRoundTimings",
   "transcriptTokenCounts",
@@ -581,9 +554,6 @@ export function legacyConfigFromValues(values: LegacyPreferenceValues): Transcri
   );
 }
 
-export const migrateLegacyConfig = legacyConfigFromValues;
-export const configFromLegacyPrefs = legacyConfigFromValues;
-
 export interface LegacyPreferenceWrites {
   readonly transcriptRoundTimings: boolean;
   readonly transcriptTokenCounts: boolean;
@@ -612,5 +582,3 @@ export function dualWriteLegacyPreferences(
   const values = legacyWritesFromConfig(config);
   for (const key of LEGACY_PREF_KEYS) write(key, values[key]);
 }
-
-export const legacyPrefsFromConfig = legacyWritesFromConfig;

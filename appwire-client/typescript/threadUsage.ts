@@ -4,6 +4,7 @@
 // each is trivially unit-testable.
 
 import type { ThreadModel, TurnModel } from "./model";
+import type { EvenerThread, EvenerUsage } from "./types.gen";
 
 // TokenPair is one turn's or one session's up/down token counts, already
 // resolved to real numbers.
@@ -87,4 +88,32 @@ export function sessionTokens(model: ThreadModel): SessionTokens | null {
   // An olderCursor is thread/read's own signal that it truncated the window,
   // so the turns in hand are a suffix of the transcript, not all of it.
   return { inputTokens, outputTokens, scope: model.olderCursor ? "loaded" : "session" };
+}
+
+// UsageSummary is a session's token/cost/context accounting plus its work
+// duration - the shape the native activity sheet renders. It carries only the
+// thread-level cumulative figures (EvenerThread.usage): unlike sessionTokens
+// above, it has no per-turn fallback and no "loaded" scope, so an absent wire
+// field stays undefined rather than becoming a 0 that would read as a real
+// measurement. A per-turn fallback for sessions with no cumulative usage is a
+// visible behaviour change (D18 B3), not this move.
+export type UsageSummary = Readonly<
+  EvenerUsage &
+    Pick<EvenerThread, "cost" | "contextUsed" | "contextWindow" | "contextRemaining" | "contextPressure"> & {
+      durationMs?: number;
+    }
+>;
+
+// threadUsageSummary reads a thread's own UsageSummary straight off the wire,
+// with no derivation beyond field renaming (workMillis -> durationMs).
+export function threadUsageSummary(evener: EvenerThread): UsageSummary {
+  return {
+    ...evener.usage,
+    cost: evener.cost,
+    contextUsed: evener.contextUsed,
+    contextWindow: evener.contextWindow,
+    contextRemaining: evener.contextRemaining,
+    contextPressure: evener.contextPressure,
+    durationMs: evener.workMillis,
+  };
 }

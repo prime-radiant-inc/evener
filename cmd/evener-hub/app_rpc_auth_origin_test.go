@@ -130,7 +130,11 @@ func TestAuthApiKeySetBroadcastEchoesOriginClientId(t *testing.T) {
 // never actually read), wrapped in writeApplied. The broadcast that follows
 // must be the no-data form - no provider or activeSource key at all - never
 // the fabricated pair of a real provider beside an empty activeSource a
-// naive writeDidApply(err) gate would announce as fact.
+// naive writeDidApply(err) gate would announce as fact. It sends its own
+// OriginClientId and requires that it is NOT echoed: an id-bearing
+// provider-less broadcast would be indistinguishable from a provider-instance
+// echo, so it could consume an instance mutation's marker and turn that
+// mutation's own echo foreign.
 func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
 	client := newAuthOriginTestClient(t)
 
@@ -143,7 +147,7 @@ func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
 
 	var resp appwire.AuthLoginCompleteResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginComplete,
-		appwire.AuthLoginCompleteParams{Provider: "anthropic"}, &resp)
+		appwire.AuthLoginCompleteParams{Provider: "anthropic", OriginClientId: "tab-a"}, &resp)
 	if err == nil {
 		t.Fatal("evener/auth/loginComplete = nil, want the failed status read reported")
 	}
@@ -151,6 +155,9 @@ func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
 	raw := waitForAuthUpdatedRaw(t, client)
 	if strings.Contains(string(raw), "provider") || strings.Contains(string(raw), "activeSource") {
 		t.Fatalf("broadcast params = %s, want the no-data form (neither key present): a failed status read must never announce a fabricated activeSource", raw)
+	}
+	if strings.Contains(string(raw), "originClientId") {
+		t.Fatalf("broadcast params = %s, want no originClientId: the no-data form must not be attributable as a provider-instance echo", raw)
 	}
 }
 

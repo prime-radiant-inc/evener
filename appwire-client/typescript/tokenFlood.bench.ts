@@ -87,8 +87,8 @@ describe("token-flood: per-delta profile + growth curve (console output - see fi
 // buffers the primitive, likewise non-quadratic) - so a real-reducer fold of
 // 64 B deltas shows a ~flat late/early decile ratio at every size. The
 // agentMessage path is measured alongside as the contrast: THAT path's
-// pre-appendChunk array spread is the one that was quadratic (reducer.ts's
-// chunk-view comment), and it folds flat too now. The original refutation ran
+// pre-appendChunk array spread is the one that was quadratic (chunkview.ts's
+// module comment), and it folds flat too now. The original refutation ran
 // these same sizes under Node/V8 and Hermes; this in-tree case runs under
 // whatever engine executes `vitest bench`.
 function foldStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {

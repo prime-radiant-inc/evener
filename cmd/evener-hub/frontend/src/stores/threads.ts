@@ -2,7 +2,7 @@
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
 // It rides the single AppwireClientLike connection.ts wires via
-// useConnectionStore.getState().connect(client) — this store has no
+// connectionStore.getState().connect(client) — this store has no
 // connect() of its own — and reactively re-attaches its onNotification/onReady
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
@@ -40,7 +40,7 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
@@ -2301,14 +2301,16 @@ connectionStore.subscribe((state) => {
 });
 
 // requireClient reads the client connection.ts wired via
-// useConnectionStore.getState().connect(client) — threads.ts has no
+// connectionStore.getState().connect(client) — threads.ts has no
 // connect() of its own in the locked interface, so it rides connection.ts's
-// single wiring point.
+// single wiring point. The one thing that is threads-specific is the
+// defensive rewireClient() call (see above), so it takes only the shared
+// resolver and routes every client read through this rewire-aware wrapper -
+// nothing here hands out a bare port whose request/onNotification would
+// silently skip the rewire.
+const { requireClient: resolveCurrentClient } = connectedClientPort("threads");
 function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
+  const client = resolveCurrentClient();
   rewireClient(client);
   return client;
 }

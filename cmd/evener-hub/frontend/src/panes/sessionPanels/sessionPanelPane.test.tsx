@@ -288,7 +288,9 @@ function activityRootTree(): ActivityTree {
 
 function continuedActivityTree(): ActivityTree {
   return {
-    revision: 2,
+    // The continuation page shares the retained tree's revision: a page from a
+    // different revision is discarded by the consumer, not grafted.
+    revision: 1,
     root: {
       kind: "session",
       sessionId: "session_a",

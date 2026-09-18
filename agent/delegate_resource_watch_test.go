@@ -1317,10 +1317,11 @@ func newStableWatchRuntimeBase(t *testing.T, rootFS afero.Fs) *stableWatchRuntim
 
 // requireNoRunningStopDriver fails the test when a stop reconcile driver
 // (started by StopSubtreeAndDrive) is still running at test end. The driver
-// drains on context.Background and only exits once its stop completes, so a
-// test that leaves such a stop pending leaks a goroutine into every later test
-// of the binary (#1394). A completed stop's driver is joined so it cannot
-// outlive the test either.
+// drains on its own cancellable context, so it exits either when its stop
+// completes or when a bounded close join gives up and abandons it (cancelling
+// that context); a test that leaves such a stop pending without either outcome
+// leaks a goroutine into every later test of the binary (#1394). A completed
+// stop's driver is joined so it cannot outlive the test either.
 func requireNoRunningStopDriver(t *testing.T, controller *delegateTreeController) {
 	t.Helper()
 	controller.mu.Lock()

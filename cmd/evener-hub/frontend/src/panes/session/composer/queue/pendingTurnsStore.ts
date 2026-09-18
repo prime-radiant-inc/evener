@@ -1,7 +1,13 @@
 import {
+  awaitingFirstFrameSend,
+  blockedEntries,
+  createMutationProjectionFence,
   createPendingTurnsStore,
+  type MutationPersistencePort,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
+  recoveryEntries,
+  replaceTargetRecords,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -49,25 +55,11 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   identity: { isOwnMutationRecord },
 });
 
-let refreshGeneration = 0;
-let allTargetsRefreshGeneration = 0;
-const refreshGenerations = new Map<string, number>();
-let refreshEpoch = 0;
-
-function replaceTargetRecords<T extends { clientMutationId: string; targetRef: string }>(
-  current: Map<string, T>,
-  targets: ReadonlySet<string>,
-  records: T[],
-): Map<string, T> {
-  const next = new Map(current);
-  for (const [id, record] of next) {
-    if (targets.has(record.targetRef)) next.delete(id);
-  }
-  for (const record of records) {
-    if (targets.has(record.targetRef)) next.set(record.clientMutationId, record);
-  }
-  return next;
-}
+// The durable-read fence a refresh's targets are decided through, and the
+// port it reads them from: readMutationPersistence is already shaped to
+// MutationPersistencePort, so no adapter object is needed beyond naming it.
+const projectionFence = createMutationProjectionFence<MutationAttachment>();
+const persistencePort: MutationPersistencePort<MutationAttachment> = { read: readMutationPersistence };
 
 // Every durable projection operation below is registered here while it runs.
 // The work is the mutation runtime's start plus real IndexedDB reads and
@@ -141,55 +133,33 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
-  const epoch = refreshEpoch;
-  const generation = ++refreshGeneration;
-  // Starting a newer read supersedes older snapshots even if that read fails.
-  if (ref === undefined) allTargetsRefreshGeneration = generation;
-  else refreshGenerations.set(ref, generation);
-  try {
-    const snapshot = await readMutationPersistence(ref);
-    if (refreshEpoch !== epoch) return false;
-    // Provenance is monotonic knowledge about ids rather than a view of the
-    // records currently in storage, so it is published from every read of this
-    // epoch and in its own setState: a read a newer generation has already
-    // superseded still saw a record of this client's, and the newer read - taken
-    // later - may be looking at storage that record has since been settled out
-    // of. Skipping it there would leave the id known to nobody.
-    pendingTurnsStore.recordSubmittedHere(snapshot);
-    // Reads of all targets and reads of one target share the same ordering.
-    // An old all-target snapshot must not erase a newer local commit.
-    const targets = new Set(
-      ref === undefined
-        ? [
-            ...refreshGenerations.keys(),
-            ...snapshot.outbox.map((record) => record.targetRef),
-            ...snapshot.optimistic.map((record) => record.targetRef),
-            ...snapshot.recovery.map((record) => record.targetRef),
-          ]
-        : [ref],
-    );
-    for (const target of targets) {
-      if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0))
-        targets.delete(target);
-      else refreshGenerations.set(target, generation);
-    }
-    pendingTurnsStore.setState((state) => ({
-      outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
-      optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
-      recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
-    }));
-    return true;
-  } catch {
-    // A read failure cannot discard the last durable projection. Lifecycle
-    // discovery or the next explicit action retries the same IndexedDB read.
-    return false;
-  }
+  const accepted = await projectionFence.refresh(persistencePort, ref);
+  if (!accepted) return false;
+  const { snapshot } = accepted;
+  // Provenance is monotonic knowledge about ids rather than a view of the
+  // records currently in storage, so it is published from every read the
+  // fence accepted and in its own setState: a read a newer generation has
+  // already superseded still saw a record of this client's, and the newer
+  // read - taken later - may be looking at storage that record has since
+  // been settled out of. Skipping it there would leave the id known to
+  // nobody.
+  pendingTurnsStore.recordSubmittedHere(snapshot);
+  // apply() re-decides the accepted targets right here, not at refresh()'s
+  // resolution: a live commit's advance() for one of them can land in
+  // between, and it must still out-rank this snapshot for that target.
+  const targets = accepted.apply();
+  pendingTurnsStore.setState((state) => ({
+    outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
+    optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
+    recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
+  }));
+  return true;
 }
 
 subscribeMutationPersistence((targetRefs, committed) => {
   if (committed) {
     const { record, recoveryId } = committed;
-    refreshGenerations.set(record.targetRef, ++refreshGeneration);
+    projectionFence.advance(record.targetRef);
     pendingTurnsStore.recordSubmittedHere({ outbox: [record], optimistic: [] });
     pendingTurnsStore.setState((state) => {
       const recovery = new Map(state.recovery);
@@ -256,7 +226,7 @@ export function submitWithPendingTracking(
   if (!pendingTurnsStore.beginSubmission(opts.ref)) {
     return Promise.reject(new Error("A message submission is already pending for this task"));
   }
-  const epoch = refreshEpoch;
+  const epoch = projectionFence.epoch();
   const draftRevisionAtStart = readDraftRevision(opts.ref);
   return trackProjectionWork(
     (async () => {
@@ -269,7 +239,7 @@ export function submitWithPendingTracking(
         }
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
-        if (epoch === refreshEpoch) {
+        if (epoch === projectionFence.epoch()) {
           const skillNames = [...(opts.skillNames ?? [])];
           const { cleared: clearStoredDraft, draftUnchanged } = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
             draftRevisionAtStart,
@@ -298,7 +268,7 @@ export function submitWithPendingTracking(
           }
         }
       } finally {
-        if (epoch === refreshEpoch) {
+        if (epoch === projectionFence.epoch()) {
           pendingTurnsStore.endSubmission(opts.ref);
         }
         // Projection reads own their tracking, but cannot delay or change the
@@ -393,19 +363,7 @@ export function pendingTurnEntries(ref: string, method?: PendingMethod): Pending
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {
   const model = useThreadsStore((state) => state.threads.get(ref));
-  return useMemo(() => {
-    const activeTurn = model?.turns.find((turn) => turn.id === model.activeTurnId);
-    if (!activeTurn) return false;
-    let sawIdentifiedUserMessage = false;
-    for (const item of activeTurn.items) {
-      if (item.type === "userMessage" && item.clientMutationId) {
-        sawIdentifiedUserMessage = true;
-        continue;
-      }
-      if (sawIdentifiedUserMessage && item.type !== "systemMessage") return false;
-    }
-    return sawIdentifiedUserMessage;
-  }, [model]);
+  return useMemo(() => awaitingFirstFrameSend(model), [model]);
 }
 
 export function useRecoveryEntries(ref: string): MutationRecoveryRecord[] {
@@ -414,9 +372,7 @@ export function useRecoveryEntries(ref: string): MutationRecoveryRecord[] {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = [...recovery.values()]
-      .filter((record) => record.targetRef === ref)
-      .sort((left, right) => left.intentSequence - right.intentSequence);
+    const records = recoveryEntries(recovery, ref);
     return records.length > 0 ? records : NO_RECOVERY;
   }, [recovery, ref]);
 }
@@ -427,9 +383,7 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = [...outbox.values()]
-      .filter((record) => record.targetRef === ref && record.state === "blockedUnknown")
-      .sort((left, right) => left.intentSequence - right.intentSequence);
+    const records = blockedEntries(outbox, ref);
     return records.length > 0 ? records : NO_BLOCKED;
   }, [outbox, ref]);
 }
@@ -496,10 +450,7 @@ export function resendRecoveryPendingTurn(
 }
 
 export function resetPendingTurnsStoreForTests(): void {
-  refreshEpoch += 1;
-  refreshGeneration = 0;
-  allTargetsRefreshGeneration = 0;
-  refreshGenerations.clear();
+  projectionFence.reset();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   inFlightProjectionWork.clear();
