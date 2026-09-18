@@ -159,25 +159,14 @@ if $merge_unit; then
 	unit_prof="$workdir/unit.prof"
 	go test -count=1 -coverpkg=./... -coverprofile="$unit_prof" ./... >/dev/null 2>&1 || true
 	# union the two textfmt profiles: a block is covered if EITHER run hit it.
-	python3 - "$unit_prof" "$e2e_prof" <<'PY'
-import re, sys
-seen = {}
-for path in sys.argv[1:]:
-	try:
-		f = open(path)
-	except OSError:
-		continue
-	for l in f:
-		m = re.match(r'^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$', l)
-		if not m:
-			continue
-		f_, sl, sc, el, ec, ns, cnt = m.groups()
-		key = (f_, sl, sc, el, ec)
-		seen[key] = (int(ns), seen.get(key, (0, False))[1] or int(cnt) > 0)
-tot = sum(n for n, _ in seen.values())
-cov = sum(n for n, c in seen.values() if c)
-print(f"COMBINED unit+e2e union: covered={cov} total={tot} pct={100*cov/tot:.1f}%")
-PY
+	# Concatenating and counting through the Go covstmt primitive does exactly
+	# that — it dedupes blocks by position and unions hits — the same
+	# accounting coverage-floor.sh uses, so this combined number can never
+	# drift from the ratchet's. Missing inputs are skipped, as the Python did.
+	combined="$workdir/combined.prof"
+	cat "$unit_prof" "$e2e_prof" 2>/dev/null >"$combined"
+	read -r cov tot < <(go run ./cmd/evener-dev/bin dev covstmt "$combined" | tr '\n' ' ')
+	echo "COMBINED unit+e2e union: covered=$cov total=$tot pct=$(awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')%"
 fi
 
 if [ -n "$html_out" ]; then

@@ -90,3 +90,155 @@ func writeCovFixture(t *testing.T, path, content string) {
 		t.Fatalf("writing %s: %v", path, err)
 	}
 }
+
+// gapsFixture exercises every branch the gaps report has: a covered block, an
+// uncovered block, a duplicate position unioned to covered, two packages, a
+// top-level file with no slash (which groups as its own package), and a --in
+// match. The same fixture feeds the expected outputs below, which were captured
+// from the Python implementation this report replaced.
+const gapsFixture = "mode: set\n" +
+	"pkg/a/file.go:10.1,20.2 10 1\n" +
+	"pkg/a/file.go:30.1,40.2 100 0\n" +
+	"pkg/b/file.go:1.1,2.2 5 0\n" +
+	"pkg/b/file.go:1.1,2.2 5 1\n" +
+	"pkg/b/other.go:1.1,2.2 20 0\n" +
+	"other/z.go:1.1,2.2 7 0\n" +
+	"top.go:1.1,2.2 3 0\n"
+
+// TestCovstmtGapsAggregateMatchesPython pins the ranking report's exact bytes
+// for the default (by package), by file, --zero, and --top shapes. The expected
+// text is the deleted Python's output verbatim, so a refactor that changes a
+// column, an ordering, or the summary line fails here rather than in a reader's
+// terminal.
+func TestCovstmtGapsAggregateMatchesPython(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "by package",
+			args: []string{"--gaps", "--by", "package", profile},
+			want: " MISSING    total     cov%  package\n" +
+				"     100      110     9.1%  pkg/a\n" +
+				"      20       25    20.0%  pkg/b\n" +
+				"       7        7     0.0%  other\n" +
+				"       3        3     0.0%  top.go\n" +
+				"\n" +
+				"showing 4 of 4 packages with gaps; 130 uncovered of 145 statements overall (10.3%)\n",
+		},
+		{
+			name: "by file",
+			args: []string{"--gaps", "--by", "file", profile},
+			want: " MISSING    total     cov%  file\n" +
+				"     100      110     9.1%  pkg/a/file.go\n" +
+				"      20       20     0.0%  pkg/b/other.go\n" +
+				"       7        7     0.0%  other/z.go\n" +
+				"       3        3     0.0%  top.go\n" +
+				"\n" +
+				"showing 4 of 4 files with gaps; 130 uncovered of 145 statements overall (10.3%)\n",
+		},
+		{
+			name: "zero only",
+			args: []string{"--gaps", "--by", "file", "--zero", profile},
+			want: " MISSING    total     cov%  file\n" +
+				"      20       20     0.0%  pkg/b/other.go\n" +
+				"       7        7     0.0%  other/z.go\n" +
+				"       3        3     0.0%  top.go\n" +
+				"\n" +
+				"showing 3 of 3 files with gaps; 130 uncovered of 145 statements overall (10.3%)\n",
+		},
+		{
+			name: "top truncates the table but not the summary",
+			args: []string{"--gaps", "--by", "package", "--top", "2", profile},
+			want: " MISSING    total     cov%  package\n" +
+				"     100      110     9.1%  pkg/a\n" +
+				"      20       25    20.0%  pkg/b\n" +
+				"\n" +
+				"showing 2 of 4 packages with gaps; 130 uncovered of 145 statements overall (10.3%)\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut strings.Builder
+			if code := covstmtRun(tc.args, &out, &errOut); code != 0 {
+				t.Fatalf("covstmtRun(%q) exits %d, want 0 (stderr: %q)", tc.args, code, errOut.String())
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("covstmtRun(%q) output:\n%q\nwant:\n%q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCovstmtGapsInMatchesPython pins the --in block listing, including the
+// summary's statement total over ALL matching blocks (not just the shown top)
+// and Python's repr of the pattern.
+func TestCovstmtGapsInMatchesPython(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	var out, errOut strings.Builder
+	args := []string{"--gaps", "--in", "file.go", profile}
+	if code := covstmtRun(args, &out, &errOut); code != 0 {
+		t.Fatalf("covstmtRun(%q) exits %d, want 0 (stderr: %q)", args, code, errOut.String())
+	}
+	want := "   STMTS  location\n" +
+		"     100  pkg/a/file.go:30-40\n" +
+		"\n" +
+		"showing 1 of 1 uncovered blocks (100 statements) in files matching 'file.go'\n"
+	if got := out.String(); got != want {
+		t.Fatalf("covstmtRun(%q) output:\n%q\nwant:\n%q", args, got, want)
+	}
+}
+
+// TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the
+// exit is still 0 (an empty result is information, not a failure).
+func TestCovstmtGapsNoMatch(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	var out, errOut strings.Builder
+	args := []string{"--gaps", "--in", "nowhere", profile}
+	if code := covstmtRun(args, &out, &errOut); code != 0 {
+		t.Fatalf("covstmtRun(%q) exits %d, want 0 (stderr: %q)", args, code, errOut.String())
+	}
+	want := "no uncovered blocks in files matching 'nowhere'\n"
+	if got := out.String(); got != want {
+		t.Fatalf("covstmtRun(%q) output = %q, want %q", args, got, want)
+	}
+}
+
+// TestCovstmtGapsRejectsBadBy keeps the validation the shell script performed —
+// --by is package or file, nothing else.
+func TestCovstmtGapsRejectsBadBy(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	var out, errOut strings.Builder
+	if code := covstmtRun([]string{"--gaps", "--by", "bogus", profile}, &out, &errOut); code != 2 {
+		t.Fatalf("covstmtRun with --by bogus exits %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "--by must be package or file") {
+		t.Fatalf("stderr does not explain the bad --by: %q", errOut.String())
+	}
+}
+
+// TestCovstmtGapsRequiresExactlyOneProfile: the report is a single profile's
+// ranking; two profiles have no defined output, so it is a usage error.
+func TestCovstmtGapsRequiresExactlyOneProfile(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	var out, errOut strings.Builder
+	if code := covstmtRun([]string{"--gaps", profile, profile}, &out, &errOut); code != 2 {
+		t.Fatalf("covstmtRun --gaps with two profiles exits %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "usage:") {
+		t.Fatalf("stderr does not print usage: %q", errOut.String())
+	}
+}

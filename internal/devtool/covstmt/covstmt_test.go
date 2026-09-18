@@ -7,6 +7,7 @@ package covstmt
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -146,5 +147,93 @@ func TestStmtCountsReaderMatchesFile(t *testing.T) {
 	if gotCovered != wantCovered || gotTotal != wantTotal {
 		t.Fatalf("StmtCountsReader = (%d, %d), want (%d, %d) matching StmtCounts",
 			gotCovered, gotTotal, wantCovered, wantTotal)
+	}
+}
+
+// TestBlocksKeepsPositionDedupAndAnyHitUnion pins the per-block view's two
+// load-bearing properties against the same fixtures StmtCounts uses: duplicate
+// positions collapse to one block (last-wins stmtCount) and any hit covers.
+func TestBlocksKeepsPositionDedupAndAnyHitUnion(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/file.go:10.1,20.2 10 0\n" +
+		"pkg/file.go:10.1,20.2 99 1\n" + // same position: last-wins count, any-hit covered
+		"pkg/file.go:30.1,40.2 300 0\n" // uncovered
+	blocks, err := BlocksReader(strings.NewReader(profile))
+	if err != nil {
+		t.Fatalf("BlocksReader: %v", err)
+	}
+	want := []Block{
+		{File: "pkg/file.go", StartLine: 10, EndLine: 20, StmtCount: 99, Covered: true},
+		{File: "pkg/file.go", StartLine: 30, EndLine: 40, StmtCount: 300, Covered: false},
+	}
+	if len(blocks) != len(want) {
+		t.Fatalf("BlocksReader returned %d blocks, want %d: %+v", len(blocks), len(want), blocks)
+	}
+	for i := range want {
+		if blocks[i] != want[i] {
+			t.Fatalf("block %d = %+v, want %+v", i, blocks[i], want[i])
+		}
+	}
+}
+
+// TestBlocksFileOrderIsStable means callers (the gaps report) never depend on
+// map iteration order: blocks come back sorted by file then line span.
+func TestBlocksFileOrderIsStable(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/z.go:10.1,20.2 1 1\n" +
+		"pkg/a.go:40.1,50.2 1 0\n" +
+		"pkg/a.go:10.1,20.2 1 1\n" +
+		"other/b.go:5.1,6.2 1 0\n"
+	blocks, err := BlocksReader(strings.NewReader(profile))
+	if err != nil {
+		t.Fatalf("BlocksReader: %v", err)
+	}
+	want := []string{"other/b.go:5", "pkg/a.go:10", "pkg/a.go:40", "pkg/z.go:10"}
+	if len(blocks) != len(want) {
+		t.Fatalf("BlocksReader returned %d blocks, want %d: %+v", len(blocks), len(want), blocks)
+	}
+	for i, b := range blocks {
+		got := b.File + ":" + strconv.Itoa(b.StartLine)
+		if got != want[i] {
+			t.Fatalf("block %d = %s, want %s (all: %+v)", i, got, want[i], blocks)
+		}
+	}
+}
+
+// TestBlocksReaderMatchesStmtCountsTotals is the drift guard between the two
+// views: folding the blocks must reproduce StmtCounts exactly on the same
+// bytes, including the duplicate-position cases.
+func TestBlocksReaderMatchesStmtCountsTotals(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/a.go:1.1,2.2 40 1\n" +
+		"pkg/a.go:1.1,2.2 40 0\n" +
+		"pkg/a.go:3.1,4.2 60 0\n" +
+		"pkg/b.go:1.1,0.0 7 0\n"
+	wantCovered, wantTotal, err := StmtCountsReader(strings.NewReader(profile))
+	if err != nil {
+		t.Fatalf("StmtCountsReader: %v", err)
+	}
+	blocks, err := BlocksReader(strings.NewReader(profile))
+	if err != nil {
+		t.Fatalf("BlocksReader: %v", err)
+	}
+	covered, total := 0, 0
+	for _, b := range blocks {
+		total += b.StmtCount
+		if b.Covered {
+			covered += b.StmtCount
+		}
+	}
+	if covered != wantCovered || total != wantTotal {
+		t.Fatalf("folded blocks = (%d, %d), want (%d, %d) from StmtCountsReader",
+			covered, total, wantCovered, wantTotal)
+	}
+}
+
+// TestBlocksMissingFile returns an error rather than a silent empty list.
+func TestBlocksMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.out")
+	if _, err := Blocks(path); err == nil {
+		t.Fatalf("Blocks(%q) on a missing file: want error, got nil", path)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 )
 
@@ -34,6 +35,86 @@ import (
 // since they are digits and dots. This mirrors the regex the deleted Python
 // stmt_counts used, byte for byte.
 var blockLine = regexp.MustCompile(`^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$`)
+
+// Block is one coverage block after position dedup: the file and line span it
+// covers, its statement count, and whether ANY occurrence of its position was
+// hit. It is the per-block view of the same parse StmtCounts folds into two
+// totals; the gaps report (coverage-gaps.sh, via `evener dev covstmt --gaps`)
+// ranks these rather than inventing a second parser.
+type Block struct {
+	File      string
+	StartLine int
+	EndLine   int
+	StmtCount int
+	Covered   bool
+}
+
+// blockPos is the dedup identity of a block: the whole (file, start, end)
+// position tuple, not position alone — the same position in two different files
+// is two distinct blocks.
+type blockPos struct {
+	file                string
+	startLine, startCol int
+	endLine, endCol     int
+}
+
+type blockEntry struct {
+	stmtCount int
+	covered   bool
+}
+
+// parseProfile reads a Go coverage profile and returns its blocks keyed by
+// position, deduped and unioned exactly as the counting contract requires:
+// last-wins stmtCount, any-hit covered. Non-block lines (the mode header, blank
+// lines, comments, anything that does not match blockLine) are skipped
+// silently, matching the deleted shell helper.
+func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
+	// The python version reads with a 1MB buffer; bufio.Scanner's default
+	// 64KB token limit would reject a very long single line, so raise it.
+	scanner := bufio.NewScanner(r)
+	const bufSize = 1 << 20 // 1 MiB
+	scanner.Buffer(make([]byte, bufSize), bufSize)
+
+	seen := make(map[blockPos]blockEntry)
+	for scanner.Scan() {
+		m := blockLine.FindStringSubmatch(scanner.Text())
+		if m == nil {
+			continue
+		}
+		sl, _ := strconv.Atoi(m[2])
+		sc, _ := strconv.Atoi(m[3])
+		el, _ := strconv.Atoi(m[4])
+		ec, _ := strconv.Atoi(m[5])
+
+		stmtCount, serr := strconv.Atoi(m[6])
+		if serr != nil {
+			return nil, fmt.Errorf("covstmt: parsing stmt count %q: %w", m[6], serr)
+		}
+		count, cerr := strconv.Atoi(m[7])
+		if cerr != nil {
+			return nil, fmt.Errorf("covstmt: parsing count %q: %w", m[7], cerr)
+		}
+
+		key := blockPos{file: m[1], startLine: sl, startCol: sc, endLine: el, endCol: ec}
+		if prev, ok := seen[key]; ok {
+			// stmtCount is the same for every occurrence of a position on
+			// real profiles, but the tie-break is pinned anyway: the deleted
+			// Python stmt_counts kept the LAST occurrence's count, so
+			// last-wins keeps the two implementations equivalent on every
+			// input, not just toolchain-produced ones. covered unions
+			// separately — ANY hit covers.
+			prev.stmtCount = stmtCount
+			prev.covered = prev.covered || count > 0
+			seen[key] = prev
+		} else {
+			seen[key] = blockEntry{stmtCount: stmtCount, covered: count > 0}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("covstmt: scanning profile: %w", err)
+	}
+	return seen, nil
+}
 
 // StmtCounts opens the coverage profile at path and reports the covered and
 // total statement counts. A missing or unreadable file is an error rather
@@ -48,62 +129,12 @@ func StmtCounts(path string) (covered, total int, err error) {
 }
 
 // StmtCountsReader parses a Go coverage profile from r and reports the covered
-// and total statement counts. Non-block lines (the mode header, blank lines,
-// comments, anything that does not match the block-line regex) are skipped
-// silently, matching the shell helper.
+// and total statement counts.
 func StmtCountsReader(r io.Reader) (covered, total int, err error) {
-	// The python version reads with a 1MB buffer; bufio.Scanner's default
-	// 64KB token limit would reject a very long single line, so raise it.
-	scanner := bufio.NewScanner(r)
-	const bufSize = 1 << 20 // 1 MiB
-	scanner.Buffer(make([]byte, bufSize), bufSize)
-
-	// key = "file\x00startLine.startCol,endLine.endCol"; value = (stmtCount, covered)
-	type entry struct {
-		stmtCount int
-		covered   bool
+	seen, err := parseProfile(r)
+	if err != nil {
+		return 0, 0, err
 	}
-	seen := make(map[string]entry)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		m := blockLine.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		file, sl, sc, el, ec, ns, cnt := m[1], m[2], m[3], m[4], m[5], m[6], m[7]
-
-		// Dedupe by the whole (file, position) tuple, not position alone: the
-		// same position in two different files is two distinct blocks.
-		key := file + "\x00" + sl + "." + sc + "," + el + "." + ec
-
-		stmtCount, serr := strconv.Atoi(ns)
-		if serr != nil {
-			return 0, 0, fmt.Errorf("covstmt: parsing stmt count %q: %w", ns, serr)
-		}
-		count, cerr := strconv.Atoi(cnt)
-		if cerr != nil {
-			return 0, 0, fmt.Errorf("covstmt: parsing count %q: %w", cnt, cerr)
-		}
-
-		if prev, ok := seen[key]; ok {
-			// stmtCount is the same for every occurrence of a position on
-			// real profiles, but the tie-break is pinned anyway: the deleted
-			// Python stmt_counts kept the LAST occurrence's count, so
-			// last-wins keeps the two implementations equivalent on every
-			// input, not just toolchain-produced ones. covered unions
-			// separately — ANY hit covers.
-			prev.stmtCount = stmtCount
-			prev.covered = prev.covered || count > 0
-			seen[key] = prev
-		} else {
-			seen[key] = entry{stmtCount: stmtCount, covered: count > 0}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, 0, fmt.Errorf("covstmt: scanning profile: %w", err)
-	}
-
 	for _, e := range seen {
 		total += e.stmtCount
 		if e.covered {
@@ -111,4 +142,48 @@ func StmtCountsReader(r io.Reader) (covered, total int, err error) {
 		}
 	}
 	return covered, total, nil
+}
+
+// Blocks opens the coverage profile at path and returns its deduped blocks in
+// a stable (file, start line, end line) order. A missing or unreadable file is
+// an error rather than a silent empty list.
+func Blocks(path string) ([]Block, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return BlocksReader(f)
+}
+
+// BlocksReader parses a Go coverage profile from r and returns its deduped
+// blocks. It is the per-block companion to StmtCountsReader, built on the same
+// parse so the two can never disagree about what a block is or whether it is
+// covered.
+func BlocksReader(r io.Reader) ([]Block, error) {
+	seen, err := parseProfile(r)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Block, 0, len(seen))
+	for p, e := range seen {
+		out = append(out, Block{
+			File:      p.file,
+			StartLine: p.startLine,
+			EndLine:   p.endLine,
+			StmtCount: e.stmtCount,
+			Covered:   e.covered,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.StartLine != b.StartLine {
+			return a.StartLine < b.StartLine
+		}
+		return a.EndLine < b.EndLine
+	})
+	return out, nil
 }
