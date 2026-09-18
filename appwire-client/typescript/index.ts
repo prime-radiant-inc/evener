@@ -279,6 +279,7 @@ export {
 } from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
+export { isPlainObject } from "./plainObject";
 export { humanizeState } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
@@ -323,6 +324,7 @@ export {
 export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
 export type { PluginSelectionState } from "./spawnPluginSelectionState";
 export {
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   reconcilePluginSelection,
   selectAllPlugins,

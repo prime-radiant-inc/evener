@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FakeClient, gateRequests } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -179,7 +179,7 @@ test("re-runs a failed lookup when the connection recovers", async () => {
 // from before the recovery must not overwrite the retry's fresher result.
 test("a stale pre-recovery response cannot overwrite the retry's result", async () => {
   const client = new FakeClient();
-  const answers = gateRequests(client, "evener/git/head");
+  const answers = gateSettlements(client, "evener/git/head");
   renderLocation("/repo", client);
   await waitFor(() => expect(answers).toHaveLength(1));
 
@@ -187,10 +187,10 @@ test("a stale pre-recovery response cannot overwrite the retry's result", async 
   client.emitStateChange("ready");
   await waitFor(() => expect(answers).toHaveLength(2));
 
-  answers[1]?.({ head: "fresh", originUrl: "" });
+  answers[1]?.resolve({ head: "fresh", originUrl: "" });
   expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("fresh");
 
-  answers[0]?.({ head: "stale", originUrl: "" });
+  answers[0]?.resolve({ head: "stale", originUrl: "" });
   await waitFor(() => expect(screen.getByTestId("composer-repo-branch").textContent).toBe("fresh"));
 });
 

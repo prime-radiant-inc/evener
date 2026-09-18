@@ -23,20 +23,19 @@ test("refresh reads the catalog through the connection's client, and a failed re
   connectionStore.setState({ client: catalogClient(["review", "standup"]) as never });
   await useCommandCatalog.getState().refresh();
   expect(useCommandCatalog.getState().commands).toHaveLength(2);
-  expect(useCommandCatalog.getState()).toMatchObject({ loaded: true, loading: false, error: null });
+  expect(useCommandCatalog.getState()).toMatchObject({ loading: false, error: null });
 
   const failing = new FakeClient();
   failing.on("evener/command/list", () => Promise.reject(new Error("down")));
   connectionStore.setState({ client: failing as never });
   await useCommandCatalog.getState().refresh();
   expect(useCommandCatalog.getState().commands).toHaveLength(2);
-  expect(useCommandCatalog.getState().loaded).toBe(true);
   expect(useCommandCatalog.getState().error).toContain("down");
 });
 
 test("a refresh with no client wired is a named failure, not a hang or a throw", async () => {
   await useCommandCatalog.getState().refresh();
-  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], loaded: false, loading: false });
+  expect(useCommandCatalog.getState()).toMatchObject({ commands: [], loading: false });
   expect(useCommandCatalog.getState().error).toContain("Not connected");
 });
 

@@ -33,11 +33,11 @@ import (
 // rather than by process, so it correctly serializes concurrent in-process
 // goroutines too. Manager does hold one other piece of mutable state — the
 // current lock session's accumulated StoreChanged (store_changed.go) — but
-// that too is only ever touched while the same flock is held, so it needs no
-// mutex of its own either. A controller mutex here would add nothing but
-// contention: it would be held across the manager's own blocking
-// (up to 30s) lock acquisition, serializing otherwise-independent mutations
-// (e.g. two unrelated marketplaces) behind whichever one is slowest.
+// that already guards itself with its own mutex (storeChangedMu, paths.go),
+// so a controller mutex here would add nothing but contention: it would be
+// held across the manager's own blocking (up to 30s) lock acquisition,
+// serializing otherwise-independent mutations (e.g. two unrelated
+// marketplaces) behind whichever one is slowest.
 type hubPluginsController struct {
 	mgr              *plugins.Manager
 	launchConfigRoot string

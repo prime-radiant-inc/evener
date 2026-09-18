@@ -193,11 +193,10 @@ func TestMigrateMarketplaceName_MoveSucceedsThenSaveFailsReportsNoChange(t *test
 	mustNotExist(t, m.marketplaceDir("foo-bar"))
 }
 
-// TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange is
-// the migration-on-a-list-request case the last #1602 review round found: a
-// store needing migration, with every write persistently failing, must never
-// report a change no matter how many times it is listed — not once, up
-// front, before any write is attempted.
+// TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange
+// proves a store needing migration, with every write persistently failing,
+// never reports a change no matter how many times it is listed — not once,
+// up front, before any write is attempted.
 func TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -218,15 +217,15 @@ func TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange(t *
 	}
 }
 
-// TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged is RoboRev's Medium
-// 1 on #1733: flock gives real mutual exclusion in wall-clock time, but no Go
-// happens-before edge the race detector can see, and several of this
-// package's own lockAcquirer test seams (installAcquireLock,
+// TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged proves
+// pendingStoreChanged/onStoreChanged need their own synchronization, not
+// just the file lock's: flock gives real mutual exclusion in wall-clock time
+// but no Go happens-before edge the race detector can see, and several of
+// this package's own lockAcquirer test seams (installAcquireLock,
 // marketplaceAcquireLock, gcAcquireLock) are stubbed to a no-op release in
-// other tests — so pendingStoreChanged/onStoreChanged need their own
-// synchronization, not just the file lock's. Several goroutines each add a
-// distinct marketplace to the one Manager concurrently; every one of them
-// must be reported, and -race must find nothing.
+// other tests. Several goroutines each add a distinct marketplace to the one
+// Manager concurrently; every one of them must be reported, and -race must
+// find nothing.
 func TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
