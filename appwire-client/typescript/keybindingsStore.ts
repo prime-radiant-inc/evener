@@ -597,15 +597,26 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * be fenced by, or fence, the other's. Reset with the rest of the wiring
    * state so a never-resolving write cannot leak into the next test. */
   let writeQueue: Promise<void> = Promise.resolve();
+  /** Writes in flight or queued behind the chain. A write that finds none
+   * dispatches immediately (its synchronous prefix runs this tick); a write
+   * that finds one chains behind the chain's full settlement. */
+  let pendingWrites = 0;
 
   /** Serializes one write behind the previous write's full settlement (success
    * OR failure): a failed write must not block the queue, and the next write
-   * composes against whatever state the failure left. */
+   * composes against whatever state the failure left. A write that finds the
+   * queue idle starts now, preserving the synchronous dispatch each write path
+   * had before the queue was shared. */
   function enqueueWrite<T>(run: () => Promise<T>): Promise<T> {
-    const queued = writeQueue.then(run, run);
+    const queued = pendingWrites === 0 ? run() : writeQueue.then(run, run);
+    pendingWrites += 1;
     writeQueue = queued.then(
-      () => undefined,
-      () => undefined,
+      () => {
+        pendingWrites -= 1;
+      },
+      () => {
+        pendingWrites -= 1;
+      },
     );
     return queued;
   }
@@ -1158,18 +1169,18 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   ): Promise<KeybindingsOverrides> {
     const state = getState();
     if (!fence.liveHub(callGeneration)) {
-      // A generation end / support drop retired the payload while this save
-      // was queued: retirePayload already published writeUncertain from
-      // `saving`, and the checkpoint is its durable record, so nothing leaves.
-      // Return the current payload, as a fenced reply does.
-      return currentPayload(state);
+      // A generation end / support drop / disposal retired the payload while
+      // this save waited in the queue. retirePayload already published
+      // writeUncertain from `saving`, and the call-time checkpoint is its
+      // durable record, so nothing leaves the device. Reject as the call-time
+      // guard would have, one tick later.
+      throw new Error("Shortcut save was cancelled.");
     }
     if (
       state.storageUnavailable ||
       state.writeUncertain ||
       state.hubSupport !== "supported" ||
       !state.loaded ||
-      state.hubLoading ||
       state.loadError !== null ||
       revision !== state.revision
     ) {
@@ -1298,6 +1309,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       missedChangeNotification = false;
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();
+      pendingWrites = 0;
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).
