@@ -82,10 +82,12 @@ func multipleMatchOneOfParams() map[string]any {
 // exactly-one) must not enumerate branch requirements the arguments already
 // satisfy — a model cannot infer what to change from satisfied requirements.
 // The bare /oneOf cause has no failing arm to describe, so the message must
-// name the over-match and the actual recovery instead.
+// name the over-match and the actual recovery instead, and must not append an
+// Example (minimalExample ignores oneOf, so it would print an object matching
+// zero branches).
 func TestExplainSchemaError_MultipleMatchOneOfNamesOverMatch(t *testing.T) {
 	args := map[string]any{"a": "x"}
-	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "oneOf")
+	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "/oneOf")
 	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
 		t.Fatalf("multiple-match oneOf rendered branch requirements the args already satisfy (issue #623): %q", msg)
 	}
@@ -94,6 +96,45 @@ func TestExplainSchemaError_MultipleMatchOneOfNamesOverMatch(t *testing.T) {
 	}
 	if !strings.Contains(msg, "satisfy exactly one") {
 		t.Fatalf("message must give the recovery direction (satisfy exactly one branch): %q", msg)
+	}
+	if strings.Contains(msg, "Example:") {
+		t.Fatalf("over-match message must not append an example that matches zero branches (roborev finding 2): %q", msg)
+	}
+}
+
+// A nested oneOf whose first failing arm contains an over-matching oneOf makes
+// the deepest cause the *inner* combinator ("/oneOf/0/oneOf"), not the
+// top-level one. The outer oneOf matched zero branches, so claiming an
+// over-match would be false (roborev finding 1); the message must keep
+// enumerating the outer branches it can describe instead.
+func TestExplainSchemaError_NestedOneOfNoMatchDoesNotClaimOverMatch(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"oneOf": []any{
+			map[string]any{"oneOf": []any{
+				map[string]any{"required": []any{"a"}},
+				map[string]any{"required": []any{"a"}},
+			}},
+			map[string]any{"required": []any{"b"}},
+		},
+	}
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", params, args, "", "/oneOf/0/oneOf")
+	if strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("nested oneOf failure claimed the outer branches matched more than one (roborev finding 1): %q", msg)
+	}
+	if !strings.Contains(msg, `send all of "b"`) {
+		t.Fatalf("outer no-match must still describe its describable branch requirement: %q", msg)
+	}
+}
+
+// A bare keyword ("oneOf") is a root-level location: the over-match shape is
+// recognized when the caller passes either form.
+func TestExplainSchemaError_MultipleMatchOneOfAcceptsBareKeyword(t *testing.T) {
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "oneOf")
+	if !strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("bare root-level keyword must still detect the over-match: %q", msg)
 	}
 }
 

@@ -26,9 +26,10 @@ import (
 // (malformed path, schema shape mismatch) falls back to treating the whole
 // original string as a single top-level field name.
 //
-// constraintKeyword, when non-empty, is the failing JSON-Schema keyword's
-// name (the last segment of the deepest cause's KeywordLocation, e.g.
-// "maxLength"), supplied by the caller (offendingKeyword). When the field is
+// constraintKeywordLocation, when non-empty, is the deepest cause's
+// KeywordLocation (e.g. "properties/x/maxLength", "oneOf/0/not"), supplied by
+// the caller (offendingKeywordLocation). Its last segment names the keyword; a
+// bare keyword ("maxLength") is a single-segment location. When the field is
 // present and the keyword is a recognized value constraint (maxLength,
 // minLength, minItems, maxItems, enum), the message names the actual
 // constraint, its limit, and the offending value/length instead of the
@@ -37,8 +38,10 @@ import (
 // field never gets the "Required arguments" tail, recognized keyword or not:
 // that tail lists already-satisfied sibling fields, which is misleading
 // regardless of whether the specific constraint can be detailed.
-func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation, constraintKeyword string) string {
+func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation, constraintKeywordLocation string) string {
 	var b strings.Builder
+
+	constraintKeyword := lastKeywordSegment(constraintKeywordLocation)
 
 	containerSchema := params
 	containerPath := ""
@@ -87,7 +90,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 	// missing-field fallback below would misreport a present, valid argument
 	// as missing (issue #618). Explain the constraint itself instead.
 	if isBranchKeyword(constraintKeyword) {
-		if msg := oneOfConstraintMessage(toolName, params, constraintKeyword); msg != "" {
+		if msg := oneOfConstraintMessage(toolName, params, constraintKeyword, constraintKeywordLocation); msg != "" {
 			return msg
 		}
 	}
@@ -729,6 +732,27 @@ func formatPath(segs []string) string {
 	return b.String()
 }
 
+// lastKeywordSegment returns the last path segment of a JSON-Schema
+// KeywordLocation ("oneOf/0/not" -> "not"). A bare keyword ("maxLength") is
+// returned unchanged, so callers that only know the segment may pass it
+// directly.
+func lastKeywordSegment(location string) string {
+	if i := strings.LastIndex(location, "/"); i >= 0 {
+		return location[i+1:]
+	}
+	return location
+}
+
+// isBareOneOfLocation reports whether a failing KeywordLocation names the
+// schema's top-level oneOf node itself rather than a nested combinator. The
+// validator emits a JSON Pointer ("/oneOf"); a caller that only knows the
+// segment passes "oneOf". Both trim to a single "oneOf" segment, while a
+// nested failure's location ("/oneOf/0/oneOf", "/properties/x/oneOf") keeps
+// interior slashes and is not bare.
+func isBareOneOfLocation(location string) bool {
+	return strings.Trim(location, "/") == "oneOf"
+}
+
 // isBranchKeyword reports whether a failing JSON-Schema keyword is one of the
 // combinators whose branches oneOfConstraintMessage can describe ("oneOf",
 // and the "not" that lives inside a oneOf branch — the delegate shape). A
@@ -751,40 +775,42 @@ func isBranchKeyword(keyword string) bool {
 // branch list for the failing keyword or no branch can be described, letting
 // the caller fall back to the generic message.
 //
-// A bare combinator — the deepest cause is the combinator node itself, with no
-// per-arm child causes — is the multiple-match shape: oneOf means exactly-one,
-// so the arguments matched more than one branch. There is no failing branch to
-// describe (every branch's requirements are already satisfied), so enumerating
-// them would coach nothing; name the over-match and its recovery instead
-// (issue #623). offendingKeyword walks into Causes[0] while one exists, so this
-// shape surfaces the combinator's own keyword ("oneOf"), while a no-match
-// failure surfaces the failing arm's inner keyword ("not" for the delegate
-// shape).
-func oneOfConstraintMessage(toolName string, params map[string]any, keyword string) string {
+// A bare top-level combinator — the deepest cause is the top-level oneOf node
+// itself, with no per-arm child causes — is the multiple-match shape: oneOf
+// means exactly-one, so the arguments matched more than one branch. There is no
+// failing branch to describe (every branch's requirements are already
+// satisfied), so enumerating them would coach nothing; name the over-match and
+// its recovery instead (issue #623). The location, not just the keyword, is
+// what distinguishes this from a *nested* oneOf failure: the deepest-first walk
+// makes a nested combinator's location "/oneOf/0/oneOf", which is not the
+// top-level list branchList can describe, so it keeps the branch enumeration.
+func oneOfConstraintMessage(toolName string, params map[string]any, keyword, keywordLocation string) string {
 	branches, source := branchList(params, keyword)
 	if len(branches) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: arguments violate a conditional rule on the combination of arguments (the schema's %s constraint), not any single argument's type or value.", toolName, source)
-	if keyword == "oneOf" {
+	if keyword == "oneOf" && isBareOneOfLocation(keywordLocation) {
 		// The multiple-match shape: no failing branch to describe, so name the
 		// over-match and its recovery instead of enumerating requirements the
-		// arguments already satisfy.
+		// arguments already satisfy. No Example either: minimalExample renders
+		// only top-level required fields and ignores the oneOf arms, so it would
+		// print an object matching zero branches, contradicting the coaching.
 		fmt.Fprintf(&b, "\nThe arguments matched more than one branch; make them satisfy exactly one.")
-	} else {
-		rendered := false
-		for i, br := range branches {
-			desc := branchRequirement(br)
-			if desc == "" {
-				continue
-			}
-			rendered = true
-			fmt.Fprintf(&b, "\nBranch %d requires: %s.", i, desc)
+		return b.String()
+	}
+	rendered := false
+	for i, br := range branches {
+		desc := branchRequirement(br)
+		if desc == "" {
+			continue
 		}
-		if !rendered {
-			return ""
-		}
+		rendered = true
+		fmt.Fprintf(&b, "\nBranch %d requires: %s.", i, desc)
+	}
+	if !rendered {
+		return ""
 	}
 	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
 	return b.String()
@@ -792,10 +818,9 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword stri
 
 // branchList returns the schema's branch list for the failing combinator
 // keyword and the keyword that names it in the message. A "not" failure
-// inside a oneOf branch (the delegate shape) has no top-level "not" list —
-// the failing not's KeywordLocation path was reduced to its last segment by
-// offendingKeyword — so it falls back to the enclosing oneOf and reports
-// that as the source keyword (keyword-path walking is issues #621-625).
+// inside a oneOf branch (the delegate shape) has no top-level "not" list, so
+// it falls back to the enclosing oneOf and reports that as the source keyword
+// (keyword-path walking is issues #621-625).
 func branchList(params map[string]any, keyword string) (branches []any, source string) {
 	list, _ := params[keyword].([]any)
 	if list != nil {
