@@ -20,12 +20,16 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AppwireClient, PluginRefParams } from "@evener/appwire-client";
+import type { ConnectionState, PluginRefParams } from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { useConnectionDisplay } from "./connectionDisplay";
+import {
+  isReady,
+  useConnectionDisplay,
+  useRenderClient,
+} from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -61,9 +65,7 @@ export function PluginsScreen({
   // fresh one; the last client this screen had keeps the list mounted
   // through that gap too, rather than dropping to the wall for a moment the
   // banner should cover just as well as a passive reconnect does.
-  const lastClient = useRef<AppwireClient | null>(null);
-  if (client) lastClient.current = client;
-  const renderClient = client ?? lastClient.current;
+  const renderClient = useRenderClient(client);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -81,6 +83,7 @@ export function PluginsScreen({
       <Plugins
         key={activeProfile.id}
         client={renderClient}
+        connectionState={state}
         hubName={activeProfile.name}
         gate={gate}
       />
@@ -92,14 +95,17 @@ function Plugins({
   client,
   hubName,
   gate,
+  connectionState,
 }: {
   client: ConversationClientLike;
   hubName: string;
   gate: PluginMutationGate;
+  connectionState: ConnectionState;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
+  const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
@@ -213,7 +219,7 @@ function Plugins({
           keyboardShouldPersistTaps="handled"
           refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void state.fetchPlugins();
+            if (ready) void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -234,6 +240,7 @@ function Plugins({
               <ErrorMessage message={listError} />
               {listError && (
                 <Action
+                  disabled={!ready}
                   onPress={() => {
                     void state.fetchPlugins();
                   }}
@@ -322,7 +329,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
@@ -340,7 +347,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(value) => {
                     const target = selected;
                     void act(() =>
@@ -354,7 +361,7 @@ function Plugins({
                 />
               </View>
               <Action
-                disabled={busy}
+                disabled={busy || !ready}
                 onPress={() => {
                   const target = selected;
                   void act(
@@ -380,7 +387,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={busy} onPress={remove}>
+              <Action disabled={busy || !ready} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

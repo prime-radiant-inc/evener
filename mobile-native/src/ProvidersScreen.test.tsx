@@ -136,7 +136,10 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
 
-	harness.connection = { ...harness.connection, client: null, state: "closed", fatal: true };
+	// `client: hub.client` deliberately kept set - a real hubConnection.ts
+	// keeps it set on "closed" too, and this test must prove the wall comes
+	// from `fatal`, not from `client` dropping to null.
+	harness.connection = { ...harness.connection, state: "closed", fatal: true };
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});

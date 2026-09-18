@@ -6,7 +6,6 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
-	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
@@ -19,14 +18,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
-	type AppwireClient,
+	type ConnectionState,
 	createHubOverviewStore,
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { useConnectionDisplay } from "./connectionDisplay";
+import { isReady, useConnectionDisplay, useRenderClient } from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -40,9 +39,7 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
 	// already; only a manual retry's own token refetch clears it briefly, and
 	// the last client this screen had covers that gap too.
-	const lastClient = useRef<AppwireClient | null>(null);
-	if (client) lastClient.current = client;
-	const renderClient = client ?? lastClient.current;
+	const renderClient = useRenderClient(client);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -59,6 +56,7 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			{display === "banner" ? <ConnectionStatus /> : null}
 			<HubSettings
 				client={renderClient}
+				connectionState={state}
 				hubId={activeProfile.id}
 				hubName={activeProfile.name}
 				openTranscript={() =>
@@ -121,6 +119,7 @@ const HUB_OVERVIEW_REFRESH_FAILED =
 
 function HubSettings({
 	client,
+	connectionState,
 	hubId,
 	hubName,
 	openTranscript,
@@ -130,6 +129,7 @@ function HubSettings({
 	openLaunchSettings,
 }: {
 	client: ConversationClientLike;
+	connectionState: ConnectionState;
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
@@ -139,6 +139,7 @@ function HubSettings({
 	openLaunchSettings(): void;
 }) {
 	const colors = useColors();
+	const ready = isReady(connectionState);
 	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
@@ -176,7 +177,7 @@ function HubSettings({
 					<RefreshControl
 						refreshing={state.loading && !!data}
 						onRefresh={() => {
-							void state.refresh();
+							if (ready) void state.refresh();
 						}}
 					/>
 				}
@@ -194,6 +195,7 @@ function HubSettings({
 						state={upgradeState}
 						hubName={hubName}
 						runningIdentity={hub}
+						disabled={!ready}
 						onStart={() => {
 							void upgrade.start();
 						}}
@@ -226,7 +228,7 @@ function HubSettings({
 				/>
 				{state.error && (
 					<Action
-						disabled={state.loading}
+						disabled={state.loading || !ready}
 						onPress={() => {
 							void state.refresh();
 						}}
