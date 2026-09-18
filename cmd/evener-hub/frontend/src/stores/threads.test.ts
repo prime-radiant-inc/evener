@@ -4308,6 +4308,50 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(settled).toBe(true);
     inspector.close();
   });
+
+  // A malformed consumedClientMutationIds (anything that is not an array of
+  // non-empty strings) must be ignored outright: a string is itself iterable
+  // character-by-character, so an unguarded spread would settle a record
+  // named by coincidence rather than by the daemon. The fixed id below ("a")
+  // is deliberately a substring of the malformed value, so an unguarded
+  // spread of "abc" would wrongly retire it.
+  test("a malformed consumedClientMutationIds on a queueChanged push is ignored, not iterated", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "a" });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    let record: Awaited<ReturnType<typeof storage.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await storage.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+    expect(record.clientMutationId).toBe("a");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: "abc",
+      },
+    } as unknown as AnyNotification);
+    await settleCallerContinuations();
+
+    expect(await storage.getOptimistic("a")).toBeDefined();
+    storage.close();
+  });
 });
 
 describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {

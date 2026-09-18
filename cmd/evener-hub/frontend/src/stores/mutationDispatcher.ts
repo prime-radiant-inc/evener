@@ -152,8 +152,13 @@ export class MutationDispatcher {
       // server replays it, and the replay's own receipt carries the same
       // consumed ids again. Settling the drain first would durably remove
       // the one record whose receipt names them, with no path left to retry.
-      if (receipt.consumedClientMutationIds?.length) {
-        await this.reconcileIdentities(receipt.consumedClientMutationIds);
+      // Scoped to method === "turn/drainAsSteer": the field means "consumed
+      // by THIS drain," never "consumed by whatever this receipt happens to
+      // be for" -- a well-formed array riding a different mutation's receipt
+      // must settle nothing.
+      if (method === "turn/drainAsSteer") {
+        const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
+        if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
@@ -255,6 +260,16 @@ function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorDa
 function mutationMethod(method: string): MethodName {
   if (!RETRY_SAFE_MUTATION_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);
   return method as MethodName;
+}
+
+// validConsumedClientMutationIds treats anything that is not an array of
+// non-empty strings as though the field were absent, never guessing. A
+// string is itself iterable character-by-character, so an unguarded spread
+// of a malformed value would silently settle records named by coincidence
+// rather than by the daemon.
+export function validConsumedClientMutationIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.every((id): id is string => typeof id === "string" && id.trim() !== "") ? value : [];
 }
 
 function mutationReceipt(result: unknown): MutationReceipt | undefined {

@@ -760,6 +760,60 @@ describe("MutationDispatcher", () => {
     expect(client.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(2);
     outbox.close();
   });
+
+  // A malformed consumedClientMutationIds (anything that is not an array of
+  // non-empty strings) must be ignored outright: a string is itself iterable
+  // character-by-character, and an unguarded spread would settle records
+  // named by coincidence rather than by the daemon.
+  test("a malformed consumedClientMutationIds on a drain receipt is ignored, not iterated", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-malformed-consumed", ["drain-a"]);
+    const drain = await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        ...receipt(params.clientMutationId, "applied", "pending"),
+        // Malformed: a string, not an array. A naive `[...value]` spread
+        // would silently produce one "id" per character.
+        consumedClientMutationIds: "not-an-array" as unknown as string[],
+      },
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    const reconcileSpy = vi.spyOn(dispatcher, "reconcileIdentities");
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(reconcileSpy).not.toHaveBeenCalled();
+    // The drain's own receipt still settles normally; only the malformed
+    // field's (non-)contribution is under test.
+    expect(await outbox.getOutbox(drain.clientMutationId)).toBeUndefined();
+    outbox.close();
+  });
+
+  // consumedClientMutationIds means "consumed by THIS drain" -- never
+  // "consumed by whatever mutation this receipt happens to answer." A
+  // well-formed array riding a non-drain receipt must settle nothing.
+  test("a well-formed consumedClientMutationIds on a non-drain receipt settles nothing", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "non-drain-consumed", ["bystander", "queue-a"]);
+    const bystander = await outbox.enqueueIntent(queueIntent("ref-a", "bystander"));
+    await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({
+      receipt: {
+        ...receipt(params.clientMutationId, "applied", "pending"),
+        // Well-formed, but this receipt answers turn/queue, not a drain.
+        consumedClientMutationIds: [bystander.clientMutationId],
+      },
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    const reconcileSpy = vi.spyOn(dispatcher, "reconcileIdentities");
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(reconcileSpy).not.toHaveBeenCalled();
+    outbox.close();
+  });
 });
 
 test("attempt evidence is visible to another tab before transport and survives an unknown outcome", async () => {
