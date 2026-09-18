@@ -164,7 +164,20 @@ if $merge_unit; then
 	# accounting coverage-floor.sh uses, so this combined number can never
 	# drift from the ratchet's. Missing inputs are skipped, as the Python did.
 	combined="$workdir/combined.prof"
-	cat "$unit_prof" "$e2e_prof" 2>/dev/null >"$combined"
+	if ! : >"$combined"; then
+		echo "e2e-cover: cannot create $combined" >&2
+		exit 1
+	fi
+	# Skip inputs that do not exist (as the Python did), but fail loudly on any
+	# other read or write error: a partially written combined profile would be
+	# counted as if it were whole and print a wrong, successful-looking number.
+	for prof in "$unit_prof" "$e2e_prof"; do
+		[ -f "$prof" ] || continue
+		if ! cat "$prof" >>"$combined"; then
+			echo "e2e-cover: cannot append $prof to $combined" >&2
+			exit 1
+		fi
+	done
 	# Capture the count and check its status before parsing: a failed `go run`
 	# or covstmt must fail this report loudly, not leave `read` with empty
 	# fields that print as a malformed, successful-looking coverage line.

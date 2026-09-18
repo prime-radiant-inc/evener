@@ -45,6 +45,24 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// The gaps-only flags have no meaning in count mode. Silently ignoring them
+	// would let a forgotten --gaps print counts where the caller expected a
+	// ranking, so a stray one is a usage error rather than a no-op.
+	if !*gaps {
+		var stray []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "by", "top", "zero", "in":
+				stray = append(stray, "--"+f.Name)
+			}
+		})
+		if len(stray) > 0 {
+			sort.Strings(stray)
+			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --gaps is required for %s\n", strings.Join(stray, ", "))
+			fs.Usage()
+			return 2
+		}
+	}
 	profiles := fs.Args()
 	// The count mode takes one or more profiles; --gaps is a single profile's
 	// ranking, so more than one is a usage error.

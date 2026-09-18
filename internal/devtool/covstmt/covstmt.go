@@ -81,10 +81,25 @@ func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
 		if m == nil {
 			continue
 		}
-		sl, _ := strconv.Atoi(m[2])
-		sc, _ := strconv.Atoi(m[3])
-		el, _ := strconv.Atoi(m[4])
-		ec, _ := strconv.Atoi(m[5])
+		// Every numeric field is checked, not just the counts: an out-of-range
+		// line or column would otherwise parse as 0 and collapse two distinct
+		// positions into one, silently changing the total.
+		sl, err := strconv.Atoi(m[2])
+		if err != nil {
+			return nil, fmt.Errorf("covstmt: parsing start line %q: %w", m[2], err)
+		}
+		sc, err := strconv.Atoi(m[3])
+		if err != nil {
+			return nil, fmt.Errorf("covstmt: parsing start column %q: %w", m[3], err)
+		}
+		el, err := strconv.Atoi(m[4])
+		if err != nil {
+			return nil, fmt.Errorf("covstmt: parsing end line %q: %w", m[4], err)
+		}
+		ec, err := strconv.Atoi(m[5])
+		if err != nil {
+			return nil, fmt.Errorf("covstmt: parsing end column %q: %w", m[5], err)
+		}
 
 		stmtCount, serr := strconv.Atoi(m[6])
 		if serr != nil {

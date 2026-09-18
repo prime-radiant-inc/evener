@@ -244,19 +244,63 @@ func TestBlocksMissingFile(t *testing.T) {
 // startCol, the 10.1 block (uncovered) precedes the 10.5 block (covered); a
 // sort keyed only on (file, startLine, endLine) would let these swap run to run.
 func TestBlocksOrderIsTotalOverColumns(t *testing.T) {
-	const profile = "mode: set\n" +
-		"pkg/f.go:10.1,20.2 1 0\n" +
-		"pkg/f.go:10.5,20.9 1 1\n"
-	for i := range 100 {
-		blocks, err := BlocksReader(strings.NewReader(profile))
-		if err != nil {
-			t.Fatalf("BlocksReader: %v", err)
-		}
-		if len(blocks) != 2 {
-			t.Fatalf("BlocksReader returned %d blocks, want 2: %+v", len(blocks), blocks)
-		}
-		if blocks[0].Covered || !blocks[1].Covered {
-			t.Fatalf("iteration %d: blocks out of position order: %+v", i, blocks)
-		}
+	// One fixture per tie-break field, so a sort keyed on only part of the
+	// position fails here. The startCol fixture differs in startCol and endCol;
+	// the endCol fixture shares file, startLine, startCol, AND endLine and
+	// differs only in endCol. In both, ascending order puts the lower-position
+	// block (count 0, uncovered) first; without the tie-break the two stay in
+	// map order and the assertion flips run to run.
+	fixtures := map[string]string{
+		"startCol tie-break": "mode: set\n" +
+			"pkg/f.go:10.1,20.2 1 0\n" +
+			"pkg/f.go:10.5,20.9 1 1\n",
+		"endCol tie-break": "mode: set\n" +
+			"pkg/f.go:10.1,20.2 1 0\n" +
+			"pkg/f.go:10.1,20.9 1 1\n",
+	}
+	for name, profile := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			for i := range 100 {
+				blocks, err := BlocksReader(strings.NewReader(profile))
+				if err != nil {
+					t.Fatalf("BlocksReader: %v", err)
+				}
+				if len(blocks) != 2 {
+					t.Fatalf("BlocksReader returned %d blocks, want 2: %+v", len(blocks), blocks)
+				}
+				if blocks[0].Covered || !blocks[1].Covered {
+					t.Fatalf("iteration %d: blocks out of position order: %+v", i, blocks)
+				}
+			}
+		})
+	}
+}
+
+// TestBlocksReaderRejectsOutOfRangePosition pins the position-field parse
+// errors: a block line whose line or column overflows int must fail the parse
+// rather than collapse to 0 and merge two distinct positions into one, which
+// would silently change the statement total.
+func TestBlocksReaderRejectsOutOfRangePosition(t *testing.T) {
+	const huge = "99999999999999999999" // > int64 max
+	tests := []struct {
+		name  string
+		line  string
+		wants string
+	}{
+		{"start line", "pkg/f.go:" + huge + ".1,2.2 1 1\n", "parsing start line"},
+		{"start column", "pkg/f.go:1." + huge + ",2.2 1 1\n", "parsing start column"},
+		{"end line", "pkg/f.go:1.1," + huge + ".2 1 1\n", "parsing end line"},
+		{"end column", "pkg/f.go:1.1,2." + huge + " 1 1\n", "parsing end column"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BlocksReader(strings.NewReader("mode: set\n" + tc.line))
+			if err == nil {
+				t.Fatalf("BlocksReader accepted an out-of-range %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.wants)
+			}
+		})
 	}
 }

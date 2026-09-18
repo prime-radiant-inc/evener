@@ -263,6 +263,32 @@ func TestCovstmtGapsRejectsNegativeTop(t *testing.T) {
 	}
 }
 
+// TestCovstmtCountModeRejectsGapsOnlyFlags: --by/--top/--zero/--in mean nothing
+// without --gaps. Silently ignoring them would print counts where a caller who
+// forgot --gaps expected a ranking, so each is a usage error.
+func TestCovstmtCountModeRejectsGapsOnlyFlags(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	for _, args := range [][]string{
+		{"--by", "file", profile},
+		{"--top", "5", profile},
+		{"--zero", profile},
+		{"--in", "x", profile},
+	} {
+		var out, errOut strings.Builder
+		if code := covstmtRun(args, &out, &errOut); code != 2 {
+			t.Errorf("covstmtRun(%q) exits %d, want 2", args, code)
+		}
+		if !strings.Contains(errOut.String(), "--gaps is required for") {
+			t.Errorf("covstmtRun(%q) stderr = %q, want the gaps-only message", args, errOut.String())
+		}
+		if got := out.String(); got != "" {
+			t.Errorf("covstmtRun(%q) stdout = %q, want empty", args, got)
+		}
+	}
+}
+
 // TestPyReprMatchesPython pins pyRepr against Python's repr() for the shapes an
 // --in pattern can take, including the control bytes that would otherwise reach
 // the terminal raw.
