@@ -183,9 +183,12 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	if err := launchconfig.SaveLayer(path, layer); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
+	// The layer is on disk from here on, so every later failure is an applied
+	// write: the resolution only reads it back, and every other client's launch
+	// config is stale whatever it answers.
 	resolved, err := c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
-		return appwire.LaunchConfigResolved{}, err
+		return appwire.LaunchConfigResolved{}, writeApplied(err)
 	}
 	// Same effective-view contract as Resolve: the save returns what a
 	// session started now would run with, runtime floors included.
@@ -235,9 +238,10 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if err := hubLaunchSaveMeta(paths.Meta, meta); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
+	// The trust decision is recorded from here on; see SetLayer.
 	resolved, err = c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
-		return appwire.LaunchConfigResolved{}, err
+		return appwire.LaunchConfigResolved{}, writeApplied(err)
 	}
 	return launchconfig.ResolvedToWire(launchconfig.ApplyRuntimeDefaults(resolved, c.getenv, launchconfig.LaunchOptionSchema())), nil
 }

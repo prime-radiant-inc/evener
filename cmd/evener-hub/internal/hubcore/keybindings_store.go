@@ -42,7 +42,11 @@ type keybindingsStoreFaults struct {
 type KeybindingsPostRenameError struct{ Err error }
 
 func (e *KeybindingsPostRenameError) Error() string { return e.Err.Error() }
-func (e *KeybindingsPostRenameError) Unwrap() error { return e.Err }
+
+// Unwrap reports ErrWriteApplied beside the failure itself: this type is the
+// keybindings store's name for that state, so a generic errors.Is(err,
+// ErrWriteApplied) check recognizes it too.
+func (e *KeybindingsPostRenameError) Unwrap() []error { return []error{e.Err, ErrWriteApplied} }
 
 // KeybindingsStore is the hub-authoritative store for user keybinding
 // overrides. One mutex serializes each durable update.
