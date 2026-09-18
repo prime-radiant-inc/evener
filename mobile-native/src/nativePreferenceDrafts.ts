@@ -16,26 +16,44 @@ import type {
  * that identical primitive, so a bare-string sentinel here would make the
  * two indistinguishable - exactly the collision that let a present, invalid
  * transcript checkpoint (the string case) read as no draft at all (the null
- * case). */
+ * case). Namespaced (never the bare "storedNull" a future checkpoint field
+ * could plausibly reuse) and checked by exact shape, not the tag alone: a
+ * real checkpoint always carries its own substantive fields, so requiring
+ * this to be the record's ONLY key rules out a checkpoint that happens to
+ * also carry a same-named field of its own. */
+const STORED_NULL_KIND = "evener.nativePreferenceDrafts.storedNull";
 export interface StoredNullRecord {
-	readonly kind: "storedNull";
+	readonly kind: typeof STORED_NULL_KIND;
 }
-export const STORED_NULL_RECORD: StoredNullRecord = { kind: "storedNull" };
+export const STORED_NULL_RECORD: StoredNullRecord = { kind: STORED_NULL_KIND };
 export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
-	return typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "storedNull";
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		Object.keys(value).length === 1 &&
+		(value as { kind?: unknown }).kind === STORED_NULL_KIND
+	);
 }
 
 /** A stored record's bytes that JSON.parse could not decode at all. Tagged
  * with the original bytes rather than returned bare: a bare string could
  * coincidentally equal a legitimately decoded value (a checkpoint field, or
  * STORED_NULL_RECORD's own would-be sentinel), which is the same class of
- * collision StoredNullRecord exists to close. */
+ * collision StoredNullRecord exists to close - see its own comment on the
+ * namespaced tag and exact-shape check. */
+const UNPARSEABLE_KIND = "evener.nativePreferenceDrafts.unparseable";
 export interface UnparseableDraftBytes {
-	readonly kind: "unparseable";
+	readonly kind: typeof UNPARSEABLE_KIND;
 	readonly raw: string;
 }
 export function isUnparseableDraftBytes(value: unknown): value is UnparseableDraftBytes {
-	return typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "unparseable";
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		Object.keys(value).length === 2 &&
+		(value as { kind?: unknown }).kind === UNPARSEABLE_KIND &&
+		typeof (value as { raw?: unknown }).raw === "string"
+	);
 }
 
 /** Parses a draft record's stored bytes the way a backend's own get() must:
@@ -48,7 +66,7 @@ export function parseDraftBytes(raw: string): unknown {
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		return { kind: "unparseable", raw } satisfies UnparseableDraftBytes;
+		return { kind: UNPARSEABLE_KIND, raw } satisfies UnparseableDraftBytes;
 	}
 	return parsed === null ? STORED_NULL_RECORD : parsed;
 }

@@ -80,21 +80,30 @@ export type DiscardStoredDraftResult = "removed" | "absent" | "refused";
  * publishes the state. One implementation either way. `isReadable`, when
  * given, refuses rather than removing a record that decodes fine now (see
  * DiscardStoredDraftResult); a caller with no decoder of its own gets the
- * original always-remove behavior. */
+ * original always-remove behavior. Every port method may throw a genuine
+ * storage failure (see DraftPort's own docs) - degrading to
+ * "storageUnavailable" is what lets a store-free caller (no repository, no
+ * live store to publish the failure to) treat this the same as
+ * readDraftOutcome's own load() call, rather than escape its event handler
+ * uncaught. */
 export function discardStoredDraft<Checkpoint>(
   storage: DraftPort<Checkpoint>,
   isReadable: (value: unknown) => boolean = () => false,
-): DiscardStoredDraftResult {
-  const value = storage.load();
-  if (value === null || value === undefined) return "absent";
-  if (isReadable(value)) return "refused";
-  if (storage.removeIf(value)) return "removed";
-  // The compare-and-swap failed: a concurrent writer replaced the record
-  // between the load() above and this call. Re-read to tell "gone" from
-  // "still there, but not the bytes just named" - the latter must not be
-  // reported the same as nothing to discard.
-  const current = storage.load();
-  return current === null || current === undefined ? "absent" : "refused";
+): DiscardStoredDraftResult | "storageUnavailable" {
+  try {
+    const value = storage.load();
+    if (value === null || value === undefined) return "absent";
+    if (isReadable(value)) return "refused";
+    if (storage.removeIf(value)) return "removed";
+    // The compare-and-swap failed: a concurrent writer replaced the record
+    // between the load() above and this call. Re-read to tell "gone" from
+    // "still there, but not the bytes just named" - the latter must not be
+    // reported the same as nothing to discard.
+    const current = storage.load();
+    return current === null || current === undefined ? "absent" : "refused";
+  } catch {
+    return "storageUnavailable";
+  }
 }
 
 export interface DraftRepository<Checkpoint> {

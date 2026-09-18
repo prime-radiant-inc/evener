@@ -267,6 +267,56 @@ describe("discardStoredDraft", () => {
 
     expect(discardStoredDraft(storage)).toBe("absent");
   });
+
+  // Every DraftPort method may throw a genuine storage failure (see the
+  // port's own docs) - unlike a live repository's discardDraft, there is no
+  // caller-supplied catch upstream of this call, so a throw here must
+  // degrade to an outcome, the same posture readDraftOutcome takes on load(),
+  // rather than escape a store-free caller's event handler uncaught.
+  it("degrades to 'storageUnavailable' when load() throws", () => {
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => {
+        throw new Error("disk unavailable");
+      },
+      save: () => {},
+      insertIfAbsent: () => true,
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
+
+  it("degrades to 'storageUnavailable' when removeIf() throws", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const storage: DraftPort<Checkpoint> = {
+      ...drafts.storage,
+      removeIf: () => {
+        throw new Error("disk unavailable");
+      },
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
+
+  it("degrades to 'storageUnavailable' when the re-read after a failed removeIf throws", () => {
+    let loadCount = 0;
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => {
+        loadCount++;
+        if (loadCount === 1) return { corrupt: true, marker: 1 };
+        throw new Error("disk unavailable");
+      },
+      save: () => {},
+      insertIfAbsent: () => true,
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
 });
 
 // memoryDraftStorage's own removeIf/replaceIf compare by JSON.stringify -
