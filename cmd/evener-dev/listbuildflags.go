@@ -6,19 +6,18 @@ package dev
 //
 // The answer matters because `go list` and `go test` do not see the same tree.
 // -tags selects files, and so can select whole packages; -race, -msan and -asan
-// each set a build tag of their own (race, msan, asan), so a package whose only
-// files sit behind `//go:build race` exists for `go test -race` and not for a
-// plain `go list`. The gate enumerates first and hands `go test` the list, so
-// anything the enumeration cannot see is not tested, and nothing says so.
+// each set a build tag of their own (race, msan, asan); -overlay can add or
+// replace a package's files; -mod, -modfile and -compiler can change which
+// module graph and package set resolves. A package that exists for `go test`
+// under one of those flags and not for a plain `go list` is never tested, and
+// nothing says so, so each one is forwarded with its value.
 //
 // A flag whose value is the next argument is consumed with it before anything
 // is classified, so that value is never read as a flag: `-run -race` is a regex
 // whose text is `-race`, and reading it as a build flag would hand the
-// enumeration a sanitiser the caller never asked for. The value-taking flags
-// are shardplan.go's tables, which already hold every `go test` flag of that
-// shape: this walker is a permissive filter over whatever the gate was handed,
-// while the shard runner's parser is exhaustive and refuses a flag it does not
-// know, but the two agree on which flags have a value to consume.
+// enumeration a sanitiser the caller never asked for. Normalisation and the
+// value-taking tables are shardplan.go's, so both readers consume values from
+// the same spellings, including `-test.run` for `-run`.
 
 import (
 	"flag"
@@ -29,8 +28,14 @@ import (
 )
 
 // packageSelectionValueFlags take their value as the next argument and change
-// which packages exist.
-var packageSelectionValueFlags = map[string]bool{"-tags": true}
+// which packages or files exist, so they are forwarded to the enumeration.
+// -C is deliberately absent: it changes directory before the command runs, and
+// the gate has already stood in the module's own directory, so a caller's -C
+// cannot be applied to this enumeration. Its value is still consumed, so it is
+// not misread as a flag.
+var packageSelectionValueFlags = map[string]bool{
+	"-tags": true, "-overlay": true, "-mod": true, "-modfile": true, "-compiler": true,
+}
 
 // packageSelectionBareFlags stand alone and change which packages exist, each
 // by setting a build tag of its own name.
@@ -47,23 +52,12 @@ func consumesValue(name string) bool {
 	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
 }
 
-// normalisedFlag is a caller's flag in the one spelling everything here
-// compares: go's flag package reads --tags and -tags alike, so a reader that
-// knows one of them drops the other.
-func normalisedFlag(raw string) (whole, name, value string, inline bool) {
-	whole = raw
-	if strings.HasPrefix(whole, "--") && len(whole) > 2 {
-		whole = whole[1:]
-	}
-	name, value, inline = strings.Cut(whole, "=")
-	return whole, name, value, inline
-}
-
 // packageSelectionFlags is the answer, in the spelling `go list` will be given.
 func packageSelectionFlags(args []string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
-		whole, name, _, inline := normalisedFlag(args[i])
+		whole := goFlag(args[i])
+		name, _, inline := strings.Cut(whole, "=")
 		if name == "-args" {
 			// Everything after -args belongs to the test binary, not to `go
 			// test`: a word spelled -race there is an argument whose text is
@@ -109,7 +103,13 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	for _, f := range packageSelectionFlags(fs.Args()) {
-		_, _ = fmt.Fprintln(stdout, f)
+		// A short write would hand the gate a truncated flag list, and it would
+		// enumerate under flags the caller never set. Fail loudly instead, so
+		// the gate's own guard stops the run.
+		if _, err := fmt.Fprintln(stdout, f); err != nil {
+			_, _ = fmt.Fprintf(stderr, "evener-dev list-build-flags: writing flags: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

@@ -11,6 +11,7 @@ Subcommands:
   dev                        Dev tooling (agent-shards, covstmt, list-build-flags, module-lint)
   module-lint              Run golangci-lint across workspace modules in parallel waves
   agent-shards             Run agent test shards in parallel
+  list-build-flags         Print the go test flags that also belong on the go list that enumerates packages
   fuzz-harvest             Harvest fuzz seed corpora from recorded traffic
   fuzzcov                  Static fuzz gap gate
   fuzzregistry             Audit the fuzz target registry
