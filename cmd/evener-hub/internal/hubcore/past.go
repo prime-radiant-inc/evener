@@ -198,7 +198,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		i.reportSkips(skipped)
 
 		if pastBeforeRebuildSwap != nil {
 			pastBeforeRebuildSwap()
@@ -215,6 +214,10 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		i.gen++
 		gen := i.gen
 		i.mu.Unlock()
+		// Report skips only for the scan that actually replaced the index; a
+		// superseded attempt's stale view must not move the skip baseline or
+		// emit a diagnostic for a scan that was discarded.
+		i.reportSkips(skipped)
 		return i.publishAndSignal(all, gen), nil
 	}
 	// Contended on every attempt: keep the newer in-memory snapshot rather than
@@ -722,12 +725,13 @@ var errFTSBaselineStale = errors.New("fts mirror does not match the published sn
 //
 // It assumes the table currently reflects prev, which publishFTS guarantees by
 // serializing on ftsMu, and verifies that inside the transaction two ways: the
-// row count must equal len(prev), and the DB must carry the PRAGMA user_version
-// token writeFTSTx stamped on the last successful write. The token is what
-// catches a replaced or restored index.db whose row count happens to match but
-// whose rows/ids differ — a count-only check would accept it, skip the
-// "unchanged" ids, and leave foreign text in a mirror marked healthy. Either
-// mismatch returns errFTSBaselineStale for publishFTS to repair with a rewrite.
+// row count must equal len(prev), and the DB must carry the
+// past_sessions_fts_state (owner, seq) token writeFTSTx stamped on the last
+// successful write. The token is what catches a replaced or restored index.db
+// whose row count happens to match but whose rows/ids differ — a count-only
+// check would accept it, skip the "unchanged" ids, and leave foreign text in a
+// mirror marked healthy. Either mismatch returns errFTSBaselineStale for
+// publishFTS to repair with a rewrite.
 func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
 	prevIdx := make(map[string]int, len(prev))
 	for k, e := range prev {

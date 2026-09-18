@@ -112,6 +112,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB,
 		fuzzScenarioPastIndex_FTSWriteUsesImmediateTransaction,
 		fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold,
+		fuzzScenarioPastIndex_SupersededRebuildDoesNotReportSkips,
 		fuzzScenarioPastIndex_SupersededPublishAbandonsStaleRebuild,
 		fuzzScenarioPastIndex_SearchRepairsStaleFTS,
 		fuzzScenarioPastIndex_Pagination,

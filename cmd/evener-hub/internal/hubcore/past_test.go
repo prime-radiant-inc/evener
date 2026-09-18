@@ -1669,3 +1669,49 @@ func fuzzScenarioPastIndex_FTSWriteUsesImmediateTransaction(t *testing.T) {
 		}
 	}
 }
+
+// fuzzScenarioPastIndex_SupersededRebuildDoesNotReportSkips pins that a
+// discarded Rebuild scan leaves the skip baseline alone. reportSkips must run
+// only for the scan that is actually swapped in; otherwise a superseded
+// attempt moves i.skipped and emits a "[hub] past index: skipped ..." line
+// derived from a disk view that was never indexed.
+func fuzzScenarioPastIndex_SupersededRebuildDoesNotReportSkips(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "alpha", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory whose name fails the project-id validator becomes a skip.
+	bad := filepath.Join(root, "projects", "bad-name")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Supersede every attempt's scan by bumping the generation from the seam, so
+	// Rebuild never swaps a scan in.
+	prev := pastBeforeRebuildSwap
+	pastBeforeRebuildSwap = func() {
+		idx.mu.Lock()
+		idx.gen++
+		idx.mu.Unlock()
+	}
+	defer func() { pastBeforeRebuildSwap = prev }()
+
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	idx.mu.RLock()
+	_, reported := idx.skipped[bad]
+	idx.mu.RUnlock()
+	if reported {
+		t.Fatal("a discarded Rebuild scan reported its skip; skip diagnostics must come only from a swapped scan")
+	}
+}
