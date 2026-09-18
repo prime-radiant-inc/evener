@@ -126,10 +126,11 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
 
   test("drops an unsafe or rounding integer magnitude on both paths (Go wire type is *int)", () => {
     const options = [option({ wireField: "maxRounds", kind: "integer" })];
-    const unsafe = collectAdvancedOverrides(options, { maxRounds: { value: "1e21" } });
-    // Number() alone would round this to 1 and pass a safe-integer check; the
+    // A high-precision decimal rounds to 1 if you Number() the string first; the
     // exact-decimal rule drops it in both callers.
     const rounded = collectAdvancedOverrides(options, { maxRounds: { value: "1.0000000000000000001" } });
+    // "1e21" is exponent notation, so it is rejected as an unsafe magnitude.
+    const unsafe = collectAdvancedOverrides(options, { maxRounds: { value: "1e21" } });
     const boundary = collectAdvancedOverrides(options, { maxRounds: { value: "9007199254740991" } });
     const state: LaunchFormState = {
       scalars: { maxRounds: "1e21" },

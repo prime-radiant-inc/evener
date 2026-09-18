@@ -302,6 +302,20 @@ const DECIMAL_INTEGER_RE = /^[+-]?\d+$/;
 const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
+// isExactSafeInteger: the integer arm's rule on its own - the raw string must be
+// an exact decimal integer whose value is within the safe integer range. Decided
+// on the string (and a BigInt of it), never on Number(raw): Number() rounds a
+// value with more precision than a double holds, so "1.0000000000000000001"
+// becomes 1. Exported so a surface that reports its own validation error
+// (mobile-native's parseLaunchScalar) shares this rule instead of repeating
+// Number()'s rounding.
+export function isExactSafeInteger(raw: string): boolean {
+  const value = raw.trim();
+  if (!DECIMAL_INTEGER_RE.test(value)) return false;
+  const exact = BigInt(value);
+  return exact >= MIN_SAFE_BIGINT && exact <= MAX_SAFE_BIGINT;
+}
+
 // collectScalar applies the launch-config collect rule to one scalar control's
 // raw form value: a boolean's "" (unset) is dropped, text is trimmed, an
 // empty-after-trim scalar is dropped (never sent as ""), and an integer is
@@ -320,14 +334,7 @@ export function collectScalar(opt: LaunchOption, raw: string): { value: unknown 
   const trimmed = raw.trim();
   if (trimmed === "") return null; // omit empty-after-trim scalars, never sent as ""
   if (opt.kind === "integer") {
-    // Decide on the string itself, not on Number(trimmed): Number() rounds a
-    // value with more precision than a double holds, so "1.0000000000000000001"
-    // becomes 1 and would be sent as an integer the user never typed. Only an
-    // exact decimal integer inside the safe range is converted.
-    if (!DECIMAL_INTEGER_RE.test(trimmed)) return null;
-    const exact = BigInt(trimmed);
-    if (exact < MIN_SAFE_BIGINT || exact > MAX_SAFE_BIGINT) return null;
-    return { value: Number(exact) };
+    return isExactSafeInteger(trimmed) ? { value: Number(trimmed) } : null;
   }
   return { value: trimmed };
 }
