@@ -246,7 +246,8 @@ func (m *Manager) recoverMarkedRename() error {
 		if err != nil {
 			return fail(err)
 		}
-		return fail(fmt.Errorf("another marketplace is recorded as %q; rename that one, or delete %s to abandon the unfinished rename", marker.To, path))
+		_, _ = fmt.Fprintf(m.stderr(), "warning: %s names an unfinished rename onto %q, which is now taken\n", path, marker.To)
+		return fail(fmt.Errorf("another marketplace is recorded as %q; rename that one, or delete %s to abandon the unfinished rename", marker.To, renameMarkerFileName))
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
@@ -347,7 +348,8 @@ func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error 
 		if err != nil {
 			return fail(err)
 		}
-		return fail(fmt.Errorf("no marketplace is recorded as %q to merge into; delete %s to abandon the unfinished merge", marker.To, path))
+		_, _ = fmt.Fprintf(m.stderr(), "warning: %s names an unfinished merge into %q, which is no longer recorded\n", path, marker.To)
+		return fail(fmt.Errorf("no marketplace is recorded as %q to merge into; delete %s to abandon the unfinished merge", marker.To, renameMarkerFileName))
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
@@ -465,12 +467,17 @@ func (m *Manager) removeRenameMarker() {
 // behind, for the error that failure returns: the store may be between the two
 // names, and what brings it to one is the next lock holder's recovery, so the
 // user is told which file records the operation that is still to be finished.
+// This error reaches a ListMarketplaces/List RPC caller as directly as any
+// marketplace write failure (lockStore runs the migration this recovers on
+// every one of them), so it names only the marker's bare filename - never
+// this machine's absolute plugin-store path, which goes to the hub's log.
 func (m *Manager) markerLeftForRecovery(what string) error {
 	path, err := m.storePath(renameMarkerFileName)
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("%s still records the %s, which the next store operation finishes", path, what)
+	_, _ = fmt.Fprintf(m.stderr(), "warning: %s still records the %s, which the next store operation finishes\n", path, what)
+	return fmt.Errorf("%s still records the %s, which the next store operation finishes", renameMarkerFileName, what)
 }
 
 // migrationRecord is the store's record of the renames the migration has made,
