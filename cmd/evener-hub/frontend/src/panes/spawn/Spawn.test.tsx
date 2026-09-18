@@ -5430,7 +5430,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
 });
 
-test("the open spawn menu wires listbox roles and aria-activedescendant on the prompt", async () => {
+test("the open spawn menu wires listbox roles, aria-controls, and aria-activedescendant on the prompt", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
@@ -5447,9 +5447,69 @@ test("the open spawn menu wires listbox roles and aria-activedescendant on the p
   const activeId = promptField().getAttribute("aria-activedescendant");
   expect(activeId).toBeTruthy();
   expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+  // aria-controls names the listbox the prompt is completing against - the
+  // other half of the activedescendant wiring, set on the same native node.
+  const controls = promptField().getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  expect(document.getElementById(controls ?? "")).toBe(slashMenu());
 
   await user.keyboard("{Escape}");
   expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
+  expect(promptField().getAttribute("aria-controls")).toBeNull();
+});
+
+test("ArrowDown/ArrowUp move the spawn menu highlight and wrap at both ends", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // Two matches: the /reasoning-effort built-in then the /review catalog
+  // command, so index 0 is the built-in.
+  expect(slashOptions()).toHaveLength(2);
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("false");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+
+  await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+});
+
+test("clicking a spawn menu option commits it without ever blurring the prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // index 0 is the built-in /reasoning-effort, 1 /review.
+  await user.click(slashOptions()[1] as HTMLElement);
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  // The option's onMouseDown preventDefault keeps focus in the field, so the
+  // click's onSelect commits rather than racing the blur-close.
+  expect(document.activeElement).toBe(promptField());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
 
 // --- Task 6: submit interception for pre-session builtins --------------------

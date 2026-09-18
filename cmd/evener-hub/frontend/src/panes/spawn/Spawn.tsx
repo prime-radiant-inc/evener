@@ -641,11 +641,14 @@ function SpawnForm({
   const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
   const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
   // prop - it's a shared widget outside this stream's manifest - so this
   // component sets both directly on the native node it already refs for
   // cursor restoration below, the same imperative-DOM idiom the cursor-
-  // restore layout effect already uses on the identical ref.
+  // restore layout effect already uses on the identical ref. Only
+  // slashActiveId gates the effect: the ref is stable and slashListboxId is a
+  // constant, so neither belongs in the dependency list.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -677,7 +680,6 @@ function SpawnForm({
   // so a late decode-failure callback never reverts newer typing.
   const textRef = useRef(prompt);
   textRef.current = prompt;
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
   // kata 61v2: `busy` state alone is not a re-entrancy guard. Three clicks
