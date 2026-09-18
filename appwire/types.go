@@ -1793,6 +1793,14 @@ type MutationReceipt struct {
 	TurnID           string                  `json:"turnId,omitempty"`
 	QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`
 	ProjectionState  MutationProjectionState `json:"projectionState"`
+	// ConsumedClientMutationIDs names the client mutation ids a drain's OWN
+	// transition consumed (currently the only mutation that folds other
+	// queued entries into itself). It rides the durable mutation result, so
+	// a replayed disposition carries the same ids the first execution did —
+	// unlike queueChanged's own copy of this fact, a replay needs no live
+	// push to settle those records (issue #1704). Absent on every receipt
+	// that is not a drain's.
+	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
 }
 
 type PendingMutation struct {

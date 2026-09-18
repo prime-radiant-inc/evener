@@ -144,6 +144,12 @@ export class MutationDispatcher {
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      // A drain's own receipt names the queue intents it consumed (durable
+      // across a replay, unlike a live push): settle them the same way any
+      // other authoritative feed does, through reconcileIdentities.
+      if (receipt.consumedClientMutationIds?.length) {
+        await this.reconcileIdentities(receipt.consumedClientMutationIds);
+      }
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {

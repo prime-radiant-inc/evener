@@ -53,6 +53,22 @@ function clearIntent(targetRef = "ref-a"): MutationIntent {
   };
 }
 
+function drainIntent(targetRef = "ref-a", text = "steer this"): MutationIntent {
+  const input = [{ type: "text", text }];
+  return {
+    targetRef,
+    threadId: "thread-a",
+    method: "turn/drainAsSteer",
+    payload: {
+      ref: targetRef,
+      expectedQueueRevision: 2,
+      input,
+    },
+    attachments: [],
+    optimisticDisplay: { method: "turn/drainAsSteer", input },
+  };
+}
+
 function storage(indexedDB: IDBFactory, databaseName: string, mutationIds: string[]): MutationOutboxIndexedDB {
   let nextId = 0;
   return new MutationOutboxIndexedDB({
@@ -616,6 +632,60 @@ describe("MutationDispatcher", () => {
     await dispatcher.dispatchTargets(["ref-a"]);
 
     expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
+  });
+
+  // A drain's own receipt names the queue intents it consumed
+  // (consumedClientMutationIds, issue #1704), durable across a replay, so the
+  // dispatcher settles them from the receipt itself through the same
+  // settle-by-id path a live push uses (reconcileIdentities) -- no push
+  // required.
+  test("a drain's receipt settles the queue intents it named as consumed", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-receipt-consumed", ["queue-a", "drain-a"]);
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    const drain = await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        ...receipt(params.clientMutationId, "applied", "pending"),
+        consumedClientMutationIds: [queued.clientMutationId],
+      },
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.listOutbox("ref-a")).toEqual([]);
+    const optimistic = await outbox.listOptimistic("ref-a");
+    expect(optimistic.map((record) => record.clientMutationId)).toEqual([drain.clientMutationId]);
+    outbox.close();
+  });
+
+  // The receipt's settle-by-id path and a live push's (threads.ts's own
+  // reconcileIdentities call) can both name the same consumed id; the second
+  // arrival must not throw or double-retire.
+  test("settling the same consumed id from both the receipt and a later push is idempotent", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-receipt-and-push", ["queue-a", "drain-a"]);
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        ...receipt(params.clientMutationId, "applied", "pending"),
+        consumedClientMutationIds: [queued.clientMutationId],
+      },
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(await outbox.getOptimistic(queued.clientMutationId)).toBeUndefined();
+
+    await expect(dispatcher.reconcileIdentities([queued.clientMutationId])).resolves.not.toThrow();
+    expect(await outbox.getOptimistic(queued.clientMutationId)).toBeUndefined();
+    outbox.close();
   });
 });
 

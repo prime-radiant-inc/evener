@@ -782,6 +782,10 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		snapshot.InputQueue = remaining
 		snapshot.QueueRevision++
 		response = appwire.TurnDrainAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
+		// Durable, so a replay reports it too: replayClientMutationResult
+		// unmarshals this same JSON, and the replay branch below never calls
+		// reflectDurableInputQueue to re-announce it any other way.
+		response.Receipt.ConsumedClientMutationIDs = consumedClientMutationIDs
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr

@@ -457,7 +457,7 @@ type QueueChangedData struct {
 	// #1704). It is a one-shot transition fact about this push, never a
 	// property of the durable queue itself — unset on every push that is not
 	// the consuming transition.
-	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
+	ConsumedClientMutationIDs []string `json:"consumed_client_mutation_ids,omitempty"`
 }
 
 // TaskSummaryData is the current task summary carried by a TaskUpdatedData

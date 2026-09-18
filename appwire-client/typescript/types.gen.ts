@@ -1155,6 +1155,7 @@ export interface MutationReceipt {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+  consumedClientMutationIds?: string[];
 }
 
 export interface NavigationCapability {
