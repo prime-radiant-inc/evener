@@ -64,10 +64,11 @@ export type MutationDiscoveryReason =
 
 // The storage this layer needs, as an interface rather than a class: the web's
 // MutationOutboxIndexedDB implements it and stays where it is (it is IndexedDB
-// through and through), and another host implements the same 13 calls over
-// whatever it has. Two of them are this class's own (enqueueIntent,
-// listTargetRefs); the rest are what the dispatcher calls, declared here so
-// one port describes the contract rather than two halves of it.
+// through and through), and another host implements the same 14 calls over
+// whatever it has. Three of them are this class's own (enqueueIntent,
+// enqueueInterruptAndCancel, listTargetRefs); the rest are what the dispatcher
+// calls, declared here so one port describes the contract rather than two
+// halves of it.
 //
 // Every method is async because durable storage is: a host with a synchronous
 // store returns resolved promises.
