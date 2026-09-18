@@ -39,11 +39,10 @@ const backend = {
 	delete(key: string) {
 		Storage.removeItemSync(key);
 	},
-	deleteIf(key: string, value: unknown): boolean {
+	deleteIf(key: string, value: unknown) {
 		// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
-		if (Storage.getItemSync(key) !== JSON.stringify(value)) return false;
-		Storage.removeItemSync(key);
-		return true;
+		if (Storage.getItemSync(key) === JSON.stringify(value))
+			Storage.removeItemSync(key);
 	},
 };
 

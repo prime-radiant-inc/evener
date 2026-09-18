@@ -67,19 +67,14 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still this one; reports
-   * whether it did. */
-  removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
+  /** Removes the stored checkpoint only if it is still this one. */
+  removeIf(checkpoint: KeybindingDraftCheckpoint): void;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. There is no real
- * backing store here - only this one repository instance ever touches it -
- * so there is no concurrent writer a compare-and-swap could actually lose to;
- * removeIf reports success unconditionally rather than the refusal a
- * byte-aware port reports when a record it named is gone. */
+ * store's state only and does not survive the instance. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
 }
 
 export interface KeybindingsStoreFields {
@@ -309,8 +304,8 @@ function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: numbe
 }
 
 // discardStoredDraft is re-exported here (not just from draftCheckpointPort
-// directly) so index.ts's existing `discardStoredDraft as
-// discardStoredKeybindingDraft` import keeps working unchanged.
+// directly) so index.ts can re-export it as discardStoredKeybindingDraft
+// alongside this store's other exports.
 export { discardStoredDraft } from "./draftCheckpointPort";
 
 function invalidDraft(): never {

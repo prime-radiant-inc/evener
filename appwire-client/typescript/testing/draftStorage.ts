@@ -35,9 +35,8 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     removeIf: (checkpoint: Checkpoint) => {
       lastRemoveIf = structuredClone(checkpoint);
-      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return false;
+      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return;
       stored = null;
-      return true;
     },
   };
   return {
