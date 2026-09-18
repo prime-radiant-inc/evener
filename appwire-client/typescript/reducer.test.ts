@@ -6075,11 +6075,10 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
 // is followed by its own status frame: the agent's failure exit
 // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0) emits
 // EventSessionEnd with Reason "turn_failed", announced as
-// thread/status/changed(idle). The reducer's self-settle on the failed frame
-// is a redundant safety net kept pending #1432; this pins it while it stays.
-// A completed turn is different: the status frame that follows it (idle at
-// session end, active at an inline boundary) is the authority.
-test("a failed active turn settles the session idle ahead of its status frame", () => {
+// thread/status/changed(idle) with the capabilities inline. Like a completed
+// turn's, that frame is the status's authority; the failed stamp settles the
+// turn alone.
+test("a failed active turn leaves the status to the frame that follows it", () => {
   const initial = hydrateThread(
     {
       thread: testThread({
@@ -6103,8 +6102,19 @@ test("a failed active turn settles the session idle ahead of its status frame", 
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
+  // The turn ended; its status frame has not arrived.
   expect(failed.activeTurnId).toBeUndefined();
+  expect(failed.status.type).toBe("active");
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
 });
 
 test("a completed active turn leaves the status to the frame that follows it (inline boundary)", () => {
@@ -6133,9 +6143,9 @@ test("a completed active turn leaves the status to the frame that follows it (in
 // The status is authoritative and the transcript's id can be absent while the
 // session is active (a hydrate cut between turns, or the gap after
 // turn/completed at an inline boundary). A failed completion arriving then is
-// still the session's own failure; its status frame follows (kata hen0), and
-// the settle here is the redundant safety net kept pending #1432.
-test("a failed turn/completed with no active turn id still settles an active session idle", () => {
+// still the session's own failure, but its status frame follows (kata hen0)
+// and owns the settle.
+test("a failed turn/completed with no active turn id leaves the settle to its status frame", () => {
   const initial = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "ref_t", 1000);
   expect(initial.activeTurnId).toBeUndefined();
   const failed = applyNotification(
@@ -6150,13 +6160,25 @@ test("a failed turn/completed with no active turn id still settles an active ses
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
+  expect(failed.status.type).toBe("active");
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
 });
 
-// The same settle drops the work-clock anchor with the status: a hydrate can
-// carry a live anchor with no turn id, and StatusRow clocks now-minus-anchor
-// for as long as the model holds one.
-test("a failed turn/completed with no active turn id clears the work-clock anchor", () => {
+// The work-clock anchor goes with the status, and thread/status/changed drops
+// a live anchor on any non-active transition: a hydrate can carry a live
+// anchor with no turn id, and StatusRow clocks now-minus-anchor for as long as
+// the model holds one. The failed stamp leaves both alone; the status frame
+// that follows ends them together.
+test("a failed turn/completed with no active turn id leaves the work-clock anchor to its status frame", () => {
   const initial = hydrateThread(
     { thread: testThread({ status: { type: "active" }, evener: { activeTurnStartedAt: 900 } }) },
     "ref_t",
@@ -6176,8 +6198,19 @@ test("a failed turn/completed with no active turn id clears the work-clock ancho
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
-  expect(failed.activeTurnStartedAt).toBeUndefined();
+  expect(failed.status.type).toBe("active");
+  expect(failed.activeTurnStartedAt).toBeDefined();
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
+  expect(settled.activeTurnStartedAt).toBeUndefined();
 });
 
 // A failed completion for a turn that another turn has since superseded is
