@@ -102,6 +102,16 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		// A value flag with nothing after it must not be dropped silently:
 		// go test would choke on the mangled list instead.
 		{name: "a dangling value flag is refused", args: []string{"-short", "-tags"}, wantErr: true},
+		// Every value-taking flag's value is checked, not just the forwarded
+		// ones: the gate word-splits `go test`'s flags, so -run "Smoke -race"
+		// hands go test a real -race the enumeration never applied.
+		{name: "a whitespace value on a non-selection flag is refused", args: []string{"-run", "Smoke -race"}, wantErr: true},
+		{name: "and inline whitespace there too", args: []string{"-run=Smoke -race"}, wantErr: true},
+		{name: "a glob value on a non-selection flag is refused", args: []string{"-run", "Test*"}, wantErr: true},
+		{name: "a separate empty value on a non-selection flag is refused", args: []string{"-run", ""}, wantErr: true},
+		{name: "a dangling non-selection value flag is refused", args: []string{"-short", "-run"}, wantErr: true},
+		// A plain non-selection value is still consumed without complaint.
+		{name: "an ordinary non-selection value is fine", args: []string{"-run", "TestFoo", "-race"}, want: []string{"-race"}},
 		// The bug this table exists for: a regex whose text is -race is a
 		// regex, and forwarding it would enumerate under a sanitiser nobody
 		// asked for.
@@ -177,12 +187,18 @@ func TestListBuildFlagsRefusesC(t *testing.T) {
 }
 
 func TestListBuildFlagsRefusesADanglingValue(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if code := listBuildFlags([]string{"--", "-tags"}, &stdout, &stderr); code == 0 {
-		t.Fatalf("listBuildFlags with a dangling -tags = 0, want nonzero; stdout = %q", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), "nothing after it") {
-		t.Fatalf("stderr = %q, want a dangling-value refusal", stderr.String())
+	// Both a forwarded selection flag and a non-selection value flag must be
+	// refused, not silently skipped.
+	for _, flag := range []string{"-tags", "-run"} {
+		t.Run(flag, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := listBuildFlags([]string{"--", flag}, &stdout, &stderr); code == 0 {
+				t.Fatalf("listBuildFlags with a dangling %s = 0, want nonzero; stdout = %q", flag, stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "nothing after it") {
+				t.Fatalf("stderr = %q, want a dangling-value refusal", stderr.String())
+			}
+		})
 	}
 }
 
