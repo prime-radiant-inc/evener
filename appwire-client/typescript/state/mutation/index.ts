@@ -11,7 +11,7 @@
 // reconciles, and what a host's own store of them tracks, not where any of
 // it lives.
 
-export type { MutationDispatcherOptions } from "./dispatcher";
+export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
 export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
   MutationClientLookup,
