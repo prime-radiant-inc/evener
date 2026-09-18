@@ -1716,6 +1716,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// per stall: clearing activeTurnID makes every later call in the same
 			// stall a no-op, so continued backoff never re-broadcasts the same
 			// failure.
+			//
+			// Both frames name the relay's target. The synthesized failure is the
+			// turn's; the session STATUS is thread/status/changed's, never
+			// turn/completed's — the daemon's real failure exit emits the same
+			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
+			// EventSessionEnd{Reason:"turn_failed"} as
+			// thread/status/changed(idle)). Without the status frame a client
+			// that leaves the status to the status frame, as the shared web and
+			// mobile reducer now does, would keep the session active with Stop
+			// and Steer still showing and Send withheld — the exact stall this
+			// synthesis exists to end. The capabilities are the hub's own answer
+			// for a session whose daemon is gone (the set a past read returns),
+			// because the departing daemon's set describes the turn that is over.
 			giveUpOnActiveTurn := func(cause error) {
 				if activeTurnID == "" {
 					return
@@ -1726,8 +1739,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cause != nil {
 					message += ": " + cause.Error()
 				}
-				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, map[string]any{
-					"turn": appwire.Turn{
+				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+					Turn: appwire.Turn{
 						ID:     turnID,
 						Status: appwire.TurnStatusFailed,
 						Error: &appwire.TurnError{
@@ -1735,6 +1750,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 							Source:  "hub",
 						},
 					},
+				})
+				capabilities := pastThreadCapabilities()
+				capabilities.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+					ThreadID:     threadID,
+					Ref:          subscribeParams.Ref,
+					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+					Capabilities: &capabilities,
 				})
 			}
 			recordFailure := func(cause error) {
