@@ -216,6 +216,7 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 				})
 				if entry.timestamp.After(live.activityAt) {
 					live.activityAt = entry.timestamp
+					live.rearmQuietCadenceLocked()
 				}
 				if entry.timestamp.After(live.productiveActivityAt) {
 					live.productiveActivityAt = entry.timestamp
@@ -237,6 +238,7 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
+		live.rearmQuietCadenceLocked()
 	}
 	if entry.timestamp.After(live.productiveActivityAt) {
 		live.productiveActivityAt = entry.timestamp

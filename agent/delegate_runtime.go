@@ -135,6 +135,22 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	return nil
 }
 
+// rearmQuietCadenceLocked clears a pending quiet wake so the next watchdog
+// window is measured from fresh activity rather than from the last wake. It
+// mirrors the rearm ReportActivityPhase performs on a new activity timestamp,
+// for the controller paths that advance activityAt directly (steer persistence)
+// instead of going through it. An outstanding claim needs no handling here:
+// CompleteQuietAttention already rejects a claim whose activityAt no longer
+// matches live.activityAt.
+func (live *delegateLiveState) rearmQuietCadenceLocked() {
+	if !live.quietNotified {
+		return
+	}
+	live.quietNotified = false
+	live.quietNotifiedAt = time.Time{}
+	live.quietSequence++
+}
+
 func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Time) error {
 	if s == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
