@@ -2,7 +2,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
+import type { MutationOutboxRecord, MutationRecord, MutationRecoveryRecord } from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
@@ -32,6 +32,24 @@ const drafts = createStore<{ records: Map<string, HumanNoteDraft> }>(() => ({ re
 // under; absence is not an acknowledgement and is never treated as one.
 const SETTLED_ELSEWHERE_STATUS =
   "Note is still unsaved: the blocked save it was waiting on is no longer pending in this tab";
+// The state and status text a retained row maps to on the draft's submitted
+// record: a row in the recovery store is a refusal (its reason when the daemon
+// gave one), a blocked row is still waiting on session recovery, any other
+// state is taken as-is. refreshPersistence applies this on a persistence
+// notification; the blur-save retry path applies the same mapping to the row
+// its post-retry read observes.
+function submittedStatusFor(
+  record: MutationOutboxRecord,
+  refused: MutationRecoveryRecord | undefined,
+): { state: "submitting" | "blockedUnknown" | "rejected"; error: string | null } {
+  const state = refused ? "rejected" : record.state;
+  const error = refused
+    ? (refused.recoveryReason ?? "Note could not be saved")
+    : state === "blockedUnknown"
+      ? "Note save is blocked pending session recovery"
+      : null;
+  return { state, error };
+}
 let unsubscribePersistence: (() => void) | undefined;
 let persistenceRead = 0;
 function observePersistence(): void {
@@ -69,12 +87,7 @@ function refreshPersistence(): void {
         if (draft?.submitted?.id !== record.clientMutationId || draft.generation !== draft.submitted.generation)
           continue;
         const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
-        const state = refused ? "rejected" : record.state;
-        const error = refused
-          ? (refused.recoveryReason ?? "Note could not be saved")
-          : state === "blockedUnknown"
-            ? "Note save is blocked pending session recovery"
-            : null;
+        const { state, error } = submittedStatusFor(record, refused);
         put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
       }
     })
@@ -202,10 +215,11 @@ export function blurHumanNote(ref: string, owner: symbol): void {
         // Present in another state: the draft takes the row's actual state
         // rather than the retry's boolean - the same mapping refreshPersistence
         // applies on a persistence notification.
+        const { state, error } = submittedStatusFor(record, refused);
         put(ref, {
           ...latest,
-          submitted: { ...submitted, state: refused ? "rejected" : record.state },
-          error: refused ? (refused.recoveryReason ?? "Note could not be saved") : null,
+          submitted: { ...submitted, state },
+          error,
           saved: false,
         });
         return;
