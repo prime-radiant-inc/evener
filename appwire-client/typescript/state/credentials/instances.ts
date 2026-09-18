@@ -310,6 +310,19 @@ interface LocalMutationMarker {
   // The marker's latest life event: the most recent issue, or the RPC response
   // that re-stamped it; ages the marker out.
   issuedAt: number;
+  // True once the mutation's RPC response has landed. An unsettled marker
+  // belongs to a mutation still in flight, so it is never pruned however old it
+  // looks: a slow response must still be able to restamp it, and that
+  // mutation's late echo must still find it.
+  settled: boolean;
+}
+
+// staleLocalMutation reports whether a marker has outlived its meaning. Only a
+// SETTLED marker can go stale - the echo window ran from its response, so a
+// later echo is not this marker's. A marker still in flight is kept however old
+// its stamp looks.
+function staleLocalMutation(marker: LocalMutationMarker, now: number): boolean {
+  return marker.settled && now - marker.issuedAt > SELF_ECHO_WINDOW_MS;
 }
 
 export function createCredentialInstancesStore(deps: CredentialInstancesDeps): CredentialInstancesStore {
@@ -777,7 +790,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     for (;;) {
       const marker = firstMarker(provider);
       if (marker === undefined) return undefined;
-      if (now - marker.issuedAt <= SELF_ECHO_WINDOW_MS) return marker;
+      if (!staleLocalMutation(marker, now)) return marker;
       retireLocalMutation(marker); // stale: no echo of ours left for it
     }
   }
@@ -788,15 +801,17 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // one mutation's reply retarget another's marker when same-subject mutations
   // overlap.
   //
-  // Arming also drops markers already outside the echo window. A
+  // Arming also drops markers that have outlived their meaning. A
   // provider-instance marker can never be spent by an id-less notification
   // (those stay foreign), so without this a hub that ignores originClientId -
   // an older build - would strand one marker per successful instance mutation
-  // for the life of the connection.
+  // for the life of the connection. Only SETTLED markers are dropped: an
+  // in-flight marker must survive so its slow response can still restamp it and
+  // its late echo still correlate.
   function noteLocalMutation(provider: string | undefined): LocalMutationMarker {
     const now = Date.now();
-    localMutations = localMutations.filter((marker) => now - marker.issuedAt <= SELF_ECHO_WINDOW_MS);
-    const marker: LocalMutationMarker = { provider, issuedAt: now };
+    localMutations = localMutations.filter((marker) => !staleLocalMutation(marker, now));
+    const marker: LocalMutationMarker = { provider, issuedAt: now, settled: false };
     localMutations.push(marker);
     return marker;
   }
@@ -811,11 +826,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     if (index !== -1) localMutations.splice(index, 1);
   }
 
-  // restampLocalMutation moves the exact marker a mutation armed to now, when
-  // its RPC response lands; a marker an early echo already consumed is gone, so
-  // this is then a no-op.
+  // restampLocalMutation settles the exact marker a mutation armed when its RPC
+  // response lands, moving its echo window to now; a marker an early echo
+  // already consumed is gone, so this is then a no-op.
   function restampLocalMutation(marker: LocalMutationMarker): void {
-    if (localMutations.includes(marker)) marker.issuedAt = Date.now();
+    if (!localMutations.includes(marker)) return;
+    marker.issuedAt = Date.now();
+    marker.settled = true;
   }
 
   // True exactly when this notification is this client's own echo of a

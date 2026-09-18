@@ -744,6 +744,42 @@ describe("instance mutations and their own echo", () => {
     expect(store.getState().selfRefresh).toBe(afterOwn);
   });
 
+  test("an in-flight marker survives the echo window, so a slow mutation's own late echo still correlates", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => LISTING);
+    const slow = deferred<InstanceListResponse>();
+    const fast = deferred<InstanceListResponse>();
+    let edits = 0;
+    fake.on("evener/instance/edit", () => (++edits === 1 ? slow.promise : fast.promise));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // A's RPC is still outstanding when it ages past the echo window.
+    const a = store.getState().edit({ name: "work", baseUrl: "https://a" });
+    await vi.advanceTimersByTimeAsync(2500);
+    // Arming B must not prune A's in-flight marker.
+    const b = store.getState().edit({ name: "work", baseUrl: "https://b" });
+    const marked = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+
+    // A's response lands late and its own echo follows: it must still be read as
+    // this client's. Were A pruned when B was armed, this echo would find no
+    // marker and be misread as a foreign listing change.
+    const afterFirstEcho = store.getState().selfRefresh;
+    slow.resolve(LISTING);
+    await a;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(afterFirstEcho);
+
+    fast.resolve(LISTING);
+    await b;
+  });
+
   test("every instance mutation stamps originClientId", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();

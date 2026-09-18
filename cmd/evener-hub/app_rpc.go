@@ -1526,7 +1526,13 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 	case err == nil:
 		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
 	case writeDidApply(err):
-		notifyInstanceUpdated(server, originClientID)
+		// The no-data form, deliberately WITHOUT the origin. The originating
+		// credential mutation has already retired its own marker on the error,
+		// so it cannot attribute this broadcast anyway - and echoing the origin
+		// would make this provider-less broadcast structurally identical to a
+		// provider-instance echo, letting it consume an instance mutation's
+		// marker and turn that mutation's own echo foreign.
+		notifyInstanceUpdated(server, "")
 	}
 }
 
@@ -1546,7 +1552,10 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 // this broadcast so that client can recognize its own echo by id instead of
 // refetching as if another client had changed the list; empty when the caller
 // sent none (an older build, the TUI), which leaves the payload exactly as it
-// was before the field existed.
+// was before the field existed. The credential no-data form notifyAuthWrite
+// uses passes no origin even when the caller sent one: that caller's own marker
+// was retired by the failure, so the broadcast is unattributable, and carrying
+// an id would make it look like a provider-instance echo to the SDK.
 func notifyInstanceUpdated(server *appserver.Server, originClientId string) {
 	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{OriginClientId: originClientId})
 }
