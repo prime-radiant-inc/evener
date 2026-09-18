@@ -631,8 +631,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const ownTail = releaseTail;
     const start = (waited: boolean): Promise<T> => {
       // This write now heads the drain: anything queued behind it waits on its
-      // tail, which reset() may have to release on the write's behalf.
-      releaseHeadTail = ownTail;
+      // tail, which reset() may have to release on the write's behalf. Only a
+      // write in the CURRENT epoch may claim the head: a stale-epoch write
+      // waking after a reset must not overwrite a live head's handle (its own
+      // settle is epoch-guarded and would clear the newer head's release).
+      if (epoch === writeEpoch) releaseHeadTail = ownTail;
       return run(waited);
     };
     const queued = idle
@@ -653,6 +656,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     };
     queued.then(settle, settle);
     return queued;
+  }
+
+  /** Wakes the writes queued behind the head request so they drain through
+   * their dead-generation fence. Called wherever the payload is retired, so a
+   * request that never settles cannot hold the queue hostage across a
+   * disconnect, support drop, detach, or reset. */
+  function releaseAbandonedHead(): void {
+    const release = releaseHeadTail;
+    releaseHeadTail = null;
+    release?.();
   }
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
@@ -785,6 +798,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // authoritative payload on every refresh, leaving the old hub's shortcuts
     // live and editing silently disabled (roborev PR #884 round 11).
     retirePayload();
+    // End the generation for the QUEUE too: a write parked behind a request
+    // that never settles is fenced now, so release it (and the writes behind
+    // it) to drain through their dead-generation fence instead of hanging.
+    // Deliberately NOT done in retirePayload: a support flap retires the
+    // payload but must leave a queued write in place so its row error surfaces
+    // when the in-flight write it queued behind finally settles (see the
+    // settings section's "generation-fenced queued write" case).
+    releaseAbandonedHead();
   }
 
   function beginReadyGeneration(): void {
@@ -1227,12 +1248,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // The draft was composed against a revision the hub no longer has: the
       // same draftConflict the live editor reports. Nothing left the device,
       // so the checkpoint is settled and the draft stays for review.
+      let settleError: string | null = null;
       try {
         persistDraft({ ...checkpoint, writeUncertain: false });
       } catch {
-        // persistDraft has already published storageUnavailable/draftError.
+        // persistDraft has already published storageUnavailable; keep its
+        // actionable error instead of clearing it in the publish below.
+        settleError = DRAFT_SAVE_FAILED_MESSAGE;
       }
-      setState({ saving: false, draftConflict: true, draftError: null });
+      setState({ saving: false, draftConflict: true, draftError: settleError });
       throw new Error("The shortcuts changed before your save could run. Review the current values.");
     }
     if (
@@ -1254,14 +1278,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // durable uncertainty is left untouched: nothing left the device, so a
       // checkpoint this save wrote is settled, but an outcome that is already
       // unknown is not silently cleared.
+      let settleError: string | null = null;
       if (!state.writeUncertain) {
         try {
           persistDraft({ ...checkpoint, writeUncertain: false });
         } catch {
-          // persistDraft has already published storageUnavailable/draftError.
+          // persistDraft has already published storageUnavailable; keep its
+          // actionable error instead of clearing it in the publish below.
+          settleError = DRAFT_SAVE_FAILED_MESSAGE;
         }
       }
-      setState({ saving: false, draftError: null });
+      setState({ saving: false, draftError: settleError });
       throw new Error(UNAVAILABLE_MESSAGE);
     }
     const token = fence.claimWrite();
@@ -1380,12 +1407,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       writeQueue = Promise.resolve();
       pendingWrites = 0;
       writeEpoch += 1;
-      // Wake the writes queued behind an abandoned request now: they fail
-      // their own dead-generation fence and drain, instead of waiting forever
-      // for a request that may never settle.
-      const releaseHead = releaseHeadTail;
-      releaseHeadTail = null;
-      releaseHead?.();
+      // endReadyGeneration above retired the payload, which already released
+      // the abandoned head tail so queued writes drain through their fence.
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).

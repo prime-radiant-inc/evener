@@ -819,6 +819,42 @@ describe("the two write paths serialize through one queue", () => {
     heldGet.resolve(payload(3, [applied]));
     await read;
   });
+
+  test("ending a generation drains a write queued behind a never-settling request", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    // The first request is deliberately never settled.
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const second = store.getState().patchOverrides([applied]);
+
+    store.endReadyGeneration();
+    // The queued write drains through its dead-generation fence instead of
+    // waiting on a request that will never answer.
+    await expect(second).rejects.toThrow();
+    void first;
+  });
+
+  test("a checkpoint settle failure during revalidation keeps the storage error visible", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const save = store.getState().saveDraft(proposed);
+    // The save's revalidation settles the checkpoint when it finds the moved
+    // revision; make that settle write fail.
+    drafts.failSave(true);
+    settlements[0]!.resolve(payload(4, [applied]));
+    await expect(first).resolves.toBeDefined();
+    await expect(save).rejects.toThrow();
+    expect(store.getState()).toMatchObject({ saving: false, draftConflict: true, storageUnavailable: true });
+    expect(store.getState().draftError).not.toBeNull();
+  });
 });
 
 describe("payload rules shared by both apps", () => {
