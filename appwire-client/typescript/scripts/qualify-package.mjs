@@ -640,7 +640,7 @@ const outboxStorage: MutationOutboxStorage = {
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
 ${inertOutboxStorageMethods}
 };
-const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+const outboxOptions: MutationOutboxOptions = { getClient: () => null, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
 const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
@@ -735,7 +735,7 @@ ${inertOutboxStorageMethods}
 const memoryOutbox = new client.MutationOutbox(
   memoryOutboxStorage,
   {
-    isReady: () => true,
+    getClient: () => ({ state: "ready" }),
     onDiscover: (targetRefs, reason) => {
       discovered.push({ targetRefs, reason });
     },

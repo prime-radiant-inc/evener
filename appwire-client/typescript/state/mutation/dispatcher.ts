@@ -19,11 +19,11 @@
 import type { AppwireClientLike } from "../../clientLike";
 import { mutationErrorData, WireError } from "../../errors";
 import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
-import type { MutationOutboxStorage } from "./outbox";
+import { isClientReady, type MutationClientLookup, type MutationOutboxStorage } from "./outbox";
 import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
-  getClient: (targetRef: string) => AppwireClientLike | null | undefined;
+  getClient: MutationClientLookup;
   onStorageChange?: (targetRefs: string[]) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
@@ -107,7 +107,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   async #drainTarget(targetRef: string): Promise<boolean> {
     for (;;) {
       const client = this.#getClient(targetRef);
-      if (client?.state !== "ready") return false;
+      if (!isClientReady(client)) return false;
       const loaded = await this.#storage.nextDispatchable(targetRef);
       if (!loaded) return true;
 

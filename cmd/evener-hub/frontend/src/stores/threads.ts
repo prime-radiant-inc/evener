@@ -45,6 +45,7 @@ import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from ".
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
+  type MutationClientLookup,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
@@ -817,8 +818,14 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // One client lookup for both halves of the mutation runtime: the dispatcher
+  // asks it per target ref, and the outbox asks it ref-less for "is any client
+  // ready right now". Wiring them from one function is what keeps the
+  // dispatcher's readiness and the outbox's from drifting apart.
+  const getClient: MutationClientLookup = (targetRef) =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
   const dispatcher = new MutationDispatcher(storage, {
-    getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
+    getClient,
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
@@ -868,7 +875,7 @@ function getMutationRuntime(): MutationRuntime | null {
     },
   });
   const outbox = new MutationOutbox(storage, {
-    isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
+    getClient,
     onDiscover: (targetRefs) => {
       if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
