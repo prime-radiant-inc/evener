@@ -969,6 +969,42 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draftConflict).toBe(true);
   });
 
+  // editDraft always restamped currentGeneration(), laundering the very
+  // conflict the test above proves: an edit made to an already-conflicted
+  // draft (composed against a PREVIOUS hub session) must not silently adopt
+  // the new live generation as if this edit itself re-confirmed it valid
+  // there - only rebaseDraft's explicit review may re-earn the stamp.
+  test("editing an already-conflicted draft keeps it stale until rebased, instead of silently re-stamping the live generation", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
+
+    // A hub replacement reporting the same revision by coincidence.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().draftConflict).toBe(true);
+    const conflictedGeneration = store.getState().draft?.generation;
+
+    // Editing the still-conflicted draft must not restamp it to the new
+    // live generation - it keeps the generation it was actually composed
+    // against, and stays flagged stale.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Meta+Shift+P" }];
+    store.getState().editDraft(otherRules);
+    expect(store.getState().draft).toEqual({
+      version: 1,
+      revision: 3,
+      rules: otherRules,
+      generation: conflictedGeneration,
+    });
+    expect(store.getState().draftConflict).toBe(true);
+
+    // Only an explicit rebase re-earns the current generation and clears it.
+    store.getState().rebaseDraft(3);
+    expect(store.getState().draft?.generation).not.toBe(conflictedGeneration);
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
   // A restore's own generation stamp was the live one just because a live
   // generation existed, so a storage-recovery restore (discardDraft's
   // refuse-and-reclassify, refreshOverrides' one-more-restore-attempt) could
