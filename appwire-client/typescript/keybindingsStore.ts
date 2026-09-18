@@ -598,6 +598,18 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * state so a never-resolving write cannot leak into the next test. */
   let writeQueue: Promise<void> = Promise.resolve();
 
+  /** Serializes one write behind the previous write's full settlement (success
+   * OR failure): a failed write must not block the queue, and the next write
+   * composes against whatever state the failure left. */
+  function enqueueWrite<T>(run: () => Promise<T>): Promise<T> {
+    const queued = writeQueue.then(run, run);
+    writeQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
     // The draft restore is part of the initial state so a host that builds
@@ -976,6 +988,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
   }
 
+  /** The payload a fenced or abandoned write returns: its own reply landed
+   * nothing, so the store's current confirmed state is the answer. */
+  function currentPayload(state: KeybindingsStoreState): KeybindingsOverrides {
+    return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
+  }
+
   function patchOverrides(
     rulesOrCompose: readonly KeybindingsRule[] | (() => readonly KeybindingsRule[]),
   ): Promise<KeybindingsOverrides> {
@@ -1036,10 +1054,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           expectedRevision: state.revision,
           config: { version: 1, rules: cloneRules(rules) },
         });
-        if (!stillMine()) {
-          const current = getState();
-          return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
-        }
+        if (!stillMine()) return currentPayload(getState());
         const payload = fromWireOverrides(result);
         if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
         applyHubOverrides(payload);
@@ -1069,12 +1084,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // Chain behind the previous write's SETTLEMENT: a failed write must not
     // block the queue, and the next write composes against whatever state
     // the failure left (the conflict path already refreshed it).
-    const result = writeQueue.then(run, run);
-    writeQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+    return enqueueWrite(run);
   }
 
   /** The draft editor's gate: a confirmed, supported, idle hub state with a
@@ -1134,23 +1144,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // Chain behind the previous write's SETTLEMENT, exactly as patchOverrides
     // does: a failed write must not block the queue, and the next write
     // composes against whatever state the failure left.
-    const queued = writeQueue.then(
-      () => runQueuedSave(callGeneration, revision, checked, checkpoint),
-      () => runQueuedSave(callGeneration, revision, checked, checkpoint),
-    );
-    writeQueue = queued.then(
-      () => undefined,
-      () => undefined,
-    );
-    return queued;
+    return enqueueWrite(() => runQueuedSave(callGeneration, revision, checked, checkpoint));
   }
 
   /** The queued half of saveDraft: the request and its post-reply sequence,
-   * run only once no other write holds the wire. Revalidates the intent the
-   * call-time gate checked against the state that write settled - a generation
-   * that ended, support that dropped, an unknown outcome, or a confirmed
-   * revision that moved under the draft makes it stale, and then nothing
-   * leaves the device. */
+   * run only once no other write holds the wire. Revalidates the intent
+   * against the state that write settled before anything leaves the device. */
   async function runQueuedSave(
     callGeneration: number,
     revision: number,
@@ -1163,7 +1162,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // was queued: retirePayload already published writeUncertain from
       // `saving`, and the checkpoint is its durable record, so nothing leaves.
       // Return the current payload, as a fenced reply does.
-      return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
+      return currentPayload(state);
     }
     if (
       state.storageUnavailable ||
@@ -1190,9 +1189,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const stillMine = () => fence.writeStillMine(generation, token);
     let result: unknown;
     try {
-      // The saving publish above may have disposed the store or retired the
-      // payload (a host tearing down on the transition): the checkpoint stays
-      // for the next instance to restore, and nothing leaves.
+      // A teardown between this save's call-time publish and here may have
+      // disposed the store or retired the payload: the checkpoint stays for
+      // the next instance to restore, and nothing leaves.
       if (!stillMine()) throw new Error("Shortcut save was cancelled.");
       result = await client.request("evener/settings/keybindings/patch", {
         expectedRevision: revision,
@@ -1230,10 +1229,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     //     proposal stays for review. A cleanup failure keeps the draft in view
     //     with the port marked unavailable, and never turns a confirmed write
     //     back into an unknown outcome.
-    if (!stillMine()) {
-      const state = getState();
-      return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
-    }
+    if (!stillMine()) return currentPayload(getState());
     const value = fromWireOverrides(result);
     if (value === undefined || value.loadError !== undefined || value.revision < revision) {
       setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_MESSAGE });
