@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -163,13 +164,12 @@ func TestRetirementSafetyDetachedLifetime(t *testing.T) {
 			}
 			// This is root's first successfully-processed turn, so it also
 			// launched the async session namer (launchInitialPromptNamer,
-			// session_namer.go), which is never joined before ProcessInput
-			// returns. Wait for it here too, for the same reason
-			// assertRetirementEvidenceEligible does (#1879): a raw TryClaim
-			// this close to that turn can otherwise race the namer goroutine
-			// and see a spurious "autonomous" blocker.
-			root.sendersWG.Wait()
-			claim, state, err = c.TryClaim(true)
+			// session_namer.go). retirementClaimAfterFirstTurn waits for it
+			// before claiming, for the same reason assertRetirementEvidenceEligible
+			// does (#1879): a raw TryClaim this close to that turn can
+			// otherwise race the namer goroutine and see a spurious
+			// "autonomous" blocker.
+			claim, state, err = retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", state, err)
 			}
@@ -1369,17 +1369,26 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 	}
 }
 
+// retirementClaimAfterFirstTurn is the shared guard for a TryClaim call made
+// close to a session's first non-empty turn. That turn also launches the
+// async session namer (launchInitialPromptNamer / launchCompactionNamerGated,
+// session_namer.go) in its own goroutine, which is never joined before
+// ProcessInput returns and correctly holds an "autonomous" blocker
+// (session_retirement_evidence.go) until it settles. Waiting on every
+// registered sender before reading evidence is what
+// assertRetirementEvidenceEligible and TestRetirementSafetyDetachedLifetime's
+// own raw eligibility check both need to avoid racing that goroutine and
+// intermittently reporting a settled owner ineligible (#1879); this is the
+// one place that wait lives, so both call it, and both are exercised by the
+// same regression tests below.
+func retirementClaimAfterFirstTurn(root *Session, c *RetirementController) (*RetirementClaim, RetirementSnapshot, error) {
+	root.sendersWG.Wait()
+	return c.TryClaim(true)
+}
+
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	t.Helper()
-	// The session namer (launchInitialPromptNamer / launchCompactionNamerGated,
-	// session_namer.go) starts in its own goroutine and is never joined before
-	// the triggering turn returns; while it is in flight it correctly reports
-	// itself as an "autonomous" blocker (session_retirement_evidence.go). Wait
-	// for every such registered sender to settle before reading evidence, or
-	// this call races that goroutine and intermittently reports a settled
-	// owner ineligible (#1879).
-	c.root.sendersWG.Wait()
-	claim, state, err := c.TryClaim(true)
+	claim, state, err := retirementClaimAfterFirstTurn(c.root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("settled owner not eligible: %+v, %v", state, err)
 	}
@@ -1388,33 +1397,47 @@ func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	}
 }
 
-// TestRetirementEvidenceEligibleAwaitsInFlightNamer is the deterministic
+// TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer is the deterministic
 // regression for #1879: launchInitialPromptNamer (session_namer.go) starts
 // the session namer in its own goroutine and never joins it before the
-// triggering ProcessInput returns, while that goroutine correctly reports
-// itself as an "autonomous" blocker (session_retirement_evidence.go) until it
-// settles. assertRetirementEvidenceEligible is the shared helper more than a
-// dozen retirement tests call right after a turn settles; without waiting
-// for the namer first, that call races the namer's own goroutine and
-// intermittently fails with "settled owner not eligible" on a loaded CI
-// runner.
+// triggering ProcessInput returns, while that goroutine correctly holds an
+// "autonomous" blocker (session_retirement_evidence.go) until it settles.
+// retirementClaimAfterFirstTurn is the one place assertRetirementEvidenceEligible
+// and TestRetirementSafetyDetachedLifetime's own raw eligibility check both
+// wait for it; this exercises that shared function directly, so reverting its
+// wait reproduces both #1879 occurrences (2 of the 4 named tests / round 1's
+// and round 2's CI failures) at once.
 //
-// This holds the namer open on <-release and runs the helper in its own
-// goroutine so the two states are observed in program order rather than
-// raced against a wall-clock guess: while the namer is provably still
-// parked on <-release, sendersWG's count for it cannot have reached zero, so
-// a non-blocking read of helperDone can never see it closed -- not a race,
-// a consequence of sync.WaitGroup's own invariant. Only once release is
-// closed can the helper possibly settle. Reverting the helper's
-// sendersWG.Wait() call makes the first read observe an immediate Fatal
-// instead (eligibility is genuinely refused while the real namer holds its
-// blocker), which this proves by construction rather than by timing.
-func TestRetirementEvidenceEligibleAwaitsInFlightNamer(t *testing.T) {
+// Only retirementClaimAfterFirstTurn itself runs on the spawned goroutine (no
+// *testing.T call can run there: Fatal would only unwind that goroutine, not
+// the test). started, closed as that goroutine's first statement, rules out
+// the goroutine simply never having been scheduled before the read below --
+// the failure mode a prior version of this test had. The runtime.Gosched()
+// loop after it then gives a buggy (un-waited) claim every opportunity to
+// race ahead and settle before that read, without a wall-clock literal; it
+// makes an early, specific failure likely but is not itself what proves
+// anything, and the comment on the second select below is the one entitled
+// to say so.
+//
+// The second select, after release, is the actual proof: resultCh is
+// buffered, so whatever it holds is fixed at the instant
+// retirementClaimAfterFirstTurn's TryClaim call actually ran, independent of
+// when this goroutine reads it. sync.WaitGroup's own invariant guarantees a
+// correct implementation's sendersWG.Wait() cannot return before release is
+// closed, so that call cannot have happened yet in the correct
+// implementation; a version that skips the wait calls TryClaim immediately
+// against the still-blocked real namer and gets back a genuine ineligible
+// verdict, which is exactly the value this second select receives, whenever
+// it happens to run.
+func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
 		return finalResponse("turn settled")
 	}))
 	c := retirementEvidenceController(t, root)
 	held, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseNamer) // never leak the namer goroutine on an earlier Fatal
 	namer := llm.NewClient()
 	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
 		close(held)
@@ -1425,81 +1448,43 @@ func TestRetirementEvidenceEligibleAwaitsInFlightNamer(t *testing.T) {
 	if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-held // the namer goroutine is provably still in flight right here
-
-	helperDone := make(chan struct{})
-	go func() {
-		defer close(helperDone)
-		assertRetirementEvidenceEligible(t, c)
-	}()
 	select {
-	case <-helperDone:
-		t.Fatal("eligibility check completed while the namer was still held in flight")
-	default:
-		// The namer has not been released, so sendersWG's count for it cannot
-		// be zero yet: the helper provably cannot have settled.
+	case <-held: // the namer goroutine is provably still in flight right here
+	case <-time.After(5 * time.Second): // TRIPWIRE: the fixture's namer call is synchronous from ProcessInput; reaching it is near-instant.
+		t.Fatal("namer fixture never reached its held gate")
 	}
 
-	close(release)
-	select {
-	case <-helperDone:
-	case <-time.After(5 * time.Second): // TRIPWIRE: real settlement is microseconds once the namer is released; this only bounds a genuine hang.
-		t.Fatal("eligibility check did not complete after the namer was released")
-	}
-}
-
-// TestRetirementDetachedLifetimeEligibilityAwaitsInFlightNamer is the
-// deterministic regression for the second #1879 occurrence at 2e7c2fe0a:
-// TestRetirementSafetyDetachedLifetime checks eligibility with a raw
-// c.TryClaim(true) call right after root's first turn, not through
-// assertRetirementEvidenceEligible, so round 1's fix to that shared helper
-// never covered it. Same construction as
-// TestRetirementEvidenceEligibleAwaitsInFlightNamer: the namer is held on
-// <-release, so sendersWG's count for it cannot be zero, so the raw claim
-// cannot yet report eligible -- proved by the WaitGroup invariant, not by
-// timing.
-func TestRetirementDetachedLifetimeEligibilityAwaitsInFlightNamer(t *testing.T) {
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
-		return finalResponse("turn settled")
-	}))
-	c := retirementEvidenceController(t, root)
-	held, release := make(chan struct{}), make(chan struct{})
-	namer := llm.NewClient()
-	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
-		close(held)
-		<-release
-		return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
-	}})
-	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
-	if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
-		t.Fatal(err)
-	}
-	<-held // the namer goroutine is provably still in flight right here
-
-	type claimResult struct {
+	type outcome struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
 		err   error
 	}
-	resultCh := make(chan claimResult, 1)
+	started := make(chan struct{})
+	resultCh := make(chan outcome, 1)
 	go func() {
-		root.sendersWG.Wait()
-		claim, state, err := c.TryClaim(true)
-		resultCh <- claimResult{claim, state, err}
+		close(started)
+		claim, state, err := retirementClaimAfterFirstTurn(root, c)
+		resultCh <- outcome{claim, state, err}
 	}()
 	select {
-	case <-resultCh:
-		t.Fatal("claim settled while the namer was still held in flight")
+	case <-started:
+	case <-time.After(5 * time.Second): // TRIPWIRE: goroutine dispatch; near-instant on any live scheduler.
+		t.Fatal("claim goroutine never started")
+	}
+	for range 10000 {
+		runtime.Gosched() // best-effort: see the doc comment above.
+	}
+	select {
+	case res := <-resultCh:
+		t.Fatalf("claim settled while the namer was still held in flight: %+v %v", res.state, res.err)
 	default:
-		// The namer has not been released, so sendersWG's count for it cannot
-		// be zero yet: the wait below it provably cannot have returned.
 	}
 
-	close(release)
+	releaseNamer()
 	select {
 	case res := <-resultCh:
 		if res.err != nil || res.claim == nil {
-			t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", res.state, res.err)
+			t.Fatalf("claim blocked eligibility after the namer released: %+v %v", res.state, res.err)
 		}
 		if err := c.Abort(res.claim, ""); err != nil {
 			t.Fatal(err)
