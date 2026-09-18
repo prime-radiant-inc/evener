@@ -828,10 +828,59 @@ func TestEmbeddedSkillsDir_RepublishesWhenVerifiedCopyDisappears(t *testing.T) {
 	}
 }
 
+// processCopyRootRefused reports whether the platform refuses root as the
+// process-lifetime extraction root. It runs the same gate the degraded path runs
+// on its temp root — ensureTrustedProcessRoot, which consults
+// processCopyRootTrusted — so the skip travels with the platform's own decision
+// instead of a hard-coded runtime.GOOS.
+func processCopyRootRefused(root string) bool {
+	_, err := resolveTrustedRoot(root, ensureTrustedProcessRoot)
+	return err != nil
+}
+
+// skipIfProcessCopyRefused skips a test whose expectations require the degraded
+// process-lifetime copy where this platform refuses its temp root: the copy
+// fails closed there, so the test would fail for a platform decision rather than
+// a defect.
+func skipIfProcessCopyRefused(t *testing.T) {
+	t.Helper()
+	if processCopyRootRefused(os.TempDir()) {
+		t.Skip("process-lifetime copy is refused on this platform")
+	}
+}
+
+// The degraded-copy guard must track the platform's process-root decision, not a
+// hard-coded GOOS, so the tests that need the copy skip exactly where the
+// platform refuses the root.
+func TestProcessCopyRootRefused_TracksThePlatformDecision(t *testing.T) {
+	// A root the platform's process-root predicate rejects is refused.
+	untrusted := filepath.Join(t.TempDir(), "untrusted")
+	if err := os.Mkdir(untrusted, 0o700); err != nil {
+		t.Fatalf("create untrusted root: %v", err)
+	}
+	if err := os.Chmod(untrusted, 0o777); err != nil {
+		t.Fatalf("open untrusted root: %v", err)
+	}
+	if !processCopyRootRefused(untrusted) {
+		t.Fatal("a root the process-root predicate rejects was accepted")
+	}
+
+	// A root the platform vouches for is accepted. Platforms that vouch for no
+	// temp root at all (Windows) refuse every root, so only assert this direction
+	// where the gate accepts one.
+	trusted := t.TempDir()
+	if _, err := resolveTrustedRoot(trusted, ensureTrustedProcessRoot); err == nil {
+		if processCopyRootRefused(trusted) {
+			t.Fatal("a root the process-root gate accepts was refused")
+		}
+	}
+}
+
 // The shared content-addressed cache is best-effort: when it cannot be resolved,
 // the process keeps one private extraction of the bundled skills for the rest of
 // its lifetime instead of failing resolution.
 func TestEmbeddedSkillsDir_FallsBackToAProcessLifetimeCopy(t *testing.T) {
+	skipIfProcessCopyRefused(t)
 	// A base that cannot be staged into (it does not exist) fails
 	// materialization, so there is nothing to publish or adopt.
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
@@ -918,6 +967,7 @@ func resetProcessSkills() {
 // A temp cleaner can remove the process copy while the process lives; the next
 // resolution must extract a fresh one rather than hand back a dangling path.
 func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyDisappears(t *testing.T) {
+	skipIfProcessCopyRefused(t)
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
 	t.Cleanup(resetProcessSkills)
 
@@ -954,6 +1004,7 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyDisappears(t *testing.T) 
 // A cleaner that removes files but leaves the process directory must not leave
 // an incomplete tree in place.
 func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsIncomplete(t *testing.T) {
+	skipIfProcessCopyRefused(t)
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
 	t.Cleanup(resetProcessSkills)
 
