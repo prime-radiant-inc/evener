@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
+import { resetSettingsOverviewStoreForTests, type SettingsOverviewStoreState } from "../../../stores/settingsOverview";
 import { AgentsSection } from "./agents";
-import type { SettingsOverviewStore } from "./overviewSeam";
 
 // The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
 // jsdom has no layout, so placement contracts are pinned against the
@@ -18,16 +19,22 @@ afterEach(() => {
   cleanup();
 });
 
-function fixture(overrides: Partial<SettingsOverviewStore> = {}): () => SettingsOverviewStore {
-  return () => ({ data: null, loading: false, error: null, fetch: async () => {}, ...overrides });
+function fixture(overrides: Partial<SettingsOverviewStoreState> = {}): () => SettingsOverviewStoreState {
+  return () => ({
+    data: null,
+    loading: false,
+    error: null,
+    fetch: async () => {},
+    refresh: async () => {},
+    ...overrides,
+  });
 }
 
 describe("AgentsSection", () => {
   test("calls fetch() once on mount (fetch caches; the store owns re-fetch decisions)", () => {
     // useConnectedEffect gates the mount-time fetch on the connection being
-    // ready (see that hook's own doc comment) - true of the real store this
-    // section will front onto once T4 lands, even though this placeholder's
-    // own fetch is a no-op that doesn't itself touch the wire.
+    // ready (see that hook's own doc comment) - true of the real
+    // settingsOverview store this section now fronts onto.
     connectionStore.setState({ state: "ready" });
     const fetchFn = vi.fn().mockResolvedValue(undefined);
     render(<AgentsSection sectionId="agents" useOverview={fixture({ fetch: fetchFn })} />);
@@ -84,5 +91,20 @@ describe("AgentsSection", () => {
   test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
     expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
     expect(css).toMatch(/\.builtin\s*\{[^}]*margin-left:\s*auto/);
+  });
+});
+
+describe("AgentsSection default overview hook", () => {
+  test("reads the real settingsOverview store: fetches evener/settings/overview and renders its agents", async () => {
+    resetSettingsOverviewStoreForTests();
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    const data: SettingsOverviewResponse = { agents: [{ name: "store-agent" }] };
+    fake.on("evener/settings/overview", () => data);
+
+    render(<AgentsSection sectionId="agents" />);
+
+    expect(await screen.findByText("store-agent")).toBeTruthy();
+    expect(fake.calls).toContainEqual({ method: "evener/settings/overview", params: {} });
   });
 });
