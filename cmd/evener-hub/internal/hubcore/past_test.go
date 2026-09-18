@@ -27,6 +27,119 @@ func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 	}
 }
 
+// fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow pins a Rebuild swapping in
+// the row it scanned (v1) after a Find's probe already read the newer on-disk
+// meta (v2): foldOne must replace the stale indexed row, not keep it.
+func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "scanned-v1", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "probed-v2", UpdatedAt: time.Unix(1_700_000_100, 0).UTC()})
+	probe, ok := idx.probeOne(id)
+	if !ok {
+		t.Fatal("expected probeOne to read the session")
+	}
+	idx.foldOne(probe)
+
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index after the fold")
+	}
+	if got.Meta.Name != "probed-v2" {
+		t.Fatalf("fold kept the staler indexed row: Name=%q, want %q", got.Meta.Name, "probed-v2")
+	}
+	if fired != 1 {
+		t.Fatalf("onChange fired %d times for the fold replacement, want 1", fired)
+	}
+}
+
+// fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename pins the rename half
+// of the freshness check: a rename preserves UpdatedAt and stamps NameUpdatedAt
+// (app_rename.go), so a probe that read the renamed meta must still replace a
+// stale scanned row.
+func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "old-name", NameUpdatedAt: base, UpdatedAt: base})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+
+	// Rename-only update: same UpdatedAt, newer NameUpdatedAt.
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "new-name", NameUpdatedAt: base.Add(time.Minute), UpdatedAt: base})
+	probe, ok := idx.probeOne(id)
+	if !ok {
+		t.Fatal("expected probeOne to read the session")
+	}
+	idx.foldOne(probe)
+
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index after the fold")
+	}
+	if got.Meta.Name != "new-name" {
+		t.Fatalf("fold discarded the rename-only update: Name=%q, want %q", got.Meta.Name, "new-name")
+	}
+	if fired != 1 {
+		t.Fatalf("onChange fired %d times for the rename fold, want 1", fired)
+	}
+}
+
+// fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold pins that Find returns the
+// row the index actually holds after foldOne, not the probe's. A concurrent
+// writer can index a strictly newer row for the id between this Find's cache
+// lookup and foldOne; returning the probe's older meta would hand the caller
+// stale state in exactly the probe-vs-scan race this addresses.
+func fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "probed-v1", UpdatedAt: base})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+
+	prev := pastAfterFindProbe
+	pastAfterFindProbe = func() {
+		// A concurrent writer indexed a newer row for the same id first.
+		idx.foldOne(PastEntry{
+			ID:       id,
+			Meta:     schema.SessionMeta{ID: id, Name: "live-v2", UpdatedAt: base.Add(time.Minute)},
+			StateDir: proj,
+		})
+	}
+	defer func() { pastAfterFindProbe = prev }()
+
+	got, ok := idx.Find(id)
+	if !ok {
+		t.Fatal("expected Find to surface the session")
+	}
+	if got.Meta.Name != "live-v2" {
+		t.Fatalf("Find returned the probe's stale meta: Name=%q, want %q", got.Meta.Name, "live-v2")
+	}
+}
+
 func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	root := t.TempDir()
 	projA := filepath.Join(root, "projects", "project-a-0123456789")

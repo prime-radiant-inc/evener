@@ -1093,6 +1093,11 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	return out
 }
 
+// pastAfterFindProbe, when non-nil, runs in Find after a miss's probe and before
+// foldOne folds the row. It is a deterministic test seam for interleaving a
+// concurrent writer that indexes a newer row first; nil in production.
+var pastAfterFindProbe func()
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1108,7 +1113,16 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if !found {
 		return PastEntry{}, false
 	}
+	if pastAfterFindProbe != nil {
+		pastAfterFindProbe()
+	}
 	i.foldOne(entry)
+	// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
+	// swapped it in after this Find's cache lookup missed, or another fold won the
+	// id — so return what the index actually holds, not the probe's older meta.
+	if live, ok := i.findCached(sessionID); ok {
+		return live, true
+	}
 	return entry, true
 }
 
@@ -1167,15 +1181,21 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 // UpdateMeta replaces an existing one.
 func (i *PastIndex) foldOne(entry PastEntry) {
 	i.mu.Lock()
-	if _, ok := i.byID[entry.ID]; ok {
-		// A concurrent Rebuild indexed it first; its entry is at least as
-		// fresh as the probe's (both read the same file), so keep it.
+	if old, ok := i.byID[entry.ID]; ok && !metaNewer(entry.Meta, old.Meta) {
+		// A concurrent Rebuild indexed it first and its row is at least as fresh
+		// as the probe's; keep it. The reverse — the scan read v1, an external
+		// writer then bumped the meta to v2, and the probe read v2 — must not keep
+		// the stale scanned row, so the freshness check falls through to replace.
 		i.mu.Unlock()
 		return
 	}
 	i.byID[entry.ID] = entry
 	fresh := make([]PastEntry, 0, len(i.all)+1)
-	fresh = append(fresh, i.all...)
+	for _, e := range i.all {
+		if e.ID != entry.ID {
+			fresh = append(fresh, e)
+		}
+	}
 	fresh = insertSorted(fresh, entry)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
@@ -1183,4 +1203,19 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 	gen := i.gen
 	i.mu.Unlock()
 	i.publishAndSignal(all, gen)
+}
+
+// metaNewer reports whether a is a newer revision of the same session than b,
+// by the fields the writers version with: UpdatedAt for content/activity, and
+// NameUpdatedAt for renames. The rename path (and SaveSessionMeta) preserves
+// UpdatedAt and stamps NameUpdatedAt instead, so UpdatedAt alone would judge a
+// rename-only update "not newer".
+func metaNewer(a, b schema.SessionMeta) bool {
+	if a.UpdatedAt.After(b.UpdatedAt) {
+		return true
+	}
+	if b.UpdatedAt.After(a.UpdatedAt) {
+		return false
+	}
+	return a.NameUpdatedAt.After(b.NameUpdatedAt)
 }
