@@ -547,9 +547,13 @@ function SpawnForm({
   // the settle window after a cwd/harness change — or while a credential
   // change-triggered refresh is pending — modelCatalog still holds the
   // previous snapshot, and a value valid only there must not validate.
-  // null means never successfully loaded (or the last refresh failed):
-  // validation fail-closes through that window instead of accepting a
-  // value the current scope never offered.
+  // null means never successfully loaded (or the last refresh failed): a
+  // /model value then cannot be validated against this scope at all, so the
+  // pre-start check treats it as "don't know" and forwards a shape-valid value
+  // for thread/start to judge (effort falls back to its ladder). Only a
+  // scope/loader MISMATCH is proven staleness and still fail-closes: there
+  // modelCatalog holds the previous snapshot, and a value valid only in that
+  // scope must not validate.
   const [modelCatalogStamp, setModelCatalogStamp] = useState<{
     scope: string;
     loader: () => Promise<ModelCatalog>;
@@ -1433,6 +1437,13 @@ function SpawnForm({
     modelCatalogStamp.loader === loadCatalog
       ? modelCatalog
       : null;
+  // Proven staleness: a snapshot committed for a DIFFERENT scope or loader.
+  // Unlike a never-committed catalog (stamp null), this is positive knowledge
+  // that the snapshot on hand belongs elsewhere, so validation fail-closes on
+  // it rather than treating the value as "don't know".
+  const modelCatalogScopeMismatch =
+    modelCatalogStamp !== null &&
+    (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
 
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
@@ -1780,20 +1791,26 @@ function SpawnForm({
   // A valid /model invocation supplies the missing model itself, so it
   // bootstraps past the required-model guard: the value rides thread/start
   // (doSpawn's launch-scalar path below), and neither the button nor
-  // handleSpawn may refuse a submit that CAN succeed. Unknown values still
-  // fail in doSpawn's own pre-start validation with the blocked toast. The
-  // catalog half is load-bearing: an unloaded catalog resolves zero items,
-  // so a known value typed before it lands does NOT bootstrap (and doSpawn
-  // fail-closes it the same way) - the user picks a model once the list
-  // they validated against exists.
+  // handleSpawn may refuse a submit that CAN succeed.
+  //
+  // A catalog that never committed for this scope (stamp null and no scope
+  // mismatch) cannot vouch for the value, so - parallel to doSpawn - a
+  // shape-valid `provider/model` still bootstraps and thread/start judges it;
+  // withholding Start here would dead-end the ~250ms settle window (or a
+  // failed refresh) for a value that would succeed. A scope-matched catalog
+  // still has to list the value, and proven staleness (another scope/loader's
+  // stamp) still withholds Start.
   const slashModelBootstrap =
     modelRequired && pluginSelectionSupported && attachments.items.length === 0
       ? (() => {
           const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
           if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
-          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), match.argsText) !== undefined
-            ? match.argsText.trim()
-            : null;
+          const value = match.argsText.trim();
+          if (scopedModelCatalog === null && !modelCatalogScopeMismatch) {
+            const { provider, model: modelId } = splitModelId(value);
+            return provider !== "" && modelId !== "" ? value : null;
+          }
+          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), value) !== undefined ? value : null;
         })()
       : null;
 
@@ -1906,9 +1923,6 @@ function SpawnForm({
         // status quo. Conflating "don't know" with "known empty" would
         // refuse valid values whenever the catalog lists the model without
         // ladder details.
-        const scopeMismatch =
-          modelCatalogStamp !== null &&
-          (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
         const scopedEffortEntry =
           effortModel === ""
             ? undefined
@@ -1920,8 +1934,19 @@ function SpawnForm({
         // validate a value the new scope never offered. Passing "" keeps the
         // stale chip out of the candidate set (bare effort fails closed on
         // the empty query regardless).
-        const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
-        const scopedEffortCurrent = scopeMismatch ? "" : reasoningEffort;
+        const scopedEffortLevels = modelCatalogScopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
+        const scopedEffortCurrent = modelCatalogScopeMismatch ? "" : reasoningEffort;
+        // A model value cannot be validated against a catalog that never
+        // committed for the current scope: during the ~250ms CATALOG_SETTLE_MS
+        // window after mount - or after a failed refresh - resolveSpawnModelItems
+        // resolves zero items for EVERY value, known or not, so fail-closing
+        // here toasts a spurious "unknown value" for a model the scope does
+        // offer. Treat it as "don't know" and forward the typed value as the
+        // launch scalar, letting the start call's own check decide. Only PROVEN
+        // staleness (a stamp for another scope/loader) and a scope-matched
+        // catalog that omits the value still fail closed.
+        const modelCatalogUnknown =
+          builtinMatch.command.id === "model" && scopedModelCatalog === null && !modelCatalogScopeMismatch;
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
@@ -1936,7 +1961,7 @@ function SpawnForm({
           builtinMatch.command.id === "reasoning-effort" && value === ""
             ? undefined
             : findBuiltinArgument(items, builtinMatch.argsText);
-        if (!matched) {
+        if (!matched && !modelCatalogUnknown) {
           const message = value
             ? `/${builtinMatch.command.id}: unknown value "${value}"`
             : `/${builtinMatch.command.id} needs a value`;
@@ -1946,8 +1971,21 @@ function SpawnForm({
           setBusyStartedAt(null);
           return;
         }
-        if (builtinMatch.command.id === "model" && matched) {
-          const { provider, model: modelId } = splitModelId(matched.id);
+        if (builtinMatch.command.id === "model") {
+          // A forwarded-but-unvalidated value (modelCatalogUnknown) is RAW user
+          // text, not a provider/model catalog id: "foo" splits to provider
+          // "foo" with an empty model, and the launch would carry no model at
+          // all. Refuse the same way the remote path above does rather than
+          // silently drop the request - this is a shape check, not a catalog
+          // judgment, so it holds even while the catalog is unknown.
+          const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
+          if (provider === "" || modelId === "") {
+            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
+            busyRef.current = false;
+            setBusy(false);
+            setBusyStartedAt(null);
+            return;
+          }
           slashScalars = { modelProvider: provider, model: modelId };
         } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
           slashScalars = { reasoningEffort: matched.id };

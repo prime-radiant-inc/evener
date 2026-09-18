@@ -88,7 +88,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	// child), so the fallthrough below keeps the same dirs: the catalog then
 	// shows what the resulting session loads instead of going empty.
 	pluginDirs := resolved.Effective.PluginDirs
-	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins); err != nil {
+	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins, cfg.PluginResolveManager); err != nil {
 		// Same admission rule thread/start uses (app_threadlifecycle.go): a
 		// resolver failure is fatal when a selection must be honored, and
 		// always when the failure IS the caller leaving (canceled/deadline on
