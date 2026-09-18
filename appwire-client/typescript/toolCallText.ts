@@ -7,6 +7,7 @@
 // helpers work from text and JSON arguments because their current callers do
 // not share a stable structured state shape; a body that has a useful producer
 // state parses item.raw at its own domain boundary.
+import { isPlainObject } from "./plainObject";
 
 // clip is a head-truncation: text at or under `max` passes through
 // unchanged; over budget, keeps the first `max` chars and appends a single
@@ -109,10 +110,6 @@ export function parseJSONObject(text: string | undefined): Record<string, unknow
   } catch {
     return undefined;
   }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // trailingBracketFooter extracts the inner text of a trailing "[...]"

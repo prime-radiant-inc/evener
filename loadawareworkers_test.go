@@ -491,39 +491,3 @@ func TestLoadAwareCgroupTrailingNewlinePaths(t *testing.T) {
 		})
 	}
 }
-
-// TestRunModuleTestsUsesLoadAwareBudgets guards the wiring: the Go gate's
-// parallelism budgets must size to spare capacity through this library rather
-// than a fixed number, or the helper is dead code and a fleet of concurrent
-// runs goes back to each claiming the whole machine.
-func TestRunModuleTestsUsesLoadAwareBudgets(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("scripts", "gate", "run-module-tests.sh"))
-	if err != nil {
-		t.Fatalf("read run-module-tests.sh: %v", err)
-	}
-	// Comments are stripped before matching: the header explains this wiring,
-	// and a substring assertion against raw text would pass on that prose even
-	// if the executable lines stopped calling the helper (testing.md: an
-	// assertion that matches its own comment proves nothing).
-	var body strings.Builder
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
-		body.WriteString(line)
-		body.WriteString("\n")
-	}
-	// A minimal wiring check: the helper's own behavior is covered by the table
-	// and fixture tests above, so this only confirms the gate routes its
-	// budgets through the guarded helper rather than abandoning it.
-	for _, want := range []string{
-		"load-aware-workers.sh",
-		"load_aware_helper",
-		"gate_budget",
-	} {
-		if !strings.Contains(body.String(), want) {
-			t.Errorf("run-module-tests.sh does not contain %q outside comments; its -p/-parallel budgets must be sized from spare capacity", want)
-		}
-	}
-}

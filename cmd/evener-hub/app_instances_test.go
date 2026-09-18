@@ -3278,8 +3278,8 @@ func TestInstances_EditRenameReportsTheMoveFailureOverAFailedReload(t *testing.T
 // A rename whose credentials moved cleanly and whose final reload failed is
 // as persisted as one that succeeded outright: providers.toml and the
 // credentials both carry the new name, and only the hub's own view is behind.
-// So it is a renamePersistedError too, which is what has the handler announce
-// it to the clients whose lists that file just made stale. The unreadable
+// So it is an applied write too, which is what has the handler announce it to
+// the clients whose lists that file just made stale. The unreadable
 // config is written from the loadAuth seam for the reason the sibling test
 // above gives: it is the one point between the move and the reload a test can
 // reach.
@@ -3302,8 +3302,8 @@ func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T)
 	if err == nil {
 		t.Fatal("Edit(rename) = nil, want the failed reload reported")
 	}
-	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
-		t.Fatalf("Edit(rename) = %v (%T), want a renamePersistedError so the rename is still broadcast", err, err)
+	if !writeDidApply(err) {
+		t.Fatalf("Edit(rename) = %v (%T), want an applied write so the rename is still broadcast", err, err)
 	}
 	// The move itself ran, which is what makes this the persisted case rather
 	// than one with a credential left behind.

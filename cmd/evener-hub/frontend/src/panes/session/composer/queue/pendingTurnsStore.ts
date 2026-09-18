@@ -1,7 +1,10 @@
 import {
+  awaitingFirstFrameSend,
   createPendingTurnsStore,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
+  outboxEntriesByState,
+  recoveryEntries,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -393,19 +396,7 @@ export function pendingTurnEntries(ref: string, method?: PendingMethod): Pending
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {
   const model = useThreadsStore((state) => state.threads.get(ref));
-  return useMemo(() => {
-    const activeTurn = model?.turns.find((turn) => turn.id === model.activeTurnId);
-    if (!activeTurn) return false;
-    let sawIdentifiedUserMessage = false;
-    for (const item of activeTurn.items) {
-      if (item.type === "userMessage" && item.clientMutationId) {
-        sawIdentifiedUserMessage = true;
-        continue;
-      }
-      if (sawIdentifiedUserMessage && item.type !== "systemMessage") return false;
-    }
-    return sawIdentifiedUserMessage;
-  }, [model]);
+  return useMemo(() => awaitingFirstFrameSend(model), [model]);
 }
 
 export function useRecoveryEntries(ref: string): MutationRecoveryRecord[] {
@@ -414,9 +405,7 @@ export function useRecoveryEntries(ref: string): MutationRecoveryRecord[] {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = [...recovery.values()]
-      .filter((record) => record.targetRef === ref)
-      .sort((left, right) => left.intentSequence - right.intentSequence);
+    const records = recoveryEntries(recovery, ref);
     return records.length > 0 ? records : NO_RECOVERY;
   }, [recovery, ref]);
 }
@@ -429,9 +418,7 @@ function useOutboxRecordsByState(ref: string, state: "blockedUnknown" | "cancele
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = [...outbox.values()]
-      .filter((record) => record.targetRef === ref && record.state === state)
-      .sort((left, right) => left.intentSequence - right.intentSequence);
+    const records = outboxEntriesByState(outbox, ref, state);
     return records.length > 0 ? records : NO_BLOCKED;
   }, [outbox, ref, state]);
 }

@@ -641,13 +641,32 @@ const outboxStorage: MutationOutboxStorage = {
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
 ${inertOutboxStorageMethods}
 };
-const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+// A complete ready client, type-checked here: the outbox's lookup must accept
+// a full AppwireClientLike, not just a state field. The runtime smoke below
+// repeats it in plain JavaScript, where the same object cannot be annotated.
+const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
+  connect: () => Promise.resolve({} as never),
+  request: () => Promise.resolve({} as never),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({} as never),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const outboxOptions: MutationOutboxOptions = { getClient: () => readyClient, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
 const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+// The dispatcher always supplies a target ref, so a consumer whose lookup
+// requires one must stay assignable to its port; the ref-less outbox lookup
+// (above) must not have loosened it.
+const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
 const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher;`,
+void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -733,10 +752,26 @@ const memoryOutboxStorage = {
   listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
 ${inertOutboxStorageMethods}
 };
+// A complete AppwireClientLike: the runtime consumer is plain JavaScript, so
+// the double cannot be type-annotated here, but it supplies every member so a
+// strict TypeScript consumer copying it would compile. Only its state field is
+// read by the outbox below.
+const readyClient = {
+  connect: () => Promise.resolve({}),
+  request: () => Promise.resolve({}),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({}),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
 const memoryOutbox = new client.MutationOutbox(
   memoryOutboxStorage,
   {
-    isReady: () => true,
+    getClient: () => readyClient,
     onDiscover: (targetRefs, reason) => {
       discovered.push({ targetRefs, reason });
     },

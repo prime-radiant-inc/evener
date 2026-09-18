@@ -1520,19 +1520,20 @@ func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t 
 	}
 }
 
-// TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry pins
-// what a page reports when its own fixed parts — here a session label, which
-// is the user's opening prompt when a session has no name — already exceed
-// the response limit. Dropping the last entry is what a size trim does when
-// the page is too big, but an entry alone on the page is not thereby the
-// reason the page is too big: reporting a small job as too large to render
-// is a false diagnosis, and re-pointing the continuation past it drops a
-// renderable entry for good. Nothing can be rendered here at all, so the
-// page has to say that and stop rather than hand out a token that produces
-// this same page forever.
-func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *testing.T) {
+// TestLoadSessionJobActivityTree_CapsAnOversizedPromptLabel pins the fix for
+// the envelope whose own label alone used to exceed the limit. A session with
+// no generated name labels itself with its OriginalPrompt verbatim, so a
+// pasted multi-megabyte prompt made the response go out over
+// activityMaxEncodedBytes with nothing left to drop: the label is a fixed part
+// of every page reporting the session, including the ancestor chain of a
+// continuation. Projection now caps it — saying so with an ellipsis — so the
+// page fits and its entries still render. (The trim-level behavior when a
+// response's fixed parts genuinely exceed the limit remains pinned by
+// TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts and
+// TestMarkActivityEnvelopeTooLarge_WithdrawsTheContinuation.)
+func TestLoadSessionJobActivityTree_CapsAnOversizedPromptLabel(t *testing.T) {
 	stateDir := t.TempDir()
-	rootID := "oversizedenveloperoot"
+	rootID := "oversizedlabelroot"
 	started := time.Unix(11000, 0).UTC()
 	events := make([]jobstore.Event, 0, 2)
 	for i := range 2 {
@@ -1552,46 +1553,28 @@ func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *tes
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 
-	continuation := ""
-	pages := 0
-	var branchErrors []string
-	for {
-		pages++
-		if pages > 4 {
-			t.Fatalf("walked %d pages without terminating -- a page that can render nothing must not hand out a continuation", pages)
-		}
-		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
-		if err != nil {
-			t.Fatalf("page %d: %v", pages, err)
-		}
-		if len(tree.Root.Entries) != 0 {
-			t.Fatalf("page %d rendered %d entries, want none -- the label alone is over the limit", pages, len(tree.Root.Entries))
-		}
-		if tree.Root.Branch.Error != "" {
-			branchErrors = append(branchErrors, tree.Root.Branch.Error)
-			if tree.Root.Counts.Complete {
-				t.Fatalf("page %d reports %q and still calls itself complete: %+v", pages, tree.Root.Branch.Error, tree.Root.Counts)
-			}
-		}
-		next := tree.Root.Branch.Continuation
-		if next == "" {
-			break
-		}
-		continuation = next
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(branchErrors) == 0 {
-		t.Fatal("no page reported why it rendered nothing")
+	raw, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, branchError := range branchErrors {
-		if strings.Contains(branchError, "job_0") {
-			t.Fatalf("branch error %q blames a small job for an oversized response envelope", branchError)
-		}
-		if !strings.Contains(branchError, "no entries rendered") {
-			t.Fatalf("branch error %q does not report the response's own size", branchError)
-		}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("page = %d bytes, over the %d-byte limit", len(raw), activityMaxEncodedBytes)
 	}
-	if pages != 1 {
-		t.Fatalf("walked %d pages, want 1 -- nothing can be rendered, so there is nothing to continue to", pages)
+	if len(tree.Root.Entries) != 2 {
+		t.Fatalf("page rendered %d entries, want 2 -- the label is capped, so nothing had to be dropped", len(tree.Root.Entries))
+	}
+	if tree.Root.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none: the label is capped, not reported as unfittable", tree.Root.Branch.Error)
+	}
+	if n := len([]rune(tree.Root.Label)); n > activityMaxLabelRunes {
+		t.Fatalf("label = %d runes, want at most %d", n, activityMaxLabelRunes)
+	}
+	if !strings.HasSuffix(tree.Root.Label, "…") {
+		t.Fatalf("label %q does not say it was cut", tree.Root.Label)
 	}
 }
 
@@ -1797,22 +1780,28 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 	}
 }
 
-// seedAbsentJournalActivityRoot writes a root whose delegate entries are big
-// enough to force a trim, with no jobs.jsonl of its own, and returns the
-// root's jobs.jsonl path and its delegate IDs in render order.
+// seedAbsentJournalActivityRoot writes a root whose entries are big enough to
+// force a trim, with no jobs.jsonl of its own, and returns the root's
+// jobs.jsonl path and its delegate IDs in render order.
+//
+// Delegate prose is capped at projection time (activityMaxDelegateProseRunes),
+// so an oversized descriptor task no longer makes a page big. The child's
+// shell-job description travels the same envelope uncapped, so that is what
+// forces the trim these fixtures need.
 func seedAbsentJournalActivityRoot(t *testing.T, stateDir, rootID string, delegates int) (string, []string) {
 	t.Helper()
 	started := time.Unix(900, 0).UTC()
-	task := strings.Repeat("t", 250_000)
+	description := strings.Repeat("d", 400_000)
 	var descriptors []delegatestore.Descriptor
 	var ids []string
 	for i := range delegates {
 		childID := fmt.Sprintf("%schild%02d", rootID, i)
-		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, task))
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "inspect child"))
 		ids = append(ids, "dlg_"+childID)
 		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
 			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
 			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+			Description: description,
 		})
 		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 	}

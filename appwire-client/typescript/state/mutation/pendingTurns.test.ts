@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import type { ThreadModel } from "../../model";
+import type { ItemModel, ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
-import { createPendingTurnsStore } from "./pendingTurns";
-import type { ClientIdentity, MutationOptimisticRecord, MutationOutboxRecord } from "./records";
+import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
+import type { ClientIdentity, MutationOptimisticRecord, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 import { threadModel } from "./testing";
 
 // A fake ClientIdentity's isOwnMutationRecord half, over a fixed id rather
@@ -48,6 +48,18 @@ function optimisticRecord(overrides: Partial<MutationOptimisticRecord> = {}): Mu
     state: "accepted",
     ...overrides,
   };
+}
+
+function recoveryRecord(overrides: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
+  return {
+    ...outboxRecord(),
+    recoveryKind: "rejected",
+    ...overrides,
+  };
+}
+
+function userMessageItem(overrides: Partial<ItemModel> = {}): ItemModel {
+  return { id: "item-1", turnId: "turn_1", type: "userMessage", text: "hello", ...overrides };
 }
 
 function fakeThreadsPort(models: Record<string, ThreadModel | undefined> = {}): PendingTurnsThreadsPort {
@@ -319,5 +331,68 @@ describe("createPendingTurnsStore", () => {
         expect.objectContaining({ id: "cmid-1", source: "authoritative", fromThisClient: true }),
       ]);
     });
+  });
+});
+
+describe("awaitingFirstFrameSend", () => {
+  test("derives from the identified active turn and needs no confirmation timer", () => {
+    const model = threadModel({
+      activeTurnId: "turn_1",
+      turns: [{ id: "turn_1", status: "inProgress", items: [userMessageItem({ clientMutationId: "mutation_1" })] }],
+    });
+    expect(awaitingFirstFrameSend(model)).toBe(true);
+  });
+
+  test("an authoritative assistant frame retires first-frame state by model identity", () => {
+    const model = threadModel({
+      activeTurnId: "turn_1",
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          items: [
+            userMessageItem({ clientMutationId: "mutation_1" }),
+            { id: "item-2", turnId: "turn_1", type: "agentMessage", text: "working" },
+          ],
+        },
+      ],
+    });
+    expect(awaitingFirstFrameSend(model)).toBe(false);
+  });
+
+  test("returns false with no active turn or no model at all", () => {
+    expect(awaitingFirstFrameSend(threadModel({ activeTurnId: undefined, turns: [] }))).toBe(false);
+    expect(awaitingFirstFrameSend(undefined)).toBe(false);
+  });
+});
+
+describe("recoveryEntries", () => {
+  test("returns ref's recovery records ordered by intent sequence, oldest first", () => {
+    const recovery = new Map([
+      ["cmid-2", recoveryRecord({ clientMutationId: "cmid-2", targetRef: "ref-a", intentSequence: 2 })],
+      ["cmid-1", recoveryRecord({ clientMutationId: "cmid-1", targetRef: "ref-a", intentSequence: 1 })],
+      ["cmid-3", recoveryRecord({ clientMutationId: "cmid-3", targetRef: "ref-b", intentSequence: 0 })],
+    ]);
+    expect(recoveryEntries(recovery, "ref-a").map((record) => record.clientMutationId)).toEqual(["cmid-1", "cmid-2"]);
+  });
+});
+
+describe("blockedEntries", () => {
+  test("returns ref's blockedUnknown outbox records ordered by intent sequence, oldest first", () => {
+    const outbox = new Map([
+      [
+        "cmid-2",
+        outboxRecord({ clientMutationId: "cmid-2", targetRef: "ref-a", state: "blockedUnknown", intentSequence: 2 }),
+      ],
+      [
+        "cmid-1",
+        outboxRecord({ clientMutationId: "cmid-1", targetRef: "ref-a", state: "blockedUnknown", intentSequence: 1 }),
+      ],
+      [
+        "cmid-3",
+        outboxRecord({ clientMutationId: "cmid-3", targetRef: "ref-a", state: "submitting", intentSequence: 0 }),
+      ],
+    ]);
+    expect(blockedEntries(outbox, "ref-a").map((record) => record.clientMutationId)).toEqual(["cmid-1", "cmid-2"]);
   });
 });

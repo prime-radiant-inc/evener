@@ -190,12 +190,16 @@ describe("refresh", () => {
     expect(daemonResidentsStore.getState().data?.defaultTimeoutMillis).toBe(9999);
   });
 
-  test("rejects with a helpful error when no client is connected", async () => {
-    // No client connected: store has client=null
+  test("rejects with the shared port's labelled error when no client is connected", async () => {
+    // No client connected: store has client=null. The message must be the exact
+    // one connectedClientPort("daemonResidents") raises, not a hand-rolled
+    // equivalent with its own wording (the drift roborev flagged).
     await daemonResidentsStore.getState().refresh();
     const state = daemonResidentsStore.getState();
     expect(state.data).toBeNull();
-    expect(state.error).toMatch(/no client connected/);
+    expect(state.error).toBe(
+      "daemonResidents store: no client connected; call connectionStore.getState().connect(client) first",
+    );
   });
 });
 

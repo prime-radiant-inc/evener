@@ -51,3 +51,15 @@ export function hasItemFailure(item: ItemFailureSignals): boolean {
 export function isInProgressStatus(status: string | undefined): boolean {
   return status === "inProgress";
 }
+
+// Whether an item is still in flight. The item's own status decides when it
+// has one; the turn's status covers an older or partial item frame that has
+// not carried its item status yet. Shared by both projections — the web's
+// transcript entries and the phone's rows (mobile/src/conversation) — so a
+// second copy of "is this still running" is not how the two transcripts
+// start disagreeing about a streaming row. Takes ItemFailureSignals, not a
+// full ItemModel, so either host's item shape satisfies it without a
+// conversion wrapper at the call site.
+export function isActiveItem(item: ItemFailureSignals, turnStatus: string | undefined): boolean {
+  return isInProgressStatus(item.status) || (isInProgressStatus(turnStatus) && item.status === undefined);
+}

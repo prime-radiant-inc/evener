@@ -21,8 +21,59 @@ import type {
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationOutboxState,
   MutationRecoveryRecord,
 } from "./records";
+
+// A pure read over `model`'s active turn: true once an identified user
+// message (one carrying its own clientMutationId) has landed in it and
+// nothing but a system message has followed since - the "sent, not yet
+// answered" state a composer shows with no confirmation timer of its own,
+// retired the moment a real assistant frame lands.
+export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean {
+  const activeTurn = model?.turns.find((turn) => turn.id === model.activeTurnId);
+  if (!activeTurn) return false;
+  let sawIdentifiedUserMessage = false;
+  for (const item of activeTurn.items) {
+    if (item.type === "userMessage" && item.clientMutationId) {
+      sawIdentifiedUserMessage = true;
+      continue;
+    }
+    if (sawIdentifiedUserMessage && item.type !== "systemMessage") return false;
+  }
+  return sawIdentifiedUserMessage;
+}
+
+// `ref`'s recovery records, oldest submission first - the order a recovery
+// list renders in.
+export function recoveryEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  recovery: ReadonlyMap<string, MutationRecoveryRecord<A>>,
+  ref: string,
+): MutationRecoveryRecord<A>[] {
+  return [...recovery.values()]
+    .filter((record) => record.targetRef === ref)
+    .sort((left, right) => left.intentSequence - right.intentSequence);
+}
+
+// `ref`'s outbox records still waiting on a blocked resend, oldest first.
+export function blockedEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+): MutationOutboxRecord<A>[] {
+  return outboxEntriesByState(outbox, ref, "blockedUnknown");
+}
+
+// `ref`'s outbox records in the given durable state, oldest first - the one
+// read the blocked-retry and stop-canceled lists share.
+export function outboxEntriesByState<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+  state: MutationOutboxState,
+): MutationOutboxRecord<A>[] {
+  return [...outbox.values()]
+    .filter((record) => record.targetRef === ref && record.state === state)
+    .sort((left, right) => left.intentSequence - right.intentSequence);
+}
 
 // What a ref's pending-turns projection needs from the host's thread store:
 // the current model, read fresh whenever `pendingTurnEntries` reconciles -

@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -42,14 +43,14 @@ type turnCacheEntry struct {
 	// one file identity and divergence ordinal. Kept alongside the parse memo
 	// so both are evicted together, and separate from it because the sum is a
 	// different projection of the same immutable bytes.
-	usageTotal *usageTotalMemo
+	usageTotal *scanMemo[*appwire.EvenerUsage]
 	// failedToolCalls memoizes FailedToolCallsFromFile's full-transcript
 	// failure count, on the same terms as usageTotal above.
-	failedToolCalls *failedToolCallsMemo
+	failedToolCalls *scanMemo[int]
 	// derivedTotals memoizes DerivedTotalsFromFile's combined single-pass scan
 	// (usage sum and failure count together), on the same terms as usageTotal
 	// and failedToolCalls above.
-	derivedTotals *derivedTotalsMemo
+	derivedTotals *scanMemo[derivedTotals]
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
@@ -72,6 +73,16 @@ type scanMemoKey struct {
 	fromOrdinal    int
 }
 
+// scanMemo is one memoized full-transcript scan value, valid while the file
+// identity and divergence ordinal it was computed for still hold. One generic
+// type serves all three scans (usage total, failure count, combined derived
+// totals), so their validity gate is a single implementation rather than three
+// copies that can drift apart.
+type scanMemo[T any] struct {
+	key   scanMemoKey
+	value T
+}
+
 // scanMemoIdentity builds the scanMemoKey for one stat result and divergence
 // ordinal. All three full-transcript scan memos key on exactly this, so the
 // combined memo can never outlive the two it consolidates.
@@ -83,6 +94,69 @@ func scanMemoIdentity(info os.FileInfo, fromEntryOrdinal int) scanMemoKey {
 		changeIdentity: fileChangeIdentity(info),
 		fromOrdinal:    fromEntryOrdinal,
 	}
+}
+
+// memoizeScan is the one implementation behind every memoized full-transcript
+// scan: stat the file, key the memo on its identity plus the divergence
+// ordinal, serve a matching memo, and otherwise run scan once outside the lock
+// and store the result under that key. The callers differ only in which entry
+// field holds their memo, how their value is copied for the caller, and the
+// scan itself — those are the parameters; the file-identity gate lives here
+// once rather than three times over.
+//
+// clone, when non-nil, hands each caller its own copy so mutating a returned
+// value cannot corrupt the memo others share; pass nil when the value is
+// trivially copied already (an int).
+//
+// scan runs outside c.mu so a slow read does not block other sessions, and the
+// result is stored into whatever entry c.entries[path] holds by then, the same
+// way loadItemProjectionContext merges into a concurrent parse.
+func memoizeScan[T any](
+	c *TurnCache,
+	path string,
+	fromEntryOrdinal int,
+	memoOf func(*turnCacheEntry) *scanMemo[T],
+	setMemo func(*turnCacheEntry, *scanMemo[T]),
+	clone func(T) T,
+	scan func() (T, error),
+) (T, error) {
+	var zero T
+	info, err := os.Stat(path)
+	if err != nil {
+		return zero, fmt.Errorf("stat transcript: %w", err)
+	}
+	identity := scanMemoIdentity(info, fromEntryOrdinal)
+	cloneValue := func(value T) T {
+		if clone == nil {
+			return value
+		}
+		return clone(value)
+	}
+
+	c.mu.Lock()
+	if entry, ok := c.entries[path]; ok {
+		if memo := memoOf(&entry); memo != nil && memo.key == identity {
+			value := memo.value
+			c.touch(path)
+			c.mu.Unlock()
+			return cloneValue(value), nil
+		}
+	}
+	c.mu.Unlock()
+
+	value, err := scan()
+	if err != nil {
+		return zero, err
+	}
+
+	c.mu.Lock()
+	entry := c.entries[path]
+	setMemo(&entry, &scanMemo[T]{key: identity, value: value})
+	c.entries[path] = entry
+	c.touch(path)
+	c.evictLocked()
+	c.mu.Unlock()
+	return cloneValue(value), nil
 }
 
 // ItemTurnsFromFile returns the cached logical item turns for path when its

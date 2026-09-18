@@ -2,7 +2,7 @@
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
 // It rides the single AppwireClientLike connection.ts wires via
-// useConnectionStore.getState().connect(client) — this store has no
+// connectionStore.getState().connect(client) — this store has no
 // connect() of its own — and reactively re-attaches its onNotification/onReady
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
@@ -40,11 +40,12 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
+  type MutationClientLookup,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
@@ -821,8 +822,14 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // One client lookup for both halves of the mutation runtime: the dispatcher
+  // asks it per target ref, and the outbox asks it ref-less for "is any client
+  // ready right now". Wiring them from one function is what keeps the
+  // dispatcher's readiness and the outbox's from drifting apart.
+  const getClient: MutationClientLookup = (targetRef) =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
   const dispatcher = new MutationDispatcher(storage, {
-    getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
+    getClient,
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
@@ -872,7 +879,7 @@ function getMutationRuntime(): MutationRuntime | null {
     },
   });
   const outbox = new MutationOutbox(storage, {
-    isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
+    getClient,
     onDiscover: (targetRefs) => {
       if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
@@ -2467,14 +2474,16 @@ connectionStore.subscribe((state) => {
 });
 
 // requireClient reads the client connection.ts wired via
-// useConnectionStore.getState().connect(client) — threads.ts has no
+// connectionStore.getState().connect(client) — threads.ts has no
 // connect() of its own in the locked interface, so it rides connection.ts's
-// single wiring point.
+// single wiring point. The one thing that is threads-specific is the
+// defensive rewireClient() call (see above), so it takes only the shared
+// resolver and routes every client read through this rewire-aware wrapper -
+// nothing here hands out a bare port whose request/onNotification would
+// silently skip the rewire.
+const { requireClient: resolveCurrentClient } = connectedClientPort("threads");
 function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
+  const client = resolveCurrentClient();
   rewireClient(client);
   return client;
 }
@@ -2898,8 +2907,24 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // beforePublish was evaluated before publication, but reconciliation above
     // runs asynchronously after it. A Stop acknowledged in that window must
     // cancel the dispatch this refresh earned too, exactly as handleReady's
-    // targeted tail rechecks its own fence at the scheduling point.
-    beforePublish?.();
+    // targeted tail rechecks its own fence at the scheduling point. The
+    // rejection lands only after publication, so what the refresh earned on
+    // the way is unwound with it: publication opened the ref's dispatch gate
+    // and reconciliation may have cleared its recovery-blocked obligation,
+    // and a later outbox discovery would dispatch queued mutations on the
+    // strength of both if the fence left them banked.
+    try {
+      beforePublish?.();
+    } catch (error) {
+      // Stop canceled this refresh, so its earned dispatchability goes with
+      // it: close the gate and re-arm recovery (the forceStop tail's own
+      // retention rule) until a fresh snapshot proves it can clear.
+      dispatchableMutationRefs.delete(ref);
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+      }));
+      throw error;
+    }
     const runtime = getMutationRuntime();
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },

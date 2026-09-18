@@ -9556,6 +9556,95 @@ test("a Stop during refreshThread's reconciliation is not overtaken by its dispa
   }
 });
 
+// RoboRev Medium on d7a264d4 (PR 1393): the beforePublish recheck that rejects
+// a Stop-overtaken refreshThread runs only after the refresh has already
+// banked what it earned on the way - publication opened the ref's dispatch
+// gate, and reconciliation cleared the recovery-blocked obligation the stopped
+// snapshot had armed. The rejection left both banked, so the outbox's own later
+// discovery scan dispatched the queued mutation anyway, on the strength of a
+// refresh the Stop had just canceled. The fence must unwind what it canceled:
+// the gate closes and the obligation re-arms before the rejection.
+test("a later discovery cannot dispatch what a Stop-canceled refresh earned", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "refresh-stop-discovery" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise - and stopped again once the Stop below lands.
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything,
+    // so the held call below is unambiguously the resumed read's.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The resume: a fresh authoritative snapshot whose reconciliation is the
+    // window the Stop lands in.
+    status = "idle";
+    const release = deferred<void>();
+    let reconciliationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reconciliationStarted = resolve;
+    });
+    const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+    const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+      this: MutationDispatcher,
+      ...args
+    ) {
+      reconciliationStarted();
+      await release.promise;
+      return reconcile.apply(this, args);
+    });
+    try {
+      const fence = resumeStopFence("ref_a");
+      const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+      await started;
+      // The Stop lands while the resume's reconciliation is in flight, and the
+      // stopped daemon's fresh reads are recovery-blocked again.
+      await threadsStore.getState().shutdown("ref_a");
+      status = "restartRequired";
+      release.resolve();
+      await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+      // Publication itself was not undone - the finding's premise - so the
+      // canceled refresh's earned dispatchability is all there is to unwind.
+      expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+      // The outbox's own later discovery scan must not dispatch the queued
+      // mutation on the strength of the canceled refresh.
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => sends >= 1);
+      expect(sends).toBe(0);
+      // The recovery-blocked obligation the canceled refresh's reconciliation
+      // cleared is restored: Retry stays fenced until a fresh snapshot proves
+      // recovery again.
+      expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 // RoboRev Medium on fee4eb8 (PR 1393): pruning a ref's Stop generation on
 // release could make a fence miss a REAL Stop in one interleaving - the
 // baseline sees the absent entry as 0, the Stop records a nonzero sequence

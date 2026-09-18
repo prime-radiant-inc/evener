@@ -4,13 +4,13 @@
 # definition of "the install is ready".
 #
 # npm ci installs exactly what's pinned in the committed package-lock.json;
-# skip it when node_modules is already newer than the lockfile (a missing
-# node_modules or a changed lockfile both trigger a fresh npm ci). (`-nt` is
-# a POSIX test(1) primitive, supported by /bin/sh on macOS and dash on
-# Linux; note it follows symlinks, so a symlinked node_modules compares the
-# SHARED target's mtime against this worktree's own lockfile — a comparison
-# every fresh worktree loses, which is why the symlink branch settles that
-# case on lockfile content instead.)
+# skip it when a real (non-symlinked) node_modules is already newer than the
+# lockfile (a missing node_modules or a changed lockfile both trigger a fresh
+# npm ci). (`-nt` is a POSIX test(1) primitive, supported by /bin/sh on macOS
+# and dash on Linux; it follows symlinks, so the symlink branch below is
+# checked FIRST — running it second let a shared install whose target mtime
+# was newer than this worktree's lockfile skip the lockfile-content comparison
+# entirely and proceed on a mismatched install.)
 #
 # Two guards, both from real incidents:
 #
@@ -35,9 +35,7 @@ repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 frontend=${EVENER_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}
 cd "$frontend"
 
-if [ node_modules -nt package-lock.json ]; then
-	:
-elif [ -L node_modules ]; then
+if [ -L node_modules ]; then
 	# A shared install's mtime says nothing about this worktree: the worktree
 	# checks its lockfile out long after the install was populated, so mtime
 	# calls every fresh worktree stale. What settles it is the lockfile the
@@ -53,6 +51,8 @@ elif [ -L node_modules ]; then
 		echo "  real node_modules — never npm ci through the symlink." >&2
 		exit 1
 	fi
+elif [ node_modules -nt package-lock.json ]; then
+	:
 else
 	npm ci
 fi

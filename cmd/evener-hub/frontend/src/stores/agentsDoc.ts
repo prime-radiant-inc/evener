@@ -14,19 +14,13 @@
 // requireClient() throws outside any try/catch, matching stores/credentials.ts:
 // "no client connected" is a programmer error, not a state to degrade into.
 
-import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@evener/appwire-client";
+import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore, onConnectionNotification } from "./connection";
+import { connectedClientPort, connectionStore, onConnectionNotification } from "./connection";
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("agentsDoc store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+const { requireClient } = connectedClientPort("agentsDoc");
 
 export interface AgentsDocStoreState {
   /** The last document the hub confirmed - null until the first fetch lands. */

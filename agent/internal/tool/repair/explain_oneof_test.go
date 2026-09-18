@@ -62,6 +62,85 @@ func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testi
 	}
 }
 
+// multipleMatchOneOfParams is the schema from issue #623: two oneOf arms that
+// both require the same property, so an argument object supplying it matches
+// both. The validator's failing cause is the bare /oneOf node with no per-arm
+// child causes (contrast the no-match delegate shape, whose /oneOf carries one
+// child per failing arm).
+func multipleMatchOneOfParams() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+		"oneOf": []any{
+			map[string]any{"required": []any{"a"}},
+			map[string]any{"required": []any{"a"}},
+		},
+	}
+}
+
+// Issue #623: a oneOf failure caused by matching MORE THAN ONE arm (oneOf means
+// exactly-one) must not enumerate branch requirements the arguments already
+// satisfy — a model cannot infer what to change from satisfied requirements.
+// The bare /oneOf cause has no failing arm to describe, so the message must
+// name the over-match and the actual recovery instead, and must not append an
+// Example (minimalExample ignores oneOf, so it would print an object matching
+// zero branches).
+func TestExplainSchemaError_MultipleMatchOneOfNamesOverMatch(t *testing.T) {
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "/oneOf")
+	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
+		t.Fatalf("multiple-match oneOf rendered branch requirements the args already satisfy (issue #623): %q", msg)
+	}
+	if !strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("message must name the over-match, not just the constraint: %q", msg)
+	}
+	if !strings.Contains(msg, "satisfy exactly one") {
+		t.Fatalf("message must give the recovery direction (satisfy exactly one branch): %q", msg)
+	}
+	if strings.Contains(msg, "Example:") {
+		t.Fatalf("over-match message must not append an example that matches zero branches (roborev finding 2): %q", msg)
+	}
+}
+
+// A nested oneOf whose first failing arm contains an over-matching oneOf makes
+// the deepest cause the *inner* combinator ("/oneOf/0/oneOf"), not the
+// top-level one. The outer oneOf matched zero branches, so claiming an
+// over-match would be false (roborev finding 1); the message must keep
+// enumerating the outer branches it can describe instead.
+func TestExplainSchemaError_NestedOneOfNoMatchDoesNotClaimOverMatch(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"oneOf": []any{
+			map[string]any{"oneOf": []any{
+				map[string]any{"required": []any{"a"}},
+				map[string]any{"required": []any{"a"}},
+			}},
+			map[string]any{"required": []any{"b"}},
+		},
+	}
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", params, args, "", "/oneOf/0/oneOf")
+	if strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("nested oneOf failure claimed the outer branches matched more than one (roborev finding 1): %q", msg)
+	}
+	if !strings.Contains(msg, `send all of "b"`) {
+		t.Fatalf("outer no-match must still describe its describable branch requirement: %q", msg)
+	}
+	if strings.Contains(msg, "Example:") {
+		t.Fatalf("nested oneOf no-match must not append an example matching zero branches (roborev follow-up): %q", msg)
+	}
+}
+
+// A bare keyword ("oneOf") is a root-level location: the over-match shape is
+// recognized when the caller passes either form.
+func TestExplainSchemaError_MultipleMatchOneOfAcceptsBareKeyword(t *testing.T) {
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "oneOf")
+	if !strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("bare root-level keyword must still detect the over-match: %q", msg)
+	}
+}
+
 // delegateOneOfEnumParams mirrors delegateOneOfParams with a single
 // non-string-enum property in place of the string-enum "sandbox": the
 // second oneOf branch requires prop and constrains it to enum. enum takes

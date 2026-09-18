@@ -295,7 +295,37 @@ export function buildFormState(options: LaunchOption[], current: LaunchConfigLay
   return state;
 }
 
-function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | null {
+// Exact decimal integer (no fraction, exponent, or other Number() syntax) and
+// the safe-integer bounds as BigInts, so an integer option can be validated
+// before Number() would round it.
+const DECIMAL_INTEGER_RE = /^[+-]?\d+$/;
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+// isExactSafeInteger: the integer arm's rule on its own - the raw string must be
+// an exact decimal integer whose value is within the safe integer range. Decided
+// on the string (and a BigInt of it), never on Number(raw): Number() rounds a
+// value with more precision than a double holds, so "1.0000000000000000001"
+// becomes 1. Exported so a surface that reports its own validation error
+// (mobile-native's parseLaunchScalar) shares this rule instead of repeating
+// Number()'s rounding.
+export function isExactSafeInteger(raw: string): boolean {
+  const value = raw.trim();
+  if (!DECIMAL_INTEGER_RE.test(value)) return false;
+  const exact = BigInt(value);
+  return exact >= MIN_SAFE_BIGINT && exact <= MAX_SAFE_BIGINT;
+}
+
+// collectScalar applies the launch-config collect rule to one scalar control's
+// raw form value: a boolean's "" (unset) is dropped, text is trimmed, an
+// empty-after-trim scalar is dropped (never sent as ""), and an integer is
+// trimmed then coerced - a value that is not an exact decimal integer inside the
+// safe range (NaN, Infinity, "12abc", a fraction like "12.5", "1e21", or a
+// literal too large to represent exactly) is dropped, never sent, because the Go
+// wire type is *int and any of those would fail thread/start's decode. Exported
+// so the spawn pane's AdvancedValues collector routes its scalar arm through
+// this exact rule too, instead of a second, drifted copy (#1444).
+export function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | null {
   if (opt.kind === "boolean") {
     if (raw === "true") return { value: true };
     if (raw === "false") return { value: false };
@@ -303,7 +333,10 @@ function collectScalar(opt: LaunchOption, raw: string): { value: unknown } | nul
   }
   const trimmed = raw.trim();
   if (trimmed === "") return null; // omit empty-after-trim scalars, never sent as ""
-  return { value: opt.kind === "integer" ? Number(trimmed) : trimmed };
+  if (opt.kind === "integer") {
+    return isExactSafeInteger(trimmed) ? { value: Number(trimmed) } : null;
+  }
+  return { value: trimmed };
 }
 
 // collectConfig builds the save payload from `state` alone (never a cached
