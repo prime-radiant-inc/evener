@@ -42,7 +42,7 @@ import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationIntent,
@@ -1411,7 +1411,18 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 }
 
 function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
+  if (n.method === "thread/queueChanged") {
+    // consumedClientMutationIds names entries THIS push's own transition (a
+    // drain) just took out of the queue (issue #1704): the daemon knows
+    // exactly which ids it consumed, so those settle by the same positive-
+    // evidence rule as the remaining, still-queued ids below. Validated the
+    // same way the receipt path validates it: anything not an array of
+    // non-empty strings settles nothing, never guessed at by spreading it.
+    return [
+      ...(n.params.queue.clientMutationIds ?? []),
+      ...validConsumedClientMutationIds(n.params.consumedClientMutationIds),
+    ];
+  }
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }

@@ -1499,6 +1499,57 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorCopiesConsumedClientMutationIDs (issue #1704) verifies
+// a drain's consumed ids ride the projected notification's params, not the
+// durable Queue facet, so a client can settle those optimistic records by
+// positive evidence.
+func TestAppEventProjectorCopiesConsumedClientMutationIDs(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventQueueChanged,
+		SessionID: "th_1",
+		Data: events.QueueChangedData{
+			Depth:                     0,
+			ConsumedClientMutationIDs: []string{"mutation-a", "mutation-b"},
+		},
+	})
+	if len(out) != 1 {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadQueueChangedParams)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if len(params.ConsumedClientMutationIDs) != 2 ||
+		params.ConsumedClientMutationIDs[0] != "mutation-a" ||
+		params.ConsumedClientMutationIDs[1] != "mutation-b" {
+		t.Fatalf("ConsumedClientMutationIDs=%+v, want [mutation-a mutation-b]", params.ConsumedClientMutationIDs)
+	}
+}
+
+// TestAppEventProjectorOmitsConsumedClientMutationIDsWhenAbsent (issue #1704)
+// is the encoding-level half of the wire-shape contract: the set is positive
+// evidence, so an absent key means this push named nothing consumed, and the
+// field is never [].
+func TestAppEventProjectorOmitsConsumedClientMutationIDsWhenAbsent(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventQueueChanged,
+		SessionID: "th_1",
+		Data:      events.QueueChangedData{Depth: 1, Preview: []string{"queued"}},
+	})
+	if len(out) != 1 {
+		t.Fatalf("out=%+v", out)
+	}
+	payload, err := json.Marshal(out[0].Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "consumedClientMutationIds") {
+		t.Fatalf("payload %s unexpectedly contains consumedClientMutationIds", payload)
+	}
+}
+
 func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	for name, images := range map[string][]events.UserInputImage{
 		"nil":   nil,

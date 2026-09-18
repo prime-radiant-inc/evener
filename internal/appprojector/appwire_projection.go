@@ -1094,6 +1094,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				Texts:             append([]string(nil), data.Texts...),
 				SkillNames:        cloneSkillNames(data.SkillNames),
 			},
+			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
