@@ -908,7 +908,7 @@ describe("projectThread", () => {
             status: "completed",
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       // ask_user is a question item, not clustered with surrounding tools.
       expect(kinds(c)).toEqual(["activity", "question", "activity"]);
@@ -1326,7 +1326,7 @@ describe("projectThread", () => {
             argumentsJson: args,
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       expect(kinds(c)).toEqual(["user", "question"]);
       const q = c.items.find((i) => i.kind === "question");
@@ -1370,7 +1370,7 @@ describe("projectThread", () => {
             text: "[answers]\n1. [H] → A",
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       // A later userMessage resolves the pending ask, so no question item.
       expect(kinds(c)).not.toContain("question");
@@ -1398,7 +1398,7 @@ describe("projectThread", () => {
             argumentsJson: args,
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       expect(kinds(c)).not.toContain("question");
     });
