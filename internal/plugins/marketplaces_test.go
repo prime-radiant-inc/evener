@@ -1032,6 +1032,128 @@ func TestEditMarketplace_RenameRefusesToMoveAnotherMarketplacesSource(t *testing
 	}
 }
 
+// seedPhysicalSourceBehindSymlinkedStore makes the store's marketplaces
+// directory a symlink and seeds name with a directory source recorded by its
+// physical path — the layout a store on a symlinked root can hold. It returns
+// the physical source path and a sentinel inside it.
+func seedPhysicalSourceBehindSymlinkedStore(t *testing.T, m *Manager, elsewhere, name string) (physical, sentinel string) {
+	t.Helper()
+	physical = filepath.Join(elsewhere, name)
+	if err := os.MkdirAll(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel = filepath.Join(physical, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{name: {
+		Source:          Source{Kind: SourceDirectory, Path: physical},
+		InstallLocation: physical,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return physical, sentinel
+}
+
+// The clone path is routinely compared as recorded, but the store's marketplaces
+// directory can itself be a symlink, and a record can name the physical path.
+// The guard must resolve the clone too, or the sweep walks the symlink and
+// deletes the live source behind it.
+func TestRemoveMarketplace_SparesAPhysicalSourceUnderASymlinkedStore(t *testing.T) {
+	root, elsewhere := t.TempDir(), t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(root, marketplacesDirName)); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(root)
+	_, sentinel := seedPhysicalSourceBehindSymlinkedStore(t, m, elsewhere, "acme")
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the physical source behind the symlinked store was deleted: %v", err)
+	}
+}
+
+func TestEditMarketplace_RenameSparesAPhysicalSourceUnderASymlinkedStore(t *testing.T) {
+	root, elsewhere := t.TempDir(), t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(root, marketplacesDirName)); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(root)
+	_, sentinel := seedPhysicalSourceBehindSymlinkedStore(t, m, elsewhere, "acme")
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the physical source behind the symlinked store was deleted by the rename: %v", err)
+	}
+}
+
+// A source can be reached through a symlink chain that dips into the clone and
+// back out: a link inside the clone points elsewhere, and the recorded source
+// path is a link outside the clone pointing at that link. The final resolved
+// target is outside the clone, but deleting the clone removes the hop and breaks
+// the source, so the guard has to walk the links, not just resolve them.
+func TestRemoveMarketplace_SparesASourceWhoseLinkPassesThroughTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hop := filepath.Join(clone, "hop")
+	if err := os.Symlink(t.TempDir(), hop); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry")
+	if err := os.Symlink(hop, entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: entry},
+		InstallLocation: entry,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Lstat(hop); err != nil {
+		t.Fatalf("the link hop inside the clone was swept: %v", err)
+	}
+}
+
+func TestEditMarketplace_RenameSparesASourceWhoseLinkPassesThroughTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hop := filepath.Join(clone, "hop")
+	if err := os.Symlink(t.TempDir(), hop); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry")
+	if err := os.Symlink(hop, entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: entry},
+		InstallLocation: entry,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Lstat(hop); err != nil {
+		t.Fatalf("the link hop inside the clone was swept by the rename: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

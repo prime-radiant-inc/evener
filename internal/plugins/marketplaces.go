@@ -348,32 +348,88 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 //
 // The model is what the sweep actually deletes: the tree at the clone path. A
 // source below clone goes with it — even through a symlink, since removing the
-// clone deletes the link — so both the recorded path and its resolved target
-// are compared against clone. An ancestor of clone is not deleted by RemoveAll
-// and must not be protected, or its stale clone would survive and hold the name.
+// clone deletes the link — so the source is compared against the clone both as
+// recorded and after symlinks are resolved. The clone itself is resolved the
+// same way, because the store root or its marketplaces directory can be a
+// symlink and a legacy record can name the physical path. An ancestor of clone
+// is not deleted by RemoveAll and must not be protected, or its stale clone
+// would survive and hold the name.
 func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, error) {
 	absClone, err := filepath.Abs(clone)
 	if err != nil {
 		return false, fmt.Errorf("resolving %s: %w", clone, err)
 	}
+	resolvedClone, err := resolveForContainment(clone)
+	if err != nil {
+		return false, err
+	}
+	underClone := func(path string) bool {
+		return pathWithinDir(absClone, path) || pathWithinDir(resolvedClone, path)
+	}
 	for _, ref := range mk {
 		if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
 			continue
 		}
-		abs, err := filepath.Abs(ref.Source.Path)
+		touches, err := sourceTouchesClone(ref.Source.Path, underClone)
 		if err != nil {
-			return false, fmt.Errorf("resolving %s: %w", ref.Source.Path, err)
+			return false, err
 		}
-		// A recorded path at or beneath the clone is deleted with it whether or
-		// not it resolves — a symlink beneath the clone is itself removed.
-		if pathWithinDir(absClone, abs) {
+		if touches {
 			return true, nil
 		}
-		// A source recorded elsewhere but resolving inside the clone names a
-		// target the sweep deletes, leaving the source dangling.
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil && pathWithinDir(absClone, resolved) {
+	}
+	return false, nil
+}
+
+// sourceTouchesClone reports whether deleting the tree at the clone would delete
+// or break the recorded source: whether the source's absolute path, its fully
+// resolved target, or any symlink met while resolving it sits at or beneath the
+// clone. The symlink walk is what catches a chain that passes back out of the
+// clone — a source reached through a link the clone holds is broken even when
+// its final target is elsewhere, and a full EvalSymlinks would hide that hop.
+func sourceTouchesClone(source string, underClone func(string) bool) (bool, error) {
+	abs, err := filepath.Abs(source)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", source, err)
+	}
+	if underClone(abs) {
+		return true, nil
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil && underClone(resolved) {
+		return true, nil
+	}
+	root := filepath.VolumeName(abs) + string(filepath.Separator)
+	current := root
+	for comp := range strings.SplitSeq(strings.TrimPrefix(abs, root), string(filepath.Separator)) {
+		if comp == "" {
+			continue
+		}
+		next := filepath.Join(current, comp)
+		info, err := marketplaceLstat(next)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
+				// A component that is not there cannot be destroyed.
+				return false, nil
+			}
+			return false, fmt.Errorf("checking %s: %w", next, err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return false, fmt.Errorf("reading link %s: %w", next, err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(next), target)
+		}
+		// The link itself, and the path it names, both go if the clone holds
+		// them — the final target alone would miss a hop back out of the clone.
+		if underClone(next) || underClone(target) {
 			return true, nil
 		}
+		current = filepath.Clean(target)
 	}
 	return false, nil
 }
