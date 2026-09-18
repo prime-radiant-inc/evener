@@ -139,8 +139,7 @@ function RestartRequiredNotice({
         // the reconnect window (the resumed identity among them) suppresses
         // the resume RPC. Once the RPC resolves and the new identity exists,
         // the checks below name both refs exactly.
-        const stopFence = () => stopBaseline();
-        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopFence });
+        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopBaseline });
         refreshedRef = thread.evener.ref;
         // During the post-resume hydration the pane still shows the old ref
         // (the navigate below has not run), so a Stop against EITHER ref must
