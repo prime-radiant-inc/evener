@@ -402,14 +402,18 @@ function projectItem(
     const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
-    // A mid-stream reasoning item's live deltas accumulate in
-    // reasoningSummaries (reducer.ts's appendReasoningDelta), never in
-    // text — only a settle with real wire text populates that. Read the
-    // same joined-paragraphs source the web's think block reads, falling
-    // back to text for a settled item hydrated with no reasoningSummaries.
+    // item.text is preferred first: it is always the item's most
+    // authoritative settled value (reducer.ts's mergeCompletedText), while
+    // reasoningSummaries can be stale — wireItemToModel seeds it from ANY
+    // non-empty initial wire text, and mergeReasoning then keeps that seed
+    // across later merges once it's set, so a later completion carrying
+    // different authoritative text must not be masked by it. Only when
+    // text is genuinely blank (a mid-stream item with no settle yet) does
+    // this fall back to the same joined-paragraphs source the web's think
+    // block reads, so live deltas (reducer.ts's appendReasoningDelta) still
+    // show before the item settles.
     const reasoningOutput =
-      joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n") ||
-      item.text;
+      item.text || joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
     return {
       kind: "activity",
       pre: {

@@ -474,6 +474,51 @@ describe("projectThread", () => {
         expect(a.detail.output).toBe("thinking hard");
       }
     });
+
+    // reducer.ts's wireItemToModel seeds reasoningSummaries from ANY
+    // non-empty initial wire text (item/started, or a replayed item on
+    // hydrate), and mergeReasoning then keeps that seeded summary across
+    // later merges once it's set. A later completion carrying different,
+    // authoritative text must not be masked by the stale seeded summary.
+    it("shows the completion's authoritative text over a stale seeded reasoningSummaries entry", () => {
+      let model = hydrateThread(
+        { thread: thread([turn("t1", [], { status: "inProgress" })]) },
+        "ref-1",
+        0,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "inProgress", text: "draft thought" },
+          },
+        } as AnyNotification,
+        1000,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "completed", text: "final thought" },
+          },
+        } as AnyNotification,
+        1001,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((row) => row.kind === "activity" && row.id === "r1");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toBe("final thought");
+      }
+    });
   });
 
   describe("shell/tool/MCP call items", () => {

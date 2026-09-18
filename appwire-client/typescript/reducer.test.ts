@@ -4614,6 +4614,44 @@ test("a runtime non-string title/hint/source folds to undefined, never a value I
   expect(items[0]?.warning?.hint).toBeUndefined();
 });
 
+// The string-or-absent contract means "absent" too, not just "not a
+// string": a whitespace-only value is not real content (hasWarningText's
+// own reading, which every consumer must apply), so storing it verbatim
+// leaves a future reader one missed hasWarningText call away from
+// rendering blank content. Normalize at the fold instead.
+test("a whitespace-only title/hint/source folds to undefined at the source, not just at each consumer", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "warning",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        message: "rate limit approaching",
+        source: "   ",
+        title: "   ",
+        hint: "\n\t",
+      },
+    },
+    1002,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items[0]?.warning?.source).toBeUndefined();
+  expect(items[0]?.warning?.title).toBeUndefined();
+  expect(items[0]?.warning?.hint).toBeUndefined();
+});
+
 test("two warnings in one turn get distinct ids in arrival order", () => {
   let model = testHydrate();
   model = applyNotification(
@@ -4725,7 +4763,11 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
   expect(item).toMatchObject({
     type: "warning",
     text: "context canceled",
-    warning: { source: "user", title: "Cancelled", hint: "" },
+    // An empty-string hint is blank, not absent-but-still-a-string — the
+    // fold normalizes it to undefined (foldWarningParams), the same
+    // string-or-absent reading every consumer already applies via
+    // hasWarningText.
+    warning: { source: "user", title: "Cancelled", hint: undefined },
   });
 });
 
@@ -4801,10 +4843,15 @@ test.each([
   expect(item.text).toBe(JSON.stringify(params));
 });
 
-// The wire-shaped fixture RoboRev's round-20 review of #1580 named directly:
-// a warning frame that is nothing but `{"warning":42}` — no threadId/ref
-// wrapping at all — still renders its own JSON rather than a blank item.
-test('warning with only {"warning":42} and no routing envelope renders that frame itself', () => {
+// A routed message-less frame (threadId/ref present, so
+// notificationTargetsThread accepts it) whose only other field is a
+// non-string `warning: 42` still renders its own JSON rather than a blank
+// item — the same case test.each pins above, kept as its own named test
+// since RoboRev's round-20 review of #1580 named this exact shape directly.
+// A genuinely routing-less frame (no threadId/ref at all) is dropped by
+// notificationTargetsThread before it ever reaches this fold; that is a
+// different, untested-here case, not what this test verifies.
+test('warning with a routed {"warning":42} frame renders that frame itself', () => {
   let model = testHydrate();
   model = applyNotification(
     model,

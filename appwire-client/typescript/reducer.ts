@@ -1255,9 +1255,13 @@ export function foldWarningParams(params: WarningParams): WarningFold {
     text:
       warningMessage(params) ||
       (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
-    title: typeof params.title === "string" ? params.title : undefined,
-    hint: typeof params.hint === "string" ? params.hint : undefined,
-    source: typeof params.source === "string" ? params.source : undefined,
+    // Blank is absent too, not just "not a string" — hasWarningText's own
+    // reading, which every consumer must apply anyway. Normalizing it here
+    // means a future reader is never one missed hasWarningText call away
+    // from rendering blank content.
+    title: hasWarningText(params.title) ? params.title : undefined,
+    hint: hasWarningText(params.hint) ? params.hint : undefined,
+    source: hasWarningText(params.source) ? params.source : undefined,
   };
 }
 

@@ -7134,6 +7134,30 @@ describe("ConversationStore", () => {
         .conversation?.items.find((row) => row.kind === "failure");
       expect(failureRow).toMatchObject({ kind: "failure", detail: "provider hiccup" });
     });
+
+    // A message-less warning frame's text is the up-to-2000-char raw JSON
+    // fallback (rawWarningFrame); the live row's id must never embed it —
+    // that bloats timeline ids and the ownership keys they feed. It falls
+    // back to the literal "Warning" (the same sanitized title the row
+    // displays), never folded.text.
+    it("keeps the live row id short for a message-less warning with no active turn", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        // No message/title/hint anywhere: folded.text is the bounded raw
+        // JSON fallback (up to 2000 chars) — the `extra` field forces it
+        // long enough that reusing folded.text for the id would be obvious.
+        params: { ...target, extra: "x".repeat(500) },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(failureRow.id.length).toBeLessThan(30);
+        expect(failureRow.id.startsWith("warning:Warning:")).toBe(true);
+      }
+    });
   });
 
   // I3: Track actual page-owned item IDs per binding/token. On reread merge,

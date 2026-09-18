@@ -2870,7 +2870,11 @@ export function createConversationStore() {
             // a warning carrying both a message and a hint shows both, the
             // same as the web and TUI renderers.
             const detail = [folded.text, folded.hint].filter(hasWarningText).join(" — ");
-            const id = `warning:${folded.title ?? folded.text ?? "warning"}:${++liveNoticeSerial}`;
+            // Built from the sanitized title, never folded.text: a
+            // message-less frame's text is the up-to-2000-char raw JSON
+            // fallback, which would otherwise bloat this id (and the
+            // ownership keys it feeds).
+            const id = `warning:${title}:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,
