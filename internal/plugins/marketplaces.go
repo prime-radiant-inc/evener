@@ -313,20 +313,52 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := mk[name]; !ok {
+	ref, ok := mk[name]
+	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	// A directory source's install location is its own path, so a directory
-	// under the store's canonical name can only be a stale clone — the one a
+	// under the store's canonical name is normally a stale clone — the one a
 	// git->directory re-source failed to remove, say. Sweep it whatever the
 	// recorded kind, or it outlives the marketplace under a name nothing
-	// records and blocks that name for a later rename.
+	// records and blocks that name for a later rename. The one record that must
+	// not be swept is a directory source that names the clone path itself.
 	clone := m.marketplaceDir(name)
-	if err := marketplaceRemoveAll(clone); err != nil {
-		_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
+	protect, err := m.sweepWouldDeleteSource(ref, clone)
+	if err != nil {
+		return err
+	}
+	if !protect {
+		if err := marketplaceRemoveAll(clone); err != nil {
+			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
+		}
 	}
 	delete(mk, name)
 	return m.saveMarketplaces(mk)
+}
+
+// sweepWouldDeleteSource reports whether removing or renaming the canonical
+// clone directory clone would delete the marketplace's own directory source.
+// A directory source never lives at the clone path for any record the store
+// wrote since refuseSourceInStore began refusing a source inside it, but a
+// record written before that rule — or seeded by hand — can still name it, and
+// a sweep must not be what finally deletes a live source. A non-directory
+// source never lives there, so it is never protected. Either containment
+// direction counts, because the clone path can be the source, hold it, or sit
+// inside it.
+func (m *Manager) sweepWouldDeleteSource(ref MarketplaceRef, clone string) (bool, error) {
+	if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
+		return false, nil
+	}
+	source, err := resolveForContainment(ref.Source.Path)
+	if err != nil {
+		return false, err
+	}
+	resolvedClone, err := resolveForContainment(clone)
+	if err != nil {
+		return false, err
+	}
+	return pathWithinDir(resolvedClone, source) || pathWithinDir(source, resolvedClone), nil
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
@@ -595,9 +627,17 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		// remove. Sweep it rather than moving it: moving it would park the
 		// same unrecorded directory under the new name, which is still a name
 		// nothing records it under. Nothing references it, so there is nothing
-		// to put back and no undo step to add.
-		if err := marketplaceRemoveAll(oldDir); err != nil {
-			return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
+		// to put back and no undo step to add. A record that names the clone
+		// path as its own directory source keeps it: that directory is the live
+		// source, not residue.
+		protect, err := m.sweepWouldDeleteSource(ref, oldDir)
+		if err != nil {
+			return fail(err)
+		}
+		if !protect {
+			if err := marketplaceRemoveAll(oldDir); err != nil {
+				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
+			}
 		}
 	}
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)

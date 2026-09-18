@@ -800,6 +800,64 @@ func TestEditMarketplace_RenameSweepsAStrandedCloneUnderADirectorySource(t *test
 	}
 }
 
+// seedLegacyInStoreDirectorySource writes a directory-source record whose path
+// is the marketplace's own canonical clone directory — a store the current
+// refuseSourceInStore would never write, but a pre-rule or hand-seeded store
+// can hold. It returns a sentinel inside that directory so a caller can tell
+// whether the live source survived.
+func seedLegacyInStoreDirectorySource(t *testing.T, m *Manager, name string) string {
+	t.Helper()
+	clone := m.marketplaceDir(name)
+	if err := os.MkdirAll(filepath.Join(clone, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(clone, ".claude-plugin", "marketplace.json")
+	if err := os.WriteFile(sentinel, []byte(`{"name":"`+name+`","owner":{"name":"o"},"plugins":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{name: {
+		Source:          Source{Kind: SourceDirectory, Path: clone},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return sentinel
+}
+
+// The store refuses a directory source inside itself today, so a directory at
+// <marketplaces>/<name> is normally residue. A record written before that rule
+// (or seeded by hand) can still name the clone path as its source, and then the
+// directory is the live source: RemoveMarketplace must not delete it.
+func TestRemoveMarketplace_SparesADirectorySourceThatIsTheClonePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	sentinel := seedLegacyInStoreDirectorySource(t, m, "acme")
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the live directory source was deleted by removal: %v", err)
+	}
+}
+
+// The same legacy record on the rename path: the clone path is the live source,
+// so a rename must leave it in place rather than sweeping it as stale residue.
+func TestEditMarketplace_RenameSparesADirectorySourceThatIsTheClonePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	sentinel := seedLegacyInStoreDirectorySource(t, m, "acme")
+
+	ref, err := m.EditMarketplace(context.Background(), "acme", "beta", nil)
+	if err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if ref.Source.Kind != SourceDirectory || ref.InstallLocation == "" {
+		t.Fatalf("rename lost the directory source: %+v", ref)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the live directory source was deleted by the rename: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
