@@ -286,9 +286,11 @@ describe("the checkpointed draft editor", () => {
 
     // The write succeeded, but the checkpoint it wrote is gone - replaced,
     // not just removed. The replacement survives on disk, and the store
-    // adopts it rather than reporting no draft.
+    // adopts it rather than reporting no draft. Its generation is null: a
+    // restore never stamps the live generation itself - only the next
+    // authoritative payload does.
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // Settling an uncertain checkpoint replaces it atomically: a concurrent
@@ -322,7 +324,7 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
     expect(store.getState().writeUncertain).toBe(false);
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // settledWrite's checkpoint reclassification is deferred inside the thunk
@@ -588,7 +590,7 @@ describe("the checkpointed draft editor", () => {
     // just removed. The replacement survives on disk, and the store adopts
     // it rather than reporting no draft.
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // Both rejection branches below apply their payload through
@@ -885,7 +887,7 @@ describe("the checkpointed draft editor", () => {
     // actually there now, which is readable.
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
   });
 
   test("a discard refuses and re-classifies when the record has been replaced", async () => {
@@ -911,7 +913,7 @@ describe("the checkpointed draft editor", () => {
     store.getState().discardDraft();
     expect(drafts.stored()).toEqual(newer);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // A draft restored before any ready generation began (a store built
@@ -963,6 +965,51 @@ describe("the checkpointed draft editor", () => {
     store.beginReadyGeneration();
     await store.getState().refreshOverrides();
 
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
+  // A restore's own generation stamp was the live one just because a live
+  // generation existed, so a storage-recovery restore (discardDraft's
+  // refuse-and-reclassify, refreshOverrides' one-more-restore-attempt) could
+  // silently re-assert an on-disk record as belonging to the CURRENT
+  // generation, defeating the very check the scenario above relies on for a
+  // record that might be a previous session's. A restore now never stamps a
+  // live generation itself - only an authoritative payload the store has
+  // actually just reconciled earns a draft its generation, exactly once.
+  test("a storage-recovery restore during a live generation defers its generation stamp to the next authoritative payload, so a later generation change still catches it stale", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
+
+    // Another writer replaces the SAME on-disk record while this generation
+    // is already live: discardDraft's own removeIf refuses and re-classifies
+    // via restoreDraft - the storage-recovery path.
+    const replacement: KeybindingDraftCheckpoint = { id: "other", baseRevision: 3, rules, writeUncertain: false };
+    drafts.storage.save(replacement);
+    store.getState().discardDraft();
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The connection drops and reconnects (a different hub, or the same hub
+    // restarted) - a new generation begins, reporting the SAME revision by
+    // coincidence. This next authoritative payload is what actually earns
+    // the draft its generation - the new one, since nothing has judged it
+    // stale yet.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(false);
+
+    // A SECOND generation change, same coincidental revision: now that the
+    // draft has an actually-earned generation, the mismatch is caught -
+    // proving the storage recovery above did not quietly grant it
+    // unconditional trust in the live generation forever.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
     expect(store.getState().revision).toBe(3);
     expect(store.getState().draftConflict).toBe(true);
   });
