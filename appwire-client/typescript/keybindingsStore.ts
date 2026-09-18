@@ -1202,7 +1202,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       drafts.save(checkpoint);
       return checkpoint;
     } catch {
-      setState({ storageUnavailable: true });
+      setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });
       throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
     }
   }

@@ -427,6 +427,21 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  test("editDraft's local save failure marks draftError alongside storageUnavailable", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    drafts.failSave();
+
+    // Native renders draftError ?? hubError: a save failure that only sets
+    // storageUnavailable disables the editor with no message at all.
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: true,
+      draftError: "Could not save the shortcut draft locally.",
+    });
+  });
+
   // The no-port fallback storage's removeIf/replaceIf report success
   // unconditionally: there is no real backing store behind them, so no
   // concurrent writer to have raced against, and a refusal there would read
