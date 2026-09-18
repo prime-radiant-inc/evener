@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,7 @@ func TestProjectActivitySession_CollapsesUnsupportedTypeErrors(t *testing.T) {
 	if !strings.Contains(got.Branch.Error, "unsupported type") {
 		t.Fatalf("branch error = %q, want it to say unsupported type", got.Branch.Error)
 	}
-	if want := fmt.Sprintf("%d", n); !strings.Contains(got.Branch.Error, want) {
+	if want := strconv.Itoa(n); !strings.Contains(got.Branch.Error, want) {
 		t.Fatalf("branch error = %q, want the count %s of collapsed records", got.Branch.Error, want)
 	}
 }
