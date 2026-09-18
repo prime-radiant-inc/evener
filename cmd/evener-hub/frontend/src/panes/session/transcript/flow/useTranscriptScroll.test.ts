@@ -1662,6 +1662,178 @@ describe("jumpToBottom landing reliability", () => {
   });
 });
 
+// Opening a session lands at the end from size estimates and measures once;
+// nothing re-anchors that landing afterwards without a scroll event or an
+// item-count change. A webfont that swaps in AFTER the landing grows
+// scrollHeight with scrollTop pinned (measured 11466 -> 11487 at
+// document.fonts.ready), and a late-arriving row measurement can do the
+// same - either way the reader is left a few pixels short of the true
+// bottom with wasAtBottomRef still true, so no pill offers a way back.
+// Re-anchor once the fonts settle and on every resize of the scroll content,
+// while the reader was at the bottom before the change.
+describe("late content growth with no scroll event", () => {
+  // The issue's figures: the mount landed at the true bottom (16519 =
+  // 17221 - 702), then the content grew below while the offset stayed pinned.
+  const MOUNTED_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17221, clientHeight: 702 };
+  const GREW_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17366, clientHeight: 702 };
+  const TRUE_BOTTOM_AFTER_GROWTH = GREW_AT_BOTTOM.scrollHeight - GREW_AT_BOTTOM.clientHeight;
+
+  // jsdom implements neither document.fonts nor ResizeObserver; both are
+  // stubbed here so the hook's production triggers run, with the promise and
+  // the observer callback driven explicitly so "after the growth, with no
+  // scroll event" is exactly what each test stages.
+  function installFonts() {
+    let resolve!: () => void;
+    const ready = new Promise<void>((r) => {
+      resolve = r;
+    });
+    Object.defineProperty(document, "fonts", { value: { ready }, configurable: true });
+    return {
+      resolve,
+      restore: () => Reflect.deleteProperty(document, "fonts"),
+    };
+  }
+
+  interface FakeObserver {
+    target: Element | null;
+    disconnected: boolean;
+    callback: ResizeObserverCallback;
+  }
+
+  function installResizeObserver() {
+    const observers: FakeObserver[] = [];
+    class FakeResizeObserver {
+      target: Element | null = null;
+      disconnected = false;
+      readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe(target: Element) {
+        this.target = target;
+      }
+      unobserve() {}
+      disconnect() {
+        this.disconnected = true;
+      }
+    }
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+    return {
+      observers,
+      trigger: () => {
+        for (const observer of observers) observer.callback([], observer as unknown as ResizeObserver);
+      },
+      restore: () => Reflect.deleteProperty(globalThis, "ResizeObserver"),
+    };
+  }
+
+  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM) {
+    const { ref, el } = makeListHandle();
+    // The scroll content VirtualList renders inside the port (its sizer): a
+    // webfont swap resizes THIS, not the port, so the observer must watch it.
+    const content = document.createElement("div");
+    el.appendChild(content);
+    const { measure, set } = makeMeasure(start);
+    const view = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    definePort(el, start);
+    return { el, content, set, result: view.result };
+  }
+
+  test("re-anchors to the true bottom when document.fonts.ready resolves after a webfont swap grew the content", async () => {
+    const fonts = installFonts();
+    try {
+      const { el, set } = mountWithContent();
+
+      // The swap: content grew below the fold, the offset stayed pinned and
+      // NO scroll event fired (the exact 21px stranding the issue measured).
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      await act(async () => {
+        fonts.resolve();
+        await Promise.resolve();
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      fonts.restore();
+    }
+  });
+
+  test("re-anchors when a ResizeObserver tick reports the scroll content grew", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, content, set } = mountWithContent();
+      expect(resizeObserver.observers[0]?.target).toBe(content);
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("a reader scrolled away keeps their position when the fonts settle", async () => {
+    const fonts = installFonts();
+    try {
+      const away: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
+      const awayGrown: ScrollMetrics = { scrollTop: 0, scrollHeight: 5100, clientHeight: 500 };
+      const { el, set } = mountWithContent(away);
+
+      definePort(el, awayGrown);
+      set(awayGrown);
+
+      await act(async () => {
+        fonts.resolve();
+        await Promise.resolve();
+      });
+
+      expect(el.scrollTop).toBe(0);
+    } finally {
+      fonts.restore();
+    }
+  });
+
+  test("the observer is disconnected when the mount effect tears down", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { ref, el } = makeListHandle();
+      el.appendChild(document.createElement("div"));
+      const { measure } = makeMeasure(MOUNTED_AT_BOTTOM);
+      const view = renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      );
+
+      expect(resizeObserver.observers[0]?.disconnected).toBe(false);
+      view.unmount();
+      expect(resizeObserver.observers[0]?.disconnected).toBe(true);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+});
+
 // The error anchor (contracts-transcript-scroll-liveness.md §5, lines
 // 113-114): a failed turn arriving while the reader is scrolled away is
 // remembered so the pill can point at it and jump straight there, instead

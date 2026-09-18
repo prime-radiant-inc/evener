@@ -1467,6 +1467,53 @@ export function useTranscriptScroll({
       if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
     }
 
+    // A content change that never produces a scroll event: a webfont swaps in
+    // after the mount's landing (scrollHeight grows while the offset stays
+    // pinned - measured 11466 -> 11487 at document.fonts.ready), or the
+    // virtualizer adopts newly-measured row heights without moving scrollTop.
+    // The scroll listener's own correction below is the same premise and the
+    // same remedy, but it only runs on a scroll event - neither of these fires
+    // one, so without this the reader is left a few pixels short of the true
+    // bottom with wasAtBottomRef still true: no pill, nothing to click. Re-pin
+    // to the new true bottom from live geometry, guarded by the same "more
+    // content in the same box, offset not moved backwards" test the listener
+    // uses so a prepend or a scroll-away is never yanked.
+    function reanchorIfContentGrew() {
+      if (!el) return;
+      const previous = lastScrollGeometryRef.current;
+      const m = measure(el);
+      lastScrollGeometryRef.current = m;
+      if (
+        wasAtBottomRef.current &&
+        !isAtBottom(m) &&
+        m.clientHeight === previous.clientHeight &&
+        m.scrollHeight > previous.scrollHeight &&
+        m.scrollTop >= previous.scrollTop
+      ) {
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+      }
+    }
+
+    let disposed = false;
+    // The fonts trigger covers the swap landing before the virtualizer has
+    // re-measured the rows; the observer covers the row measurement itself.
+    const fonts = document.fonts;
+    if (fonts) {
+      void fonts.ready
+        .then(() => {
+          if (!disposed) reanchorIfContentGrew();
+        })
+        .catch(() => {});
+    }
+    let contentObserver: ResizeObserver | undefined;
+    const content = el.firstElementChild;
+    if (typeof ResizeObserver !== "undefined" && content) {
+      contentObserver = new ResizeObserver(() => {
+        if (!disposed) reanchorIfContentGrew();
+      });
+      contentObserver.observe(content);
+    }
+
     el.addEventListener("scroll", handleScroll);
     el.addEventListener("wheel", markWheel, { passive: true });
     el.addEventListener("touchstart", startTouch, { passive: true });
@@ -1481,6 +1528,8 @@ export function useTranscriptScroll({
     window.addEventListener("blur", endAutoscrollOnFocusLoss, { passive: true });
     document.addEventListener("visibilitychange", forgetGesturesWhenHidden, { passive: true });
     return () => {
+      disposed = true;
+      contentObserver?.disconnect();
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);
       el.removeEventListener("touchstart", startTouch);
