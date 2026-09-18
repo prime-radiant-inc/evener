@@ -8,10 +8,11 @@ secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`, `lint-gofmt`,
 and `secret-scan`. `make lint` runs all of them; CI enforces every one across
 its split jobs, and each target's trigger says which.
 
-`golangci-lint` and `gitleaks` are the only external tools the gate needs;
-`make tools` installs the CI-pinned versions from `.tool-versions`. `lint-biome`
-additionally needs the frontend's `node_modules`, which `web-preflight.sh`
-makes ready exactly as it does for the other web targets. The tools
+`make tools` installs the gate's only run-time tools, `golangci-lint` and
+`gitleaks`, from the CI-pinned `.tool-versions`. `lint-biome` additionally
+needs Node/npm and the frontend's `node_modules` (which on a cold install means
+a network fetch), made ready by `web-preflight.sh` exactly as it is for the
+other web targets. The tools
 behave differently when absent: a missing `golangci-lint` fails the gate
 outright, while a missing local `gitleaks` warns and returns zero — CI sets
 `EVENER_GITLEAKS_REQUIRED=1` so absence there is a failure rather than a
@@ -22,10 +23,13 @@ which points the same tool at the committed fuzz corpora.
 ## Why `lint-biome` delegates to the frontend lint script
 
 `lint-biome` is the one gate whose tool does not live where a repo-root
-invocation would find it. The pinned `@biomejs/biome` is installed only under
-`cmd/evener-hub/frontend/node_modules`, so `npx biome` from the repository root
-finds no local package and downloads the unrelated `biome@0.3.3`, which ignores
-its arguments and exits 0. Every root-scoped "biome both scopes" invocation
+invocation would find it. No `biome` binary is installed at the repository root:
+the frontend's pinned `@biomejs/biome` lives in
+`cmd/evener-hub/frontend/node_modules` (and `mobile-native` carries its own copy
+for the native tree, which a root `npx biome` never resolves), so `npx biome`
+from the repository root finds no local package and downloads the unrelated
+`biome@0.3.3`, which ignores its arguments and exits 0. Every root-scoped
+"biome both scopes" invocation
 therefore reported green while checking nothing (#1406). The recipe runs
 `npm run lint` from the frontend directory: npm puts that install's
 `node_modules/.bin` on `PATH`, so `biome` resolves to the frontend's pinned

@@ -232,9 +232,11 @@ lint-package-imports:
 # lint-biome delegates to the frontend's own `lint` script, the same command
 # the web job's `make test-web` runs, so the two scopes are defined in exactly
 # one place and cannot drift. It runs that script from cmd/evener-hub/frontend
-# so npm resolves `biome` from that install's node_modules; the pinned
-# @biomejs/biome lives only there, and a root `npx biome` instead downloads the
-# unrelated `biome@0.3.3`, which ignores its arguments and exits 0 (issue
+# so npm resolves `biome` from that install's node_modules. No `biome` is
+# installed at the repository root (mobile-native carries its own @biomejs/biome
+# for the native tree, which a root `npx biome` never resolves), so a root
+# `npx biome` downloads the unrelated `biome@0.3.3`, which ignores its arguments
+# and exits 0 (issue
 # #1406: every root-scoped "biome both scopes" invocation reported green while
 # checking nothing). web-preflight owns the install-readiness definition the
 # other web targets use, so this gate cannot run against a stale or missing

@@ -35,10 +35,12 @@ requests.
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
 ../../../appwire-client/typescript`; see cmd/evener-hub/frontend/package.json).
-Never run `npx biome` from the repository root: the pinned `@biomejs/biome`
-lives in `cmd/evener-hub/frontend/node_modules`, so a root `npx biome` resolves
-an unrelated `biome@0.3.3` package that ignores its arguments and exits 0 — a
-root-scoped invocation checks nothing while reporting success. Use
+Never run `npx biome` from the repository root: no `biome` binary is installed
+there (the frontend's pinned `@biomejs/biome` lives in
+`cmd/evener-hub/frontend/node_modules`, and `mobile-native` carries its own copy
+for the native tree), so a root `npx biome` resolves an unrelated `biome@0.3.3`
+package that ignores its arguments and exits 0 — a root-scoped invocation checks
+nothing while reporting success. Use
 `make lint-biome` (part of `make lint`), or run Biome from the frontend
 directory: `cd cmd/evener-hub/frontend && npm run lint` to check or
 `npm run check` to fix. Before the gate, run

@@ -1134,16 +1134,22 @@ func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
 // recipe to the frontend directory and to the frontend's own `lint` script.
 //
 // The defect this guards is not a missing check but a check that resolves to
-// an unrelated tool. The pinned @biomejs/biome lives in
-// cmd/evener-hub/frontend/node_modules and nowhere else, so `npx biome` from
-// the repository root finds no local package and downloads the unrelated
-// `biome@0.3.3` package, which ignores its arguments and exits 0. A
-// root-scoped `npx biome` gate therefore reports green while checking
-// nothing. Delegating to the frontend's `lint` script from the frontend
-// directory fixes both halves: npm puts that install's node_modules/.bin on
-// PATH, so `biome` cannot resolve elsewhere, and the script stays the single
-// definition of the two enforced scopes. A recipe that re-implements the
-// scopes instead would let a later package.json edit silently shrink the gate.
+// an unrelated tool. No `biome` is installed at the repository root (the
+// frontend's pinned @biomejs/biome lives in
+// cmd/evener-hub/frontend/node_modules, and mobile-native carries its own copy
+// for the native tree), so `npx biome` from the repository root finds no local
+// package and downloads the unrelated `biome@0.3.3` package, which ignores its
+// arguments and exits 0. A root-scoped `npx biome` gate therefore reports green
+// while checking nothing. Delegating to the frontend's `lint` script from the
+// frontend directory fixes both halves: npm puts that install's
+// node_modules/.bin on PATH, so `biome` cannot resolve elsewhere, and the script
+// stays the single definition of the two enforced scopes. A recipe that
+// re-implements the scopes instead would let a later package.json edit silently
+// shrink the gate.
+//
+// It also pins the web-preflight prerequisite: without it a stale or missing
+// frontend install would slip past the recipe-only assertions above even though
+// the target's own annotations claim it cannot.
 func TestLintBiomeRunsTheFrontendLintScript(t *testing.T) {
 	t.Parallel()
 	recipes := makefileRecipes(t)
@@ -1167,4 +1173,30 @@ func TestLintBiomeRunsTheFrontendLintScript(t *testing.T) {
 			"list is duplicated and can drift from the command the web job runs. Recipe:\n%s",
 			strings.TrimSpace(recipe))
 	}
+	if prereqs := lintBiomePrerequisites(t); !slices.Contains(prereqs, "web-preflight") {
+		t.Errorf("lint-biome does not depend on web-preflight (prerequisites: %v), so it can run "+
+			"against a stale or missing frontend install — the guarantee its own annotations claim. "+
+			"Add web-preflight to the rule line.", prereqs)
+	}
+}
+
+// lintBiomePrerequisites returns the prerequisite names on make/linting.mk's
+// lint-biome rule line, parsed from the rule rather than matched as a substring
+// of the recipe so a mention in a comment cannot satisfy the audit.
+func lintBiomePrerequisites(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile("make/linting.mk")
+	if err != nil {
+		t.Fatalf("reading make/linting.mk: %v", err)
+	}
+	for line := range strings.Lines(string(raw)) {
+		line = strings.TrimRight(line, "\n")
+		name, rest, ok := ruleLineName(line)
+		if !ok || name != "lint-biome" {
+			continue
+		}
+		rest, _, _ = strings.Cut(rest, "#")
+		return strings.Fields(rest)
+	}
+	return nil
 }
