@@ -192,7 +192,10 @@ func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "no longer registered") {
 		t.Fatalf("err = %v, want it to say the marketplace is no longer registered despite the clone litter", err)
 	}
-	list, _ := m.ListMarketplaces(ctx)
+	list, listErr := m.ListMarketplaces(ctx)
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
 	if _, ok := list["market-a"]; ok {
 		t.Fatalf("marketplace still listed after its save-then-remove: %v", list)
 	}
