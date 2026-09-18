@@ -9515,6 +9515,7 @@ test("a stale client's ready callback cannot begin a generation for a replaced c
   const stale = new FakeClient("connecting");
   const current = new FakeClient("ready");
   current.on("thread/read", () => readResponse("ref_test"));
+  current.on("thread/resume", () => ({}));
   const staleReady = vi.spyOn(stale, "onReady");
   connectionStore.getState().connect(stale);
   connectionStore.setState({
@@ -9529,13 +9530,25 @@ test("a stale client's ready callback cannot begin a generation for a replaced c
   connectionStore.setState({
     features: { ...(await current.connect()).features },
   });
-  const authorityRefsBeforeStaleReady = threadsStore.getState().mutationAuthorityRefs.size;
+  // Seed the current store with a tracked ref so handleReady would refresh it
+  // if the stale callback somehow did trigger. Ensure refs are tracked so
+  // handleReady will subscribe to them on the client it's given.
+  await threadsStore.getState().ensureThread("ref_test");
+  // Verify there's at least one tracked ref.
+  expect(threadsStore.getState().threads.has("ref_test")).toBe(true);
+  const trackedRefsBeforeStale = new Set(threadsStore.getState().threads.keys());
 
   // The race this fixes: `stale`'s own dispatch can snapshot its ready
   // handlers before rewireClient's unsubscribe removes this one, so it
   // still runs - after `current` is already the wired client. Without the
-  // guard, the stale callback would clear mutationAuthorityRefs.
+  // guard, the stale callback would run its body: readyEpoch += 1,
+  // setState({ mutationAuthorityRefs: new Set() }), then call
+  // handleReady(stale, epoch), which subscribes to tracked refs on the stale client.
   staleReadyCallback?.(await stale.connect());
 
-  expect(threadsStore.getState().mutationAuthorityRefs.size).toBe(authorityRefsBeforeStaleReady);
+  // The stale callback must not have run its body. If it had, it would have
+  // cleared mutationAuthorityRefs via setState({ mutationAuthorityRefs: new Set() })
+  // in its first statement after incrementing readyEpoch.
+  const authorityRefsClearedToEmpty = threadsStore.getState().mutationAuthorityRefs.size === 0;
+  expect(authorityRefsClearedToEmpty).toBe(false);
 });
