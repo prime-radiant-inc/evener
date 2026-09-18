@@ -184,6 +184,76 @@ it("offers the model's answerable asks", () => {
   expect(conversation.items.some((row) => row.kind === "question")).toBe(true);
 });
 
+// pendingQuestions must answer from the canonical refs (liveAsksFor), never
+// from a display-bound copy: a store that wires project.ts's truncateItem
+// into its own cap-and-truncate pass (mobile/src/state/conversation.ts) can
+// bound a "question" row's option labels for display, and two options that
+// share a prefix past that bound collide once cut — composeQuestionAnswers
+// must validate a selection against the full label, or a cut label could
+// pass as a choice the agent never actually offered under its real name.
+// projectConversation itself never truncates (bounding is a pass a store
+// applies afterward), so this checks pendingQuestions' own refs directly
+// rather than reproducing that store pass here.
+it("returns the option's full, untruncated label regardless of size", () => {
+  const prefix = "x".repeat(MAX_ITEM_BYTES);
+  const labelA = `${prefix}-first-option`;
+  const labelB = `${prefix}-second-option`;
+  const conversation = projectConversation(
+    hydrateThread(
+      {
+        thread: {
+          id: "thread-1",
+          sessionId: "session-1",
+          preview: "",
+          ephemeral: false,
+          modelProvider: "anthropic",
+          createdAt: 0,
+          updatedAt: 0,
+          status: { type: "idle" },
+          cwd: "",
+          cliVersion: "",
+          source: "",
+          turns: [
+            {
+              id: "t1",
+              status: "completed",
+              itemsView: "default",
+              items: [
+                {
+                  id: "ask-1",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "ask_user",
+                  status: "completed",
+                  argumentsJson: JSON.stringify({
+                    questions: [
+                      {
+                        header: "Choice",
+                        question: "Choose",
+                        options: [
+                          { label: labelA, detail: "" },
+                          { label: labelB, detail: "" },
+                        ],
+                        multi_select: false,
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+          evener: { ref: "ref-1", askPending: true },
+        } as unknown as Thread,
+      },
+      "ref-1",
+      0,
+    ),
+  );
+  const [refs] = pendingQuestions(conversation);
+  const labels = refs?.options.map((o) => o.label);
+  expect(labels).toEqual([labelA, labelB]);
+});
+
 // liveAskQuestions (the package's deriveAskQuestions.ts) has "no memory of
 // its own" by its own doc comment: every call re-parses every pending
 // ask_user's argumentsJson. projectConversation's own default argument pays
@@ -393,33 +463,31 @@ it("distinguishes two oversized questions that share a prefix past the display b
 // is exactly the O(payload)-per-render cost this identity exists to avoid
 // paying twice: the SAME question array (the reference reconcileBatches.ts
 // hands back unchanged, per its own "same array when nothing changed" rule)
-// must answer from a memo, not rehash. Measured by size, not wall-clock: 200
-// oversized questions computed once vs. read 500 more times from the same
-// reference costs orders of magnitude less than the first call alone would
-// if repeated 500 times.
+// must answer from a memo, not rehash. Counted, not timed (a wall-clock
+// delta flakes under scheduler pauses or a loaded CI runner): questionHash's
+// digest input is built with one JSON.stringify(question) per question, so a
+// spy on the global counts exactly one fresh-computation pass per distinct
+// array reference, and zero for every memoized read of the same one.
 it("memoizes by question-array reference instead of rehashing on every call", () => {
-  const bigHeader = "x".repeat(MAX_ITEM_BYTES);
   const many: AskQuestionRef[] = Array.from({ length: 20 }, (_, i) => ({
     ...question,
     key: `call_${i}:0`,
     callId: `call_${i}`,
-    header: `${bigHeader}-${i}`,
+    header: `header-${i}`,
   }));
 
-  const start = performance.now();
+  const stringifySpy = vi.spyOn(JSON, "stringify");
   const first = questionsIdentity(many);
-  const firstCallMs = performance.now() - start;
+  const firstCallCount = stringifySpy.mock.calls.length;
+  expect(firstCallCount).toBeGreaterThan(0); // the fresh pass really did stringify something
 
-  const repeatsStart = performance.now();
+  stringifySpy.mockClear();
   for (let i = 0; i < 200; i++) {
     expect(questionsIdentity(many)).toBe(first);
   }
-  const repeatsMs = performance.now() - repeatsStart;
-
-  // A memoized read is orders of magnitude cheaper than one full hash pass;
-  // 200 of them staying well under 10x a single fresh computation is a
-  // generous margin that only holds if they are not each rehashing.
-  expect(repeatsMs).toBeLessThan(Math.max(firstCallMs * 10, 5));
+  // A memoized read returns before touching JSON.stringify at all.
+  expect(stringifySpy).not.toHaveBeenCalled();
+  stringifySpy.mockRestore();
 });
 
 it("offers nothing when nothing is answerable, whatever the wire's flag says", () => {
