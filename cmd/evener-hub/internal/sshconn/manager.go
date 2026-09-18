@@ -898,6 +898,64 @@ func (m *Manager) Close() error {
 	return first
 }
 
+// DetachHost removes name's host cleanly: it stops the supervisor first, then
+// drops the mapped channel, so a removed-then-readded host attaches fresh. The
+// name is normalized through the registry exactly like Ensure and
+// ClientIfAttached, and an unknown name (or a nil registry) is a no-op
+// returning nil: removal of the registry entry is what makes re-add clean, so
+// there is nothing to detach for a name the registry no longer reports.
+//
+// The host lock serializes with an in-flight Ensure — both hold it while they
+// inspect or publish the host's channel, so a channel cannot be announced as
+// usable after its teardown has begun — and the supervisor is stopped before
+// the channel is cleared so it cannot reconnect behind this call. The Detached
+// is paired through claimAnnounced exactly like Close, so consumers see it
+// only when the channel was announced. The channel close runs after the locks
+// are released: Channel.Close blocks on the ssh child's exit and must never be
+// held across m.mu, but the host lock spans the map mutation so no Ensure can
+// interleave between the clear and the reap. This never dials, preflights, or
+// attaches, and a second call for the same name is a no-op returning nil.
+func (m *Manager) DetachHost(name string) error {
+	if m.reg == nil {
+		return nil
+	}
+	host, ok := m.reg.Get(name)
+	if !ok {
+		return nil
+	}
+	// The registry is the authority on the name's spelling, and every map below
+	// is keyed off host.Name: normalizing here keeps a padded spelling from
+	// missing the channel Ensure published, exactly as Ensure does.
+	name = host.Name
+	// Serialize with Ensure and this host's supervisor, as Close does: neither
+	// can inspect or publish the channel while it is being torn down.
+	lock := m.hostLock(name)
+	lock.Lock()
+	// Stop the reconnect loop before clearing the channel: a supervisor parked
+	// in backoff would otherwise re-attach behind this call and a removed host
+	// would come back on its own.
+	m.stopSupervisor(name)
+	m.mu.Lock()
+	ch := m.chans[name]
+	delete(m.chans, name)
+	m.mu.Unlock()
+	// Pair the Attached a consumer saw with a Detached, under the same lock
+	// that ordered them. claimAnnounced makes this a no-op for a channel whose
+	// Detached was already emitted, so a Close racing this call cannot pair it
+	// twice.
+	if ch != nil && m.claimAnnounced(name, ch) {
+		m.detachEvent(name, StateDisconnected)
+	}
+	lock.Unlock()
+	// Reaping the ssh child can block on its exit, which needs no lock; the map
+	// no longer references this channel, so a concurrent Ensure attaching fresh
+	// — the re-add path — cannot interleave with it.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
 // ensureOnce runs one full preflight-then-decide-then-attach sequence with the
 // state transitions around it. Every branch is chosen by the one decision table
 // in ensureDecision; this function owns only the ordering and the recovery.

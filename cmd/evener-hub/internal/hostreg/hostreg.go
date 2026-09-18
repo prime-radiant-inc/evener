@@ -304,6 +304,32 @@ func (r *Registry) Get(name string) (Host, bool) {
 	return cloneHost(host), true
 }
 
+// Remove deletes the host registered under name along with its upstream edges.
+// A removed host stays removed: Get and All no longer report it, and a later
+// Add of the same name starts clean rather than inheriting the old edges (a
+// stale edges entry under the re-added name would false-positive the cycle
+// check against upstreams that no longer apply).
+//
+// Edges recorded on other hosts that name the removed host are left alone: the
+// cycle walk already treats an unknown upstream as a leaf, so they dangle
+// harmlessly until the target is re-added or the dependent is removed.
+func (r *Registry) Remove(name string) error {
+	// Trimmed like every other name, so a padded spelling removes its host
+	// instead of failing as unknown while the host stays registered.
+	name = strings.TrimSpace(name)
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	delete(r.hosts, name)
+	delete(r.edges, name)
+	return nil
+}
+
 // All returns every registered host sorted by name, mirroring
 // appsource.Registry.All. Component 05 iterates it to register a source per
 // host.

@@ -524,6 +524,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources)
+	// Component 08 slice 1: the host registry surface (add/list/status/
+	// remove). Controller-local, never dials; add/remove invalidate the
+	// manifest's sources so the picker converges without a refresh tick.
+	// The sidecar persists beside the selected hub.toml; hubHosts are the
+	// validated hub.toml entries.
+	registerHostManageHandlers(server, sources, nil, cfg, "", nil, navigation)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)

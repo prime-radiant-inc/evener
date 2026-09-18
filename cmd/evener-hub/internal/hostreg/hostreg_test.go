@@ -392,3 +392,153 @@ func TestValuesAreStoredTrimmed(t *testing.T) {
 		t.Fatalf("stored host = %+v, want trimmed values", got)
 	}
 }
+
+func TestRemoveUnknownHost(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("nope"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("Remove(unknown) = %v, want ErrUnknownHost", err)
+	}
+	// The refusal must not disturb the registered host.
+	if _, ok := r.Get("m4"); !ok {
+		t.Error("Get(m4) missing after a refused Remove")
+	}
+}
+
+func TestRemoveRejectsInvalidNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		remove string
+		want   error
+	}{
+		{"blank", "   ", ErrInvalidName},
+		{"empty", "", ErrInvalidName},
+		{"bad charset slash", "a/b", ErrInvalidName},
+		{"dotdot inside", "a..b", ErrInvalidName},
+		{"dot alone", ".", ErrInvalidName},
+		{"reserved local", ReservedName, ErrReservedName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := New([]Host{host("m4")})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := r.Remove(tt.remove); !errors.Is(err, tt.want) {
+				t.Fatalf("Remove(%q) = %v, want %v", tt.remove, err, tt.want)
+			}
+			if _, ok := r.Get("m4"); !ok {
+				t.Error("Get(m4) missing after a refused Remove")
+			}
+		})
+	}
+}
+
+// Remove deletes the host: Get misses and All no longer lists it. The padded
+// spelling must remove the host too, matching the trimmed lookups elsewhere.
+func TestRemoveDeletesHost(t *testing.T) {
+	r, err := New([]Host{host("m4"), host("studio")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("  m4  "); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := r.Get("m4"); ok {
+		t.Error("Get(m4) present after Remove")
+	}
+	if _, ok := r.Get("  m4  "); ok {
+		t.Error("Get with a padded name present after Remove")
+	}
+	got := r.All()
+	if len(got) != 1 || got[0].Name != "studio" {
+		t.Errorf("All() after Remove = %+v, want only studio", got)
+	}
+	// Removing twice reports unknown: the host stays removed, it is not
+	// resurrected and the second call is not a silent success.
+	if err := r.Remove("m4"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("second Remove = %v, want ErrUnknownHost", err)
+	}
+}
+
+// A later Add of the same name starts clean: it succeeds with a different SSH
+// value, proving no stale host state survived the removal.
+func TestRemoveThenReAddStartsClean(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("m4"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	readded := Host{Name: "m4", SSH: "m4-new.local"}
+	if err := r.Add(readded); err != nil {
+		t.Fatalf("Add after Remove: %v", err)
+	}
+	got, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing after re-Add")
+	}
+	if got.SSH != "m4-new.local" {
+		t.Fatalf("Get(m4).SSH = %q, want %q", got.SSH, "m4-new.local")
+	}
+}
+
+// Removing a dependent clears its edges, so re-adding it without upstreams
+// succeeds instead of tripping the cycle check on a stale edge entry.
+func TestRemoveClearsDependentEdges(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("add a: %v", err)
+	}
+	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
+		t.Fatalf("add b with upstream a: %v", err)
+	}
+	if err := r.Remove("b"); err != nil {
+		t.Fatalf("Remove(b): %v", err)
+	}
+	if err := r.Add(host("b")); err != nil {
+		t.Fatalf("re-Add b without upstreams: %v", err)
+	}
+	// The re-added host carries no edges, so it is a leaf again.
+	if err := r.SetUpstreams("a", []string{"b"}); err != nil {
+		t.Fatalf("SetUpstreams(a, b) after re-adding b edgeless: %v", err)
+	}
+}
+
+// Removing an upstream does not stop it from being re-added, and the
+// dependent's dangling edge still resolves once the upstream is back.
+func TestRemoveUpstreamThenReAdd(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("add a: %v", err)
+	}
+	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
+		t.Fatalf("add b with upstream a: %v", err)
+	}
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	if _, ok := r.Get("a"); ok {
+		t.Error("Get(a) present after Remove")
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("re-Add a: %v", err)
+	}
+	got, ok := r.Get("a")
+	if !ok || got.SSH != "a.local" {
+		t.Fatalf("Get(a) after re-Add = %+v, %v, want the re-added host", got, ok)
+	}
+	// The dependent still points at a, so closing the loop back is refused.
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("SetUpstreams closing a cycle through the re-added upstream = %v, want ErrHostCycle", err)
+	}
+}
