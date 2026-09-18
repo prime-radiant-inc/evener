@@ -36,6 +36,7 @@ import type {
   ItemModel,
   MutationReceipt,
   ThreadItem,
+  TurnModel,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -769,6 +770,19 @@ function findFoldedItem(
     if (found) return found;
   }
   return undefined;
+}
+
+// Two turns are the same turn for a page/reread merge by the package's own
+// identity rule (mirrors mergeOlderItemPage's turnsMatch): matching ids, or
+// sharing an item's identity. thread/turns/list is itself item-paginated, so
+// a turn can split into fragments across a page boundary and carry a
+// different id per fragment — an id-only comparison would treat a fragment
+// as unrelated to its own turn's later window.
+function turnsShareIdentity(left: TurnModel, right: TurnModel): boolean {
+  if (left.id === right.id) return true;
+  return left.items.some((leftItem) =>
+    right.items.some((rightItem) => itemIdentityMatches(leftItem, rightItem)),
+  );
 }
 
 // Project a wire ThreadItem into a mobile timeline item for insertion from
@@ -1739,10 +1753,14 @@ export function createConversationStore() {
           // gate on turn ownership, not item ownership — a page whose items
           // were entirely deduped or evicted still owns turns that must not
           // be dropped, since they may be the only usage data a session
-          // without a thread-level cumulative total has.
+          // without a thread-level cumulative total has. Ownership is
+          // recorded only by a loadOlder call that actually succeeded
+          // (pageOwnedTurnIds); a failed attempt still bumps loadOlderToken
+          // but must not, on its own, force preservation of history it never
+          // loaded.
           const preserveTurnHistory =
             currentConvForMerge?.instanceId === conversation.instanceId &&
-            (entryLoadOlderToken !== loadOlderToken || pageOwnedTurnIds.size > 0);
+            pageOwnedTurnIds.size > 0;
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
@@ -1920,14 +1938,23 @@ export function createConversationStore() {
           let mergedTurns = conversation.turns;
           let wireOlderCursor = conversation.olderCursor;
           if (preserveTurnHistory && currentConvForMerge !== null && turnsPage) {
-            // D18 B3 round 6 (a): fold the fresh reread's own turns into the
-            // ACCUMULATED prior model (page history and all) through the
-            // package's own mergeOlderItemPage, the same identity-aware merge
-            // loadOlder uses — an id-only filter here has the same
-            // split-fragment bug loadOlder had. Turn order in the result
-            // doesn't matter (conversation.turns is summed, never displayed
-            // in order), only which turns and usage values survive.
-            mergedTurns = mergeOlderItemPage(currentConvForMerge, turnsPage).turns;
+            // The fresh reread is authoritative for any turn its own window
+            // covers — a fresh usage/status update must win over the
+            // accumulated page's stale copy of the same turn (unlike
+            // loadOlder's own merge above, where the ALREADY-HELD
+            // conversation is rightly authoritative over the older page it
+            // is folding in). Only page-only turns — accumulated turns the
+            // fresh window does not cover — are folded in beside it, matched
+            // by the package's own identity rule (turnsShareIdentity), not
+            // an id-only filter — a turn split into fragments across a page
+            // boundary shares no id with its own later fragment. Turn order
+            // in the result doesn't matter (conversation.turns is summed,
+            // never displayed in order), only which turns and usage values
+            // survive.
+            const pageOnlyTurns = currentConvForMerge.turns.filter(
+              (turn) => !conversation.turns.some((fresh) => turnsShareIdentity(turn, fresh)),
+            );
+            mergedTurns = [...conversation.turns, ...pageOnlyTurns];
             // D18 B3 round 6 (b): only carry the prior conversation's own
             // wire cursor when merging actually contributed a turn beyond
             // the fresh reread's own window — otherwise a fresh, complete
