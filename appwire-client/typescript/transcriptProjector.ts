@@ -139,9 +139,15 @@ function isMessage(item: ItemModel): boolean {
   return MESSAGE_TYPES.has(item.type);
 }
 
-function isActiveItem(item: ItemModel, turn: TurnModel): boolean {
-  // The turn check covers an older or partial item frame that has not carried
-  // its item status yet.
+/**
+ * Whether an item is still in flight. The item's own status decides when it has
+ * one; the turn's status covers an older or partial item frame that has not
+ * carried its item status yet. Exported because both projections ask it — the
+ * web's transcript entries and the phone's rows (mobile/src/conversation) —
+ * and a second copy of "is this still running" is how two transcripts start
+ * disagreeing about a streaming row.
+ */
+export function isActiveItem(item: ItemModel, turn: Pick<TurnModel, "status">): boolean {
   return isInProgressStatus(item.status) || (isInProgressStatus(turn.status) && item.status === undefined);
 }
 
