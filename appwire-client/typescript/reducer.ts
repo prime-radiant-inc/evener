@@ -1062,13 +1062,23 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
     return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
   }
   if (typeof value === "object" && value !== null) {
-    const pruned: Record<string, unknown> = {};
-    // Object.entries(value) (or Object.keys) would allocate one entry per
-    // own key BEFORE any cap applies — for a malformed frame with millions
-    // of keys, that is the exact O(frame-size) allocation this function
-    // exists to avoid, just moved one line earlier. A for...in loop that
-    // counts and breaks visits (and copies) at most
-    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS keys, never materializing the rest.
+    // A wire key literally named "__proto__" is a real, own, enumerable
+    // property on the parsed object (JSON.parse never invokes a setter) -
+    // assigning into a plain `{}` here would invoke Object.prototype's
+    // __proto__ setter instead of creating an own property, silently
+    // dropping that field from the pruned result. Object.create(null) has
+    // no such setter, so every assignment below is a genuine own property.
+    const pruned: Record<string, unknown> = Object.create(null);
+    // for...in still needs one full enumeration of value's own keys (so
+    // does Object.keys/Object.entries) — that step is O(keys), the same
+    // order as the JSON.parse that produced this object in the first
+    // place, so it adds no NEW asymptotic cost on top of what parsing the
+    // wire frame already paid. What for...in avoids is allocating a
+    // [key, value] PAIR per key and READING more values than survive the
+    // cap: Object.entries reads and copies every value up front, while this
+    // loop counts and breaks, reading (and copying) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS + 1 property values regardless of
+    // how many keys the object has.
     let taken = 0;
     for (const key in value) {
       if (!Object.hasOwn(value, key)) continue;

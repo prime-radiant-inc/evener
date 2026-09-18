@@ -4759,13 +4759,17 @@ test("an oversized warning frame's fallback bounds a many-key object, not just d
   }
 });
 
-// Object.entries(value) (or Object.keys) allocates one [key, value] pair
-// PER OWN KEY before any cap applies, regardless of the array's own later
-// .slice(0, 50) — for a malformed frame with millions of keys, that
-// allocation (and the value access it implies) is the exact O(frame-size)
-// cost this function exists to avoid. A Proxy observes every property
-// GET the prune actually performs, independent of how it enumerates keys.
-test("an oversized warning frame's fallback never accesses more than the key cap's worth of property values", () => {
+// for...in still needs one full key enumeration (ownKeys) — the same O(keys)
+// cost Object.entries(value) (or Object.keys) would pay, and the same order
+// as the JSON.parse that produced this object in the first place, so this
+// loop adds no NEW asymptotic cost there. What it avoids is allocating a
+// [key, value] pair PER OWN KEY and reading more values than survive the
+// cap: Object.entries reads and copies every value up front, regardless of
+// the array's own later .slice(0, 50); this loop counts and breaks. A Proxy
+// observes both — one ownKeys call, and every property GET the prune
+// actually performs — so the test documents the true bound instead of
+// overclaiming that the walk never materializes the key list at all.
+test("an oversized warning frame's fallback enumerates keys once and never accesses more than the key cap's worth of property values", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -4779,8 +4783,13 @@ test("an oversized warning frame's fallback never accesses more than the key cap
   const MAX_OBJECT_KEYS = 50; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_OBJECT_KEYS
   const target: Record<string, string> = {};
   for (let i = 0; i < 100_000; i++) target[`key${i}`] = "v";
+  let ownKeysCalls = 0;
   let getCount = 0;
   const observed = new Proxy(target, {
+    ownKeys(t) {
+      ownKeysCalls++;
+      return Reflect.ownKeys(t);
+    },
     get(t, prop, receiver) {
       if (typeof prop === "string" && prop.startsWith("key")) getCount++;
       return Reflect.get(t, prop, receiver);
@@ -4792,6 +4801,10 @@ test("an oversized warning frame's fallback never accesses more than the key cap
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text.length).toBeGreaterThan(0);
+  // One enumeration of the full key list, no more — the cost the loop
+  // cannot avoid, and no worse than a single Object.keys/entries call would
+  // cost.
+  expect(ownKeysCalls).toBe(1);
   // A small margin above the cap for any incidental re-reads, but nowhere
   // near the 100,000 keys an Object.entries/.keys allocation would touch.
   expect(getCount).toBeLessThanOrEqual(MAX_OBJECT_KEYS + 1);
@@ -4832,6 +4845,34 @@ test("an oversized warning frame's fallback bounds an oversized property NAME, n
   for (const len of outputLengths) {
     expect(len).toBeLessThan(10_000);
   }
+});
+
+// JSON.parse creates an own, enumerable property literally named
+// "__proto__" (it does not invoke any setter) - the same shape a wire frame
+// carrying that field name arrives in after being parsed off the transport.
+// Assigning pruned[boundedKey] into a plain `{}` accumulator invokes
+// Object.prototype's __proto__ SETTER instead, silently dropping the field
+// from the rendered fallback (and repointing the accumulator's own
+// prototype, though that has no observable effect here since the result
+// only ever reaches JSON.stringify).
+test("prunedForStringify preserves a wire key literally named __proto__ instead of setting a prototype", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = JSON.parse(
+    '{"threadId":"thr_t","ref":"ref_t","warning":42,"extra":{"__proto__":{"marker":"present"}}}',
+  );
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toContain("present");
 });
 
 // A message-less frame that DOES carry a title or hint is something to show:
