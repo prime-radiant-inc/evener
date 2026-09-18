@@ -418,17 +418,31 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 // turn's provenance lookup can't diverge from the rest of the scan. Finding
 // no entry turn (history begins mid-round, e.g. a compaction boundary) keeps
 // the previous behavior: decisive.
+//
+// Only TurnUserInput, TurnSteering and TurnFailure are entry-capable kinds
+// (turnResolvesAskBoundary's own switch is the only thing that can call any
+// of them decisive; every other kind is its default:false). Every other
+// kind — TurnAssistant/TurnToolResults's own round chain, plus non-decisive
+// bookkeeping (TurnCheckpoint, TurnSummary, TurnModelSwitch,
+// TurnHookCompleted, TurnEnvironment, TurnNotesContext,
+// TurnAttentionResolution, TurnSystem) — is transparent pass-through here,
+// matching the outer scan's own treatment of these kinds (it only ever acts
+// on TurnAssistant/TurnToolResults in its switch; everything else falls
+// through turnResolvesAskBoundary's false and the loop just continues).
+// Stopping at the first non-Assistant/ToolResults turn, as this used to,
+// misreads a bookkeeping turn interleaved before the real entry as the entry
+// itself.
 func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int, origins map[string]steeringOrigin) bool {
 	for j := idx - 1; j >= 0; j-- {
 		switch history[j].Kind {
-		case schema.TurnAssistant, schema.TurnToolResults:
-			continue
-		default:
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnFailure:
 			turnOrigins := origins
 			if j < boundaryStart {
 				turnOrigins = nil
 			}
 			return turnResolvesAskBoundary(history[j], turnOrigins)
+		default:
+			continue
 		}
 	}
 	return true

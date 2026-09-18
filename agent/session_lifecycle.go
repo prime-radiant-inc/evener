@@ -1346,7 +1346,18 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 					s.terminateGoalOnError(processCtx, err)
 				}
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// A human-note carrier's own append failure (carrierSteerUndelivered)
+				// leaves askPending set -- its entry clear never ran
+				// (steeringCarrierClaimAnswersAsk) -- so settling idle here would
+				// report a session with a genuinely unanswered question as idle,
+				// diverging from restore's deriveRestoredState for the identical
+				// transcript and, via WireState, telling a live client nothing is
+				// waiting on them.
+				boundaryState := SessionIdle
+				if s.askPendingCount() > 0 {
+					boundaryState = SessionAwaiting
+				}
+				s.finishProcessingAtBoundary(processCtx, boundaryState)
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
@@ -1391,8 +1402,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
 		// pins this). askPendingCount() > 0 is checked directly alongside the
 		// state read so the gate holds regardless of which boundary state this
-		// round's own delta happened to settle on.
-		awaiting := s.State() == SessionAwaiting || s.askPendingCount() > 0
+		// round's own delta happened to settle on — awaitingOrHasPendingAsk
+		// samples both under one lock so a concurrent state transition or
+		// askPending mutation can't land between the two reads.
+		awaiting := s.awaitingOrHasPendingAsk()
 		var fu string
 		if !awaiting {
 			// Follow-ups need no such guard: they live in memory for this

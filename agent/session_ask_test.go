@@ -3874,3 +3874,179 @@ func TestAskUser_NeitherFormPresentErrors(t *testing.T) {
 		t.Fatalf("askPendingCount = %d, want 0 (rejected call must post nothing)", got)
 	}
 }
+
+// TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarly
+// covers a RoboRev #1906 round-2 Medium that measurement refuted rather than
+// confirmed: the claim was that askedThisRound's per-round delta
+// (askPendingCount() > askBefore) can wrongly read false when a resolving
+// steer drains mid-round (clearAskPendingForResolvingSteer) after this
+// round's own ask_user call appended a question, because the count "returns
+// to its starting value" -- so a generation counter set at the ask_user
+// append site (untouched by the clear) was proposed instead. Measured
+// directly: clearAskPendingForResolvingSteer's clear is unconditional
+// (s.askPending = nil, never selective) and always runs AFTER this round's
+// own ToolExec (which is where ask_user appends), so whenever a mid-round
+// clear fires the round's ending count is exactly 0 -- never able to land
+// back on a positive askBefore -- and askedThisRound=false at that point is
+// correct: nothing is left pending, so the round should continue (spec
+// §5.1's "no ask, no communicate -- next round"), not stop early into a
+// SessionAwaiting with an empty pending set. A generation counter divorced
+// from the clear gets this exact case wrong: it flags askedThisRound=true
+// off the ask_user append alone, stops the turn at this round, and forces
+// SessionAwaiting though askPendingCount() is 0 -- bypassing Stop hooks
+// (deliverIfCommunicated's own doc: askedThisRound "bypasses Stop hooks
+// entirely") for a boundary with nothing to await. This drives a note-carrier
+// round whose own model call posts a brand-new ask_user question, with a
+// resolving steer queued as a side effect of that same model response so
+// injectPostToolSteering drains it later in the SAME round (after the fresh
+// question already appended), and asserts the turn runs a THIRD model
+// request (i.e. round 1 did not stop early) with a clean, empty pending set.
+func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarly(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask1 := askUserCall("ask1", askUserArgsValid())
+	ask2 := askUserCall("ask2", askUserArgsValid())
+	var sess *Session
+	queueSteer := func() {
+		if err := sess.ensureClientMutationStore(); err != nil {
+			t.Fatalf("ensureClientMutationStore: %v", err)
+		}
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "mid-flight-answer",
+			Input:            clientMutationInput("use Postgres", nil, nil),
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer: %v", err)
+		}
+	}
+	c := llm.NewClient()
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask1) },
+			func(req llm.Request) llm.Response {
+				queueSteer()
+				return toolCallResponse(ask2)
+			},
+			func(req llm.Request) llm.Response { return finalResponse("using Postgres, thanks") },
+		},
+	}
+	c.Register(fa)
+	var err error
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-note pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount after the mid-round resolving steer = %d, want 0 (the steer clears both the old ask and the one this round just posted)", got)
+	}
+	if got := len(fa.Requests()); got != 3 {
+		t.Fatalf("model requests = %d, want 3 (the note round must not stop early; the third request reads the drained steer)", got)
+	}
+}
+
+// TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore covers
+// a RoboRev #1907 round-2 Medium, measured real: a failed human-note
+// carrier's own transcript append leaves askPending set (its entry clear
+// never ran, steeringCarrierClaimAnswersAsk), but the generic non-provider
+// failure tail in processOneInput's caller
+// (session_lifecycle.go's "handleModelError owns terminal provider
+// recovery... Keep this generic tail" branch) settled the live session
+// SessionIdle unconditionally, with no regard for askPendingCount(). Restore
+// of the identical transcript (TestAskUser_RestoreDoesNotResolveAcrossAFailed
+// HumanNoteCarrierAppend) correctly derives SessionAwaiting. WireState (the
+// externally-reported status) reads State() directly, so a live client would
+// have read this session as idle with a genuinely unanswered question still
+// live -- exactly the deadlock WireState's own doc warns against ("masking
+// the question as working would deadlock"). Drives the real
+// ProcessPendingUserInput path (not a direct acceptSteeringCarrierInput
+// call, which never reaches this tail) with the note's own transcript append
+// forced to fail, and asserts the LIVE session's state, not just a restored
+// one.
+func TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	refusal := refuseSteerAppends(sess, "note-1")
+	refusal.refuse.Store(true)
+
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true and the injected append failure", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live askPendingCount after the failed carrier append = %d, want 1 (still unanswered)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after the failed carrier append = %q, want %q (matching restore; a pending ask must not settle idle)", got, SessionAwaiting)
+	}
+}
+
+// TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry
+// covers a RoboRev #1907 round-2 Medium: roundEntryResolvesAskBoundary's
+// backward walk only skips TurnAssistant/TurnToolResults on its way to the
+// round's entry turn, so a non-decisive bookkeeping turn interleaved between
+// them (TurnEnvironment, TurnNotesContext, TurnCheckpoint, TurnSummary,
+// TurnModelSwitch, TurnHookCompleted, TurnSystem, or an unrelated non-carrier
+// TurnFailure) is misread as the entry itself: turnResolvesAskBoundary's
+// default case reports false for every one of these kinds, so the walk stops
+// there and reports "did not resolve" even when the REAL entry turn, one
+// step further back, is a genuine resolving TurnUserInput. The outer scan
+// (deriveRestoredAskPending/deriveRestoredState) already treats these same
+// kinds as transparent pass-through (turnResolvesAskBoundary's own doc: "does
+// not resolve... the round it happened to may have posted real content...
+// still ahead in the scan"); the entry walk must match it. Builds a minimal
+// history with a TurnEnvironment turn sitting between a resolving
+// TurnUserInput entry and the round's own TurnAssistant/TurnToolResults pair.
+func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
+		schema.NewTurn(schema.TurnEnvironment, llm.User("cwd: /repo")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("checking the schema")),
+		schema.NewTurn(schema.TurnToolResults, llm.User("tool result")),
+	}
+	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
+		t.Fatal("roundEntryResolvesAskBoundary = false, want true (the real entry is a resolving TurnUserInput one step past the TurnEnvironment bookkeeping turn)")
+	}
+}

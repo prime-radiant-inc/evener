@@ -39,6 +39,18 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
+// awaitingOrHasPendingAsk reports whether the session is SessionAwaiting or
+// has an unresolved ask_user question, sampling state and the pending set
+// under one lock. The drain-ladder gate (session_lifecycle.go) needs both
+// facts as of the SAME instant: two separate locked calls (State() then
+// askPendingCount()) could observe a state transition or an askPending
+// mutation land between them.
+func (s *Session) awaitingOrHasPendingAsk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == SessionAwaiting || len(s.askPending) > 0
+}
+
 // WireState is the externally-reported session state. It equals State()
 // except for one override: an idle session with undelivered job notifications
 // or claimable queued input reads as "active" because work the session owns
