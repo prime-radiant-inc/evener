@@ -103,7 +103,7 @@ export function connectedClientPort(label: string): ConnectedClientPort {
   const requireClient = (): AppwireClientLike => {
     const client = connectionStore.getState().client;
     if (!client) {
-      throw new Error(`${label} store: no client connected; call useConnectionStore.getState().connect(client) first`);
+      throw new Error(`${label} store: no client connected; call connectionStore.getState().connect(client) first`);
     }
     return client;
   };

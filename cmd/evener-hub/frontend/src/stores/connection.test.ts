@@ -77,7 +77,12 @@ describe("connectedClientPort", () => {
 
   test("requireClient names the calling store when no client is wired", () => {
     const port = connectedClientPort("widget");
-    expect(() => port.requireClient()).toThrow(/widget store: no client connected/);
+    // The recovery instruction must name something callable: `connectionStore`
+    // has `getState().connect`, while `useConnectionStore` is a bare hook
+    // function with no `getState` at all.
+    expect(() => port.requireClient()).toThrow(
+      "widget store: no client connected; call connectionStore.getState().connect(client) first",
+    );
   });
 
   test("request rejects and onNotification throws before a client is wired", async () => {

@@ -2,7 +2,7 @@
 // cluster (Marketplaces & Plugins, Plugins/Skills directories, MCP servers -
 // panes/settings/sections/{marketplacesPlugins,dirListSetting,pluginsDirs,
 // skillsDirs,mcp}). It rides the single AppwireClientLike connection.ts wires
-// via useConnectionStore.getState().connect(client), same as threads.ts/
+// via connectionStore.getState().connect(client), same as threads.ts/
 // tree.ts - this store has no connect() of its own.
 //
 // Split, deliberately, into two halves with different failure conventions,

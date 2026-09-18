@@ -198,7 +198,7 @@ describe("refresh", () => {
     const state = daemonResidentsStore.getState();
     expect(state.data).toBeNull();
     expect(state.error).toBe(
-      "daemonResidents store: no client connected; call useConnectionStore.getState().connect(client) first",
+      "daemonResidents store: no client connected; call connectionStore.getState().connect(client) first",
     );
   });
 });

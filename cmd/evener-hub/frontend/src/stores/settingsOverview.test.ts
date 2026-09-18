@@ -148,7 +148,7 @@ describe("fetch", () => {
     const state = settingsOverviewStore.getState();
     expect(state.data).toBeNull();
     expect(state.error).toBe(
-      "settingsOverview store: no client connected; call useConnectionStore.getState().connect(client) first",
+      "settingsOverview store: no client connected; call connectionStore.getState().connect(client) first",
     );
   });
 });

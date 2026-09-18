@@ -20,7 +20,7 @@ export type SettingsOverviewStoreState = HubOverviewState;
 
 export const settingsOverviewStore = createHubOverviewStore({
   // Reads the client connection.ts wired via
-  // useConnectionStore.getState().connect(client) through the shared port - the
+  // connectionStore.getState().connect(client) through the shared port - the
   // same labelled current-client resolution every other store uses; this store
   // has no connect() of its own, same rationale as threads.ts's own
   // requireClient.
