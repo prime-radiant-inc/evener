@@ -176,11 +176,14 @@ func TestRestoreUncommittedOAuthAsidesPutsBackACredentialOnlyImplicitRecord(t *t
 	}
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
-	// The instance has no providers.toml at all, and an absent config is no
-	// evidence that a removal proceeded: the pass reports it, while still
-	// completing the credential-only half that does not consult the config.
-	if err == nil || !strings.Contains(err.Error(), "no providers config file at "+f.tomlPath) {
-		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the absent config named beside the credential-only restore", restored, err)
+	// The instance has no providers.toml at all, but a credential-only copy's
+	// recovery consults neither the config kind nor the committed-copy sweep, so
+	// the absent config deferred no config-dependent work and is not reported:
+	// the successful restore must not read as "could not finish". (This rule moved
+	// with the fix that reports the config failure only when it actually deferred
+	// config-dependent work - the test once required the absent config named.)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the credential-only record restored with no config diagnostic", restored, err)
 	}
 	if !restored {
 		t.Fatal("restoreUncommittedOAuthAsides = false, want the credential-only record put back")
@@ -2462,5 +2465,106 @@ func TestInstances_EditRenameCarriesCopiesInNumericStampOrder(t *testing.T) {
 	got, rerr := os.ReadFile(record)
 	if rerr != nil || string(got) != newerBytes {
 		t.Fatalf("restored bytes = %q (%v), want the newer credential %q", got, rerr, newerBytes)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesReportsNoConfigFailureForACredentialOnlyRecovery:
+// a fresh install has no providers.toml, and a credential-only in-flight copy
+// needs no config to be put back. The pass used to append the config-failure
+// diagnostic whenever any aside existed, so a successful restore on a fresh
+// install was logged as "could not finish". With no config-dependent copy
+// deferred and no committed copy to sweep, the config failure prevented no
+// recovery work and must not be reported.
+func TestRestoreUncommittedOAuthAsidesReportsNoConfigFailureForACredentialOnlyRecovery(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: %s exists (stat err = %v), want a fresh install", f.tomlPath, err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	inflight := filepath.Join(dir, "openai-codex.json"+oauthAsideMarker+stamp)
+	const credentialBytes = "the only credential the instance ever had\n"
+	if err := os.WriteFile(inflight, []byte(credentialBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", inflight, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the credential-only copy restored with no config diagnostic", restored, err)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the credential-only copy put back")
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != credentialBytes {
+		t.Fatalf("the record = %q (%v), want the credential-only copy put back", got, rerr)
+	}
+	if _, statErr := os.Lstat(inflight); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the in-flight copy is still on disk (Lstat = %v), want it moved", statErr)
+	}
+}
+
+// TestInstances_EditRenameLeavesAnUnrankableOAuthCopyUncarried: a stamp past an
+// int64 is a name no removal wrote and one that cannot be ordered against the
+// copies beside it. The carry used to file it under the new name with want 0,
+// synthesizing a fresh rankable stamp (and bumping highestDest), which turned an
+// intentionally unorderable copy into the newest recovery candidate. It must
+// instead be left where it is, its stamp text untouched, and reported - and a
+// later recovery must still treat it as unorderable rather than restoring it.
+func TestInstances_EditRenameLeavesAnUnrankableOAuthCopyUncarried(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "99999999999999999999"
+	const content = "the unorderable copy\n"
+	source := "work.json" + oauthAsideMarker + stamp
+	if err := os.WriteFile(filepath.Join(dir, source), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", source, err)
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil {
+		t.Fatal("Edit(rename) = nil, want the un-carried copy reported")
+	}
+	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
+		t.Fatalf("Edit = %v (%T), want a renamePersistedError", err, err)
+	}
+	if !strings.Contains(err.Error(), source) {
+		t.Fatalf("Edit = %v, want it to name the copy left under the old name as %s", err, source)
+	}
+	// The copy must still be filed under its ORIGINAL name with its stamp text
+	// untouched: parseable and unorderable, exactly as before the rename.
+	got, rerr := os.ReadFile(filepath.Join(dir, source))
+	if rerr != nil || string(got) != content {
+		t.Fatalf("the copy = %q (%v), want it left under its original name %s", got, rerr, source)
+	}
+	// It must not have been given a fresh rankable stamp under the new name.
+	for _, name := range authDirEntries(t, f) {
+		inst, _, _, aside := oauthAsideInstance(name)
+		if aside && inst == "personal" {
+			t.Fatalf("an aside %s was filed under the new name for the unorderable copy, giving it a fresh rank", name)
+		}
+	}
+
+	// A later recovery still treats the copy as unorderable: it is neither put
+	// back nor deleted, and its existence does not make it the newest candidate.
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if restored {
+		t.Fatal("startup restored the unorderable copy, making it a newest recovery candidate")
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, source)); statErr != nil {
+		t.Fatalf("the unorderable copy %s was taken (%v), want it left for a later pass", source, statErr)
 	}
 }

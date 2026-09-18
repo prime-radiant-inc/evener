@@ -1140,9 +1140,9 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
 		},
 		{
-			name:    "a keyless instance the environment supplies names its variable",
+			name:    "a keyless instance the environment supplies names its variable and says the row returns",
 			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
-			want:    "unset OLLAMA_API_KEY instead",
+			want:    "unset OLLAMA_API_KEY to take away the credential it reads",
 			refuses: []string{"holds no credential of its own to clear", "clear the stored credential"},
 		},
 		{
@@ -1172,6 +1172,26 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInstances_RemovalRemedyForAKeylessEnvironmentBackedRowSaysTheRowReturns:
+// a keyless optional-bearer row reading OLLAMA_API_KEY comes back with its
+// provider, so a refusal that only says to unset the variable implies an action
+// that does not remove the row. The remedy must name the variable to unset - it
+// is the credential the removal cannot take away - AND say the instance itself
+// returns with its provider, without "instead" wording that reads as a
+// substitute for the removal.
+func TestInstances_RemovalRemedyForAKeylessEnvironmentBackedRowSaysTheRowReturns(t *testing.T) {
+	got := removalRemedy(registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"})
+	if !strings.Contains(got, "OLLAMA_API_KEY") {
+		t.Fatalf("removalRemedy = %q, want it to name the variable the removal cannot take away", got)
+	}
+	if !strings.Contains(got, "comes back with its provider") {
+		t.Fatalf("removalRemedy = %q, want it to say the instance itself returns with its provider", got)
+	}
+	if strings.Contains(got, "instead") {
+		t.Fatalf("removalRemedy = %q, want no wording that implies unsetting the variable removes the row", got)
 	}
 }
 

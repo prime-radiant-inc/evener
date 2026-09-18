@@ -1266,10 +1266,13 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 // parse it, kind intact, and no in-flight copy is left filed under a name
 // providers.toml no longer carries.
 //
-// A copy whose stamp cannot be ordered (past an int64) is carried rather than
-// promoted: the stamp text is preserved, so it stays parseable even though it
-// cannot be ranked. Committed copies are not touched - they belong to a removal
-// that stood and startup sweeps those whose name the config no longer carries.
+// A copy whose stamp cannot be ordered (past an int64) is not carried: giving it
+// a fresh stamp would rank an intentionally unorderable copy and make it the
+// newest recovery candidate. It is left filed under the old name with its stamp
+// text intact - still parseable, still unorderable - and reported the way every
+// other carry problem is. Committed copies are not touched - they belong to a
+// removal that stood and startup sweeps those whose name the config no longer
+// carries.
 func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName string) (string, []string) {
 	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
 	entries, err := os.ReadDir(dir)
@@ -1350,8 +1353,9 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 	// older 9 above the newer 10 - and startup restores the newest copy, putting
 	// the older credential back. Ordering the carry by the parsed stamp
 	// ascending preserves the source ordering. A copy whose stamp cannot be
-	// parsed (past an int64) is still carried, but not ranked, exactly as the
-	// newest-copy search above already skips it.
+	// parsed (past an int64) is not ranked, exactly as the newest-copy search
+	// above already skips it, and is left uncarried and reported rather than
+	// being given a fresh stamp.
 	ranked := make([]carriedAside, 0, len(copies))
 	var unranked []carriedAside
 	for _, c := range copies {
@@ -1371,17 +1375,24 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 		if c.name == promoted {
 			continue
 		}
+		if !c.ranked {
+			// A copy whose stamp cannot be ordered is left filed under the old
+			// name, its stamp text untouched: it stays parseable, and the
+			// destination ranking is not moved. Carrying it with want 0 would
+			// synthesize a fresh rankable stamp (and bump highestDest), turning
+			// an intentionally unorderable copy into the newest recovery
+			// candidate. The copy is reported instead, the way the other carry
+			// failures are.
+			problems = append(problems, fmt.Sprintf("OAuth copy %q not carried to %q: its stamp %q cannot be ordered (past an int64), so it was left filed under the old name rather than given a fresh rank", c.name, newName, oauthAsideStampText(c.name)))
+			continue
+		}
 		// The destination is named from this copy's own stamp, so a copy already
 		// filed under the NEW name at that stamp is a real collision. A fresh
 		// stamp one past the highest the new name holds avoids replacing it; a
 		// carry with no fresh name to take re-files the copy so recovery restores
 		// it rather than resolving it forward and deleting it
 		// (remarkUncarriedOAuthAside).
-		var want int64
-		if c.ranked {
-			want = c.stamp
-		}
-		dst, stamp, reason, _ := stepFreeAsideName(filepath.Join(dir, newName+".json"), c.configBacked, want, highestDest, haveDest)
+		dst, stamp, reason, _ := stepFreeAsideName(filepath.Join(dir, newName+".json"), c.configBacked, c.stamp, highestDest, haveDest)
 		if reason != asideSearchFound {
 			problems = append(problems, remarkUncarriedOAuthAside(dir, c.name, newName,
 				fmt.Errorf("no fresh aside name under %q was free to carry it to", newName)))
@@ -1409,25 +1420,31 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 // stored credential a keyless instance holds, or - when it holds none and
 // needs none - that the row belongs to its provider.
 func removalRemedy(inst registry.Instance) string {
-	// The variable comes first: it is what supplies the credential the removal
-	// cannot take away, whether or not the scheme also resolves without one - a
-	// keyless gateway reading OLLAMA_API_KEY is refused for the variable it
-	// reads, not for the credential it does not need.
-	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
-		return fmt.Sprintf("unset %s instead", varName)
-	}
-	// No source at all - a keyless instance, or one the registry derives from
-	// its provider alone - holds no credential this removal could take away, so
-	// naming one to remove would send the caller after something that does not
-	// exist. The same words the keyless-with-no-stored-credential case uses say
-	// what is actually true of the row.
-	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
-		return "it comes back with its provider and holds no credential of its own to clear"
-	}
+	// A keyless scheme comes first: it resolves without a credential, so the
+	// instance returns with its provider whatever the user does with any
+	// credential it happens to read. A remedy that only names the variable would
+	// imply unsetting it removes the row, which it cannot. The variable is still
+	// worth naming - it is the credential the removal cannot take away - but as
+	// the credential, not as the row.
 	if keylessScheme(inst.Auth) {
+		if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+			return fmt.Sprintf("unset %s to take away the credential it reads; the instance itself comes back with its provider", varName)
+		}
 		if inst.CredentialSource == "store" {
 			return "clear the stored credential instead"
 		}
+		// No stored credential to take away - whether the source is "none", empty
+		// or the registry derives the instance from its provider alone - so naming
+		// a credential to remove would send the caller after something that does
+		// not exist.
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	// A non-keyless environment variable is what supplies the credential the
+	// removal cannot take away.
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
+	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
 		return "it comes back with its provider and holds no credential of its own to clear"
 	}
 	if inst.CredentialSource == "adc" {
@@ -2424,9 +2441,6 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	}
 	layer, cfgErr := readAsideConfig(providersConfigPath)
 	var problems []string
-	if cfgErr != nil {
-		problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
-	}
 	// A committed copy carries its name and kind into the delete step, so the
 	// delete can report the credential-only ones that could be a stranded
 	// instance's only credential rather than removing them silently.
@@ -2546,6 +2560,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 				deferredNames[a.inst] = true
 			}
 		}
+	}
+	if cfgErr != nil && len(deferredNames) > 0 {
+		// Only a pass that actually deferred config-dependent work reports the
+		// config failure. A credential-only recovery consults neither the config
+		// kind nor the committed-copy sweep, so its success must not read as
+		// "could not finish" on a fresh install. A name lands in deferredNames
+		// exactly when a config-backed in-flight copy, a committed copy, or an
+		// in-flight twin the config would judge was left for a later pass.
+		problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
 	}
 	for _, e := range entries {
 		a, aside := parseOAuthAside(e.Name())
