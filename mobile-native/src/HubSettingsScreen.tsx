@@ -25,7 +25,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, useConnectionDisplay, useRenderClient } from "./connectionDisplay";
+import { isReady, useConnectionDisplay, useRenderClient, whenReady } from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -196,9 +196,9 @@ function HubSettings({
 						hubName={hubName}
 						runningIdentity={hub}
 						disabled={!ready}
-						onStart={() => {
+						onStart={whenReady(ready, () => {
 							void upgrade.start();
-						}}
+						})}
 						onRefresh={() => {
 							void upgrade.reconcileAfterReconnect();
 						}}
@@ -229,9 +229,9 @@ function HubSettings({
 				{state.error && (
 					<Action
 						disabled={state.loading || !ready}
-						onPress={() => {
+						onPress={whenReady(ready, () => {
 							void state.refresh();
-						}}
+						})}
 					>
 						Retry hub information
 					</Action>

@@ -29,6 +29,7 @@ import {
   isReady,
   useConnectionDisplay,
   useRenderClient,
+  whenReady,
 } from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
@@ -148,7 +149,7 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    const outcome = await runGatedMutation(gate, action);
+    const outcome = await runGatedMutation(gate, ready, action);
     if (version !== editorVersion.current) return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
@@ -204,6 +205,7 @@ function Plugins({
           hubName={hubName}
           installed={model}
           gate={gate}
+          ready={ready}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
@@ -241,9 +243,9 @@ function Plugins({
               {listError && (
                 <Action
                   disabled={!ready}
-                  onPress={() => {
+                  onPress={whenReady(ready, () => {
                     void state.fetchPlugins();
-                  }}
+                  })}
                 >
                   Retry
                 </Action>
