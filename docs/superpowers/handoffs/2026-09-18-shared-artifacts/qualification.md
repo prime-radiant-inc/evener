@@ -59,8 +59,12 @@ worktree. Backend command: `go run backend/sdk_fixture.go` from that directory.
 Browser commands from `browser/`: `npm ci`, `node codecs.mjs`,
 `node default-handlers.mjs`, `node qualify.mjs`; host TypeScript compilation also
 passed with bundler resolution. Reports are `backend-audit.md` and
-`browser-report.md`; exact pins and machine-readable evidence are retained there.
-These harnesses are dependency experiments and do not replace production tests.
+`browser-report.md`. The harness sources and full reports are local-only and
+unavailable from this repository. Sanitized machine-readable observations,
+exact package pins and the baseline result are committed in
+[evidence/](evidence/README.md); those snapshots are reviewable but are not a
+standalone reproduction kit. These dependency experiments do not replace
+production tests.
 
 Remaining qualifications include service/agent process counts, durable SQLite
 fault tests, real reference-app interaction and recovery, proxy/viewer navigation

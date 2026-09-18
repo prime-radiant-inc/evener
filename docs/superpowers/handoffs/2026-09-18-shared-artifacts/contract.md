@@ -289,6 +289,16 @@ while its readyState was `loading`; a barrier held load-based revocation and the
 authority was still live. Both attempts were denied and only the original genuine
 checkpoint was accepted. This is evidence for the chosen bridge design, not a
 production sandbox claim.
+Frame self-navigation remains a possible egress path; `connect-src 'none'`
+does not block every navigation. Spec 13.2 explicitly requires revoking host
+capabilities after unexpected navigation, not a complete no-egress guarantee.
+The restricted resource API's prohibition on arbitrary URL fetching describes
+the host API, not all browser networking. Do not claim that a load handler or
+an unsupported navigation CSP directive prevents the initial request. Production
+qualification must exercise self-navigation, redirects and meta refresh, record
+which requests leave the browser, and verify replacement documents cannot
+acquire capabilities. The scratch srcdoc replacement test proves only its
+stated capability boundary.
 Remote use requires a separate credential-free HTTPS hostname and valid TLS;
 otherwise present static fallback.
 
@@ -308,19 +318,21 @@ authority and removes its frames; it does not kill the shared backend.
 
 Recorded dependency command:
 `go run .superpowers/shared-artifacts-qualification/backend/sdk_fixture.go` — exit 0;
-real loopback SDK experiment, no provider calls. Resolved modules are saved in
-`resolved-go-modules.json`. Browser commands, from the independent scratch
+real loopback SDK experiment, no provider calls. Resolved module evidence is
+committed in [evidence/resolved-go-modules.json](evidence/resolved-go-modules.json). Browser commands, from the independent scratch
 `browser/` directory: `npm ci`, `node codecs.mjs`, `node default-handlers.mjs`,
 `node qualify.mjs` — passed. The host also passed TypeScript with the frontend's
 bundler module resolution and `skipLibCheck`. Browser evidence is
-`browser/browser-results.json`, with package integrity pins in
-`browser/dependency-pins.json`. OS: macOS 26.5.2 (25F84), Darwin 25.5.0 arm64;
+[evidence/browser-results.json](evidence/browser-results.json), with package
+integrity pins in [evidence/dependency-pins.json](evidence/dependency-pins.json).
+The [evidence inventory](evidence/README.md) distinguishes committed observations
+from the local-only harness and reports; it is not a standalone reproduction kit. OS: macOS 26.5.2 (25F84), Darwin 25.5.0 arm64;
 installed headless Chrome 153.0.8010.36. The experiment measured actual denied
 network/resource/form/popup/worker paths, opaque DOM/storage denial, ten forbidden
 SDK methods, rejected `ui/message`, and eight forged/stale runner requests.
 
 Baseline `make test` completed with exit 0: root, agent, llm, auth, envvars,
-invariant, identifier and web all passed. Log: `baseline-test.log`. New production
+invariant, identifier and web all passed. Log: [evidence/baseline-test.log](evidence/baseline-test.log). New production
 tests must observe a meaningful failing behavior before implementation. Use real
 SQLite and real service processes, scripted providers only at the LLM boundary,
 explicit fault barriers rather than timing sleeps, and the real included HTML
