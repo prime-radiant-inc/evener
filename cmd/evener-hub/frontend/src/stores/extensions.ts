@@ -18,7 +18,7 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type { AnyNotification, AppwireClientLike, PathValidateResponse } from "@evener/appwire-client";
+import type { AnyNotification, PathValidateResponse } from "@evener/appwire-client";
 import {
   createLaunchLayerStore,
   createMarketplacesStore,
@@ -32,7 +32,12 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+} from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { launchConfigStore } from "./launchConfig";
 
@@ -46,13 +51,9 @@ export interface ExtensionsStoreState extends MarketplacesState, PluginsState, L
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("extensions store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+// The shared port's `request` forwards to connectionStore's CURRENT client on
+// every call; only the notification side is extensions-specific (see below).
+const { request } = connectedClientPort("extensions");
 
 // The marketplaces, installed-plugins and global launch-layer stores proper
 // live in the package; these are the app's one instance of each, over a
@@ -83,7 +84,7 @@ function onHubConfigNotification(handler: (n: AnyNotification) => void): () => v
 }
 
 const hubClient = {
-  request: (method, params, opts) => requireClient().request(method, params, opts),
+  request,
   onNotification: onHubConfigNotification,
 } satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
 const marketplaces = createMarketplacesStore(hubClient);

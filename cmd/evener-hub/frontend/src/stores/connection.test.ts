@@ -1,6 +1,6 @@
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { answerRequests, callsTo, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 
 describe("connection handshake metadata", () => {
   beforeEach(() => {
@@ -66,5 +66,57 @@ describe("connectionStore.setState", () => {
     const client = new FakeClient("ready");
     connectionStore.getState().connect(client);
     expect(connectionStore.getState().client).toBe(client);
+  });
+});
+
+describe("connectedClientPort", () => {
+  const reset = () =>
+    connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  beforeEach(reset);
+  afterEach(reset);
+
+  test("requireClient names the calling store when no client is wired", () => {
+    const port = connectedClientPort("widget");
+    expect(() => port.requireClient()).toThrow(/widget store: no client connected/);
+  });
+
+  test("request rejects and onNotification throws before a client is wired", async () => {
+    const port = connectedClientPort("widget");
+    await expect(port.request("thread/resume", { ref: "r" })).rejects.toThrow(/no client connected/);
+    expect(() => port.onNotification(() => {})).toThrow(/no client connected/);
+  });
+
+  test("resolves the client connectionStore holds now, on every call", () => {
+    const port = connectedClientPort("widget");
+    const first = new FakeClient("ready");
+    connectionStore.getState().connect(first);
+    expect(port.requireClient()).toBe(first);
+    // A reconnect swaps in a fresh client; the port must follow it rather than
+    // keep the one captured at call time.
+    const second = new FakeClient("ready");
+    connectionStore.getState().connect(second);
+    expect(port.requireClient()).toBe(second);
+  });
+
+  test("request forwards to the wired client", async () => {
+    const port = connectedClientPort("widget");
+    const client = new FakeClient("ready");
+    answerRequests(client, "thread/resume", { ref: "r" });
+    connectionStore.getState().connect(client);
+    await expect(port.request("thread/resume", { ref: "r" })).resolves.toEqual({ ref: "r" });
+    expect(callsTo(client, "thread/resume")).toBe(1);
+  });
+
+  test("onNotification follows the wired client and returns a working unsubscribe", () => {
+    const port = connectedClientPort("widget");
+    const client = new FakeClient("ready");
+    connectionStore.getState().connect(client);
+    const seen: string[] = [];
+    const unwire = port.onNotification((n) => seen.push(n.method));
+    client.emitUnknownNotification({ method: "x/unknown", params: {} });
+    expect(seen).toEqual(["x/unknown"]);
+    unwire();
+    client.emitUnknownNotification({ method: "x/unknown", params: {} });
+    expect(seen).toEqual(["x/unknown"]);
   });
 });
