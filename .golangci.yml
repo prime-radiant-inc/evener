@@ -105,6 +105,10 @@ linters:
           - pkg: cmd/evener-hub/internal/launchconfig
             rules:
               json: camel
+          # Artifact MCP arguments and results use the public camelCase contract.
+          - pkg: internal/interactiveartifacts
+            rules:
+              json: camel
           # Google's REST API wire format is camelCase; these structs mirror
           # its ListModels response verbatim.
           - pkg: providers/google

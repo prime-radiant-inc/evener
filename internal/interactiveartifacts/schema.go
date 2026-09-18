@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"slices"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,7 +15,6 @@ import (
 // must supply its bundled bytes; this package grants no arbitrary URL fetching.
 var ViewerResource = mcp.Resource{URI: "ui://evener-artifacts/viewer-v1.html", Name: "Artifact viewer v1", MIMEType: "text/html;profile=mcp-app"}
 
-func pointer[T any](v T) *T { return &v }
 func forbids(names ...string) *jsonschema.Schema {
 	schemas := make([]*jsonschema.Schema, 0, len(names))
 	for _, name := range names {
@@ -30,7 +28,7 @@ func forbids(names ...string) *jsonschema.Schema {
 // request branches supplement the generator without a second schema catalog.
 func infer[T any]() (*jsonschema.Schema, error) {
 	return jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
-		reflect.TypeFor[Version]():            {Type: "integer", Minimum: pointer(float64(1)), Maximum: pointer(float64(MaxSafeInteger))},
+		reflect.TypeFor[Version]():            {Type: "integer", Minimum: new(float64(1)), Maximum: new(float64(MaxSafeInteger))},
 		reflect.TypeFor[Format]():             {Type: "string", Enum: []any{"html"}},
 		reflect.TypeFor[FormatVersion]():      {Type: "integer", Enum: []any{1}},
 		reflect.TypeFor[Include]():            {Type: "string", Enum: []any{"source", "state", "diagnostics"}},
@@ -43,14 +41,27 @@ func infer[T any]() (*jsonschema.Schema, error) {
 	}})
 }
 
-// ModelSchema returns an independent schema excluding the trusted mutation ID.
+// ModelSchema copies the complete JSON schema, excluding the trusted mutation ID.
+// Nonserialized property-order hints are omitted; all mutable wire fields detach.
 // Unknown-field rejection remains intact, so a model cannot inject that field.
-func ModelSchema(schema *jsonschema.Schema) *jsonschema.Schema {
-	model := schema.CloneSchemas()
+func ModelSchema(schema *jsonschema.Schema) (*jsonschema.Schema, error) {
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	var model jsonschema.Schema
+	if err := json.Unmarshal(encoded, &model); err != nil {
+		return nil, err
+	}
 	delete(model.Properties, "mutationId")
-	model.Required = slices.DeleteFunc(slices.Clone(model.Required), func(name string) bool { return name == "mutationId" })
-	model.PropertyOrder = slices.DeleteFunc(slices.Clone(model.PropertyOrder), func(name string) bool { return name == "mutationId" })
-	return model
+	required := make([]string, 0, len(model.Required))
+	for _, name := range model.Required {
+		if name != "mutationId" {
+			required = append(required, name)
+		}
+	}
+	model.Required = required
+	return &model, nil
 }
 
 func inputSchema(name string) (*jsonschema.Schema, error) {
@@ -75,13 +86,13 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 			return nil, err
 		}
 		schema.If = &jsonschema.Schema{AnyOf: []*jsonschema.Schema{{Required: []string{"sourceStartLine"}}, {Required: []string{"sourceEndLine"}}}}
-		schema.Then = &jsonschema.Schema{Required: []string{"include"}, Properties: map[string]*jsonschema.Schema{"include": {Contains: &jsonschema.Schema{Const: pointer(any("source"))}}}}
+		schema.Then = &jsonschema.Schema{Required: []string{"include"}, Properties: map[string]*jsonschema.Schema{"include": {Contains: &jsonschema.Schema{Const: new(any("source"))}}}}
 	case "artifact_list":
 		schema, err = infer[ListRequest]()
 		if err != nil {
 			return nil, err
 		}
-		schema.Properties["limit"].Maximum = pointer(float64(100))
+		schema.Properties["limit"].Maximum = new(float64(100))
 		schema.Properties["limit"].Default = json.RawMessage(`20`)
 	case "artifact_open":
 		schema, err = infer[OpenRequest]()
@@ -97,7 +108,7 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 	if err == nil {
 		for _, name := range []string{"artifactId", "mutationId"} {
 			if property, ok := schema.Properties[name]; ok {
-				property.MinLength = pointer(1)
+				property.MinLength = new(1)
 			}
 		}
 	}
@@ -115,9 +126,9 @@ func outputSchema[T any]() (*jsonschema.Schema, error) {
 	}
 	domain := rejected.Properties["error"]
 	domain.If = &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Enum: []any{"SOURCE_CONFLICT", "STATE_CONFLICT"}}}}
-	domain.Then = &jsonschema.Schema{Required: []string{"sourceRevision", "stateVersion"}, Properties: map[string]*jsonschema.Schema{"retryable": {Const: pointer(any(false))}}}
+	domain.Then = &jsonschema.Schema{Required: []string{"sourceRevision", "stateVersion"}, Properties: map[string]*jsonschema.Schema{"retryable": {Const: new(any(false))}}}
 	domain.Else = forbids("sourceRevision", "stateVersion")
-	domain.AllOf = []*jsonschema.Schema{{If: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Const: pointer(any("BUSY"))}}}, Then: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"retryable": {Const: pointer(any(true))}}}}}
+	domain.AllOf = []*jsonschema.Schema{{If: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Const: new(any("BUSY"))}}}, Then: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"retryable": {Const: new(any(true))}}}}}
 	return &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{success, rejected}}, nil
 }
 
@@ -178,7 +189,10 @@ func ParseRequest(tool string, data []byte, model bool) (any, error) {
 		return nil, err
 	}
 	if model {
-		schema = ModelSchema(schema)
+		schema, err = ModelSchema(schema)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := validateSchema(schema, value); err != nil {
 		return nil, errors.New("invalid artifact arguments")

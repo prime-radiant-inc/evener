@@ -61,7 +61,10 @@ func TestModelProjectionRejectsHostField(t *testing.T) {
 	}
 	for _, tool := range tools {
 		raw := tool.InputSchema.(*jsonschema.Schema)
-		projected := ModelSchema(raw)
+		projected, err := ModelSchema(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, ok := projected.Properties["mutationId"]; ok || slices.Contains(projected.Required, "mutationId") {
 			t.Fatalf("%s exposed mutationId", tool.Name)
 		}
@@ -250,5 +253,43 @@ func TestVersionUsesExactSubmittedInteger(t *testing.T) {
 		if _, err := ParseRequest("artifact_get_view", []byte(`{"artifactId":"A","knownStateVersion":`+token+`}`), false); err == nil {
 			t.Fatalf("accepted version %s", token)
 		}
+	}
+}
+
+func TestModelSchemaDetachesMutableNestedFields(t *testing.T) {
+	public, err := inputSchema("artifact_publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := ModelSchema(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected.OneOf[1].Required[0] = "injected"
+	projected.Properties["format"].Enum[0] = "markdown"
+	*projected.Properties["expectedSourceRevision"].Maximum = 1
+	originalArgs, err := ParseJSON([]byte(`{"mutationId":"M","title":"T","summary":"S","html":"H","format":"html","artifactId":"A","expectedSourceRevision":2,"expectedStateVersion":1}`), MaxRequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSchema(public, originalArgs); err != nil {
+		t.Errorf("projected edits changed public update contract: %v", err)
+	}
+	public = &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"payload": {Enum: []any{map[string]any{"flag": true}}}, "constant": {Const: new(any(map[string]any{"flag": true}))}}}
+	projected, err = ModelSchema(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected.Properties["payload"].Enum[0].(map[string]any)["flag"] = false
+	(*projected.Properties["constant"].Const).(map[string]any)["flag"] = false
+	if err := validateSchema(public, map[string]any{"payload": map[string]any{"flag": true}, "constant": map[string]any{"flag": true}}); err != nil {
+		t.Errorf("projected enum/const value edit changed public schema: %v", err)
+	}
+}
+
+func TestModelSchemaRejectsNonserializableContract(t *testing.T) {
+	schema := &jsonschema.Schema{Enum: []any{func() {}}}
+	if _, err := ModelSchema(schema); err == nil {
+		t.Fatal("accepted a schema that cannot be transmitted as JSON")
 	}
 }
