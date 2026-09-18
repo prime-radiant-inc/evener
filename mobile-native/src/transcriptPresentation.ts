@@ -221,7 +221,11 @@ function accountingFor(
 	return {
 		usage:
 			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
-				? { ...(tokens ?? {}), cacheReadTokens, totalTokens }
+				? {
+						...(tokens ?? {}),
+						...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+						...(totalTokens !== undefined ? { totalTokens } : {}),
+					}
 				: null,
 		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};

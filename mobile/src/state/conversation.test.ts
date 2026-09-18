@@ -4076,6 +4076,198 @@ describe("ConversationStore", () => {
     });
   });
 
+  // D18 B3 round 5: closes the class rounds 3-4 kept re-opening at different
+  // sites — the store's own top-level olderCursor (a UI-only, intentionally
+  // capped "is there another page to fetch" signal, F8) and the
+  // conversation's own ThreadModel olderCursor (the wire truth sessionTokens
+  // reads) are two different values, and code kept collapsing one into the
+  // other. Per-state table (a session with no thread-level cumulative usage,
+  // so sessionTokens is always summing turns):
+  //
+  //   state                          | store cursor | conv cursor | turns   | scope
+  //   initial (open)                 | null (F8)    | "cursor-1"  | [t2]    | loaded
+  //   loadOlder (wire has more)      | "cursor-2"   | "cursor-2"  | [t1,t2] | loaded
+  //   cap hit (wire still has more)  | null         | "more"      | [t1,t2] | loaded
+  //   rehydrate, page history kept   | (unchanged)  | prior conv's| [t1,t2] | loaded
+  //                                  |              | own cursor  |         |
+  //   rehydrate, no page history     | fresh read's | fresh read's| fresh   | per fresh
+  //                                  | own          | own         | only    | read
+  //
+  // "loadOlder" and "cap hit" (without a following rehydrate) are already
+  // covered above by "merges the older page's turns..." and "keeps
+  // conversation.olderCursor at the wire's cursor...". The remaining rows,
+  // plus the two regressions the panel found, are below.
+  describe("D18 B3 round 5: conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
+    it("initial: conversation.olderCursor and turns come straight from the hydrated model", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        usage: null,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      await store.getState().open(service, "ref-1");
+      // The store's own cursor is a UI-only pagination-enablement value that
+      // plain open() always starts at null (F8's live path establishes it
+      // separately) - it is not the wire truth conversation.olderCursor is.
+      expect(store.getState().olderCursor).toBeNull();
+      const conv = store.getState().conversation!;
+      expect(conv.olderCursor).toBe("cursor-1");
+      expect(conv.turns.map((t) => t.id)).toEqual(["t2"]);
+      expect(sessionTokens(conv)?.scope).toBe("loaded");
+    });
+
+    // Failing-first (1): round 4's own fix made conversation.olderCursor take
+    // mergedCursor, which is currentSnapshot.olderCursor - the STORE's capped
+    // cursor - whenever there is page history to preserve. That happens to
+    // equal the wire truth when the cap was never hit (this file's earlier
+    // "rehydrate preserves the older turns..." test doesn't distinguish the
+    // two), but diverges the moment the cap forces the store's cursor to
+    // null while the wire still has more.
+    it("cap hit then rehydrate: conversation.olderCursor stays the wire truth, not the store's capped null", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const items: MobileConversation["items"] = [];
+      for (let i = 100; i < 500; i++) items.push({ kind: "user", id: `item-${i}`, text: "" });
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        items,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // 200 more items - total 600, capped to 500 - but the wire still says
+      // there is more (the existing F8 cap scenario, plus a turn).
+      const olderItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 200; i++) olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
+      service.olderItems = {
+        items: olderItems,
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        nextCursor: "more",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().olderCursor).toBeNull();
+      expect(store.getState().conversation?.olderCursor).toBe("more");
+
+      // A same-session rehydrate must not let the store's capped null
+      // overwrite the wire truth loadOlder just established.
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.olderCursor).toBe("more");
+      expect(sessionTokens(conv)?.scope).toBe("loaded");
+    });
+
+    it("rehydrate without page history: conversation.olderCursor and turns come straight from the fresh reread", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 10, outputTokens: 5 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+      // No loadOlder ever ran - pageOwnedIds/pageOwnedTurnIds stay empty, so
+      // there is no page history to preserve.
+
+      const fresh = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 20, outputTokens: 8 } }],
+        olderCursor: undefined,
+      });
+      service.readProjectionResult = {
+        conversation: fresh,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // t1 is gone - there was no page history to preserve it, so the fresh
+      // reread's own (smaller) window is authoritative, same as it always was.
+      expect(conv.turns.map((t) => t.id)).toEqual(["t2"]);
+      expect(conv.olderCursor).toBeUndefined();
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 20, outputTokens: 8, scope: "session" });
+    });
+
+    // Failing-first (2): the item-history merge (preservePageHistory) gates
+    // on pageOwnedIds, which only tracks items that actually survived
+    // loadOlder's own dedupe. A page whose only item duplicates one already
+    // in hand contributes nothing to pageOwnedIds, but its turn is real and
+    // must still survive - which is exactly why pageOwnedTurnIds is tracked
+    // separately from pageOwnedIds.
+    it("evicted/filtered page: a turn survives a rehydrate even when none of that page's items did", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        items: [{ kind: "user", id: "existing", text: "existing" }],
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The older page's only item duplicates one already in hand (F10's own
+      // dedupe drops it entirely - pageOwnedIds gets nothing), but its turn
+      // is genuinely new.
+      service.olderItems = {
+        items: [{ kind: "user", id: "existing", text: "existing" }],
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+
+      const fresh = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        items: [{ kind: "user", id: "existing", text: "existing" }],
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: fresh,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
+    });
+  });
+
   describe("F11: no presentation disclosure state in conversation store", () => {
     it("conversation store does not carry expandedToolKeys or setExpandedToolKeys", () => {
       const store = createConversationStore();

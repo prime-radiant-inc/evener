@@ -873,6 +873,15 @@ export function createConversationStore() {
   // to the oldest position where they'd be discarded by the 500-cap. Cleared
   // on every conversation transition (open/close/reset/openProjected).
   const pageOwnedIds = new Set<string>();
+  // D18 B3 round 5: page-owned TURN ids, tracked separately from pageOwnedIds
+  // above. Turns are never capped or evicted the way display items are (a
+  // page's items can be entirely deduped away or trimmed by the item cap
+  // while its turns — the only source of a usage total when there is no
+  // thread-level cumulative usage — still belong in conversation.turns), so
+  // whether to preserve older turns on a rehydrate must not depend on
+  // whether any of that page's ROWS survived. Never pruned (turns are never
+  // evicted); cleared on every conversation transition, same as pageOwnedIds.
+  const pageOwnedTurnIds = new Set<string>();
   // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
   // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
   // last accepted live notification for that item. liveOwnerRev is a global
@@ -1296,6 +1305,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         set({
@@ -1364,6 +1374,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -1698,6 +1709,14 @@ export function createConversationStore() {
           const preservePageHistory =
             currentConvForMerge?.instanceId === conversation.instanceId &&
             (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
+          // D18 B3 round 5 (2): the turn-history and wire-cursor merge below
+          // gate on turn ownership, not item ownership — a page whose items
+          // were entirely deduped or evicted still owns turns that must not
+          // be dropped, since they may be the only usage data a session
+          // without a thread-level cumulative total has.
+          const preserveTurnHistory =
+            currentConvForMerge?.instanceId === conversation.instanceId &&
+            (entryLoadOlderToken !== loadOlderToken || pageOwnedTurnIds.size > 0);
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
@@ -1857,33 +1876,37 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
-          // D18 B3 round 4 (2): the reread's own turns cover only its
+          // D18 B3 round 5 (2): the reread's own turns cover only its
           // itemLimit-bounded window, so a turn loaded via an earlier
           // loadOlder (outside that window) is absent from it. Preserve those
-          // turns under the SAME gate and shape as the item-history merge
-          // above (preservePageHistory: same instanceId, and there is
-          // page-owned history to preserve) — deduped by id, older first —
-          // or a session with no cumulative usage loses everything loadOlder
-          // added the moment the next rehydrate runs.
+          // turns — deduped by id, older first — under preserveTurnHistory
+          // (turn ownership, not item ownership: a page whose rows were all
+          // deduped/evicted still owns its turns), or a session with no
+          // cumulative usage loses everything loadOlder added the moment the
+          // next rehydrate runs.
+          //
+          // conversation.olderCursor is the same wire-truth value, carried
+          // the same way: currentConvForMerge.olderCursor is itself the wire
+          // cursor loadOlder/a prior rehydrate already established, never the
+          // store's own capped pagination cursor (currentSnapshot.olderCursor
+          // — a UI-only concern, set below via mergedCursor). Reading that
+          // capped value here would flip a partial sum's scope to "session".
           let mergedTurns = conversation.turns;
-          if (preservePageHistory && currentConvForMerge !== null) {
+          let wireOlderCursor = conversation.olderCursor;
+          if (preserveTurnHistory && currentConvForMerge !== null) {
             const rereadTurnIds = new Set(conversation.turns.map((turn) => turn.id));
             const olderTurns = currentConvForMerge.turns.filter((turn) => !rereadTurnIds.has(turn.id));
             mergedTurns = [...olderTurns, ...conversation.turns];
+            wireOlderCursor = currentConvForMerge.olderCursor;
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
-          // live/page merge above. olderCursor is the one exception: it takes
-          // mergedCursor, not the fresh reread's own field, for the same
-          // reason mergedCursor itself does above (the reread's cursor
-          // reflects only its own bounded window, not page history merged in
-          // on top of it) - sessionTokens must not read this as the whole
-          // session when older turns are still preserved beyond it.
+          // live/page merge above.
           const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
             turns: mergedTurns,
-            olderCursor: mergedCursor ?? undefined,
+            olderCursor: wireOlderCursor,
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -2054,10 +2077,12 @@ export function createConversationStore() {
             // result.turns is this page's own turns (deduped against what's
             // already loaded, by id).
             const existingTurnIds = new Set(currentConv.turns.map((turn) => turn.id));
-            const mergedTurns = [
-              ...(result.turns ?? []).filter((turn) => !existingTurnIds.has(turn.id)),
-              ...currentConv.turns,
-            ];
+            const newTurns = (result.turns ?? []).filter((turn) => !existingTurnIds.has(turn.id));
+            const mergedTurns = [...newTurns, ...currentConv.turns];
+            // D18 B3 round 5 (2): record page ownership by TURN id, separate
+            // from pageOwnedIds (item ids) below — a turn survives here even
+            // when every one of its display rows is deduped away or evicted.
+            for (const turn of newTurns) pageOwnedTurnIds.add(turn.id);
             set({
               // D18 B3 round 4 (1): conversation.olderCursor is the WIRE
               // truth (result.nextCursor), never the capped nextCursor above.
@@ -2468,6 +2493,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
@@ -2906,6 +2932,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
