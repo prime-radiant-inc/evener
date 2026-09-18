@@ -441,6 +441,7 @@ function decodeMutationResult(
     const consumed = receipt.consumedClientMutationIds;
     if (
       !Array.isArray(consumed) ||
+      consumed.length === 0 ||
       consumed.some((id) => typeof id !== "string" || id.trim() === "")
     ) {
       throw new Error(

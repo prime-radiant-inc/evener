@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../client";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import { answerRequests, callsTo, FakeClient, failRequests, gateRequests } from "../../testing/fakeClient";
+import { answerRequests, callsTo, FakeClient, failRequests, gateSettlements } from "../../testing/fakeClient";
 import type { MethodName } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createListRevision } from "./listRevision";
@@ -150,30 +150,23 @@ function createLifecycleKit<S>(lifecycle: LifecycleCase<S>): LifecycleKit<S> {
     fake,
     store,
     async gatedRead() {
-      const releases = gateRequests(fake, lifecycle.listMethod);
+      const settlements = gateSettlements(fake, lifecycle.listMethod);
       const promise = lifecycle.fetch(store.getState());
       await Promise.resolve();
-      const release = releases[0];
-      if (!release) throw new Error("the read must be in flight");
-      return { promise, land: (response: unknown = lifecycle.listResponse) => release(response) };
+      const settle = settlements[0];
+      if (!settle) throw new Error("the read must be in flight");
+      return { promise, land: (response: unknown = lifecycle.listResponse) => settle.resolve(response) };
     },
     async gatedWrite() {
-      let settle: { resolve(response: unknown): void; reject(error: Error): void } | undefined;
-      fake.on(
-        lifecycle.mutationMethod,
-        (() =>
-          new Promise((resolve, reject) => {
-            settle = { resolve, reject };
-          })) as never,
-      );
+      const settlements = gateSettlements(fake, lifecycle.mutationMethod);
       const promise = lifecycle.mutate(store.getState());
       await Promise.resolve();
+      const settle = settlements[0];
       if (!settle) throw new Error("the write must be in flight");
-      const { resolve, reject } = settle;
       return {
         promise,
-        land: (response: unknown = lifecycle.mutationResponse) => resolve(response),
-        fail: (message = "write refused") => reject(new Error(message)),
+        land: (response: unknown = lifecycle.mutationResponse) => settle.resolve(response),
+        fail: (message = "write refused") => settle.reject(new Error(message)),
       };
     },
     rejectWrite(message) {

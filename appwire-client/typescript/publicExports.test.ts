@@ -33,6 +33,7 @@ import {
   sourceLabel,
   strArrayField,
   strField,
+  type TranscriptDisplayAdvancedV1,
   type WatchDisplayState,
   type WatchEntityView,
   type WatchRow,
@@ -133,5 +134,21 @@ describe("protocol package root public exports", () => {
     expect(watchName(watched.watch)).toBe("w1");
     expect(typeof watchMeta(scheduled)).toBe("string");
     expect(typeof watchFacts(scheduled, Date.parse("2026-09-12T20:00:00Z"))).toBe("string");
+  });
+
+  // The local advanced block shares its base name with the wire type, so the
+  // V1 suffix is what lets a consumer name it from the package root without
+  // shadowing the wire export. Importing it here in a type position fails
+  // compilation if index.ts stops publishing it.
+  it("re-exports TranscriptDisplayAdvancedV1 from the package root", () => {
+    const advanced: TranscriptDisplayAdvancedV1 = {
+      roundTimings: false,
+      tokenCounts: false,
+      estimatedCost: false,
+      systemEvents: false,
+      promptEvents: false,
+      hookExits: "none",
+    };
+    expect(advanced.hookExits).toBe("none");
   });
 });

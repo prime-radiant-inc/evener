@@ -69,16 +69,50 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // to fix, which evener-doctor reports too. The bundled lock and Doctor's
 // read-only wait on this lock are the two acquisitions that do not come
 // through here.
+//
+// The returned release also reports this session's accumulated StoreChanged
+// (store_changed.go) to the installed OnStoreChanged callback, whether or not
+// migrateMarketplaceNames itself failed: a migration that wrote one rename
+// before failing on the next still changed the store, and the caller that
+// asked for the lock never sees this release to skip calling it on error —
+// every acquireStoreLock caller in this package defers release immediately.
+// Capturing happens before the lock is released, not after, so the next
+// acquisition's own reset below cannot race this read; the callback itself
+// runs after, so a slow broadcast never serializes behind the file lock.
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
 		return nil, err
 	}
+	// Every save in this package runs inside a lockStore session, and
+	// reportingRelease already clears this on the way out — so in production
+	// this reset is a no-op. It defends the one case that isn't a session: a
+	// caller (today only a test fixture, plantLegacyMarketplace) that calls
+	// saveRegistry/saveMarketplaces directly, outside any lockStore call, and
+	// so leaves a flag this acquisition would otherwise inherit.
+	m.resetStoreChanged()
+	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
 		return nil, err
 	}
 	return release, nil
+}
+
+// reportingRelease wraps release so that, in order: this session's
+// accumulated change is captured and cleared, the store lock is let go, and
+// only then — outside the lock — the installed callback (if any) is told
+// what changed. A session that changed nothing invokes no callback at all.
+func (m *Manager) reportingRelease(release func()) func() {
+	return func() {
+		changed := m.captureStoreChanged()
+		release()
+		if changed.any() {
+			if cb := m.storeChangedCallback(); cb != nil {
+				cb(changed)
+			}
+		}
+	}
 }
 
 // migrateStore takes the store lock for nothing but the migration lockStore

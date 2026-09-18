@@ -1171,9 +1171,10 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 
 // Remove deletes an authored instance, its stored key and its OAuth record.
 // An instance that exists from the environment has no entry to delete, so the
-// refusal says what to unset instead (spec §5.1). A name that resolves to no
-// instance follows Create and Edit's convention (#717/#748): the caller sent
-// it, so it comes back as appwire.InvalidParams.
+// refusal says what to unset instead (spec §5.1). Refusals that blame the name
+// the caller sent — malformed, unknown, or an environment-only instance that
+// cannot be deleted — follow Create and Edit's convention (#717/#748):
+// appwire.InvalidParams, not a generic wire error.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -1209,7 +1210,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if inst.Implicit {
-		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
+		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst)))
 	}
 
 	// Read the authored layer before anything is deleted: this is a pure read,
