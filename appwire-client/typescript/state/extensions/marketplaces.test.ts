@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../errors";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
@@ -102,6 +103,63 @@ describe("fetches never throw, mutations reject", () => {
     });
     await store.getState().addMarketplace({ name: "local", source: LOCAL.source });
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+  });
+});
+
+describe("removeMarketplace clone litter", () => {
+  // Round 5 #1890: the hub's marketplaceUnregisteredCloneRemains rejection
+  // carries the updated list in data.applied (the unregister already landed;
+  // only the clone's own removal on disk failed). The shape mirrors what
+  // appwire/types.go's json tags emit: `applied.marketplaces` is a plain
+  // array (no omitempty on that field), never absent.
+  test("reconciles the list and browse cache from data.applied, then still rejects", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+
+    fake.on("evener/marketplace/remove", () => {
+      throw new WireError(
+        'marketplace "acme": marketplace unregistered, but its clone could not be removed; see the hub\'s log for detail',
+        -32603,
+        { evenerErrorInfo: "marketplaceUnregisteredCloneRemains", applied: { marketplaces: [LOCAL] } },
+      );
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow(/clone could not be removed/);
+
+    expect(store.getState().marketplaces).toEqual([LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+
+  test("appliedUnavailable leaves the list and browse cache untouched, and still rejects", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+
+    fake.on("evener/marketplace/remove", () => {
+      throw new WireError('marketplace "acme": marketplace unregistered, but its clone could not be removed', -32603, {
+        evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+        applied: { marketplaces: null },
+        appliedUnavailable: true,
+      });
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow(/clone could not be removed/);
+
+    // Nothing to reconcile from: the hub's own follow-up read failed too, so
+    // this must not read an absent/null list as "every marketplace gone".
+    expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+  });
+
+  test("an ordinary remove failure (no evenerErrorInfo) leaves the list alone", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    fake.on("evener/marketplace/remove", failing("mutation failed"));
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow("mutation failed");
+    expect(store.getState().marketplaces).toEqual([ACME]);
   });
 });
 

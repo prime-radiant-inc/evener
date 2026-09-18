@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClient } from "../../client";
-import { errorText } from "../../errors";
+import { errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   MarketplaceAddParams,
@@ -85,6 +85,23 @@ export interface MarketplacesStore
 }
 
 export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
+
+/** Extracts the updated list from a marketplaceUnregisteredCloneRemains
+ * rejection (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
+ * already applied on the hub before its clone's own removal failed, so
+ * Data.applied is the current list with the target already gone - reconcile
+ * from it even though the call still rejects, the same way keybindingsStore's
+ * rejectionPayload reads a post-rename durable failure's applied state.
+ * Returns undefined for any other rejection, or when the hub's own follow-up
+ * read to build Data.applied failed too (Data.appliedUnavailable): there is
+ * then nothing to reconcile from. */
+function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
+    return undefined;
+  const data = error.data as { applied?: { marketplaces?: MarketplaceEntry[] }; appliedUnavailable?: boolean };
+  if (data.appliedUnavailable) return undefined;
+  return data.applied?.marketplaces;
+}
 
 export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {
   // A browse response is keyed by marketplace name, so it can outlive the
@@ -220,7 +237,20 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       },
 
       addMarketplace: (params) => mutate(() => client.request("evener/marketplace/add", params), []),
-      removeMarketplace: (name) => mutate(() => client.request("evener/marketplace/remove", { name }), [name]),
+      removeMarketplace: (name) =>
+        mutate(() => client.request("evener/marketplace/remove", { name }), [name]).catch((error: unknown) => {
+          // The removal still failed - its clone remains, so the caller must
+          // still see a rejection - but the unregister itself already landed
+          // on the hub. Reconcile the list and the browse cache from
+          // Data.applied now instead of leaving the removed marketplace in
+          // client state until the separate notification/refetch path
+          // catches up.
+          const applied = cloneLitterApplied(error);
+          if (applied !== undefined) {
+            set((s) => ({ marketplaces: applied, browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [name]) }));
+          }
+          throw error;
+        }),
       refreshMarketplace: (name) => mutate(() => client.request("evener/marketplace/refresh", { name }), [name]),
       editMarketplace: (params) =>
         mutate(() => client.request("evener/marketplace/edit", params), [params.name, params.newName]),
