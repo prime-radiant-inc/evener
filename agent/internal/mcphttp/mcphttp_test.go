@@ -87,7 +87,7 @@ func TestClientWithHeaders_BaseCopiedNotMutated(t *testing.T) {
 // receive a distinct clone carrying the injected headers.
 func TestHeaderRoundTripper_DoesNotMutateRequest(t *testing.T) {
 	rec := &recordingRoundTripper{}
-	rt := &mcphttp.HeaderRoundTripper{Base: rec, Headers: map[string]string{"X-Injected": "yes"}}
+	rt := &mcphttp.HeaderRoundTripper{Base: rec, Host: "example.invalid", Headers: map[string]string{"X-Injected": "yes"}}
 
 	req, err := http.NewRequest(http.MethodGet, "https://example.invalid/", nil)
 	if err != nil {
@@ -171,5 +171,44 @@ func TestClientWithHeaders_HostScopedInjection(t *testing.T) {
 	}
 	if got := rec.got.Header.Get("Authorization"); got != "" {
 		t.Errorf("cross-host Authorization = %q, want none (must not leak credentials)", got)
+	}
+
+	// Same host, different letter case: DNS hostnames are case-insensitive, so
+	// the configured headers must still be injected.
+	rec.got = nil
+	mixedCase, err := http.NewRequest(http.MethodGet, "https://MCP.Example/mcp", nil)
+	if err != nil {
+		t.Fatalf("new mixed-case request: %v", err)
+	}
+	if _, err := rt.RoundTrip(mixedCase); err != nil {
+		t.Fatalf("mixed-case round trip: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer secret" {
+		t.Errorf("mixed-case same-host Authorization = %q, want injected value", got)
+	}
+}
+
+// An unparseable or hostless endpoint must fail closed: the returned client
+// injects nothing rather than leaking credentials to every host.
+func TestClientWithHeaders_HostlessEndpointFailsClosed(t *testing.T) {
+	for _, endpoint := range []string{"/relative/mcp", "://bad-url", ""} {
+		client := mcphttp.ClientWithHeaders(nil, endpoint, map[string]string{"Authorization": "Bearer secret"})
+		rt, ok := client.Transport.(*mcphttp.HeaderRoundTripper)
+		if !ok {
+			// Fail-closed is implemented by leaving the base transport in place.
+			continue
+		}
+		rec := &recordingRoundTripper{}
+		rt.Base = rec
+		req, err := http.NewRequest(http.MethodGet, "https://mcp.example/mcp", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if _, err := rt.RoundTrip(req); err != nil {
+			t.Fatalf("round trip: %v", err)
+		}
+		if got := rec.got.Header.Get("Authorization"); got != "" {
+			t.Errorf("endpoint %q: Authorization = %q, want none (must fail closed)", endpoint, got)
+		}
 	}
 }
