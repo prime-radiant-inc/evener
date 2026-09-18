@@ -2280,15 +2280,20 @@ describe("ConversationStore", () => {
       },
     );
 
-    // Decision 2: the chunks the model accumulated are what a reasoning row
-    // shows — they are seeded from the item's own text and extended by every
-    // summary delta, and a settle keeps them (reducer.ts's mergeReasoning).
-    // A completion carrying its own text no longer replaces what the row
-    // already showed; the web's think block reads the same chunks.
+    // reducer.ts's wireItemToModel seeds reasoningSummaries from ANY non-empty
+    // initial wire text (item/started here), and mergeReasoning keeps that
+    // seeded summary across later merges once it's set — but mergeCompletedText
+    // still treats the completion's own explicit text as authoritative
+    // (project.ts's reasoningText: a settled item's non-blank text wins over a
+    // stale seeded summary; see project.test.ts's "shows the completion's
+    // authoritative text over a stale seeded reasoningSummaries entry" for the
+    // same invariant through the canonical projector directly). Only a blank
+    // completion text falls back to the seeded summary — there is nothing else
+    // to show.
     it.each([
-      ["a later text", "final reasoning"],
-      ["empty text", ""],
-    ] as const)("keeps the accumulated reasoning when the completion carries %s", async (_label, text) => {
+      ["a later text", "final reasoning", "final reasoning"],
+      ["empty text", "", "old reasoning"],
+    ] as const)("shows the completion's text over the seeded summary when the completion carries %s", async (_label, text, expected) => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({
         method: "item/started",
@@ -2320,7 +2325,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       expect(rowById(store, "reason-authoritative-1")).toMatchObject({
         kind: "activity",
-        detail: { output: "old reasoning" },
+        detail: { output: expected },
       });
     });
 
@@ -3419,6 +3424,12 @@ describe("ConversationStore", () => {
       const initialReads = service.readProjectionCalls.length;
 
       store.getState().applyNotification(frame as AnyNotification);
+      // Three ticks to drain the scheduler's microtask hop, runOne's own
+      // Promise.resolve().then(effect), and the effect's own
+      // await rehydrate() before readProjection is actually called — the
+      // same count "rereads for an item frame the model has no rule for"
+      // (above) already needs for the identical requestRehydrate path.
+      await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
@@ -9909,8 +9920,9 @@ describe("ConversationStore", () => {
       id: string,
       transcriptKey: string,
       text: string,
+      status: ThreadItem["status"] = "completed",
     ): ThreadItem {
-      return { type: "reasoning", id, transcriptKey, status: "completed", text };
+      return { type: "reasoning", id, transcriptKey, status, text };
     }
 
     function clusterMembers(
@@ -9981,7 +9993,12 @@ describe("ConversationStore", () => {
     it("applies a reasoning delta aimed at a later clustered member in place", async () => {
       const { store } = await openProjectedWithItems([
         reasoningItem("wire-a", "key-a", "first"),
-        reasoningItem("wire-b", "key-b", "second"),
+        // inProgress: a summaryTextDelta only ever streams into a still-running
+        // item, and project.ts's reasoningText prefers the settled item.text
+        // over reasoningSummaries once an item is completed (see the reducer's
+        // own mergeReasoning/mergeCompletedText contract) — a completed item
+        // would show its frozen "second" instead of the delta.
+        reasoningItem("wire-b", "key-b", "second", "inProgress"),
       ]);
 
       store.getState().applyNotification({
