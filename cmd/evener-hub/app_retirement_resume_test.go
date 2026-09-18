@@ -1023,16 +1023,37 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 	}
 }
 
-// TestResumeAfterConfirmedRetirementRecordsLifecycle pins that a resume
+// captureHubStderr redirects the hub's lifecycle log destination (os.Stderr)
+// into a pipe for the duration of fn and returns what was written. Both pipe
+// ends are closed and os.Stderr restored through t.Cleanup, so an early
+// t.Fatalf or panic cannot leak a descriptor or leave stderr redirected.
+func captureHubStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stderr = original
+		_ = writeEnd.Close()
+		_ = readEnd.Close()
+	})
+	os.Stderr = writeEnd
+	fn()
+	_ = writeEnd.Close()
+	os.Stderr = original
+	data, _ := io.ReadAll(readEnd)
+	return string(data)
+}
+
+// TestResumeAfterConfirmedRetirementRecordsLifecycle requires that a resume
 // triggered by daemon retirement carries the same correlated lifecycle trace as
-// an explicit resume. resumeThreadLocked (from #1390/#1575) records its eight
-// stages from the trace in the context; before the fix the retirement caller
-// entered without one, so every stage was a nil-receiver no-op and the path
-// produced no diagnostics at all. The records must carry the requested
-// identity in session_id and the resolved target in resolved_session_id, the
-// same pair the explicit alias-resume path records. The log destination is the
-// hub's own stderr, not a configurable seam, so capture the real os.Stderr
-// around the call.
+// an explicit resume: an operation=resume stream whose records carry the
+// requested identity in session_id and, for every stage at or after ownership
+// resolution, the resolved target in resolved_session_id. The log destination
+// is the hub's own stderr, not a configurable seam, so capture it around the
+// call.
 func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	requested := hubtest.SessionID(t)
 	root := t.TempDir()
@@ -1095,25 +1116,14 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 		Past:        past,
 	}
 
-	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Stderr = original
-		_ = readEnd.Close()
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, newHubSourceRegistry(cfg), appwire.TurnStartParams{Ref: "local:" + requested})
 	})
-	os.Stderr = writeEnd
-	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, newHubSourceRegistry(cfg), appwire.TurnStartParams{Ref: "local:" + requested})
-	_ = writeEnd.Close()
-	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
-
 	if resumeErr != nil {
 		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
 	}
-	records := assertThreadLifecycleRecords(t, string(data))
+	records := assertThreadLifecycleRecords(t, data)
 	for _, record := range records {
 		if record["operation"] != "resume" || record["session_id"] != requested {
 			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
@@ -1133,11 +1143,10 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	}
 }
 
-// TestResumeAfterConfirmedRetirementRecordsAdmissionFailure pins the other half
-// of the same finding: a retirement resume that is refused by an admission
-// fence before it ever reaches resumeThreadLocked must still emit the request
-// pair, or the path stays unobservable exactly when it fails. Before the fix
-// the trace was only consumed by the spawn half, so this returned silently.
+// TestResumeAfterConfirmedRetirementRecordsAdmissionFailure requires that a
+// retirement resume refused by an admission fence, before it ever reaches the
+// spawn half, still emits the request pair: the path must remain observable
+// exactly when it fails.
 func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
 	requested := hubtest.SessionID(t)
 	locks := hubcore.NewResumeLocks()
@@ -1153,25 +1162,14 @@ func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
 		ResumeLocks: locks,
 	}
 
-	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Stderr = original
-		_ = readEnd.Close()
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
 	})
-	os.Stderr = writeEnd
-	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
-	_ = writeEnd.Close()
-	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
-
 	if resumeErr == nil {
 		t.Fatal("resumeAfterConfirmedRetirement unexpectedly succeeded under an admission fence")
 	}
-	records := assertThreadLifecycleRecords(t, string(data))
+	records := assertThreadLifecycleRecords(t, data)
 	for _, record := range records {
 		if record["operation"] != "resume" || record["session_id"] != requested {
 			t.Fatalf("lost refused-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
@@ -1180,13 +1178,11 @@ func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
 	assertThreadLifecycleOutcome(t, records, "request", "error", "failed")
 }
 
-// TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity pins the
-// review finding that the resolved target was stamped too late: resumeOwnership
-// resolves the alias before the function reaches its live-replacement early
-// return, so the deferred request completion must carry
-// resolved_session_id=target on that path too. While the stamp lived next to
-// resumeThreadLocked, this branch recorded resolved_session_id="-", losing the
-// requested/resolved correlation for the reuse-a-live-replacement race.
+// TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity requires
+// that the reuse-a-live-replacement early return records the resolved identity:
+// ownership resolves the alias before that return, so its deferred request
+// completion must carry resolved_session_id=target like every other
+// post-resolution outcome.
 func TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity(t *testing.T) {
 	alias := hubtest.SessionID(t)
 	stale := hubtest.SessionID(t)
@@ -1233,25 +1229,14 @@ func TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity(t *testing
 
 	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: locks}
 
-	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Stderr = original
-		_ = readEnd.Close()
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + alias})
 	})
-	os.Stderr = writeEnd
-	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + alias})
-	_ = writeEnd.Close()
-	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
-
 	if resumeErr != nil {
 		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
 	}
-	records := assertThreadLifecycleRecords(t, string(data))
+	records := assertThreadLifecycleRecords(t, data)
 	for _, record := range records {
 		if record["operation"] != "resume" || record["session_id"] != alias {
 			t.Fatalf("lost live-replacement correlation: %#v, want operation=resume session_id=%s", record, alias)
@@ -1270,6 +1255,54 @@ func TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity(t *testing
 	if !complete {
 		t.Fatalf("missing request completion: %#v", records)
 	}
+}
+
+// TestResumeAfterConfirmedRetirementRecordsLockWait pins that lock waiting is
+// observable on the retirement path: the lock_wait begin record must be
+// emitted before the alias mutex is acquired, so a resume blocked behind a
+// concurrent force stop or explicit resume is attributable to lock contention
+// rather than to a slow daemon exit or spawn.
+func TestResumeAfterConfirmedRetirementRecordsLockWait(t *testing.T) {
+	id := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	lock := locks.For(id)
+	lock.Lock()
+	release := sync.OnceFunc(lock.Unlock)
+	defer release()
+
+	w := &threadLifecycleWaitWriter{waiting: make(chan struct{})}
+	ctx, _ := withThreadLifecycleLog(t.Context(), "resume", id, w)
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: hubcore.NewRoster(runDir, nil), ResumeLocks: locks}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- resumeAfterConfirmedRetirement(ctx, cfg, nil, appwire.TurnStartParams{Ref: "local:" + id})
+	}()
+
+	select {
+	case <-w.waiting:
+		// lock_wait/begin was recorded while the alias mutex is still held.
+	case <-time.After(10 * time.Second):
+		t.Fatal("lock_wait begin was not recorded before lock acquisition while the alias mutex was held")
+	}
+	release()
+
+	finished := false
+	defer func() {
+		release()
+		if !finished {
+			<-done
+		}
+	}()
+	// The spawner is unconfigured, so the resume fails after the lock section;
+	// this test asserts the lock stages, not the outcome.
+	<-done
+	finished = true
+
+	records := assertThreadLifecycleRecords(t, w.String())
+	assertThreadLifecycleOutcome(t, records, "lock_wait", "success", "none")
+	assertThreadLifecycleOutcome(t, records, "lock_held", "success", "none")
 }
 
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {

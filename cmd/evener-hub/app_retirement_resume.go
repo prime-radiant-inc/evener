@@ -123,12 +123,10 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 // daemon: retirement remains the daemon's own decision, and force-stop
 // authority is unchanged.
 func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) (resumeErr error) {
-	// A retirement-triggered resume is a resume, so adopt #1390's correlated
-	// lifecycle trace up front with the requested identity. The request pair is
-	// recorded before any outcome, so admission and ownership failures — and the
-	// early returns where a replacement is already live — are observable too;
-	// resumeOwnership may resolve the alias to a different current target, which
-	// is stamped onto the trace below so these records carry the same
+	// A retirement-triggered resume shares resumeThread's correlated lifecycle
+	// trace: it opens the trace with the requested identity, brackets the whole
+	// attempt in the request pair so every outcome is recorded, and stamps the
+	// ownership-resolved target below so its records carry the same
 	// session_id/resolved_session_id pair an explicit resume records.
 	sessionID := deletionThreadID(params.Ref, params.ThreadID)
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
@@ -157,10 +155,9 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
-	// Stamp the ownership-resolved target before the live-replacement early
-	// returns below: the deferred request completion captures this trace by
-	// reference, so those paths — which reuse an already-live replacement — must
-	// still record the resolved identity the explicit path records.
+	// Every outcome after ownership resolution records the resolved identity,
+	// including the live-replacement early returns below: the deferred request
+	// completion captures this trace by reference.
 	ctx, trace = trace.resolved(ctx, target)
 	// A successful retirement recovery is a completed resume, so record where
 	// the alias resolved exactly as resumeThread's defer does after
