@@ -377,12 +377,22 @@ func (r *ResumeLocks) ResumeCleanupError(aliases []string) error {
 	defer r.persistenceMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.resumeCleanupErrorLocked(aliases, false)
+}
+
+// resumeCleanupErrorLocked reports the first retained child-cleanup failure
+// among the Resumes active on aliases. includeInFlight also inspects a Resume
+// whose handler has not yet completed; without it only handlerDone Resumes
+// report, so a fresh connection is never refused by a Resume that is still
+// completing normally. Callers hold r.mu.
+func (r *ResumeLocks) resumeCleanupErrorLocked(aliases []string, includeInFlight bool) error {
 	for _, alias := range aliases {
 		for active := range r.active[alias] {
-			if active.handlerDone {
-				if err := active.cleanupErr; err != nil {
-					return err
-				}
+			if !includeInFlight && !active.handlerDone {
+				continue
+			}
+			if err := active.cleanupErr; err != nil {
+				return err
 			}
 		}
 	}
@@ -401,14 +411,7 @@ func (r *ResumeLocks) ResumeCleanupErrorStrict(aliases []string) error {
 	defer r.persistenceMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, alias := range aliases {
-		for active := range r.active[alias] {
-			if err := active.cleanupErr; err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return r.resumeCleanupErrorLocked(aliases, true)
 }
 
 func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases []string, epochs map[string]uint64) (*ActiveResume, error) {
