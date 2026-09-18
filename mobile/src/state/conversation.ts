@@ -44,9 +44,15 @@ import type {
 } from "../conversation/project";
 import {
   activityState,
+  capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
+  MAX_ITEM_BYTES,
   projectItemAttachments,
+  RETAINED_ITEM_CAP,
+  TRUNCATION_MARKER,
+  truncateItem as sharedTruncateItem,
+  truncateText,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -483,65 +489,21 @@ function createDrainScheduler(): DrainScheduler {
 // LiveActivityState (Coordinate B) implements LiveActivitySink directly.
 // Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
-// --- limits and truncation helpers (centralized) ----------------------------
-
-export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
-export const TRUNCATION_MARKER = "… truncated";
-export const RETAINED_ITEM_CAP = 500;
-
-// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
-// once whenever the limit is large enough to hold the marker. Iterates
-// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
-// split and no U+FFFD replacement chars are produced. The result never
-// exceeds maxBytes.
+// --- limits and truncation helpers -------------------------------------------
+// MAX_ITEM_BYTES/RETAINED_ITEM_CAP/truncateText are the single copy in
+// project.ts (imported above), re-exported here so this module's own test
+// file and any other reader can name them from this store too. Only
+// exceedsByteLimit (the truncation-freeze check) is this store's own —
+// project.ts has no equivalent, since it tracks no per-item ownership state
+// to freeze.
 const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: every caller judges an item by
-  // exceedsByteLimit against the same limit, and the truncation freeze
-  // assumes an already-truncated item sits within it. No caller requires the
-  // marker — truncation is tracked by item identity, never by the suffix — so
-  // a limit too small to hold the marker yields the longest prefix that fits,
-  // with no marker, rather than a marker that busts the limit.
-  const fitsMarker = maxBytes >= markerBytes.length;
-  const marker = fitsMarker ? TRUNCATION_MARKER : "";
-  const markerLength = fitsMarker ? markerBytes.length : 0;
-  const targetBytes = Math.max(0, maxBytes - markerLength);
-  // Iterate code points (for...of iterates Unicode scalar values) to find
-  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
-  // avoids splitting surrogate pairs and never produces U+FFFD.
-  let byteLen = 0;
-  let cutIdx = 0;
-  for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
-    if (byteLen + cpBytes > targetBytes) break;
-    byteLen += cpBytes;
-    cutIdx += cp.length;
-  }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
-}
 
 // Check if text exceeds the byte limit (for setting truncated flag in projections).
 export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
 }
+
+export { MAX_ITEM_BYTES, RETAINED_ITEM_CAP, TRUNCATION_MARKER, truncateText };
 
 // Check if an activity detail's arguments/output/error exceed the byte limit
 // — the same rule applies to a top-level activity detail and to each of a
@@ -563,56 +525,25 @@ function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
 // private set. This allows genuine marker suffixes in content without
 // freezing delta appends.
 
-// Apply truncation to an activity detail's text-bearing fields (arguments,
-// output, error). Shared by an activity's own top-level detail and each of
-// its clustered members' details, so both are bounded the same way.
-function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
-  return {
-    ...detail,
-    arguments: detail.arguments
-      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
-      : detail.arguments,
-    output: detail.output
-      ? truncateText(detail.output, MAX_ITEM_BYTES)
-      : detail.output,
-    error: detail.error
-      ? truncateText(detail.error, MAX_ITEM_BYTES)
-      : detail.error,
-  };
+// Apply truncation to an item's text-bearing fields. Delegates to project.ts's
+// shared truncateItem so every row kind it bounds (user, assistant, notice,
+// failure, question, activity) is bounded here too — this store used to
+// truncate only "assistant" and "activity", so a pasted user message, a
+// daemon notice, a tool failure's stack, and a question's own text were never
+// bounded by the live path at all. The bound callback is a plain
+// truncateText call, not the caching one project.ts's own callers use — this
+// store already tracks per-item truncation ownership itself (the comment
+// above), so a second cache here would just be dead weight.
+export function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
+  return sharedTruncateItem(item, (text) => truncateText(text, MAX_ITEM_BYTES));
 }
 
-// Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields. Native transcript
-// projection expands a clustered activity's members directly, so each
-// member's own detail is truncated too — not just the cluster's top-level
-// detail (the first member's).
-function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
-  switch (item.kind) {
-    case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
-    case "activity":
-      return {
-        ...item,
-        detail: truncateActivityDetail(item.detail),
-        ...(item.members
-          ? {
-              members: item.members.map((member) => ({
-                ...member,
-                detail: truncateActivityDetail(member.detail),
-              })),
-            }
-          : {}),
-      };
-    default:
-      return item;
-  }
-}
-
-// Enforce the 500-item retained cap. Always retains the NEWEST items (end
-// of array) so the live tail is preserved for interactive scrolling.
+// Enforce the 500-item retained cap. Delegates to project.ts's shared
+// capItems, which also drops a leading attachment whose source item did not
+// survive the cut (this store's own cap used to just slice, leaving orphaned
+// attachments behind).
 function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
+  return sharedCapItems(items);
 }
 
 export interface ConversationState {

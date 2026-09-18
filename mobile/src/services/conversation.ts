@@ -47,10 +47,11 @@ import { projectConversation, projectTimeline } from "../conversation/project";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
-// The bounded read page limit and retained item cap, centralized so every
-// caller uses the same constant.
+// The bounded read page limit, centralized so every caller uses the same
+// constant. The retained item cap lives with the shared projection helpers
+// (conversation/project.ts's RETAINED_ITEM_CAP); nothing here needs its own
+// copy.
 export const READ_ITEM_LIMIT = 40;
-export const RETAINED_ITEM_CAP = 500;
 
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without

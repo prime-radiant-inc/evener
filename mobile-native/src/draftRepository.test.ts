@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import type { AskQuestionRef } from "@evener/appwire-client";
 import { type DraftDatabase, DraftRepository } from "./draftRepository";
+import { questionsIdentity } from "./questionAnswers";
 
 let directory: string;
 let database: DatabaseSync;
@@ -273,6 +275,42 @@ test("question selections survive reopening only for the exact destination and q
 		),
 	).toEqual({});
 });
+// questionsIdentity (questionAnswers.ts) is the SIGNATURE writeQuestions/
+// readQuestions actually receive from QuestionSheet.tsx in production — not
+// the hand-built JSON-array literals the other cases in this file use.
+// questionDefinitions (draftRepository.ts) parses that signature expecting
+// an array it can index per key; an identity that returns anything else
+// (a bare hash string, #1731 piece E round 4's own High) throws on every
+// write/read, and question drafts never persist.
+test("questionsIdentity's own signature round-trips through the real repository", () => {
+	const question: AskQuestionRef = {
+		key: "call:0",
+		callId: "call",
+		header: "Choice",
+		question: "Choose",
+		multiSelect: false,
+		options: [{ label: "A", detail: "" }],
+	};
+	const signature = questionsIdentity([question]);
+	const selections = {
+		[question.key]: {
+			resolution: { kind: "option" as const, labels: ["A"] },
+			note: "",
+		},
+	};
+	repository.writeQuestions(destination, signature, selections);
+	database.close();
+	openRepository();
+	expect(repository.readQuestions(destination, signature)).toEqual(
+		selections,
+	);
+	// A genuinely different question set gets a different identity and does
+	// not inherit the prior answer.
+	const changed = questionsIdentity([{ ...question, question: "Changed" }]);
+	expect(changed).not.toBe(signature);
+	expect(repository.readQuestions(destination, changed)).toEqual({});
+});
+
 test("hub removal also clears question selections without affecting another hub", () => {
 	const other = { ...destination, hubId: "other" };
 	const selections = {

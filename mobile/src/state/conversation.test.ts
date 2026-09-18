@@ -40,6 +40,7 @@ import {
   type LiveActivitySink,
   MAX_ITEM_BYTES,
   TRUNCATION_MARKER,
+  truncateItem,
   truncateText,
 } from "./conversation";
 
@@ -3719,6 +3720,37 @@ describe("ConversationStore", () => {
 
     it("returns the empty string for a zero byte limit", () => {
       expect(truncateText("abcdef", 0)).toBe("");
+    });
+
+    // truncateItem delegates to project.ts's shared implementation (the
+    // "unwired native helper layer" fix), which bounds every row kind the
+    // canonical projection produces — not just "assistant" and "activity",
+    // the only two this store's own switch used to cover. A pasted user
+    // message, a daemon notice, and a question's own text were never bounded
+    // by the live path before.
+    it.each([
+      ["user", { kind: "user" as const, id: "u1", text: "x".repeat(MAX_ITEM_BYTES + 100) }, "text"],
+      [
+        "notice",
+        {
+          kind: "notice" as const,
+          id: "n1",
+          origin: "system" as const,
+          family: "system" as const,
+          tone: "system" as const,
+          text: "x".repeat(MAX_ITEM_BYTES + 100),
+        },
+        "text",
+      ],
+      [
+        "failure",
+        { kind: "failure" as const, id: "f1", title: "oops", detail: "x".repeat(MAX_ITEM_BYTES + 100) },
+        "detail",
+      ],
+    ])("bounds an oversized %s item's text", (_kind, item, field) => {
+      const truncated = truncateItem(item as MobileTimelineItem) as unknown as Record<string, string>;
+      expect(truncated[field].endsWith(TRUNCATION_MARKER)).toBe(true);
+      expect(new TextEncoder().encode(truncated[field]).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
     });
 
     it("F12: emoji at boundary does not produce U+FFFD", () => {
