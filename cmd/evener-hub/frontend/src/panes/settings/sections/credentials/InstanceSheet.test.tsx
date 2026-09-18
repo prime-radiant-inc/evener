@@ -581,20 +581,10 @@ describe("the form", () => {
    * carried. The params are asserted against this OUTSIDE the fake's handler:
    * a throw inside the handler is only a rejected request, which the sheet
    * catches into a "Save failed" toast, so an assertion in there can never
-   * fail the test.
-   *
-   * `originClientId` is omitted: the sheet's edit request carries only the diff
-   * it declared, and the page's mutation identity is stamped on auth mutations,
-   * never on this one (stores/credentials.ts). A full-suite worker can leave a
-   * sibling settings suite's identity on a recorded call, which would otherwise
-   * pin a field the sheet does not control. */
+   * fail the test. */
   async function sentEditParams(fake: FakeClient): Promise<unknown> {
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/edit")).toBe(true));
-    const params = fake.calls.find((c) => c.method === "evener/instance/edit")?.params;
-    if (params === null || typeof params !== "object") return params;
-    const declared = { ...(params as Record<string, unknown>) };
-    delete declared.originClientId;
-    return declared;
+    return fake.calls.find((c) => c.method === "evener/instance/edit")?.params;
   }
   /** A save the test finishes by hand, so the sheet can be dismissed or
    * re-pointed while the request is still in flight. */
@@ -1675,7 +1665,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     // The refresh that started after the save answers first, so the store
     // discards the save's own response as superseded while its listing already
@@ -1707,7 +1701,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     // Another client wrote a different destination into the same field. The
     // listing's untouched fields all match `before`, but its baseUrl is not the
@@ -1739,7 +1737,11 @@ describe("the form", () => {
     await user.clear(field("GOOGLE_VERTEX_PROJECT"));
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p9");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { GOOGLE_VERTEX_PROJECT: "p9" } });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p9" },
+      originClientId: "test-tab",
+    });
 
     // The listing carries the variable this save declared, but its untouched
     // variable differs: this is a different instance, not this save's landing.
@@ -1774,7 +1776,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     const authored = {
       ...before,
@@ -1806,7 +1812,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     const envRow = {
       ...before,
@@ -1844,6 +1854,7 @@ describe("the form", () => {
     expect(await sentEditParams(fake)).toEqual({
       name: "work",
       baseUrl: "https://gw.example.test/v1/x?token=abc",
+      originClientId: "test-tab",
     });
 
     const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
@@ -1878,6 +1889,7 @@ describe("the form", () => {
     expect(await sentEditParams(fake)).toEqual({
       name: "work",
       baseUrl: "https://GW.example.test:443/v1",
+      originClientId: "test-tab",
     });
 
     // The hub serves Go's net/url form, which preserves the host case and the
@@ -1913,7 +1925,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.clear(field("Base URL"));
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      clearBaseUrl: true,
+      originClientId: "test-tab",
+    });
 
     const landed = {
       ...before,
@@ -1952,6 +1968,7 @@ describe("the form", () => {
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       credentialHeader: "Authorization = Bearer $NEWKEY",
+      originClientId: "test-tab",
     });
 
     // The listing serves the header the hub normalized and the endpoint the
@@ -1993,6 +2010,7 @@ describe("the form", () => {
       name: "work",
       newName: "work2",
       baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
     });
 
     const foreign = {
