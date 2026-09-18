@@ -1,0 +1,8 @@
+PASS  .        97.72s
+PASS  agent    20.46s
+PASS  llm      13.62s
+PASS  auth     3.19s
+PASS  envvars  1.36s
+PASS  invariant 0.97s
+PASS  identifier 4.25s
+PASS  web      124.48s

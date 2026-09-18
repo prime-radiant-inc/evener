@@ -1,0 +1,10 @@
+{
+  "message": {
+    "result": {
+      "mode": "inline"
+    },
+    "jsonrpc": "2.0",
+    "id": 1
+  },
+  "fallbackCalls": 0
+}

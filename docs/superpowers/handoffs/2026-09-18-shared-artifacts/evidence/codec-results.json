@@ -1,0 +1,69 @@
+{
+  "core": "2025-11-25",
+  "apps": "2026-01-26",
+  "result": [
+    {
+      "name": "accepted",
+      "input": {},
+      "valid": true,
+      "parsed": {}
+    },
+    {
+      "name": "explicit-success",
+      "input": {
+        "isError": false
+      },
+      "valid": true,
+      "parsed": {
+        "isError": false
+      }
+    },
+    {
+      "name": "rejected",
+      "input": {
+        "isError": true
+      },
+      "valid": true,
+      "parsed": {
+        "isError": true
+      }
+    },
+    {
+      "name": "wrong-type",
+      "input": {
+        "isError": "true"
+      },
+      "valid": false,
+      "parsed": null
+    },
+    {
+      "name": "foreign-success-envelope",
+      "input": {
+        "success": false
+      },
+      "valid": true,
+      "parsed": {
+        "success": false
+      }
+    }
+  ],
+  "request": {
+    "method": "ui/message",
+    "params": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"schema\":\"evener.artifact-proposal/v1\",\"proposalId\":\"scratch\",\"text\":\"hello\",\"data\":{\"a\":1}}"
+        }
+      ]
+    }
+  },
+  "wire": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "isError": true
+    }
+  }
+}
