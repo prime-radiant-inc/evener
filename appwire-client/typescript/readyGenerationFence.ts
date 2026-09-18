@@ -35,6 +35,16 @@ export interface ReadyGenerationFence {
   claimRead(): number;
   /** Claims this write's token, superseding every earlier write. */
   claimWrite(): number;
+  /** WHY a write's reply is not its own to land, because the two answers
+   * call for opposite things. LOST-HUB: the write's own claim is still
+   * intact and only support went away (the unknown window keeps the state
+   * and the in-flight work), so nothing else will ever settle this write
+   * and the editor must not be left mid-write. SUPERSEDED: a later write, or
+   * a payload retirement, has taken over - whoever took over owns `saving`
+   * now, and this reply must touch nothing. `stillClaimed` is the caller's
+   * own check (keybindingsStore.ts's store-wide write token) - this fence
+   * knows only whether the generation itself is still current. */
+  lostHub(generation: number, stillClaimed: boolean): boolean;
   /** Supersedes every read and write in flight, leaving the generation
    * active: a payload retirement calls this before publishing its own state. */
   supersede(): void;
@@ -86,6 +96,7 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     writeStillMine: (generation, token) => liveHub(generation) && token === writeSerial,
     claimRead: () => ++readSerial,
     claimWrite: () => ++writeSerial,
+    lostHub: (generation, stillClaimed) => stillClaimed && isCurrent(generation),
     supersede() {
       readSerial += 1;
       writeSerial += 1;
@@ -103,17 +114,4 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
       return true;
     },
   };
-}
-
-/** WHY a write's reply is not its own to land, because the two answers call
- * for opposite things. LOST-HUB: the write's own claim is still intact and
- * only support went away (the unknown window keeps the state and the
- * in-flight work), so nothing else will ever settle this write and the
- * editor must not be left mid-write. SUPERSEDED: a later write, or a payload
- * retirement, has taken over - whoever took over owns `saving` now, and this
- * reply must touch nothing. `stillClaimed` is the caller's own check
- * (keybindingsStore.ts's store-wide write token) - this fence knows only
- * whether the generation itself is still current. */
-export function lostHub(fence: ReadyGenerationFence, generation: number, stillClaimed: boolean): boolean {
-  return stillClaimed && fence.isCurrent(generation);
 }

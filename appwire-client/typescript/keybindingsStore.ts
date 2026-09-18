@@ -36,7 +36,7 @@ import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
-import { createReadyGenerationFence, lostHub } from "./readyGenerationFence";
+import { createReadyGenerationFence } from "./readyGenerationFence";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -651,7 +651,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * A superseded reply (a later write, or a payload retirement, took over)
    * does nothing here - its successor owns the flags. */
   function settleLostHubWrite(generation: number, token: number): void {
-    if (lostHub(fence, generation, token === fence.writeToken) && getState().saving) {
+    if (fence.lostHub(generation, token === fence.writeToken) && getState().saving) {
       setState({ saving: false, writeUncertain: true });
     }
   }
