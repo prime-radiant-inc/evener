@@ -6,6 +6,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -250,5 +251,39 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	}
 	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
 		t.Fatalf("Commands = %+v, want a single %q entry", resp.Commands, "greet")
+	}
+}
+
+// TestSortCommandDescriptors_StableForEqualKeys pins the (Name, PluginName,
+// Source) ordering to a stable sort. These three fields are the whole sort key,
+// so rows that agree on all three are only distinguished by their original
+// discovery order; an unstable sort is free to shuffle them, making the
+// advertised catalog flakier than the input. The rows are interleaved before
+// sorting so an unstable pdqsort actually has to move equal-key elements.
+func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo"}
+	const perName = 4
+	var commands []appwire.CommandDescriptor
+	for round := 0; round < perName; round++ {
+		for _, name := range names {
+			commands = append(commands, appwire.CommandDescriptor{
+				Name:        name,
+				PluginName:  "greeter",
+				Source:      "plugin",
+				Description: fmt.Sprintf("%s-%02d", name, round),
+			})
+		}
+	}
+	sortCommandDescriptors(commands)
+	nextRound := make(map[string]int, len(names))
+	for _, c := range commands {
+		var round int
+		if _, err := fmt.Sscanf(c.Description, c.Name+"-%d", &round); err != nil {
+			t.Fatalf("parse %q: %v", c.Description, err)
+		}
+		if round != nextRound[c.Name] {
+			t.Fatalf("%s rows out of discovery order: got round %d, want %d (equal-key rows were reordered)", c.Name, round, nextRound[c.Name])
+		}
+		nextRound[c.Name]++
 	}
 }
