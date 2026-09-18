@@ -117,13 +117,18 @@ export function deriveSendQueueAvailability({
   //
   // It is a tier of its own, ABOVE the capability veto rather than inside the
   // active branch, so it answers the question the active branch would answer
-  // before the status says the turn is live. Queue there advertises harness
-  // support alone (#1375), so an idle snapshot's false bit is the harness's
-  // own answer, not "no turn to queue behind": a harness WITH a queue keeps
-  // advertising true at idle, and this client's pending send still routes
-  // there. A harness with no seam would answer turn/queue Unavailable, so the
-  // rule reports the same BOTH_UNAVAILABLE the active branch does, instead of
-  // firing a request that can only fail.
+  // before the status says the turn is live. Queue advertises harness support
+  // alone (#1375), so for a LIVE idle/awaiting snapshot its bit is the
+  // harness's own answer: true still routes to the queue, and false means this
+  // harness has no queue seam, where turn/queue could only answer Unavailable.
+  // There this tier reports the both-false the active branch would report.
+  //
+  // Every other status reaching here is a cold thread the hub will RESUME on
+  // the first turn/start (app_threadread.go's pastThreadCapabilities): the set
+  // in hand is the hub's stub, not a daemon's answer, and the statuses this
+  // table does not know cannot be claimed as live either. For both the false
+  // bit says nothing about the daemon the turn is about to wake, so the queue
+  // this tier exists for is still the route.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
@@ -137,7 +142,8 @@ export function deriveSendQueueAvailability({
   // reason - see its own comment for how a session the status calls finished
   // comes to be holding one of this client's sends.
   if (hasPendingSend) {
-    return capabilities.queue === false ? BOTH_UNAVAILABLE : QUEUE_MODE;
+    const liveSnapshot = statusType === "idle" || statusType === "awaiting";
+    return liveSnapshot && capabilities.queue === false ? BOTH_UNAVAILABLE : QUEUE_MODE;
   }
 
   return PLAIN_SEND_MODE;
