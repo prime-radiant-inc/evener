@@ -412,6 +412,20 @@ export function discardStoredKeybindingDraft(
   return discardStoredDraft(storage, isReadable);
 }
 
+/** The draft/writeUncertain fields a checkpoint (or its absence) describes.
+ * Shared by restoreDraft's live read and decodeKeybindingDraftFields' offline
+ * decode below, so the two paths can never drift on what a given checkpoint
+ * means. */
+function draftFieldsFrom(checkpoint: KeybindingDraftCheckpoint | null): {
+  draft: KeybindingsOverrides | null;
+  writeUncertain: boolean;
+} {
+  return {
+    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null,
+    writeUncertain: checkpoint?.writeUncertain ?? false,
+  };
+}
+
 /** Decodes `value` into the same draft/writeUncertain fields restoreDraft
  * publishes for a loaded checkpoint, or the "nothing here" pair when it does
  * not decode. The store-free discard path (no live repository, so no
@@ -425,11 +439,7 @@ export function decodeKeybindingDraftFields(value: unknown): {
   writeUncertain: boolean;
 } {
   try {
-    const checkpoint = draftCheckpoint(value);
-    return {
-      draft: { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules },
-      writeUncertain: checkpoint.writeUncertain,
-    };
+    return draftFieldsFrom(draftCheckpoint(value));
   } catch {
     return { draft: null, writeUncertain: false };
   }
@@ -706,10 +716,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
     try {
       const checkpoint = drafts.load();
-      const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
+      const { draft, writeUncertain } = draftFieldsFrom(checkpoint);
       return {
         draft,
-        writeUncertain: checkpoint?.writeUncertain ?? false,
+        writeUncertain,
         storageUnavailable: false,
         draftUnreadable: false,
         draftError: null,
