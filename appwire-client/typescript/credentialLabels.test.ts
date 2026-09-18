@@ -457,6 +457,92 @@ describe("renameLeavesEnvironmentRow", () => {
     ).toBe(true);
   });
 
+  test("true for an authored instance whose name is the curated id it shadows, env-supplied", () => {
+    // GROQ_API_KEY is set and the user edited the implicit `groq` row (writing
+    // [providers.groq]), then renames it. The wire row is authored now
+    // (implicit: false) but still holds the curated provider's own id
+    // (providerId === name), so the rename frees `groq` and the variable
+    // re-derives the curated row there. The old comment's invariant - nothing
+    // re-derives an authored instance's old name - is false for this shape.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "groq",
+          providerId: "groq",
+          implicit: false,
+          activeSource: "env:GROQ_API_KEY",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("true for an authored curated id whose moved store was shadowing a set variable", () => {
+    // Same freed curated id, but here the store wins now: renaming moves the
+    // key and the variable the key was shadowing re-derives the curated row.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "groq",
+          providerId: "groq",
+          implicit: false,
+          activeSource: "api_key",
+          shadowedEnvVar: "GROQ_API_KEY",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("false for an authored instance that does not shadow a curated id, even env-supplied", () => {
+    // providerId !== name: renaming frees `work`, which no curated provider
+    // backs, so nothing re-derives a row under it however it was credentialed.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "work",
+          providerId: "groq",
+          implicit: false,
+          activeSource: "env:GROQ_API_KEY",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("true for a gcp-adc row whose stored JSON shadows the host's ADC file", () => {
+    // shadowedEnvVar is deliberately empty for gcp-adc (the scheme consults no
+    // variable), so the store-over-ADC shadow is visible only through the
+    // source: the JSON moves with the rename and the ADC file re-derives the
+    // curated row under the old name.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "vertex",
+          providerId: "vertex",
+          auth: "gcp-adc",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("false for a gcp-adc store row that is not the curated id - nothing re-derives it", () => {
+    // An authored gcp-adc instance at a custom name: providerId !== name, so
+    // the freed name has no curated provider behind it.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "work",
+          providerId: "vertex",
+          auth: "gcp-adc",
+          implicit: false,
+          activeSource: "store",
+          hasStoredFile: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+
   test("false for an implicit instance whose stored key shadows nothing - the row goes with the key", () => {
     expect(
       renameLeavesEnvironmentRow(

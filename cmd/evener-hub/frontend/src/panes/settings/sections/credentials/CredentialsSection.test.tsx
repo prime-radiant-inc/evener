@@ -567,6 +567,101 @@ describe("the detail sheet", () => {
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
+
+  // `implicit` is not the same as "the environment supplies it": a stored key
+  // and a signed-in Codex record are implicit rows the removal's credential
+  // cleanup DOES delete. A stale listing that still holds one is not a
+  // confirmed removal, and a surviving one is not environment access. Only the
+  // source test (fromEnvironment) tells them apart.
+  test("a superseded removal whose name survives only as a stored-key row is not confirmed", async () => {
+    const STORED = instance({
+      name: "groq",
+      providerId: "groq",
+      implicit: true,
+      activeSource: "store",
+      hasStoredFile: true,
+      authModes: ["apiKey"],
+    });
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [STORED], availableProviders: [] }));
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    // `groq` is both this row's name and its provider's group header, so scope
+    // the wait to the row button.
+    await screen.findByRole("button", { name: /groq/ });
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "groq");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal wins the store race, so the
+    // removal's own response is discarded as superseded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveRemoval({ instances: [STORED], availableProviders: [] });
+    });
+
+    // The row still on the host is the user's own stored-key row, so the
+    // removal is not confirmed and the success wording must not appear.
+    await screen.findByText(/could not be confirmed for groq/);
+    expect(screen.queryByText("Removed instance groq")).toBeNull();
+    expect(screen.queryByText(/environment access for it is still active/)).toBeNull();
+    // The removal's RPC did resolve: the owner still hears so it can drop what
+    // it retained for the name.
+    expect(onInstanceRemoved).toHaveBeenCalledWith("groq");
+  });
+
+  // The mirror of the stored-key case: a row the environment really does
+  // supply keeps the wording that says access under the name is still active.
+  test("a leftover environment-backed row produces the still-supplied wording", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", () => ({
+      instances: [
+        WORK,
+        instance({
+          name: "personal",
+          providerId: "openai-codex",
+          implicit: true,
+          activeSource: "env:OPENAI_API_KEY",
+        }),
+      ],
+      availableProviders: [],
+    }));
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText("Removed instance personal; environment access for it is still active");
+    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+  });
 });
 
 describe("credential verification", () => {

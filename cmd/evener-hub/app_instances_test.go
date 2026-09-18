@@ -908,6 +908,41 @@ func TestInstances_EditRenamesASignedInCodexAccount(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveReportsAStandingRemovalWhenTheRestoreFails: the
+// credential-only rollback is the only thing a removal of a UI-credentialed
+// instance can undo, so when a put-back fails the removal stands. The caller
+// must hear that - and the layer that could not be restored - rather than that
+// the removal "was rolled back", and the reload must not run: it would publish
+// a listing without the row while the caller was told an instance still had it.
+func TestInstances_RemoveReportsAStandingRemovalWhenTheRestoreFails(t *testing.T) {
+	f := newFlakyReloadFixture(t, "groq", func(load int) bool { return load >= 2 })
+	if before := entry(t, f.ctl.List(), "groq"); before.ActiveSource != "store" {
+		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
+	}
+	// The put-back the rollback performs cannot land.
+	f.ctl.auth.setCredential = func(string, string) error {
+		return errors.New("credentials.toml: write: read-only")
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failure")
+	}
+	if strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, must not claim the removal was rolled back when its credential could not be restored", err)
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing removal named", err)
+	}
+	if !strings.Contains(err.Error(), "stored key could not be restored") {
+		t.Fatalf("Remove = %v, want the unrestored layer named", err)
+	}
+	// The key really is gone: an honest "stands" report matches the disk.
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the stored key = %q, want it gone with the standing removal", v)
+	}
+}
+
 // TestInstances_RemoveRejectsUnknownInstance: a name that resolves to no
 // instance is the caller's to fix, the same class Edit's unknown-instance
 // refusal carries (#717/#748) — InvalidParams, not an internal fault.
@@ -4525,5 +4560,129 @@ func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
 		if got := environmentBacked(tc.inst); got != tc.want {
 			t.Fatalf("environmentBacked(%+v) = %v, want %v (%s)", tc.inst, got, tc.want, tc.name)
 		}
+	}
+}
+
+// TestInstances_RemovalRemedyNamesSomethingThatExists: the refusal reaches the
+// CLI and direct RPC callers, so each remedy has to name an action this
+// instance can actually take - the variable it reads, the host's ADC
+// credentials, the stored credential a keyless instance holds, or nothing when
+// it holds none and needs none.
+func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		inst    registry.Instance
+		want    string
+		refuses []string
+	}{
+		{
+			name: "an environment variable is unset by name",
+			inst: registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:GROQ_API_KEY"},
+			want: "unset GROQ_API_KEY instead",
+		},
+		{
+			name:    "the ADC file is the host's to remove",
+			inst:    registry.Instance{Name: "vertex", Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"},
+			want:    "application-default credentials",
+			refuses: []string{"unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance holding a stored key names that key",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "store"},
+			want:    "clear the stored credential instead",
+			refuses: []string{"unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance holding nothing does not invent one",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance the environment supplies names its variable",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
+			want:    "unset OLLAMA_API_KEY instead",
+			refuses: []string{"holds no credential of its own to clear", "clear the stored credential"},
+		},
+		{
+			name:    "a non-keyless instance with no credential source names none to remove",
+			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "none"},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+		},
+		{
+			name:    "an empty credential source is treated the same as none",
+			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: ""},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := removalRemedy(tt.inst)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("removalRemedy = %q, want it to name %q", got, tt.want)
+			}
+			for _, wrong := range tt.refuses {
+				if strings.Contains(got, wrong) {
+					t.Fatalf("removalRemedy = %q, which names the action %q that this instance cannot take", got, wrong)
+				}
+			}
+		})
+	}
+}
+
+// TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy: the refusal's advice
+// has to match what actually makes the instance exist. The old message told
+// every environment-backed row to remove the OAuth record, which for a keyless
+// gateway with a stored key names a record that does not exist beside a key
+// that does.
+func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		env     map[string]string
+		store   string
+		remove  string
+		want    string
+		refuses string
+	}{
+		{
+			name:    "a keyless optional-bearer row with a stored key",
+			store:   "ollama",
+			remove:  "ollama",
+			want:    "clear the stored credential instead",
+			refuses: "OAuth record",
+		},
+		{
+			name:    "an environment-supplied bearer row",
+			env:     map[string]string{"OPENAI_API_KEY": "env-key"},
+			remove:  "openai",
+			want:    "unset OPENAI_API_KEY instead",
+			refuses: "OAuth record",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, tt.env)
+			if tt.store != "" {
+				if err := f.store.Set(tt.store, "gk"); err != nil {
+					t.Fatalf("Set: %v", err)
+				}
+				if err := f.ctl.auth.reloadRegistry(); err != nil {
+					t.Fatalf("reloadRegistry: %v", err)
+				}
+			}
+			err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: tt.remove})
+			if err == nil {
+				t.Fatalf("Remove(%q) = nil, want the environment-backed refusal", tt.remove)
+			}
+			if !strings.Contains(err.Error(), "exists from the environment") {
+				t.Fatalf("Remove(%q) = %v, want the environment-backed refusal", tt.remove, err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Remove(%q) = %v, want the remedy %q", tt.remove, err, tt.want)
+			}
+			if strings.Contains(err.Error(), tt.refuses) {
+				t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, tt.refuses)
+			}
+		})
 	}
 }

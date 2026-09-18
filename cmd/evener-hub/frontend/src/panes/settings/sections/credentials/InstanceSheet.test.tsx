@@ -1693,6 +1693,39 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
+  // A rename always authors the entry under the new name, so an implicit row
+  // holding that name is never this rename's result: it is a curated provider
+  // the environment re-derived there, or a later tenant of the freed name.
+  // Landing the sheet on it would title one instance with another's values.
+  test("a superseded rename is not confirmed by an implicit row at the new name", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai-codex", newName: "openai-codex-work" });
+
+    // Every identity field matches, but the row is implicit - not something a
+    // rename authors.
+    const implicitLookAlike = { ...codex, name: "openai-codex-work", implicit: true };
+    await refreshList(fake, [implicitLookAlike]);
+    await act(async () => finish({ instances: [implicitLookAlike], availableProviders: [] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved openai-codex-work")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
   // The same rename answered by the store instead of superseded: the edit
   // response applies, so the sheet steers on its own request and the section
   // re-selects the new name. The pre-save entry is the wire shape again, with

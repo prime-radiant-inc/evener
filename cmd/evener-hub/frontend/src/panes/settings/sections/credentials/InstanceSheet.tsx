@@ -196,12 +196,13 @@ function renamedInstanceLanded(
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined) return undefined;
-  // Renaming an instance that had no authored entry authors one under the new
-  // name (hubInstancesController.Edit): a listing that is now implicit while
-  // this save's instance was not is that rename's own outcome, not evidence of
-  // a later tenant of the freed name. Any other change of provenance says this
-  // save's instance is not what holds the new name.
-  if (!before.implicit && listed.implicit) return undefined;
+  // Every successful rename authors an entry under the new name
+  // (hubInstancesController.Edit writes [providers.<newName>]), so a landed row
+  // is never implicit: an implicit row holding the new name is a curated
+  // provider the environment (or another client's later change) re-derived
+  // there, not this rename's result, and steering the sheet onto it would
+  // title one instance with another's values. Reject any implicit landing.
+  if (listed.implicit) return undefined;
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(

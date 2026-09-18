@@ -1268,7 +1268,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(inst) {
-		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
+		return fmt.Errorf("%s exists from the environment (%s); %s", name, describeImplicit(inst), removalRemedy(inst))
 	}
 
 	// Read the authored layer before anything is deleted: this is a pure read,
@@ -1310,7 +1310,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(locked) {
-		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(locked))
+		return fmt.Errorf("%s exists from the environment (%s); %s", name, describeImplicit(locked), removalRemedy(locked))
 	}
 
 	// The confirmation this removal carries names the row the client listed, so
@@ -1341,7 +1341,8 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 
 	removed, err := c.removeCredentials(name)
 	if err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+		return restoreErr
 	}
 
 	// An instance the user credentialed through the UI has no authored entry:
@@ -1361,7 +1362,8 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	configChanged := authored || l.Default != before.Default
 	if configChanged {
 		if err := c.writeLoadable(l); err != nil {
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+			_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+			return restoreErr
 		}
 	}
 	if err := c.reg.Reload(); err != nil {
@@ -1369,17 +1371,26 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// Nothing was written, so there is no file to put back: restoring
 			// the credentials this call deleted is the whole rollback, and a
 			// write here would create the providers.toml the guard above
-			// exists to avoid. The reload is still retried once the credentials
-			// are back: the failure above parked the registry on the
-			// implicit-only view a failed load leaves (writes refused, this row
-			// missing), and the state the file describes is unchanged, so a
-			// second attempt is the recovery rather than a repetition.
-			restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-				fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
-			if reloadErr := c.reg.Reload(); reloadErr != nil {
-				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", restored, reloadErr)
+			// exists to avoid. Only a restore that actually landed is a
+			// rollback, though: if a credential cannot be put back the removal
+			// stands, and reporting it as rolled back - and reloading, which
+			// would publish a listing without the row - would tell the caller
+			// an instance is still configured when it no longer is. The reload
+			// is retried only once the credentials are back: the failure above
+			// parked the registry on the implicit-only view a failed load
+			// leaves (writes refused, this row missing), and the state the file
+			// describes is unchanged, so a second attempt is the recovery
+			// rather than a repetition.
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				fmt.Errorf("removing %q failed: %w", name, err), "the removal stands")
+			if !restored {
+				return restoreErr
 			}
-			return restored
+			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
+			if reloadErr := c.reg.Reload(); reloadErr != nil {
+				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", rolledBack, reloadErr)
+			}
+			return rolledBack
 		}
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
@@ -1396,9 +1407,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// once this removal is reported as standing. No reload: the failure
 			// above already left the registry on the implicit-only view a load
 			// of this file produces, and writing is what is broken, not loading.
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			_, restoreFailure := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config")
+			return restoreFailure
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1408,7 +1420,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// stored key beside no active source, and the next launch would be
 		// refused for missing credentials, until some later write happened to
 		// reload again.
-		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
@@ -1424,9 +1436,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// told only that the removal "was rolled back" would read the hub as
 		// healthy.
 		if reloadErr := c.reg.Reload(); reloadErr != nil {
-			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restored, reloadErr)
+			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restoreErr, reloadErr)
 		}
-		return restored
+		return restoreErr
 	}
 	return nil
 }
@@ -1450,14 +1462,18 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 }
 
 // restoreFailedRemoval puts back what the cleanup deleted after a failed
-// removal, and folds whatever it could not restore into the error the caller
-// sees: a caller told only that the removal failed would have no way to know
-// what state the name is in. frame names that state in the failure to restore
-// - whether the entry is still authored or the removal stood - so the message
+// removal, and reports whether every deleted layer was restored: ok is true
+// on a complete restore, false when at least one layer could not be put back.
+// cause is the failure that triggered the rollback and is returned unchanged
+// when ok is true, so the caller keeps its own framing of it. On a failed
+// restore the returned error folds cause, frame, and the layers that could not
+// be put back, so a caller told only that the removal failed still knows what
+// state the name is in and what is missing from it. frame names that state -
+// whether the entry is still authored or the removal stood - so the message
 // reads as correct English for the failure that produced it. Its callers pass
 // only the layers the failure actually deleted, so this never rewrites - and
 // never reports a failure to rewrite - a credential that is still where it was.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) (bool, error) {
 	var problems []string
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
@@ -1474,9 +1490,9 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		}
 	}
 	if len(problems) == 0 {
-		return cause
+		return true, cause
 	}
-	return fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
+	return false, fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
 }
 
 // removeCredentials deletes the credential layers filed under a name whose
@@ -1536,6 +1552,39 @@ func describeImplicit(inst registry.Instance) string {
 	default:
 		return "credential source " + src
 	}
+}
+
+// removalRemedy names the action that really takes an environment-backed
+// instance away, keyed on what makes it exist. The refusal beside describeImplicit
+// reads it, so a remedy has to name something that exists for this instance: the
+// variable it reads, the ADC credentials the host supplies, the stored credential
+// a keyless instance holds, or - when it holds none and needs none - that the row
+// belongs to its provider.
+func removalRemedy(inst registry.Instance) string {
+	// The variable comes first: it is what supplies the credential the removal
+	// cannot take away, whether or not the scheme also resolves without one - a
+	// keyless gateway reading OLLAMA_API_KEY is refused for the variable it
+	// reads, not for the credential it does not need.
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
+	// No source at all - a keyless instance, or one the registry derives from
+	// its provider alone - holds no credential this removal could take away, so
+	// naming one to remove would send the caller after something that does not
+	// exist.
+	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	if keylessScheme(inst.Auth) {
+		if inst.CredentialSource == "store" {
+			return "clear the stored credential instead"
+		}
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	if inst.CredentialSource == "adc" {
+		return "remove the application-default credentials this host supplies instead"
+	}
+	return "remove the credential that supplies it instead"
 }
 
 // instanceModels renders an instance's model inventory for the sheet's

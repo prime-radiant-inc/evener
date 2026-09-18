@@ -30,6 +30,7 @@ import {
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
   safeCredentialTestResult,
@@ -372,13 +373,17 @@ export function CredentialsSection({
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
         // before the removal is reported, or the guided owner's reset fires on
-        // a listing that never lost it. What must be gone is the *authored*
-        // row: a name the environment also supplies comes back as an implicit
-        // instance the moment the authored entry is removed, and requiring the
-        // name itself to vanish would report a removal that happened as
-        // unconfirmed.
+        // a listing that never lost it. What must be gone is the row the USER
+        // owns: a name the environment also supplies comes back as a row the
+        // host derives (env:<VAR>, ADC, a keyless local default), and
+        // requiring it to vanish would report a removal that happened as
+        // unconfirmed. `implicit` alone is not that test - a stored key and a
+        // signed-in Codex record are implicit rows the removal does delete, so
+        // a stale listing still holding one must not be confirmed (and a
+        // surviving one is not "environment access"). fromEnvironment answers
+        // it by source.
         const removed = (instances: InstanceEntry[]) =>
-          !instances.some((instance) => instance.name === name && !instance.implicit);
+          !instances.some((instance) => instance.name === name && !fromEnvironment(instance));
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
           // Close the confirm dialog with the failure: the row is gone on the
@@ -397,13 +402,13 @@ export function CredentialsSection({
           if (!applied) onInstanceRemoved?.(name);
           return;
         }
-        // The authored entry is gone, but the environment can still supply
-        // access under this name, and the row that remains in the listing says
-        // so. "Removed instance X" alone would read as "no access under this
-        // name any more", which is not what the hub's own listing reports.
+        // The user's row is gone, but the environment can still supply access
+        // under this name, and the row that remains in the listing says so.
+        // "Removed instance X" alone would read as "no access under this name
+        // any more", which is not what the hub's own listing reports.
         const stillSupplied = credentialsStore
           .getState()
-          .instances.some((instance) => instance.name === name && instance.implicit);
+          .instances.some((instance) => instance.name === name && fromEnvironment(instance));
         // The name can survive the removal as an environment-supplied implicit
         // row, and a sheet left open on it would keep the removed instance's
         // dirty draft attached to a row the user never edited - a save from it
