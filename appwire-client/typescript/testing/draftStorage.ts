@@ -8,7 +8,7 @@
 // between what was saved and what removeIf is later given. In-repo test
 // support, not shipped.
 
-import type { DraftPort } from "../draftCheckpointPort";
+import { canonicalJson, type DraftPort } from "../draftCheckpointPort";
 
 export interface MemoryDraftStorage<Checkpoint> {
   storage: DraftPort<Checkpoint>;
@@ -20,6 +20,9 @@ export interface MemoryDraftStorage<Checkpoint> {
   failSave(fail?: boolean): void;
   /** Make replaceIf() throw (or stop making it throw). */
   failReplace(fail?: boolean): void;
+  /** Make load() throw (or stop making it throw) - a genuine port failure,
+   * distinct from corrupt()'s present-but-undecodable record. */
+  failLoad(fail?: boolean): void;
   /** Replace the stored value with something that is not a checkpoint. */
   corrupt(): void;
   /** The value the last removeIf() was given, exactly as the port received
@@ -34,10 +37,14 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
   let id = 0;
   let saveFails = false;
   let replaceFails = false;
+  let loadFails = false;
   let lastRemoveIf: unknown = null;
   const storage: DraftPort<Checkpoint> = {
     createId: () => `draft-${++id}`,
-    load: () => structuredClone(stored),
+    load: () => {
+      if (loadFails) throw new Error("disk unavailable");
+      return structuredClone(stored);
+    },
     save: (checkpoint: Checkpoint) => {
       if (saveFails) throw new Error("disk unavailable");
       stored = structuredClone(checkpoint);
@@ -50,13 +57,18 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     removeIf: (identity: unknown) => {
       lastRemoveIf = structuredClone(identity);
-      if (JSON.stringify(identity) !== JSON.stringify(stored)) return false;
+      // Nothing stored is never a match, whatever identity is named - a null
+      // `stored` would otherwise collide with a null/undefined identity's
+      // own canonical encoding. Compared canonically (key order normalized),
+      // the same compare a byte-aware port runs, so a same-fields-different-
+      // key-order record behaves identically here and in production.
+      if (stored === null || canonicalJson(identity) !== canonicalJson(stored)) return false;
       stored = null;
       return true;
     },
     replaceIf: (expected: unknown, next: Checkpoint) => {
       if (replaceFails) throw new Error("disk unavailable");
-      if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
+      if (stored === null || canonicalJson(expected) !== canonicalJson(stored)) return false;
       stored = structuredClone(next);
       return true;
     },
@@ -69,6 +81,9 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     failReplace(fail = true) {
       replaceFails = fail;
+    },
+    failLoad(fail = true) {
+      loadFails = fail;
     },
     corrupt() {
       stored = { invalid: true };

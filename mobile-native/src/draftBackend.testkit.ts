@@ -1,11 +1,13 @@
 // A shared in-memory NativeKeybindingDraftBackend fake for every test that
-// needs one: a Map-backed store compared by JSON bytes on deleteIf/replaceIf,
-// the same comparison the real Storage-backed backend
-// (NativePreferencesProvider.tsx) runs on stringified values.
+// needs one: a Map-backed store compared canonically (key order normalized)
+// on deleteIf/replaceIf, the same comparison the real Storage-backed backend
+// (NativePreferencesProvider.tsx) runs on stringified values via
+// matchesStoredBytes/canonicalJson.
 // NativeKeybindingDraftBackend is a superset of NativePreferenceDraftBackend
 // (the transcript draft port's narrower backend shape), so this fake serves
 // both. In-repo test support, not shipped.
 
+import { canonicalJson } from "@evener/appwire-client";
 import type { NativeKeybindingDraftBackend } from "./nativePreferenceDrafts";
 
 export interface FakeDraftBackend extends NativeKeybindingDraftBackend {
@@ -18,7 +20,10 @@ export function fakeDraftBackend(): FakeDraftBackend {
 	return {
 		store,
 		createId: () => `draft-${++id}`,
-		get: (key) => store.get(key) ?? null,
+		get: (key) => {
+			const value = store.get(key);
+			return value === undefined ? null : structuredClone(value);
+		},
 		set: (key, value) => {
 			store.set(key, structuredClone(value));
 		},
@@ -31,12 +36,15 @@ export function fakeDraftBackend(): FakeDraftBackend {
 			store.delete(key);
 		},
 		deleteIf: (key, value) => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(value)) return false;
+			// A missing key is never a match, whatever identity is named - a
+			// canonical encoding of `undefined` would otherwise collide with an
+			// `undefined` identity's own encoding.
+			if (!store.has(key) || canonicalJson(store.get(key)) !== canonicalJson(value)) return false;
 			store.delete(key);
 			return true;
 		},
 		replaceIf: (key, expected, next) => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(expected)) return false;
+			if (!store.has(key) || canonicalJson(store.get(key)) !== canonicalJson(expected)) return false;
 			store.set(key, structuredClone(next));
 			return true;
 		},
