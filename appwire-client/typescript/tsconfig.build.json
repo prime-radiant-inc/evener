@@ -43,6 +43,7 @@
     "jobOutput.ts",
     "hubOverview.ts",
     "model.ts",
+    "chunkview.ts",
     "reducer.ts",
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
