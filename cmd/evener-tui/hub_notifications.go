@@ -57,7 +57,12 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			if name := sanitizeDisplayName(params.Name); strings.TrimSpace(name) != "" {
 				m.updateDashboardRowTitle(params.Ref, name)
-				if m.notificationMatchesCurrentSession(notification) {
+				// notificationMatchesCurrentSession treats an empty ref/threadId
+				// as "matches" (correct for frames that carry no routing), so
+				// require a real identity here: an unidentified rename must not
+				// relabel whichever session happens to be open.
+				identified := strings.TrimSpace(params.Ref) != "" || strings.TrimSpace(params.ThreadID) != ""
+				if identified && m.notificationMatchesCurrentSession(notification) {
 					m.detail.Title = name
 				}
 			}

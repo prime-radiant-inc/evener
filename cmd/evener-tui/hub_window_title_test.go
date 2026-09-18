@@ -10,14 +10,13 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// windowTitleCmds runs cmd (flattening every tea.Batch level) and returns the
-// title of the tea.SetWindowTitle command it contains, whether it was found,
-// and every other message the batch produced. bubbletea's setWindowTitleMsg is
-// unexported, so the title command is identified by its message type name.
-//
-// Callers that mean "and nothing else" must check others: a batch carrying an
-// unexpected extra command would otherwise pass on finding the title.
-func windowTitleCmds(cmd tea.Cmd) (title string, found bool, others []tea.Msg) {
+// windowTitleCmds runs cmd (flattening every tea.Batch level) and returns every
+// title the tea.SetWindowTitle commands it contains would set, plus every other
+// message the batch produced. bubbletea's setWindowTitleMsg is unexported, so a
+// title command is identified by its message type name. Collecting all of them
+// (rather than stopping at the first) lets callers assert the exact command set:
+// a batch with a duplicate or unexpected extra command must not pass.
+func windowTitleCmds(cmd tea.Cmd) (titles []string, others []tea.Msg) {
 	var walk func(tea.Cmd)
 	walk = func(c tea.Cmd) {
 		if c == nil {
@@ -30,27 +29,26 @@ func windowTitleCmds(cmd tea.Cmd) (title string, found bool, others []tea.Msg) {
 			}
 		default:
 			if fmt.Sprintf("%T", msg) == "tea.setWindowTitleMsg" {
-				title = fmt.Sprint(msg)
-				found = true
+				titles = append(titles, fmt.Sprint(msg))
 				return
 			}
 			others = append(others, msg)
 		}
 	}
 	walk(cmd)
-	return title, found, others
+	return titles, others
 }
 
 // requireOnlyWindowTitle asserts cmd produced exactly one SetWindowTitle with
 // want and no other command.
 func requireOnlyWindowTitle(t *testing.T, cmd tea.Cmd, want string) {
 	t.Helper()
-	title, ok, others := windowTitleCmds(cmd)
-	if !ok {
-		t.Fatalf("no tea.SetWindowTitle command in %T", cmd)
+	titles, others := windowTitleCmds(cmd)
+	if len(titles) != 1 {
+		t.Fatalf("got %d tea.SetWindowTitle commands (%q), want exactly 1", len(titles), titles)
 	}
-	if title != want {
-		t.Fatalf("SetWindowTitle = %q, want %q", title, want)
+	if titles[0] != want {
+		t.Fatalf("SetWindowTitle = %q, want %q", titles[0], want)
 	}
 	if len(others) != 0 {
 		t.Fatalf("SetWindowTitle came with unexpected commands: %#v", others)
@@ -111,12 +109,12 @@ func TestUpdateSetsWindowTitleOnNameChanged(t *testing.T) {
 	if got := hm.detail.Title; got != "Compaction refresh name" {
 		t.Fatalf("detail title = %q, want %q", got, "Compaction refresh name")
 	}
-	title, ok, others := windowTitleCmds(cmd)
-	if !ok {
-		t.Fatal("name-changed event returned no tea.SetWindowTitle command")
+	titles, others := windowTitleCmds(cmd)
+	if len(titles) != 1 {
+		t.Fatalf("got %d SetWindowTitle commands (%q), want exactly 1", len(titles), titles)
 	}
-	if title != "Compaction refresh name" {
-		t.Fatalf("SetWindowTitle = %q, want %q", title, "Compaction refresh name")
+	if titles[0] != "Compaction refresh name" {
+		t.Fatalf("SetWindowTitle = %q, want %q", titles[0], "Compaction refresh name")
 	}
 	// The only other leg is the frame wait, primed above.
 	if len(others) != 1 {
@@ -163,8 +161,8 @@ func TestWindowTitleFallsBackThroughSessionIdentity(t *testing.T) {
 func TestWindowTitleNotReemittedWhenUnchanged(t *testing.T) {
 	m := enterWindowTitleSession(t, "Stable name")
 	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if title, ok, others := windowTitleCmds(cmd); ok || len(others) != 0 {
-		t.Fatalf("unchanged title emitted a command: title=(%q,%v) others=%#v", title, ok, others)
+	if titles, others := windowTitleCmds(cmd); len(titles) != 0 || len(others) != 0 {
+		t.Fatalf("unchanged title emitted a command: titles=%q others=%#v", titles, others)
 	}
 }
 
@@ -172,8 +170,8 @@ func TestWindowTitleNotReemittedWhenUnchanged(t *testing.T) {
 func TestWindowTitleEmptyOutsideSessionView(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if title, ok, others := windowTitleCmds(cmd); ok || len(others) != 0 {
-		t.Fatalf("dashboard update emitted a command: title=(%q,%v) others=%#v", title, ok, others)
+	if titles, others := windowTitleCmds(cmd); len(titles) != 0 || len(others) != 0 {
+		t.Fatalf("dashboard update emitted a command: titles=%q others=%#v", titles, others)
 	}
 }
 
@@ -193,20 +191,20 @@ func TestWindowTitleSanitizesControlSequences(t *testing.T) {
 		},
 		ref: "local:th_1",
 	})
-	title, ok, others := windowTitleCmds(cmd)
-	if !ok {
-		t.Fatal("session entry returned no tea.SetWindowTitle command")
+	titles, others := windowTitleCmds(cmd)
+	if len(titles) != 1 {
+		t.Fatalf("got %d SetWindowTitle commands (%q), want exactly 1", len(titles), titles)
 	}
 	const want = "evil]52;c;clipname31mend"
-	if title != want {
-		t.Fatalf("SetWindowTitle = %q, want %q", title, want)
+	if titles[0] != want {
+		t.Fatalf("SetWindowTitle = %q, want %q", titles[0], want)
 	}
 	if len(others) != 0 {
 		t.Fatalf("SetWindowTitle came with unexpected commands: %#v", others)
 	}
-	for _, r := range title {
+	for _, r := range titles[0] {
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			t.Fatalf("SetWindowTitle %q still carries control rune %#U", title, r)
+			t.Fatalf("SetWindowTitle %q still carries control rune %#U", titles[0], r)
 		}
 	}
 }
@@ -236,6 +234,39 @@ func TestHubDetailFromThreadSanitizesDisplayName(t *testing.T) {
 	})
 	if detail.Title != "abcd" {
 		t.Fatalf("detail.Title = %q, want %q", detail.Title, "abcd")
+	}
+}
+
+// The identity fallbacks (session id, ref) must be sanitized too: the header and
+// chrome render sessionDisplayName verbatim, so a control-only id or ref would
+// otherwise reach them raw even though the OSC title sink is protected.
+func TestSessionDisplayNameSanitizesIdentityFallback(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess\u009b31m"}
+	if got := m.sessionDisplayName(); got != "sess31m" {
+		t.Fatalf("sessionDisplayName = %q, want %q", got, "sess31m")
+	}
+	// A control-only session id falls through to the ref, also sanitized.
+	m.detail = hubSessionDetail{Ref: "local:th\u009d1", SessionID: "\u009b"}
+	if got := m.sessionDisplayName(); got != "local:th1" {
+		t.Fatalf("sessionDisplayName = %q, want %q", got, "local:th1")
+	}
+}
+
+// A rename frame that carries no identity must not relabel whichever session
+// happens to be open: notificationMatchesCurrentSession treats an empty
+// ref/threadId as a match, which is right for other frames but wrong here.
+func TestThreadNameChangedWithoutIdentityDoesNotRelabelViewedSession(t *testing.T) {
+	m := enterWindowTitleSession(t, "Viewed session")
+	message := appwire.NotificationMessage(appwire.NotifyThreadNameChanged, appwire.ThreadNameChangedParams{
+		Name:   "Anonymous rename",
+		Source: "user",
+	})
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *message.Notification})
+	hm := updated.(hubModel)
+	if hm.detail.Title != "Viewed session" {
+		t.Fatalf("unidentified rename relabelled the viewed session: %q", hm.detail.Title)
 	}
 }
 

@@ -48,11 +48,19 @@ func (m hubModel) desiredWindowTitle() string {
 
 // sessionDisplayName is the active session's display name: the name the hub
 // reports, or its fallbacks (the original prompt the preview carries, then the
-// session id and ref). The session header renders it verbatim and adds its
-// "untitled session" placeholder; the terminal title uses it as-is so an
-// unnamed session leaves the window title empty rather than a placeholder.
+// session id and ref). Every candidate is sanitized, not just the reported
+// name: the header, the chrome, and the dashboard row all render this string,
+// and a control-only session id or ref would otherwise reach them raw and
+// reopen the escape-injection surface the title sink already closes. The header
+// adds its "untitled session" placeholder; the terminal title uses the result
+// as-is so an unnamed session leaves the window title empty rather than a
+// placeholder.
 func (m hubModel) sessionDisplayName() string {
-	return envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref)
+	return envvars.FirstNonEmpty(
+		sanitizeDisplayName(m.detail.Title),
+		sanitizeDisplayName(m.detail.SessionID),
+		sanitizeDisplayName(m.detail.Ref),
+	)
 }
 
 // terminalTitle is the OSC-safe form of a session display name: control

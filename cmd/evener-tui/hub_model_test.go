@@ -4461,38 +4461,39 @@ func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 	if cmd == nil {
 		t.Fatal("expected quit command, got nil")
 	}
+	// Every quit route must clear the terminal window title, then quit, as one
+	// ordered sequence: a quit from a session view must not leave the session
+	// title on the terminal after the TUI exits. A bare tea.QuitMsg is a
+	// regression — it clears nothing — so it does not pass.
 	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		// quitCmd clears the terminal window title, then quits, as one ordered
-		// sequence: a quit from a session view must not leave the session title
-		// on the terminal after the TUI exits.
-		seq := reflect.ValueOf(msg)
-		if seq.Kind() != reflect.Slice {
-			t.Fatalf("expected tea.QuitMsg or an ordered quit sequence, got %T", msg)
+	seq := reflect.ValueOf(msg)
+	if seq.Kind() != reflect.Slice {
+		t.Fatalf("quit route must clear the title then quit as an ordered sequence, got %T", msg)
+	}
+	var titles []string
+	quit := false
+	for i := 0; i < seq.Len(); i++ {
+		child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
+		if !ok {
+			t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
 		}
-		var titles []string
-		quit := false
-		for i := 0; i < seq.Len(); i++ {
-			child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
-			if !ok {
-				t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
+		switch childMsg := child().(type) {
+		case tea.QuitMsg:
+			if len(titles) == 0 {
+				t.Fatal("quit ran before the window title was cleared")
 			}
-			switch childMsg := child().(type) {
-			case tea.QuitMsg:
-				quit = true
-			default:
-				if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
-					titles = append(titles, fmt.Sprint(childMsg))
-				}
+			quit = true
+		default:
+			if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
+				titles = append(titles, fmt.Sprint(childMsg))
 			}
 		}
-		if !quit {
-			t.Fatalf("quit sequence does not quit: %T", msg)
-		}
-		if len(titles) != 1 || titles[0] != "" {
-			t.Fatalf("quit must clear the window title first: titles=%q", titles)
-		}
-		return
+	}
+	if !quit {
+		t.Fatalf("quit sequence does not quit: %T", msg)
+	}
+	if len(titles) != 1 || titles[0] != "" {
+		t.Fatalf("quit must clear the window title first: titles=%q", titles)
 	}
 }
 
