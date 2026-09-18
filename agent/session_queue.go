@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -34,12 +33,18 @@ type queuedClientMutationIdentity struct {
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
-	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{
+	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentityOf(queued))
+}
+
+// queuedClientMutationIdentityOf is withQueuedClientMutation's identity for a
+// queued input, for a caller that holds the input rather than the context.
+func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
+	return queuedClientMutationIdentity{
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
 		SteeringCarrier:  queued.SteeringCarrier,
-	})
+	}
 }
 
 func queuedClientMutationFromContext(ctx context.Context) queuedClientMutationIdentity {
@@ -773,8 +778,14 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	// clientMutations.mu; the claim reads only the writer's own lock inside, so
 	// the serializer never waits on s.mu.
 	writer := s.attachedTranscript()
+	if s.cfg.testOnly.queueHeadClaimSampled != nil {
+		s.cfg.testOnly.queueHeadClaimSampled()
+	}
 	var queued queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if s.cfg.testOnly.queueHeadClaimInSerializer != nil {
+			s.cfg.testOnly.queueHeadClaimInSerializer()
+		}
 		if !queueHeadClaimable(snapshot) {
 			return nil
 		}
@@ -782,7 +793,7 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		// generation this claim commits against. Returning it from the mutation
 		// is what keeps the refusal from committing anything -- a nil return
 		// would save the generation the claim then declined to change.
-		if refusal := refuseOnPoisonedTranscript(writer); refusal != nil {
+		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
 			return refusal
 		}
 		entry := snapshot.InputQueue[0]
@@ -814,7 +825,7 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	})
 	// A refusal is the transcript's, not the store's: distinguish it from a
 	// claim write that failed, which stands down with a warning instead.
-	if errors.Is(err, transcript.ErrWriterPoisoned) {
+	if transcriptRefusedClaim(err) {
 		return queuedInput{}, err
 	}
 	if err != nil {

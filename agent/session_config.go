@@ -311,6 +311,20 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// clientMutationStartAnnounced observes a start that has claimed and
+	// announced, immediately before the turn runs -- the window a close lands in,
+	// where the post-run give-back decides whether the claim goes back. Nil in
+	// production.
+	clientMutationStartAnnounced func()
+	// queueHeadClaimInSerializer observes a queue-head claim entering the
+	// mutation-store serializer, after the transcript writer was sampled under
+	// s.mu. A lock-order test holds Session.mu and fails if this fires. Nil in
+	// production.
+	queueHeadClaimInSerializer func()
+	// queueHeadClaimSampled observes a queue-head claim that has finished its
+	// Session.mu work (the transcript writer sample) and is about to enter the
+	// serializer. Nil in production.
+	queueHeadClaimSampled func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)
