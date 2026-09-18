@@ -60,6 +60,24 @@ export const ErrorInstanceRemovePersisted = "instanceRemovePersisted";
 // failed save.
 export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
 
+// isInstanceRemovePersisted reports whether a rejection is the hub's
+// discriminator for a provider-instance removal that stood in providers.toml
+// before it could not finish (appwire.ErrorInstanceRemovePersisted). A refusal
+// or any other failure carries no such info, so it stays a plain failure and is
+// never reported as a removal.
+export function isInstanceRemovePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
+}
+
+// isInstanceRenamePersisted reports whether a rejection is the hub's
+// discriminator for a provider-instance rename that stood before its credential
+// move or reload failed (appwire.ErrorInstanceRenamePersisted); the hub's message
+// names the credential left behind, so the client steers to the new name rather
+// than reporting a failed save.
+export function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

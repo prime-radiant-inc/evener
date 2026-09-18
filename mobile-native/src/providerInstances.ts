@@ -1,9 +1,8 @@
 import {
-  ErrorInstanceRemovePersisted,
   friendlyErrorMessage,
+  isInstanceRemovePersisted as isInstanceRemovePersistedWire,
   safeCredentialTestResult,
   sessionActionError,
-  WireError,
 } from "@evener/appwire-client";
 import type {
   AuthTestResponse,
@@ -40,7 +39,7 @@ interface ProviderState {
 // by that package's errors.test.ts). A refusal or any other failure carries no
 // such info, so it stays a plain failure.
 export function isInstanceRemovePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
+  return isInstanceRemovePersistedWire(err);
 }
 
 // removalFailureMessage is what the screen shows when a removal is refused or

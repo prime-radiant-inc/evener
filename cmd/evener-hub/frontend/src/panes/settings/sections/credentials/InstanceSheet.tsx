@@ -32,15 +32,14 @@ import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evene
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
-  ErrorInstanceRenamePersisted,
   errorText,
   friendlyErrorMessage,
   fromEnvironment,
+  isInstanceRenamePersisted,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
-  WireError,
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
@@ -49,6 +48,7 @@ import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToas
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceSheet.module.css";
 import {
+  clearedField,
   draftFor,
   type InstanceDraft,
   instanceEditParams,
@@ -88,17 +88,6 @@ const STALE_SAVE_WARNING =
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
 
-// isInstanceRenamePersisted reads the hub's own discriminator for a rename that
-// stood but could not carry the instance's credentials cleanly
-// (appwire.ErrorInstanceRenamePersisted, exported by the AppWire package so every
-// client reads the one value its ErrorData carries, and bound to the Go constant
-// by that package's errors.test.ts). providers.toml names the new instance either
-// way, so the save is not a failure to report; the hub's message names the
-// credential left behind.
-function isInstanceRenamePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
-}
-
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
 // removal and a recreation under the same name, or another instance renamed
@@ -128,29 +117,15 @@ const RENAME_IDENTITY_FIELDS = [
  * digest cannot be compared as an untouched identity field across such a save. */
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
-/** The entry field each wire `clear*` flag stands for. The flag and the field
- * are different names (`clearApiKeyEnv` clears `apiKeyEnv`), and a rename's
- * identity comparison has to see a clear as the field it changed. Deriving the
- * field from the flag by lower-casing the letter after "clear" was implicit and
- * name-shaped - a field carrying an acronym would not match - so the pairing is
- * written out here: a clear flag mapped to the wrong field leaves that field
- * compared as untouched, so a superseded rename that cleared it fails to
- * recognize its own rename and reports a stale save for a write that landed. */
-const CLEARED_FIELDS: Record<string, string> = {
-  clearBaseUrl: "baseUrl",
-  clearProtocol: "protocol",
-  clearSurface: "surface",
-  clearApiKeyEnv: "apiKeyEnv",
-  clearCredentialHeader: "credentialHeader",
-};
-
 /** The entry fields this save's params changed, whether a field carries a value
- * or a `clear` flag: those are the fields a rename may legitimately differ in. */
+ * or a `clear` flag: those are the fields a rename may legitimately differ in.
+ * clearedField (instanceEdit.ts) reverse-maps a clear flag to the field it
+ * changed, from the same table that authors the flags forward. */
 function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(CLEARED_FIELDS[key] ?? key);
+    changed.add(clearedField(key));
   }
   return changed;
 }
@@ -226,8 +201,9 @@ function renamedInstanceLanded(
   // Renaming an instance that had no authored entry authors one under the new
   // name (hubInstancesController.Edit), so implicit becoming authored is that
   // rename's own outcome rather than evidence of a later tenant of the freed
-  // name. The other direction, and any change on an authored row, still says
-  // this save's instance is not what holds the new name.
+  // name. The other direction - an authored instance the listing now shows as
+  // implicit - is the one flag change a rename cannot explain, so it alone
+  // rejects the row; the flags agree on every other pair.
   //
   // What separates this save's row from a look-alike is then the identity
   // fields compared below, not the flag: a concurrent client that authored an
@@ -236,8 +212,7 @@ function renamedInstanceLanded(
   // authored rename before this relaxation, and the listing carries no
   // per-mutation identifier to close it with - an incarnation or generation
   // number on the wire is what that would take.
-  const authoredByRename = before.implicit && !listed.implicit;
-  if (listed.implicit !== before.implicit && !authoredByRename) return undefined;
+  if (!before.implicit && listed.implicit) return undefined;
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(

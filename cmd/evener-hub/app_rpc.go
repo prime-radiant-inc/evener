@@ -1183,8 +1183,19 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 // unchanged. The bool says whether the removal stood, which is also what the
 // handler broadcasts on.
 func instanceRemoveError(err error) (bool, error) {
-	if _, persisted := errors.AsType[removePersistedError](err); persisted {
-		return true, appwire.InstanceRemovePersisted(err.Error())
+	return instanceMutationError[removePersistedError](err, appwire.InstanceRemovePersisted)
+}
+
+// instanceMutationError is the one body both handlers share: a mutation that
+// stood in providers.toml carries the persisted-error marker its controller
+// wrapped (removePersistedError or renamePersistedError), and is returned to the
+// client under the wire constructor for that outcome so it reads as a standing
+// mutation rather than a failure. Every other error is returned unchanged. The
+// bool says whether the mutation stood, which is also what the handler
+// broadcasts on.
+func instanceMutationError[E error](err error, persisted func(string) appwire.WireError) (bool, error) {
+	if _, ok := errors.AsType[E](err); ok {
+		return true, persisted(err.Error())
 	}
 	return false, err
 }
@@ -1197,10 +1208,7 @@ func instanceRemoveError(err error) (bool, error) {
 // failure is returned unchanged. The bool says whether the rename stood, which
 // is also what the handler broadcasts on.
 func instanceRenameError(err error) (bool, error) {
-	if _, persisted := errors.AsType[renamePersistedError](err); persisted {
-		return true, appwire.InstanceRenamePersisted(err.Error())
-	}
-	return false, err
+	return instanceMutationError[renamePersistedError](err, appwire.InstanceRenamePersisted)
 }
 
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no

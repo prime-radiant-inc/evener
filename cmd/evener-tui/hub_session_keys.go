@@ -570,19 +570,27 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.Queue.Revision, m.detail.Queue.Depth, m.detail.InstanceID)
 }
 
-func isQueuedDrainPartial(err error) bool {
+// wireErrorHasInfo reports whether err is an appwire.WireError whose
+// data.evenerErrorInfo is info. The wire error's Data is an ErrorData in-process
+// and a decoded map over the socket, so both are accepted. The discriminator is
+// the evenerErrorInfo string, never the code: siblings share the code.
+func wireErrorHasInfo(err error, info string) bool {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		return false
 	}
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
-		return data.EvenerErrorInfo == appwire.ErrorQueuedDrainPartial
+		return string(data.EvenerErrorInfo) == info
 	case map[string]any:
-		return data["evenerErrorInfo"] == string(appwire.ErrorQueuedDrainPartial)
+		return data["evenerErrorInfo"] == info
 	default:
 		return false
 	}
+}
+
+func isQueuedDrainPartial(err error) bool {
+	return wireErrorHasInfo(err, string(appwire.ErrorQueuedDrainPartial))
 }
 
 // isAltVKey reports whether the keypress is Alt+v / Ctrl+Alt+V. WSL

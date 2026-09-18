@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -19,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -1216,13 +1216,13 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 			// deterministic name is another credential's bytes and must survive.
 			// On a refusal the bytes stay where they are and the problem is
 			// reported the way the other carry problems are.
-			_, _, configBacked, _ := oauthAsideInstance(promoted)
+			promotedAside, _ := parseOAuthAside(promoted)
 			var want int64
-			if s, perr := strconv.ParseInt(oauthAsideStampText(promoted), 10, 64); perr == nil {
+			if s, perr := strconv.ParseInt(promotedAside.stampText, 10, 64); perr == nil {
 				want = s
 			}
 			recordPath := authopenai.AuthFilePath(c.auth.stateDir, oldName)
-			dst, ok := freeAsideName(filepath.Dir(recordPath), newName, configBacked, want)
+			dst, ok := freeAsideName(filepath.Dir(recordPath), newName, promotedAside.configBacked, want)
 			switch {
 			case !ok:
 				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and no fresh recovery-recognized aside name under %q was free to file the copy %q it carried, so those bytes are still at %q", err, newName, promoted, recordPath))
@@ -1279,23 +1279,51 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 		}
 		return "", []string{fmt.Sprintf("OAuth copies under %q not read, so they could not follow the rename: %v", oldName, err)}
 	}
-	var copies []string
-	kind := make(map[string]bool, len(entries))
+	type carriedAside struct {
+		name         string
+		stamp        int64
+		ranked       bool
+		configBacked bool
+	}
+	var copies []carriedAside
+	// The highest stamp already filed under the NEW name, in-flight or committed,
+	// across every entry. The carry is the only writer under the caller's credMu, so
+	// this seed - bumped locally as copies land - is equivalent to re-listing the
+	// directory for every copy, and cheaper.
+	var highestDest int64
+	var haveDest bool
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		a, aside := parseOAuthAside(e.Name())
+		if !aside {
+			continue
+		}
+		if a.inst == newName {
+			if s, perr := strconv.ParseInt(a.stampText, 10, 64); perr == nil {
+				if !haveDest || s > highestDest {
+					highestDest, haveDest = s, true
+				}
+			}
+		}
+		if a.committed || a.inst != oldName {
+			continue
+		}
+		c := carriedAside{name: e.Name(), configBacked: a.configBacked}
+		if s, perr := strconv.ParseInt(a.stampText, 10, 64); perr == nil {
+			c.stamp, c.ranked = s, true
+		}
+		copies = append(copies, c)
+	}
 	newest := ""
 	var newestStamp int64
-	for _, e := range entries {
-		inst, committed, configBacked, aside := oauthAsideInstance(e.Name())
-		if e.IsDir() || !aside || committed || inst != oldName {
+	for _, c := range copies {
+		if !c.ranked {
 			continue
 		}
-		copies = append(copies, e.Name())
-		kind[e.Name()] = configBacked
-		stamp, perr := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
-		if perr != nil {
-			continue
-		}
-		if newest == "" || stamp > newestStamp {
-			newest, newestStamp = e.Name(), stamp
+		if newest == "" || c.stamp > newestStamp {
+			newest, newestStamp = c.name, c.stamp
 		}
 	}
 	var problems []string
@@ -1317,42 +1345,30 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 	// the new name's stamps keep saying which record is newest. os.ReadDir hands
 	// entries back in lexical order, and lexical is not numeric when stamps
 	// differ in digit length: "...removing-10" sorts before "...removing-9".
-	// freeAsideName bumps a destination to highest+1 when the source stamp is
+	// The search bumps a destination to highest+1 when the source stamp is
 	// not greater, so re-stamping in lexical order would push the numerically
 	// older 9 above the newer 10 - and startup restores the newest copy, putting
 	// the older credential back. Ordering the carry by the parsed stamp
 	// ascending preserves the source ordering. A copy whose stamp cannot be
 	// parsed (past an int64) is still carried, but not ranked, exactly as the
 	// newest-copy search above already skips it.
-	type rankedCopy struct {
-		name  string
-		stamp int64
-	}
-	ranked := make([]rankedCopy, 0, len(copies))
-	var unranked []string
-	for _, name := range copies {
-		if s, perr := strconv.ParseInt(oauthAsideStampText(name), 10, 64); perr == nil {
-			ranked = append(ranked, rankedCopy{name, s})
+	ranked := make([]carriedAside, 0, len(copies))
+	var unranked []carriedAside
+	for _, c := range copies {
+		if c.ranked {
+			ranked = append(ranked, c)
 		} else {
-			unranked = append(unranked, name)
+			unranked = append(unranked, c)
 		}
 	}
-	slices.SortStableFunc(ranked, func(a, b rankedCopy) int {
-		switch {
-		case a.stamp < b.stamp:
-			return -1
-		case a.stamp > b.stamp:
-			return 1
-		}
-		return 0
+	slices.SortStableFunc(ranked, func(a, b carriedAside) int {
+		return cmp.Compare(a.stamp, b.stamp)
 	})
-	carryOrder := make([]string, 0, len(copies))
-	for _, r := range ranked {
-		carryOrder = append(carryOrder, r.name)
-	}
+	carryOrder := make([]carriedAside, 0, len(copies))
+	carryOrder = append(carryOrder, ranked...)
 	carryOrder = append(carryOrder, unranked...)
-	for _, name := range carryOrder {
-		if name == promoted {
+	for _, c := range carryOrder {
+		if c.name == promoted {
 			continue
 		}
 		// The destination is named from this copy's own stamp, so a copy already
@@ -1362,17 +1378,24 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 		// it rather than resolving it forward and deleting it
 		// (remarkUncarriedOAuthAside).
 		var want int64
-		if s, perr := strconv.ParseInt(oauthAsideStampText(name), 10, 64); perr == nil {
-			want = s
+		if c.ranked {
+			want = c.stamp
 		}
-		dst, ok := freeAsideName(dir, newName, kind[name], want)
-		if !ok {
-			problems = append(problems, remarkUncarriedOAuthAside(dir, name, newName,
+		dst, stamp, reason, _ := stepFreeAsideName(filepath.Join(dir, newName+".json"), c.configBacked, want, highestDest, haveDest)
+		if reason != asideSearchFound {
+			problems = append(problems, remarkUncarriedOAuthAside(dir, c.name, newName,
 				fmt.Errorf("no fresh aside name under %q was free to carry it to", newName)))
 			continue
 		}
-		if rerr := renameNoReplace(filepath.Join(dir, name), dst); rerr != nil {
-			problems = append(problems, remarkUncarriedOAuthAside(dir, name, newName, rerr))
+		if rerr := renameNoReplace(filepath.Join(dir, c.name), dst); rerr != nil {
+			problems = append(problems, remarkUncarriedOAuthAside(dir, c.name, newName, rerr))
+			continue
+		}
+		// The copy landed under the new name, so a later copy must step past its
+		// stamp too. The carry is the only writer under credMu, which makes this
+		// in-memory bump equivalent to a fresh directory rescan.
+		if !haveDest || stamp > highestDest {
+			highestDest, haveDest = stamp, true
 		}
 	}
 	return promoted, problems
@@ -1571,10 +1594,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// this instance - either one makes configChanged below true, so the file is
 	// written. A crash after that write but before the commit mark must not leave
 	// a credential-only in-flight copy, which startup would restore and thereby
-	// resurrect the removed instance. Both facts are read from `before`, the layer
-	// that still holds them; `authored` is reused below for `configChanged`.
+	// resurrect the removed instance. configCarriesName is that rule, read from
+	// `before`, the layer that still holds it; `authored` is reused below for
+	// `configChanged`.
 	_, authored := before.Providers[name]
-	configBacked := authored || before.Default == name
+	configBacked := configCarriesName(before, name)
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
 	oauthAside, err := c.setAsideOAuthFile(name, configBacked)
 	if err != nil {
@@ -1729,27 +1753,29 @@ func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked boo
 	// earlier one's, and startup restores the newest copy of a name - so the
 	// older, possibly revoked record would be the one put back while the newer
 	// credential sat as inert debris. Stepping past the highest makes the order
-	// of the stamps the order of the removals. The loop below still steps a
+	// of the stamps the order of the removals. The search still steps a
 	// clock-driven seed past a collision, and stepping is safe here because
 	// removals of one name are serialized: every removal holds the caller's
 	// credMu exclusively, so no other aside for this path can be created between
 	// the existence check and the rename. The candidate keeps the all-digits
 	// tail oauthAsideInstance requires, so a stepped name is still reclaimable
 	// rather than debris.
+	//
 	// The marker the copy is written under records the removal's kind, so
 	// recovery can decide whether to put it back without asking the registry.
-	marker := oauthAsideMarkerFor(configBacked)
 	stamp := c.auth.now().UnixNano()
 	if stamp < 0 {
 		// A negative stamp is not a name any copy can carry: its decimal text
 		// holds a '-' the all-digits tail oauthAsideInstance requires, so the
 		// copy would be debris the reclaim silently skips - a removal reported
 		// as successful could leave the credential on disk. Refused before
-		// anything is deleted, mirroring the stamp bounds freeAsideName enforces.
+		// anything is deleted, mirroring the stamp bounds the search enforces.
 		return "", fmt.Errorf("remove %s: the clock returned the negative stamp %d, which no OAuth aside name can carry", name, stamp)
 	}
-	entries, err := os.ReadDir(filepath.Dir(path))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	aside, _, reason, searchErr := findFreeAsideName(filepath.Dir(path), name, configBacked, stamp)
+	switch reason {
+	case asideSearchFound:
+	case asideSearchDirUnreadable:
 		// The stamps already filed for this record path are what orders the
 		// copies of a name, so a seed taken from the clock alone cannot be
 		// trusted when the directory cannot be listed: an unreadable directory
@@ -1760,56 +1786,21 @@ func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked boo
 		// rather than guessed, before anything is deleted. A directory that does
 		// not exist is not this case: no copy can be filed somewhere that is
 		// not there.
-		return "", fmt.Errorf("remove %s: list %s to order its OAuth copies before setting one aside: %w", name, filepath.Dir(path), err)
-	}
-	if entries != nil {
-		var highest int64
-		var have bool
-		for _, e := range entries {
-			inst, _, _, aside := oauthAsideInstance(e.Name())
-			if e.IsDir() || !aside || inst != name {
-				continue
-			}
-			s, perr := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
-			if perr != nil {
-				continue
-			}
-			if !have || s > highest {
-				highest, have = s, true
-			}
-		}
-		// One past the highest is all digits for any non-negative stamp; the
-		// comparison also refuses a MaxInt64 successor, which would wrap to a
-		// negative tail no copy can carry.
-		if have && highest+1 > highest && highest+1 > stamp {
-			stamp = highest + 1
-		}
-	}
-	aside := fmt.Sprintf("%s%s%d", path, marker, stamp)
-	for {
-		_, err := os.Lstat(aside)
-		if errors.Is(err, os.ErrNotExist) {
-			break
-		}
-		if err != nil {
-			// The candidate could not be checked, so nothing here can promise
-			// the rename will not land on a copy that is already there - and a
-			// failure other than "not there" (a directory this process cannot
-			// search, a candidate past the name limit) fails the rename too.
-			// Stepping past it would spin here instead, holding the caller's
-			// credMu, so the whole removal is refused with the cause named.
-			return "", fmt.Errorf("remove %s: check whether %s is free to set its OAuth state aside: %w", name, aside, err)
-		}
-		if stamp >= maxAsideStamp {
-			// Stepping past the maximum would wrap to a negative tail no copy can
-			// carry, exactly the bound freeAsideName enforces. A removal that
-			// cannot name its aside is refused rather than leaving debris the
-			// reclaim skips, which would let a reported removal leave the
-			// credential on disk.
-			return "", fmt.Errorf("remove %s: no aside stamp at or below %d was free to set its OAuth state aside", name, maxAsideStamp)
-		}
-		stamp++
-		aside = fmt.Sprintf("%s%s%d", path, marker, stamp)
+		return "", fmt.Errorf("remove %s: list %s to order its OAuth copies before setting one aside: %w", name, filepath.Dir(path), searchErr)
+	case asideSearchCandidateUnreadable:
+		// The candidate could not be checked, so nothing here can promise
+		// the rename will not land on a copy that is already there - and a
+		// failure other than "not there" (a directory this process cannot
+		// search, a candidate past the name limit) fails the rename too.
+		// Stepping past it would spin instead, holding the caller's credMu, so
+		// the whole removal is refused with the cause named.
+		return "", fmt.Errorf("remove %s: check whether %s is free to set its OAuth state aside: %w", name, aside, searchErr)
+	case asideSearchExhausted:
+		// Stepping past the maximum would wrap to a negative tail no copy can
+		// carry, exactly the bound the search enforces. A removal that cannot
+		// name its aside is refused rather than leaving debris the reclaim
+		// skips, which would let a reported removal leave the credential on disk.
+		return "", fmt.Errorf("remove %s: no aside stamp at or below %d was free to set its OAuth state aside", name, maxAsideStamp)
 	}
 	if err := os.Rename(path, aside); err != nil {
 		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
@@ -1864,25 +1855,41 @@ func oauthAsideMarkerFor(configBacked bool) string {
 	return oauthAsideMarker
 }
 
-// oauthAsideInstance returns the instance a copy was made from, whether the
-// removal that made it had stood, whether the removal was config-backed
-// (oauthConfigAsideMarker), and whether name is a copy at all. The aside name is
-// the record's whole path - its .json suffix included - plus a stamp, so an
-// instance whose own name holds a marker is not one: `x.removing-1`'s record is
-// `x.removing-1.json`, whose tail after the marker is not a number, and no record
-// a load would read is ever taken for debris. The config-backed markers are
-// checked before the plain ones because they share the plain ones' prefix.
-func oauthAsideInstance(name string) (inst string, committed, configBacked, aside bool) {
-	for _, m := range []struct {
-		marker       string
-		committed    bool
-		configBacked bool
-	}{
-		{oauthConfigCommittedMarker, true, true},
-		{oauthConfigAsideMarker, false, true},
-		{oauthCommittedMarker, true, false},
-		{oauthAsideMarker, false, false},
-	} {
+// oauthAsideShapes is the aside-name grammar in the order it must be tried: the
+// config-backed pair before the plain pair because the config-backed markers
+// share the plain ones' prefix, and within each pair the committed shape before
+// the in-flight one. parseOAuthAside, oauthAsideInstance and oauthAsideStampText
+// all read this one table.
+var oauthAsideShapes = []struct {
+	marker       string
+	committed    bool
+	configBacked bool
+}{
+	{oauthConfigCommittedMarker, true, true},
+	{oauthConfigAsideMarker, false, true},
+	{oauthCommittedMarker, true, false},
+	{oauthAsideMarker, false, false},
+}
+
+// oauthAside is what the aside-name grammar yields for one name: the instance a
+// copy was made from, whether the removal that made it had stood, whether the
+// removal was config-backed (oauthConfigAsideMarker), and the all-digits stamp
+// between the marker and the name's end. The zero value is "not a copy".
+type oauthAside struct {
+	inst         string
+	committed    bool
+	configBacked bool
+	stampText    string
+}
+
+// parseOAuthAside reads the aside-name grammar once, so a caller that needs any
+// of the instance, the shape flags or the stamp parses them together. The aside
+// name is the record's whole path - its .json suffix included - plus a stamp, so
+// an instance whose own name holds a marker is not one: `x.removing-1`'s record
+// is `x.removing-1.json`, whose tail after the marker is not a number, and no
+// record a load would read is ever taken for debris.
+func parseOAuthAside(name string) (oauthAside, bool) {
+	for _, m := range oauthAsideShapes {
 		i := strings.LastIndex(name, m.marker)
 		if i < 0 {
 			continue
@@ -1894,27 +1901,25 @@ func oauthAsideInstance(name string) (inst string, committed, configBacked, asid
 		if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
 			continue
 		}
-		return strings.TrimSuffix(record, ".json"), m.committed, m.configBacked, true
+		return oauthAside{strings.TrimSuffix(record, ".json"), m.committed, m.configBacked, stamp}, true
 	}
-	return "", false, false, false
+	return oauthAside{}, false
+}
+
+// oauthAsideInstance returns the instance a copy was made from, whether the
+// removal that made it had stood, whether the removal was config-backed
+// (oauthConfigAsideMarker), and whether name is a copy at all.
+func oauthAsideInstance(name string) (inst string, committed, configBacked, aside bool) {
+	a, ok := parseOAuthAside(name)
+	return a.inst, a.committed, a.configBacked, ok
 }
 
 // oauthAsideStampText returns the stamp an aside name carries. The name has
-// already been accepted by oauthAsideInstance, so one of the markers is present
-// and the tail after it is all digits. The config-backed markers come first
-// because they share the plain ones' prefix.
+// already been accepted by oauthAsideInstance, so parseOAuthAside reports it and
+// the tail after its marker is all digits.
 func oauthAsideStampText(name string) string {
-	for _, marker := range []string{oauthConfigCommittedMarker, oauthConfigAsideMarker, oauthCommittedMarker, oauthAsideMarker} {
-		i := strings.LastIndex(name, marker)
-		if i < 0 {
-			continue
-		}
-		stamp := name[i+len(marker):]
-		if stamp != "" && strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) < 0 {
-			return stamp
-		}
-	}
-	return ""
+	a, _ := parseOAuthAside(name)
+	return a.stampText
 }
 
 // oauthCommittedAsideName returns the name an in-flight copy takes once the
@@ -1925,10 +1930,19 @@ func oauthAsideStampText(name string) string {
 // it carries one of the in-flight markers; the config-backed pair is tried first
 // because it shares the plain marker's prefix.
 func oauthCommittedAsideName(name string) string {
-	for _, p := range [][2]string{
+	return oauthAsideMarkerSwap(name, [][2]string{
 		{oauthConfigAsideMarker, oauthConfigCommittedMarker},
 		{oauthAsideMarker, oauthCommittedMarker},
-	} {
+	})
+}
+
+// oauthAsideMarkerSwap returns name with the first present marker at the head of
+// one pair replaced by that pair's tail. The pairs are tried in order; the
+// config-backed pair comes first in each direction because it shares the plain
+// marker's prefix. oauthCommittedAsideName and oauthInFlightAsideName are the
+// same swap in opposite directions.
+func oauthAsideMarkerSwap(name string, pairs [][2]string) string {
+	for _, p := range pairs {
 		if i := strings.LastIndex(name, p[0]); i >= 0 {
 			return name[:i] + p[1] + name[i+len(p[0]):]
 		}
@@ -1943,15 +1957,10 @@ func oauthCommittedAsideName(name string) string {
 // committed copy (oauthAsideInstance returned it with committed true), so it
 // carries one of the committed markers; the config-backed pair is tried first.
 func oauthInFlightAsideName(name string) string {
-	for _, p := range [][2]string{
+	return oauthAsideMarkerSwap(name, [][2]string{
 		{oauthConfigCommittedMarker, oauthConfigAsideMarker},
 		{oauthCommittedMarker, oauthAsideMarker},
-	} {
-		if i := strings.LastIndex(name, p[0]); i >= 0 {
-			return name[:i] + p[1] + name[i+len(p[0]):]
-		}
-	}
-	return name
+	})
 }
 
 // maxAsideStamp is the largest stamp an aside name can carry. freeAsideName
@@ -1963,114 +1972,144 @@ const maxAsideStamp int64 = 1<<63 - 1
 // renameNoReplace moves src to dst without replacing an existing dst. POSIX
 // rename(2) silently replaces its destination, which for an OAuth copy means
 // losing the bytes that destination held - a stale copy of the same instance's
-// record, or another copy's only surviving credential. link(2) refuses a taken
-// destination, and the unlink that follows leaves the bytes under a single name.
-// A taken destination returns an error satisfying errors.Is(err, os.ErrExist), so
-// the caller can pick a fresh name or report the copy as uncarried.
+// record, or another copy's only surviving credential. It therefore checks the
+// destination first and refuses a taken one with an error satisfying
+// errors.Is(err, os.ErrExist), so the caller can pick a fresh name or report the
+// copy as uncarried, and then performs the move with a SINGLE rename(2). The
+// old link-then-unlink left a window between two syscalls in which a crash
+// stranded the bytes under both names - a partial move whose old- and new-name
+// copies recovery could restore independently. A filesystem that cannot
+// hard-link a file no longer matters: no link is attempted.
 //
-// Filesystems that cannot hard-link a file (exFAT/FAT, some SMB/NFS configs)
-// refuse link(2) with ENOTSUP or EPERM, which would otherwise fail every caller
-// that must move a copy aside or onto its committed name: a removal could not
-// mark its copy committed (Remove rolls the whole removal back), and every
-// rename of an instance with a pending aside would report an un-carriable copy.
-// For exactly those two errors renameNoReplace falls back to rename(2), which
-// replaces a destination that exists - so the fallback checks the destination
-// itself first and refuses a taken one with os.ErrExist, the same refusal link
-// gives, rather than leaning on link(2) reporting EEXIST before it reports an
-// unsupported filesystem (a Linux behavior, not a guarantee the platform makes).
-// Neither file moves on that refusal. The check and the move are safe against a
-// concurrent writer because every caller serializes under the same lock - Edit's
-// and Remove's credMu (see hubAuthController.credMu; the rename carry and the
-// removal both hold it across their moves), or startup before the hub serves
+// The check and the move are safe against a concurrent writer because every
+// caller serializes under the same lock - Edit's and Remove's credMu (see
+// hubAuthController.credMu; the rename carry and the removal both hold it
+// across their moves), or startup before the hub serves
 // (restoreUncommittedOAuthAsides, run while the process holds hub.lock and
 // before the web server is built) - so no other writer can create the
-// destination between the failed link, the check and the rename. Every other
-// link error, EEXIST above all, is returned unchanged.
+// destination between the check and the move.
+//
+// src equal to dst is refused explicitly with os.ErrExist. rename(2) on a path
+// onto itself is a no-op success, but the callers that rely on the refusal read
+// it as "the committed name was taken" - the recovery pass hands a config-backed
+// in-flight copy its committed name, and a copy already filed there is exactly
+// what must not be overwritten or silently collapsed. link(2) refused this same
+// path with EEXIST, so the refusal is kept here rather than lost to rename(2).
 func renameNoReplace(src, dst string) error {
-	err := linkFile(src, dst)
-	if err == nil {
-		return os.Remove(src)
+	if src == dst {
+		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
 	}
-	if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EPERM) {
-		// The destination is checked rather than renamed onto: os.Rename would
-		// silently replace a file already there, and this fallback runs on
-		// exactly the filesystems where link(2) cannot report EEXIST for us.
-		if _, statErr := os.Lstat(dst); statErr == nil {
-			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
-		}
-		return os.Rename(src, dst)
+	if _, statErr := os.Lstat(dst); statErr == nil {
+		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
 	}
-	return err
+	return os.Rename(src, dst)
 }
-
-// linkFile is os.Link behind a seam, so a test can make it fail the way a
-// filesystem without hard links does (ENOTSUP/EPERM) and pin renameNoReplace's
-// fallback for exactly those errors.
-var linkFile = os.Link
 
 // freeAsideName picks a path for an in-flight copy of name's record under the
 // given kind, carrying a stamp no name in dir already holds. want is the stamp
 // preferred (a copy's own, across a rename); the search starts one past the
 // highest stamp already filed for name when that is greater, so a copy set down
-// later orders newest, and it steps upward past any candidate still taken. moved
+// later orders newest, and it steps upward past any candidate still taken. found
 // is false when no candidate is free - the stamp would pass maxAsideStamp - so
 // the caller leaves its source where it is rather than overwriting anything. The
 // candidate keeps the all-digits tail oauthAsideInstance requires, so every name
 // this can return parses as a copy.
 func freeAsideName(dir, name string, configBacked bool, want int64) (string, bool) {
-	marker := oauthAsideMarkerFor(configBacked)
-	stamp := want
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		// The stamps already filed for name are what a candidate must step past,
-		// so without them a caller could land a copy on a stamp an existing one
-		// holds - and recovery orders copies by their stamps. A directory that
-		// cannot be listed is refused rather than guessed at, and the caller
-		// reports the copy as un-carriable. A directory that does not exist is
-		// the empty case: the move that follows reports whatever is really
-		// wrong.
+	path, _, reason, _ := findFreeAsideName(dir, name, configBacked, want)
+	if reason != asideSearchFound {
 		return "", false
 	}
-	if entries != nil {
-		var highest int64
-		var have bool
-		for _, e := range entries {
-			inst, _, _, aside := oauthAsideInstance(e.Name())
-			if e.IsDir() || !aside || inst != name {
-				continue
-			}
-			s, perr := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
-			if perr != nil {
-				continue
-			}
-			if !have || s > highest {
-				highest, have = s, true
-			}
+	return path, true
+}
+
+// asideSearch is why findFreeAsideName and stepFreeAsideName returned no path:
+// the directory could not be listed, the candidate could not be checked, or no
+// stamp at or below maxAsideStamp was free. asideSearchFound is the zero value -
+// a path was found.
+type asideSearch int
+
+const (
+	asideSearchFound asideSearch = iota
+	asideSearchDirUnreadable
+	asideSearchCandidateUnreadable
+	asideSearchExhausted
+)
+
+// highestAsideStamp returns the highest stamp already filed for name in entries,
+// in-flight or committed, and whether any was found. A stamp that cannot be
+// ordered (past an int64) is skipped, exactly as the search below skips it.
+func highestAsideStamp(entries []os.DirEntry, name string) (int64, bool) {
+	var highest int64
+	var have bool
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
-		// One past the highest is all digits for any non-negative stamp; the
-		// comparison also refuses a maxAsideStamp successor, which would wrap to
-		// a negative tail no copy can carry.
-		if have && highest < maxAsideStamp && highest+1 > stamp {
-			stamp = highest + 1
+		a, aside := parseOAuthAside(e.Name())
+		if !aside || a.inst != name {
+			continue
+		}
+		s, perr := strconv.ParseInt(a.stampText, 10, 64)
+		if perr != nil {
+			continue
+		}
+		if !have || s > highest {
+			highest, have = s, true
 		}
 	}
+	return highest, have
+}
+
+// stepFreeAsideName picks the first path for recordPath under the given kind
+// whose stamp is want - bumped one past highest when that is greater - and that
+// nothing holds, stepping upward past any candidate still taken. It is the one
+// collision-safe naming rule freeAsideName and setAsideOAuthFile share. The
+// candidate keeps the all-digits tail oauthAsideInstance requires, so every path
+// this returns parses as a copy. reason is asideSearchFound on success, and
+// otherwise names why the search refused; err carries the filesystem cause where
+// there was one.
+func stepFreeAsideName(recordPath string, configBacked bool, want, highest int64, have bool) (string, int64, asideSearch, error) {
+	stamp := want
+	// One past the highest is all digits for any non-negative stamp; the comparison
+	// also refuses a maxAsideStamp successor, which would wrap to a negative tail no
+	// copy can carry.
+	if have && highest < maxAsideStamp && highest+1 > stamp {
+		stamp = highest + 1
+	}
+	marker := oauthAsideMarkerFor(configBacked)
 	for {
-		candidate := filepath.Join(dir, name+".json"+marker+strconv.FormatInt(stamp, 10))
-		switch _, err := os.Lstat(candidate); {
-		case errors.Is(err, os.ErrNotExist):
-			return candidate, true
-		case err != nil:
-			// The candidate could not be checked, so nothing here can promise
-			// link(2) will not land on something already there.
-			return "", false
+		candidate := recordPath + marker + strconv.FormatInt(stamp, 10)
+		switch _, lerr := os.Lstat(candidate); {
+		case errors.Is(lerr, os.ErrNotExist):
+			return candidate, stamp, asideSearchFound, nil
+		case lerr != nil:
+			// The candidate could not be checked, so nothing here can promise the move
+			// that follows will not land on something already there.
+			return candidate, stamp, asideSearchCandidateUnreadable, lerr
 		}
 		if stamp >= maxAsideStamp {
-			return "", false
+			return "", stamp, asideSearchExhausted, nil
 		}
 		stamp++
 	}
+}
+
+// findFreeAsideName lists dir, seeds the search from the highest stamp already
+// filed for name there, and delegates the collision-safe naming to
+// stepFreeAsideName. A directory that cannot be listed is refused rather than
+// guessed at - the stamps already filed for name are what a candidate must step
+// past, and recovery orders copies by their stamps. A directory that does not
+// exist is the empty case: the move that follows reports whatever is really
+// wrong.
+func findFreeAsideName(dir, name string, configBacked bool, want int64) (string, int64, asideSearch, error) {
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return "", 0, asideSearchDirUnreadable, rerr
+	}
+	highest, have := highestAsideStamp(entries, name)
+	return stepFreeAsideName(filepath.Join(dir, name+".json"), configBacked, want, highest, have)
 }
 
 // remarkUncarriedOAuthAside re-files a copy a rename could not carry so startup
@@ -2375,33 +2414,64 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// The newest in-flight copy of each name that still exists, chosen before
 	// anything moves so the choice does not depend on the order the directory
 	// hands its entries back.
-	newest := make(map[string]string, len(entries))
-	stamps := make(map[string]int64, len(entries))
+	type newestCopy struct {
+		name  string
+		stamp int64
+	}
+	newest := make(map[string]newestCopy, len(entries))
 	var committed []committedCopy
 	// A committed copy is durable evidence that a removal's commit mark
-	// (markOAuthAsidesCommitted) landed. renameNoReplace moves a copy to its
-	// committed name by link-then-unlink, so a crash between those two
-	// operations leaves the SAME bytes under BOTH names - an in-flight copy and
-	// a committed copy of the same instance at the same stamp. A legitimate
-	// state cannot produce that pair: setAsideOAuthFile seeds every new copy's
-	// stamp one past the highest already filed for the name, in-flight and
-	// committed alike, so a later in-flight copy always outranks an earlier
-	// committed one. The pair therefore means the move was interrupted after the
-	// link, and the committed name is the proof the removal's durable work had
-	// landed. The in-flight twin must be treated as committed - never put back,
-	// and swept by exactly the rules that govern a committed copy - or recovery
-	// would restore a credential whose removal had already done its durable
-	// work. This is platform-agnostic and needs no new syscall.
+	// (markOAuthAsidesCommitted) landed. renameNoReplace is a single rename(2)
+	// now, so this pass can no longer create a same-stamp pair - but a release
+	// whose move was link-then-unlink could crash between the two syscalls and
+	// leave the SAME bytes under BOTH names: an in-flight copy and a committed
+	// copy of the same instance at the same stamp. The reader stays in place for
+	// that legacy state. A legitimate state cannot produce the pair:
+	// setAsideOAuthFile seeds every new copy's stamp one past the highest
+	// already filed for the name, in-flight and committed alike, so a later
+	// in-flight copy always outranks an earlier committed one. The pair
+	// therefore means the move was interrupted, and the committed name is the
+	// proof the removal's durable work had landed. The in-flight twin must be
+	// treated as committed - never put back, and swept by exactly the rules that
+	// govern a committed copy - or recovery would restore a credential whose
+	// removal had already done its durable work.
 	paired := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		inst, isCommitted, _, aside := oauthAsideInstance(e.Name())
-		if !aside || !isCommitted {
+		a, aside := parseOAuthAside(e.Name())
+		if !aside || !a.committed {
 			continue
 		}
-		paired[inst+"\x00"+oauthAsideStampText(e.Name())] = true
+		paired[a.inst+"\x00"+a.stampText] = true
+	}
+	// Names a config-backed in-flight copy resolves forward: the config is the
+	// durable evidence the removal reached its providers.toml write, and that fact
+	// is about the INSTANCE, not one copy. Every other copy of the name -
+	// whatever its kind or stamp - is treated exactly as a committed copy is and
+	// never restored, because putting one back would resurrect the instance whose
+	// config-backed removal already deleted its configuration and credential.
+	// Collected BEFORE the classification loop so the answer cannot depend on the
+	// order os.ReadDir hands the copies back: a credential-only copy read first
+	// would otherwise reach the newest map before the config-backed copy proved
+	// the removal stood. A copy whose stamp is paired with a committed copy is
+	// already treated as committed by the pair rule and is not what resolves
+	// forward here.
+	resolvedForward := make(map[string]bool, len(entries))
+	if cfgErr == nil {
+		for _, e := range entries {
+			a, aside := parseOAuthAside(e.Name())
+			if e.IsDir() || !aside || a.committed || !a.configBacked {
+				continue
+			}
+			if paired[a.inst+"\x00"+a.stampText] {
+				continue
+			}
+			if !configCarriesName(layer, a.inst) {
+				resolvedForward[a.inst] = true
+			}
+		}
 	}
 	// Committed names a forward resolution could not promote onto because the
 	// destination was already taken. They are held out of the sweep: the bytes
@@ -2426,30 +2496,31 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	deferredRestores := make(map[string]bool, len(entries))
 	if cfgErr != nil {
 		for _, e := range entries {
-			inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
+			a, aside := parseOAuthAside(e.Name())
 			if e.IsDir() || !aside {
 				continue
 			}
 			switch {
-			case isCommitted:
+			case a.committed:
 				// The sweep would judge this committed copy against the config.
-				deferredNames[inst] = true
-			case paired[inst+"\x00"+oauthAsideStampText(e.Name())]:
+				deferredNames[a.inst] = true
+			case paired[a.inst+"\x00"+a.stampText]:
 				// The in-flight twin is swept by exactly the committed copy's
 				// rules, so the config judges it too.
-				deferredNames[inst] = true
-			case configBacked:
+				deferredNames[a.inst] = true
+			case a.configBacked:
 				// A config-backed in-flight copy cannot be classified without the
 				// config.
-				deferredNames[inst] = true
+				deferredNames[a.inst] = true
 			}
 		}
 	}
 	for _, e := range entries {
-		inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
+		a, aside := parseOAuthAside(e.Name())
 		if e.IsDir() || !aside {
 			continue
 		}
+		inst, isCommitted, configBacked := a.inst, a.committed, a.configBacked
 		if isCommitted {
 			// Only a committed copy whose name providers.toml does NOT carry is
 			// swept below: it belongs to a removal that STOOD, so nothing wants it
@@ -2466,7 +2537,7 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			}
 			continue
 		}
-		if paired[inst+"\x00"+oauthAsideStampText(e.Name())] {
+		if paired[inst+"\x00"+a.stampText] {
 			// The in-flight twin of a committed copy: the committed name proves
 			// the commit mark landed, so this is never restored. It is treated
 			// exactly as the committed copy is - swept with it when the config no
@@ -2508,6 +2579,18 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 				continue
 			}
 		}
+		// The instance resolves forward: a config-backed in-flight copy of it
+		// proved the removal reached its providers.toml write, so this copy -
+		// whatever its kind or stamp - is treated exactly as a committed copy is
+		// and never put back. It is swept when the config does not carry the name
+		// (which is what made the instance resolve forward) and left beside a
+		// carried name otherwise, so nothing is left for a later pass to restore.
+		if resolvedForward[inst] {
+			if !configCarriesName(layer, inst) {
+				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
+			}
+			continue
+		}
 		// Credential-only copies, and config-backed copies the config still
 		// carries, are put back if their record path is free.
 		if deferredNames[inst] {
@@ -2520,15 +2603,14 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			deferredRestores[inst] = true
 			continue
 		}
-		stamp, err := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
+		stamp, err := strconv.ParseInt(a.stampText, 10, 64)
 		if err != nil {
 			// A stamp past an int64 is a name no removal wrote, and one that
 			// cannot be ordered against the copies beside it.
 			continue
 		}
-		if seen, ok := stamps[inst]; !ok || stamp > seen {
-			newest[inst] = e.Name()
-			stamps[inst] = stamp
+		if seen, ok := newest[inst]; !ok || stamp > seen.stamp {
+			newest[inst] = newestCopy{e.Name(), stamp}
 		}
 	}
 	if len(deferredRestores) > 0 {
@@ -2540,7 +2622,7 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		problems = append(problems, fmt.Sprintf("held back the credential-only in-flight copies of %s: the config that would classify a config-dependent copy of the same instance could not be read, so restoring one could stand a stale credential in for the current record", strings.Join(names, ", ")))
 	}
 	restored := false
-	for inst, name := range newest {
+	for inst, entry := range newest {
 		path := authopenai.AuthFilePath(stateDir, inst)
 		// A record filed under its own name again is the one the instance has
 		// now - it was written after the removal that set this copy aside - so
@@ -2548,11 +2630,11 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		if _, err := os.Lstat(path); err == nil {
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
-			problems = append(problems, fmt.Sprintf("check %s before putting %s back (%v)", path, name, err))
+			problems = append(problems, fmt.Sprintf("check %s before putting %s back (%v)", path, entry.name, err))
 			continue
 		}
-		if err := os.Rename(filepath.Join(dir, name), path); err != nil {
-			problems = append(problems, fmt.Sprintf("put %s back as %s (%v)", name, path, err))
+		if err := os.Rename(filepath.Join(dir, entry.name), path); err != nil {
+			problems = append(problems, fmt.Sprintf("put %s back as %s (%v)", entry.name, path, err))
 			continue
 		}
 		restored = true
@@ -2795,18 +2877,31 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 			// which is what keeps their lists from disagreeing with the file -
 			// and the caller from retrying a removal whose entry is already gone.
 			//
-			// An instance with an authored [providers.<name>] entry loses it with
-			// the config write, so nothing re-derives its row: the credentials go
-			// back, under the name the caller re-authors once this removal is
-			// reported as standing. An instance with NO authored entry existed
-			// only through the credential this removal deleted (a `default`
-			// pointer names it but does not make it exist), so restoring that
-			// credential would re-derive the row the caller was just told is gone
-			// - and the refreshed listing would still contain it. Its credential
-			// therefore stays deleted and its aside is reclaimed; the removal
+			// What decides whether the credentials go back is what would
+			// re-derive the instance's row, not whether an authored entry
+			// existed. The removal's config write took any authored
+			// [providers.<name>] entry away, so an instance whose provider the
+			// registry does NOT derive from a credential is left with no row: its
+			// credentials go back, under the name the caller re-authors once this
+			// removal is reported as standing.
+			//
+			// A curated implicit provider is different: computeInstances
+			// (llm/registry/instances.go) adds a row for every curated id whose
+			// Implicit flag is set and whose credential resolves without the
+			// network, with no authored entry needed. Restoring this removal's
+			// credential would therefore re-create the row the caller was just
+			// told is gone - even when the instance also had an authored entry,
+			// which the config write removed. The registry's provider view
+			// answers the question for any provider id, curated or not, so
+			// nothing here hardcodes a provider name. Such an instance's
+			// credential stays deleted and its aside is reclaimed; the removal
 			// stands and the listing agrees with the file.
 			remnant := fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", cause, restoreErr)
-			if _, authored := before.Providers[name]; !authored {
+			derivedFromCredential := false
+			if p, ok := c.reg.Get().Provider(name); ok && registry.BoolValue(p.Implicit) {
+				derivedFromCredential = true
+			}
+			if derivedFromCredential {
 				if rerr := c.reclaimOAuthAsides(name); rerr != nil {
 					remnant = fmt.Errorf("%w; and the credentials this removal deleted could not be kept deleted (%w)", remnant, rerr)
 				}

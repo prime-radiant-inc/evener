@@ -130,23 +130,10 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 
 // isInstanceRemovePersisted reports whether err is the hub's discriminator for a
 // provider-instance removal that stood but left a copy of the OAuth record on
-// disk (appwire.ErrorInstanceRemovePersisted). The wire error's Data is an
-// ErrorData in-process and a decoded map over the socket, so both are accepted -
-// the same shape isQueuedDrainPartial reads. The discriminator is the
+// disk (appwire.ErrorInstanceRemovePersisted). The discriminator is the
 // evenerErrorInfo string, never the code: siblings share the code.
 func isInstanceRemovePersisted(err error) bool {
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		return false
-	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		return data.EvenerErrorInfo == appwire.ErrorInstanceRemovePersisted
-	case map[string]any:
-		return data["evenerErrorInfo"] == string(appwire.ErrorInstanceRemovePersisted)
-	default:
-		return false
-	}
+	return wireErrorHasInfo(err, string(appwire.ErrorInstanceRemovePersisted))
 }
 
 func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMsg) (tea.Model, tea.Cmd) {

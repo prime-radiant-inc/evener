@@ -27,14 +27,13 @@ import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
-  ErrorInstanceRemovePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
   groupByProvider,
   isEndpointConflict,
+  isInstanceRemovePersisted,
   safeCredentialTestResult,
-  WireError,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
@@ -71,16 +70,6 @@ const CLASS = {
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
-
-// isInstanceRemovePersisted reads the hub's own discriminator for a removal that
-// stood in the config but could not finish
-// (appwire.ErrorInstanceRemovePersisted, exported by the AppWire package so every
-// client reads the one value its ErrorData carries, and bound to the Go constant
-// by that package's errors.test.ts). A refusal or any other failure carries no
-// such info, so it stays a plain failure and is never reported as a removal.
-function isInstanceRemovePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
-}
 
 type OpenEditor =
   | { kind: "add" }
