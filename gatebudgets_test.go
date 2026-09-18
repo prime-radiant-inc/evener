@@ -34,8 +34,8 @@ func runSourcedGate(t *testing.T, script string) string {
 	return runSourcedGateEnv(t, script)
 }
 
-// runSourcedGateEnv is runSourcedGate with extra environment entries appended
-// to the minimal one, for the cases that need to point PATH at a fixture.
+// runSourcedGateEnv is runSourcedGate with extra environment entries for the
+// cases that need to point PATH at a fixture.
 func runSourcedGateEnv(t *testing.T, script string, extraEnv ...string) string {
 	t.Helper()
 	for _, path := range []string{gateBudgetsHelper, gateBudgetsLib} {
@@ -44,12 +44,40 @@ func runSourcedGateEnv(t *testing.T, script string, extraEnv ...string) string {
 		}
 	}
 	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}, extraEnv...)
+	cmd.Env = envOverride([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sh -c:\n%s\nexit: %v\noutput:\n%s", script, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// envOverride returns base with each "NAME=value" in overrides replacing the
+// existing entry for NAME and otherwise appended. Appending blindly would leave
+// the child with two PATH entries and hand the winner to Go's duplicate removal;
+// a fixture that means "the child resolves through this PATH" must say so with
+// one entry.
+func envOverride(base []string, overrides ...string) []string {
+	out := append([]string(nil), base...)
+	for _, kv := range overrides {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		prefix := name + "="
+		replaced := false
+		for i, entry := range out {
+			if strings.HasPrefix(entry, prefix) {
+				out[i] = kv
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // stubProbes sources the helper through gate_source_helper, then replaces the
@@ -168,10 +196,14 @@ func TestGateBudgetIgnoresAnAmbientWorkerCommand(t *testing.T) {
 	if err := os.WriteFile(decoy, []byte("#!/bin/sh\nprintf '%s' 99\n"), 0o755); err != nil {
 		t.Fatalf("write decoy: %v", err)
 	}
-	got := runSourcedGateEnv(t, ". "+gateBudgetsLib+
-		`; printf '%s' "$(gate_budget 4 4)"`, "PATH="+dir+":"+os.Getenv("PATH"))
-	if want := "4"; got != want {
-		t.Errorf("gate_budget with a decoy load_aware_workers on PATH = %q, want the fixed default %q", got, want)
+	got := runSourcedGateEnv(t, ". "+gateBudgetsLib+`
+printf 'resolved=%s\nbudget=%s\n' "$(command -v load_aware_workers)" "$(gate_budget 4 4)"`,
+		"PATH="+dir+":"+os.Getenv("PATH"))
+	// The decoy must be resolvable from the child, or the fixture would prove
+	// nothing about ignoring it.
+	want := "resolved=" + decoy + "\nbudget=4"
+	if got != want {
+		t.Errorf("with a decoy load_aware_workers on PATH, child = %q, want %q", got, want)
 	}
 }
 
