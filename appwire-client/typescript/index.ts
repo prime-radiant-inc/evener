@@ -104,6 +104,7 @@ export {
   groupByProvider,
   isEndpointConflict,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   styleInfoText,

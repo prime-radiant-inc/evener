@@ -11852,6 +11852,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
+	// The discriminator the web sheet keys on: the message alone is identical
+	// whether or not the error is wrapped in the evenerErrorInfo payload, so
+	// decode the wire data the client reads and pin it here.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	// The file is the new name either way, which is what the other clients
 	// are now out of date against.
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
@@ -11915,6 +11933,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
 	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
 		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
+	}
+	// Same discriminator as the credential-move sibling, on the reload-failed
+	// half: the rename stood, so the client is told so through the wire data,
+	// not inferred from a message it shares with a plain failure.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
 	}
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
 		t.Fatal("the rename did not reach providers.toml")

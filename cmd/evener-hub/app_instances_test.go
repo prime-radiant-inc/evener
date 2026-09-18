@@ -1846,6 +1846,70 @@ func TestInstances_RemoveClearsACredentialItsRacerWrote(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked is the mirror
+// image of the race the credential lock exists for: the removal classifies the
+// row before it holds credMu, and a credential clear that held the lock first
+// can change what the instance resolves. Here the cleared key is the only thing
+// making the instance the user's - the provider's environment variable is also
+// set - so once the clear lands and the registry reloads, the row is the
+// environment's and a removal must refuse rather than report success and leave
+// it standing. The classification is re-asked under the lock for exactly this
+// interleaving.
+func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"OPENAI_API_KEY": "env-key"})
+	if err := f.store.Set("openai", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if before := entry(t, f.ctl.List(), "openai"); !before.Implicit || before.ActiveSource != "store" {
+		t.Fatalf("fixture: openai = %+v, want the stored key to outrank the variable", before)
+	}
+
+	// The clear is held inside its seam, having already taken credMu
+	// exclusively, so the removal below classifies the row as the user's and
+	// then blocks on the credential lock the clear holds.
+	originalClear := f.ctl.auth.clearCredential
+	clearEntered := make(chan struct{})
+	releaseClear := make(chan struct{})
+	f.ctl.auth.clearCredential = func(name string) error {
+		close(clearEntered)
+		<-releaseClear
+		return originalClear(name)
+	}
+
+	clearDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.ApiKeyClear(appwire.AuthApiKeyClearParams{Provider: "openai"})
+		clearDone <- err
+	}()
+	<-clearEntered
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai"}) }()
+	// Only so the removal has reached the credential lock: what the test
+	// asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	close(releaseClear)
+
+	if err := <-clearDone; err != nil {
+		t.Fatalf("ApiKeyClear: %v", err)
+	}
+	select {
+	case err := <-removeDone:
+		if err == nil || !strings.Contains(err.Error(), "exists from the environment") {
+			t.Fatalf("Remove = %v, want the refusal for the instance the environment supplies once its stored key was cleared", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remove never finished after the credential clear completed")
+	}
+	after := entry(t, f.ctl.List(), "openai")
+	if !after.Implicit || after.ActiveSource != "env:OPENAI_API_KEY" {
+		t.Fatalf("openai = %+v, want the row the environment supplies back", after)
+	}
+}
+
 // A key is only worth storing under a name something reads. The pane offers
 // that write for the rows its listing had, so a name that is neither an
 // instance nor a curated provider is one an instance was removed from since -

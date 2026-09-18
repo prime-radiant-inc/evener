@@ -37,6 +37,7 @@ import {
   fromEnvironment,
   isInstanceRenamePersisted,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
@@ -213,12 +214,14 @@ function renamedInstanceLanded(
 }
 
 /** The note under Name. A rename always leaves the old name behind in launch
- * config and past sessions; on an environment-backed instance it also leaves
- * the instance itself, because the variable that makes it exist is not the
- * row's to move, so the rename authors a second instance beside it. */
+ * config and past sessions; on an instance the environment supplies it also
+ * leaves the instance itself, because the variable that makes it exist is not
+ * the row's to move, so the rename authors a second instance beside it. That
+ * includes a stored key the rename moves away from a set variable it was
+ * shadowing (renameLeavesEnvironmentRow). */
 function renameNote(instance: InstanceEntry): string {
   const keepsOldName = `Launch config and past sessions that reference "${instance.name}" keep the old name.`;
-  return fromEnvironment(instance)
+  return renameLeavesEnvironmentRow(instance)
     ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. ${keepsOldName}`
     : keepsOldName;
 }

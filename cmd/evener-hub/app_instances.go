@@ -1298,6 +1298,21 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
 
+	// The classification above predates the credential lock, and a credential
+	// writer that held that lock first can change what the instance resolves:
+	// clearing a stored key on an instance whose provider has an environment
+	// fallback turns a row the user owns into one the environment supplies. So
+	// the question is re-asked here, under the lock no writer can hold beside
+	// this call - existence first, because a rename landing between the two
+	// would have taken the name away entirely.
+	locked, ok := c.reg.Get().Instance(name)
+	if !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	if environmentBacked(locked) {
+		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(locked))
+	}
+
 	// The confirmation this removal carries names the row the client listed, so
 	// a name another client has re-pointed since (a removal and a recreation
 	// under it, or an edit to its base_url) is refused rather than having its

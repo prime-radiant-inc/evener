@@ -831,6 +831,25 @@ describe("the form", () => {
     expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
   });
 
+  // The same note for a row that only looks like the user's: a stored key
+  // outranks a set variable, but the rename moves the key and the variable it
+  // shadowed supplies the old name again, so the row stays too.
+  test("a stored key shadowing a set variable shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        shadowedEnvVar: "GROQ_API_KEY",
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
   test("a UI-credentialed instance's Name is editable with the ordinary rename note", async () => {
     renderSheet(
       instance({

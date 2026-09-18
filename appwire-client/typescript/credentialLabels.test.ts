@@ -7,6 +7,7 @@ import {
   fromEnvironment,
   groupByProvider,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
@@ -422,6 +423,79 @@ describe("fromEnvironment", () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+// renameLeavesEnvironmentRow drives the rename note: the row stays behind under
+// the old name when the environment, not the credential layers the rename
+// moves, supplies it. That is fromEnvironment's answer for the resolved row,
+// plus the stored key that shadows a set variable - the key moves, and the
+// variable it shadowed supplies the old name again.
+describe("renameLeavesEnvironmentRow", () => {
+  test("true for an instance the environment currently supplies", () => {
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }),
+      ),
+    ).toBe(true);
+  });
+
+  test("true for an implicit instance whose stored key shadows a set variable", () => {
+    // The finding's case: the row resolves `store` now, but once the rename
+    // moves the key the variable it was shadowing supplies the old name.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "groq",
+          providerId: "groq",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+          shadowedEnvVar: "GROQ_API_KEY",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("false for an implicit instance whose stored key shadows nothing - the row goes with the key", () => {
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+      ),
+    ).toBe(false);
+  });
+
+  test("false for an authored instance even when its key shadows a variable", () => {
+    // An authored instance's old name is freed with no curated provider behind
+    // it, so nothing re-derives a row there; the note must stay the ordinary
+    // one. shadowedEnvVar alone is not evidence the old name survives.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "work",
+          providerId: "groq",
+          implicit: false,
+          activeSource: "store",
+          hasStoredFile: true,
+          shadowedEnvVar: "GROQ_API_KEY",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("false for a UI-credentialed row with no environment fallback", () => {
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          implicit: true,
+          activeSource: "oauth",
+          hasStoredOAuth: true,
+        }),
+      ),
+    ).toBe(false);
   });
 });
 

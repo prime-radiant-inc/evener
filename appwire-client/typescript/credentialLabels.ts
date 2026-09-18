@@ -132,6 +132,23 @@ export function fromEnvironment(instance: InstanceEntry): boolean {
   return instance.activeSource.startsWith("env:") || instance.activeSource === "adc";
 }
 
+// renameLeavesEnvironmentRow answers whether a rename of this instance leaves
+// a row behind under the old name, because the environment - not the user's
+// credential layers the rename moves - is what supplies it. fromEnvironment
+// answers it for the row as it resolves now. The other case is a stored key
+// that outranks a set variable (spec §10: api_key > credential_headers >
+// store > env): the key moves with the rename, and the variable the key was
+// shadowing supplies the old name again - shadowedEnvVar names exactly that
+// losing variable (credentialLayers, issue #712). Both cases require the
+// instance to be implicit: an authored instance's old name is freed with no
+// curated provider behind it, so nothing re-derives a row there. Mirrors the
+// hub's own split between a row the user owns and one the environment
+// re-creates (environmentBacked, cmd/evener-hub/app_instances.go).
+export function renameLeavesEnvironmentRow(instance: InstanceEntry): boolean {
+  if (fromEnvironment(instance)) return true;
+  return instance.implicit && instance.shadowedEnvVar !== undefined;
+}
+
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
 // display when credentialLayers(instance) is empty - just activeSourceLabel
 // for the "none" case, which already covers required vs. optional vs.
