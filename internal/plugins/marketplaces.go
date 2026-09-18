@@ -353,12 +353,15 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // ancestor of clone is not deleted by RemoveAll and must not be protected, or
 // its stale clone would survive and hold the name.
 //
+// extra names directory sources not yet in mk — an edit's incoming source —
+// which the sweep would break just the same and must protect.
+//
 // It reports the entry's presence as well as whether a source overlays it, and
 // every inspection failure degrades to protecting the source (a warning, never
 // an error): a path the filesystem will not consider — an over-long legacy name
 // — counts as absent, so the caller must skip the sweep rather than call
 // RemoveAll on a path it would only fail on.
-func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (present, protect bool) {
+func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string, extra ...string) (present, protect bool) {
 	present, err := pathPresentNoFollow(clone)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: checking marketplace clone %s: %v\n", clone, err)
@@ -380,15 +383,24 @@ func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (present, p
 	underClone := func(path string) bool {
 		return pathWithinDir(absClone, path) || pathWithinDir(resolvedClone, path)
 	}
+	sources := make([]string, 0, len(mk)+len(extra))
 	for _, ref := range mk {
 		if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
 			continue
 		}
-		touches, err := sourceTouchesClone(ref.Source.Path, underClone, 0)
+		sources = append(sources, ref.Source.Path)
+	}
+	for _, path := range extra {
+		if path != "" {
+			sources = append(sources, path)
+		}
+	}
+	for _, source := range sources {
+		touches, err := sourceTouchesClone(source, underClone, 0)
 		if err != nil {
 			// A source the walk cannot inspect is one the sweep might still be
 			// the thing that deletes: protect it rather than run the sweep blind.
-			_, _ = fmt.Fprintf(m.stderr(), "warning: checking directory source %s: %v\n", ref.Source.Path, err)
+			_, _ = fmt.Fprintf(m.stderr(), "warning: checking directory source %s: %v\n", source, err)
 			return true, true
 		}
 		if touches {
@@ -431,6 +443,16 @@ func sourceTouchesClone(source string, underClone func(string) bool, depth int) 
 	if depth > maxSymlinkHops {
 		// Deeper than any sane chain: assume the sweep holds a link the source
 		// needs and protect.
+		return true, nil
+	}
+	// filepath.Abs and Clean erase `.` and `..`, yet the OS cannot resolve
+	// `<clone>/../outside` without the clone — the `..` needs the clone to
+	// exist. Walk the path as written first, before it is canonicalized.
+	raw, err := absoluteUncleaned(source)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", source, err)
+	}
+	if rawPrefixTouchesClone(raw, underClone) {
 		return true, nil
 	}
 	abs, err := filepath.Abs(source)
@@ -486,6 +508,43 @@ func sourceTouchesClone(source string, underClone func(string) bool, depth int) 
 		current = filepath.Clean(target)
 	}
 	return false, nil
+}
+
+// absoluteUncleaned makes path absolute without canonicalizing it, so a `.` or
+// `..` component survives for the traversal check.
+func absoluteUncleaned(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd + string(filepath.Separator) + path, nil
+}
+
+// rawPrefixTouchesClone reports whether resolving path as written must pass
+// through the clone. It walks the components in order, applying `.` and `..`
+// literally, and checks each actual location against underClone — so
+// `<clone>/../outside`, whose `..` needs the clone to exist, is caught where
+// canonicalizing first would erase the traversal.
+func rawPrefixTouchesClone(path string, underClone func(string) bool) bool {
+	root := filepath.VolumeName(path) + string(filepath.Separator)
+	current := root
+	for comp := range strings.SplitSeq(strings.TrimPrefix(path, root), string(filepath.Separator)) {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+		default:
+			current = filepath.Join(current, comp)
+			if underClone(current) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
@@ -641,11 +700,11 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 			if ref.Source.Kind != SourceDirectory {
 				clone := m.marketplaceDir(target)
 				// The old clone is redundant only where it is the marketplace's
-				// own. Every other sweep in the store checks whether a
-				// registered directory source names the path first, and this
-				// one must too: a legacy or hand-seeded record can point here,
-				// and the cleanup would delete its live source.
-				present, protect := m.sweepDestroysSource(mk, clone)
+				// own. A registered directory source that names it — a legacy
+				// or hand-seeded record — and the incoming source itself
+				// (a source can be a symlink inside the clone) must both
+				// survive, so the guard sees the incoming path too.
+				present, protect := m.sweepDestroysSource(mk, clone, src.Path)
 				if present && !protect {
 					afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
 				}

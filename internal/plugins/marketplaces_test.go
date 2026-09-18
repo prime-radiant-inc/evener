@@ -1411,6 +1411,65 @@ func TestEditMarketplace_RenameAndResourceToDirectorySparesAnotherMarketplacesSo
 	}
 }
 
+// The incoming directory source can itself sit inside the clone — a symlink
+// there pointing outside the store passes refuseSourceInStore — and the cleanup
+// would delete it. The guard has to see the incoming path, not just the
+// already-registered ones.
+func TestEditMarketplace_ResourceToDirectorySparesTheIncomingSourceBeneathTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := makeDirectoryMarketplace(t, "local", "widget")
+	link := filepath.Join(clone, "source")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceDirectory, Path: link}); err != nil {
+		t.Fatalf("EditMarketplace to a source inside the clone: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the incoming source beneath the clone was swept: %v", err)
+	}
+}
+
+// A source written as `<clone>/../outside` needs the clone to exist — the OS
+// cannot apply `..` to a component that is gone — even though canonicalizing it
+// first makes it look like a plain sibling. The guard must walk it as written.
+func TestRemoveMarketplace_SparesASourceThatTraversesTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	beta := filepath.Join(m.marketplacesDir(), "beta")
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	traversing := clone + string(filepath.Separator) + ".." + string(filepath.Separator) + "beta"
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: traversing}, InstallLocation: traversing},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("the source that traverses the clone did not protect it: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
