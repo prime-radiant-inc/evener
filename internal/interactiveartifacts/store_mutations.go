@@ -30,6 +30,9 @@ func (s *Store) authorize(ctx context.Context, hash [32]byte, method, artifact s
 }
 
 func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw []byte) (MutationReceipt, error) {
+	if len(raw) > MaxRequestBytes {
+		return MutationReceipt{}, &DomainError{Code: TooLarge}
+	}
 	raw = slices.Clone(raw)
 	if s.hooks.beforeAdmission != nil {
 		s.hooks.beforeAdmission()
@@ -63,7 +66,7 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 	if err != nil {
 		return MutationReceipt{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var head ArtifactMetadata
 	if artifact != "" {
 		head, err = artifactMetadata(ctx, tx, scope, artifact)
@@ -90,6 +93,10 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 		} else if head.StateVersion != state {
 			outcome = &DomainError{Code: StateConflict, SourceRevision: head.SourceRevision, StateVersion: head.StateVersion}
 		}
+	}
+	before, err := logicalUsage(ctx, tx)
+	if err != nil {
+		return MutationReceipt{}, err
 	}
 	if outcome == nil {
 		switch request := parsed.(type) {
@@ -120,6 +127,9 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_mutations(realm_id,principal_id,operation,mutation_id,request_fingerprint,namespace_id,artifact_id,outcome_code,result_json) VALUES(?,?,?,?,?,?,?,?,?)`, scope.RealmID, scope.PrincipalID, operation, id, fingerprint, scope.NamespaceID, artifact, code, encoded)
 	if err != nil {
+		return MutationReceipt{}, err
+	}
+	if err := s.checkGrowth(ctx, tx, before); err != nil {
 		return MutationReceipt{}, err
 	}
 	if s.hooks.beforeCommit != nil {

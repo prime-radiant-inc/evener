@@ -39,7 +39,7 @@ func (s *Store) readArtifact(ctx context.Context, hash [32]byte, method string, 
 	if err != nil {
 		return ReadResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	metadata, err := artifactMetadata(ctx, tx, scope, request.ArtifactID)
 	if err != nil {
 		return ReadResult{}, err

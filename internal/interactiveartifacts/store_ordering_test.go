@@ -137,3 +137,30 @@ func TestStoreConcurrentPublicationCheckpointOrderings(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreTombstoneOrdersBeforePendingCreation(t *testing.T) {
+	s, hash, path := setupStore(t, StoreOptions{})
+	ctx := context.Background()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var paused atomic.Bool
+	s.hooks.beforeAdmission = func() {
+		if paused.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}
+	done := make(chan error, 1)
+	go func() { _, err := s.Publish(ctx, hash, createJSON("queued")); done <- err }()
+	awaitSignal(t, entered)
+	requireNoError(t, s.TombstoneNamespace(ctx, "namespace", "realm", "owner"))
+	close(release)
+	requireCode(t, <-done, NotFoundOrForbidden)
+	requireNoError(t, s.Close())
+	s = openTestStore(t, path, StoreOptions{Clock: fixedClock})
+	requireCode(t, s.InstallGrant(ctx, hash, testScope()), NotFoundOrForbidden)
+	var count int
+	requireNoError(t, s.db.QueryRowContext(ctx, "SELECT count(*) FROM artifact_mutations").Scan(&count))
+	if count != 0 {
+		t.Fatal("pending creation crossed namespace tombstone")
+	}
+}

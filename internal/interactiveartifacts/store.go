@@ -17,10 +17,13 @@ import (
 	_ "modernc.org/sqlite" // SQLite is the durable artifact domain store.
 )
 
-// StoreOptions bounds persistent content and reader connections. Clock must be
-// safe for concurrent calls. A zero quota uses 256 MiB of logical row content.
+// storeHooks expose narrow fault boundaries to package process qualification.
+// beforeAdmission runs before mu; commit hooks run while the writer owns mu.
+// They are fixed when opening the store and must not call back into it.
 type storeHooks struct{ beforeAdmission, beforeCommit, afterCommit func() }
 
+// StoreOptions bounds persistent content and reader connections. Clock must be
+// safe for concurrent calls. A zero quota uses 256 MiB of logical row content.
 type StoreOptions struct {
 	hooks             storeHooks
 	Clock             func() time.Time
@@ -134,7 +137,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var version int
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
@@ -205,7 +208,7 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var storedRealm, storedOwner string
 	var deleted bool
 	err = tx.QueryRowContext(ctx, "SELECT realm_id,owner_thread_id,tombstoned FROM artifact_namespaces WHERE namespace_id=?", id).Scan(&storedRealm, &storedOwner, &deleted)

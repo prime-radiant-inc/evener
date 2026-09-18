@@ -23,7 +23,7 @@ func (s *Store) ReportDiagnostic(ctx context.Context, hash [32]byte, raw []byte)
 	if err != nil {
 		return DiagnosticResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := artifactMetadata(ctx, tx, scope, request.ArtifactID); err != nil {
 		return DiagnosticResult{}, err
 	}
@@ -32,6 +32,10 @@ func (s *Store) ReportDiagnostic(ctx context.Context, hash [32]byte, raw []byte)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DiagnosticResult{}, &DomainError{Code: NotFoundOrForbidden}
 	}
+	if err != nil {
+		return DiagnosticResult{}, err
+	}
+	before, err := logicalUsage(ctx, tx)
 	if err != nil {
 		return DiagnosticResult{}, err
 	}
@@ -49,6 +53,9 @@ func (s *Store) ReportDiagnostic(ctx context.Context, hash [32]byte, raw []byte)
 	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_diagnostics WHERE artifact_id=? AND revision=? AND id NOT IN (SELECT id FROM artifact_diagnostics WHERE artifact_id=? AND revision=? ORDER BY id DESC LIMIT 20)", request.ArtifactID, request.SourceRevision, request.ArtifactID, request.SourceRevision); err != nil {
 		return DiagnosticResult{}, err
 	}
+	if err := s.checkGrowth(ctx, tx, before); err != nil {
+		return DiagnosticResult{}, err
+	}
 	if _, err := s.authorize(ctx, hash, "artifact_report_diagnostic", request.ArtifactID); err != nil {
 		return DiagnosticResult{}, err
 	}
@@ -63,7 +70,7 @@ func readDiagnostics(ctx context.Context, tx *sql.Tx, id string, revision Versio
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]Diagnostic, 0)
 	for rows.Next() {
 		var diagnostic Diagnostic

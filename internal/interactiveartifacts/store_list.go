@@ -32,7 +32,7 @@ func (s *Store) List(ctx context.Context, hash [32]byte, raw []byte) (ListResult
 	if err != nil {
 		return ListResult{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := ListResult{Artifacts: make([]ArtifactMetadata, 0)}
 	for rows.Next() {
 		var item ArtifactMetadata

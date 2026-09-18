@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -48,7 +49,7 @@ func TestStoreListIsBoundedAndNamespaceScoped(t *testing.T) {
 	ctx := context.Background()
 	ids := make(map[string]bool)
 	for i := range 23 {
-		created, err := s.Publish(ctx, hash, createJSON(fmt.Sprint(i)))
+		created, err := s.Publish(ctx, hash, createJSON(strconv.Itoa(i)))
 		requireNoError(t, err)
 		ids[created.ArtifactID] = true
 	}
@@ -110,7 +111,7 @@ func TestStoreDiagnosticsBoundHistoryAndRateWithoutMutatingContent(t *testing.T)
 	before := readState(t, s, hash, created.ArtifactID)
 	for i := range 21 {
 		now = now.Add(time.Minute)
-		_, err = s.ReportDiagnostic(ctx, hash, fmt.Appendf(nil, `{"artifactId":%q,"sourceRevision":1,"message":%q}`, created.ArtifactID, fmt.Sprint(i)))
+		_, err = s.ReportDiagnostic(ctx, hash, fmt.Appendf(nil, `{"artifactId":%q,"sourceRevision":1,"message":%q}`, created.ArtifactID, strconv.Itoa(i)))
 		requireNoError(t, err)
 	}
 	got, err := s.Read(ctx, hash, readJSON(created.ArtifactID, "diagnostics"))
