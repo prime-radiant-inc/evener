@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDraftRepository, discardStoredDraft, type DraftPort } from "./draftCheckpointPort";
+import { createDraftRepository, type DraftPort, discardStoredDraft } from "./draftCheckpointPort";
 import { memoryDraftStorage } from "./testing/draftStorage";
 
 interface Checkpoint {
