@@ -259,12 +259,13 @@ load_aware_cgroup_hierarchy_cores() {
 
 	# Hierarchy-absolute: the membership path starts at the hierarchy root, so
 	# the part the mount's root field already covers is not beneath the mount
-	# point and must be stripped before joining.
+	# point and must be stripped before joining. A root of "/" is the hierarchy
+	# root, where the two readings coincide and this one adds nothing.
 	_law_root="$(load_aware_cgroup_mount_root "$_law_mi" "$_law_version")"
 	_law_root=${_law_root%/}
 	_law_absolute=
 	case "$_law_root" in
-	''|/) _law_absolute="$_law_relpath" ;;
+	''|/) ;;
 	*)
 		case "$_law_relpath" in
 		"$_law_root") _law_absolute=/ ;;
@@ -273,7 +274,7 @@ load_aware_cgroup_hierarchy_cores() {
 		;;
 	esac
 	_law_absolute_cores=
-	if [ -n "$_law_absolute" ] && [ "$_law_absolute" != "$_law_relpath" ]; then
+	if [ -n "$_law_absolute" ]; then
 		_law_absolute_cores="$(load_aware_cgroup_walk_cores "$_law_mpoint" "$_law_absolute" "$_law_version")"
 	fi
 
