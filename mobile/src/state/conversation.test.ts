@@ -28,6 +28,7 @@ import type {
   MobileTimelineItem,
 } from "../conversation/project";
 import { projectConversation } from "../conversation/project";
+import * as project from "../conversation/project";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -2695,7 +2696,9 @@ describe("ConversationStore", () => {
       });
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
-        runningTurnThread([askUserItem("ask-1", bigAsk)]),
+        runningTurnThread([askUserItem("ask-1", bigAsk)], {
+          evener: evenerWith({ activeTurnId: "t1", askPending: true }),
+        }),
       );
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -3273,7 +3276,7 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
-    it("projects a completed ask_user as a question row with the pending flag, without a reread", async () => {
+    it("projects a completed ask_user as a question row once the status frame carries the pending flag, without a reread", async () => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
@@ -3290,6 +3293,13 @@ describe("ConversationStore", () => {
             argumentsJson: VALID_ASK_ARGS,
           },
         },
+      } as AnyNotification);
+      // The item alone is not the whole signal (#1731 round 4): the status
+      // frame that lands on the same boundary carries askPending, and that
+      // is what liveAskQuestions gates the question row on.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
       } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
@@ -5657,10 +5667,13 @@ describe("ConversationStore", () => {
 
   // The ask_user lifecycle, projected from the model the frames fold into:
   // the projector has the whole turn, so a settled ask becomes its question
-  // row as it lands, and a later user message settles it — no reread in
-  // either direction.
+  // row once the wire's own askPending says so, and a later user message
+  // settles it — no reread in either direction. #1731 (piece A) round 4 made
+  // ThreadModel.askPending the single source for "is anything pending": the
+  // item scan that finds WHICH questions still needs the wire's flag to say
+  // ANYTHING is pending at all before it looks.
   describe("the question lifecycle through the projection", () => {
-    it("shows a completed parseable ask_user as a question row, with no reread", async () => {
+    it("shows a completed parseable ask_user as a question row once askPending says so, with no reread", async () => {
       const { store, service } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
       const initialReads = service.readProjectionCalls.length;
@@ -5673,7 +5686,16 @@ describe("ConversationStore", () => {
           item: askUserItem("ask-1", VALID_ASK_ARGS),
         },
       } as AnyNotification);
+      // The item alone is not the whole signal: the round that posts an
+      // ask_user call ends its turn on the same boundary a status change
+      // announces (session_lifecycle.go's askedThisRound), so the two frames
+      // land together in production. Folding this one is still no reread.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
+      } as AnyNotification);
       await yieldMicrotask();
+      expect(store.getState().conversation?.askPending).toBe(true);
       const conv = store.getState().conversation;
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeDefined();
@@ -5776,7 +5798,12 @@ describe("ConversationStore", () => {
       expect(rows(store).some((row) => row.kind === "question")).toBe(false);
     });
 
-    it("renders a live ask's question row before any snapshot says so", async () => {
+    // The reverse of the case above: an item completing is not the whole
+    // signal either. Before any status frame carries askPending, the item
+    // scan must not render a question row on its own — the class of bug
+    // #1731 round 4 closed (a client re-deriving "is anything pending" from
+    // transcript shape instead of the wire's own fact).
+    it("renders no question row for a live ask until a status frame carries askPending", async () => {
       const { store } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
       store.getState().applyNotification({
@@ -5788,9 +5815,18 @@ describe("ConversationStore", () => {
           item: askUserItem("ask-live", VALID_ASK_ARGS),
         },
       } as AnyNotification);
-      expect(rowById(store, "ask-live")).toMatchObject({ kind: "question" });
-      // The hub has said nothing yet; its flag is not this client's to write.
+      expect(rowById(store, "ask-live")).toMatchObject({ kind: "activity", family: "tool" });
       expect(store.getState().conversation?.askPending).toBe(false);
+
+      // The status frame that follows (the same boundary that ends the round
+      // which posted the ask, in production) carries the flag — no reread,
+      // and the item the model already holds becomes its question row.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
+      } as AnyNotification);
+      expect(rowById(store, "ask-live")).toMatchObject({ kind: "question" });
+      expect(store.getState().conversation?.askPending).toBe(true);
     });
 
     it("settles the question when the answering user message arrives, with no reread", async () => {
@@ -10234,18 +10270,17 @@ describe("ConversationStore", () => {
   });
 
   // A page load republishes every retained row through the same bound. The row
-  // a reader sees carries its BOUNDED text, so re-bounding it means encoding 64
-  // KiB again per publish unless the cache answers — and the cache is what makes
-  // a page load cost only the page's own rows.
-  // Whether the bound cut a row whose text is made of `filler`: truncateText
-  // measures a text's byte length without allocating, and only the oversized path
-  // encodes — the candidate prefixes it weighs against the marker. So an encode
-  // call carrying that filler is the bound doing the work again.
+  // a reader sees carries its BOUNDED text, so re-bounding it means re-cutting
+  // 64 KiB again per publish unless the cache answers — and the cache is what
+  // makes a page load cost only the page's own rows.
+  // Whether the bound cut a row whose text is made of `filler`: a truncateText
+  // call whose (oversized) argument carries that filler is the bound doing the
+  // work again, not a cache hit.
   function cutsOf(
-    encode: { mock: { calls: readonly unknown[][] } },
+    truncate: { mock: { calls: readonly unknown[][] } },
     filler: string,
   ): number {
-    return encode.mock.calls.filter(
+    return truncate.mock.calls.filter(
       (call) => typeof call[0] === "string" && call[0].length > 1_000 && call[0].startsWith(filler),
     ).length;
   }
@@ -10268,18 +10303,18 @@ describe("ConversationStore", () => {
     if (bounded === undefined) throw new Error("no bounded row");
     expect(bounded.endsWith(TRUNCATION_MARKER)).toBe(true);
 
-    // Cutting a row's text encodes candidates to measure them; a row that comes
-    // out of the cache is not cut at all, so the encoder never sees its text.
-    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    // Cutting a row's text calls truncateText on it; a row that comes out of
+    // the cache is not cut at all, so truncateText never sees its text.
+    const truncate = vi.spyOn(project, "truncateText");
     try {
       await store.getState().loadOlder(service);
       expect(rowById(store, "old")).toBeDefined();
       // The page's own oversized row is the new work.
-      expect(cutsOf(encode, "y")).toBeGreaterThan(0);
+      expect(cutsOf(truncate, "y")).toBeGreaterThan(0);
       // The row already on screen is not: its bounded text comes from the cache.
-      expect(cutsOf(encode, "x")).toBe(0);
+      expect(cutsOf(truncate, "x")).toBe(0);
     } finally {
-      encode.mockRestore();
+      truncate.mockRestore();
     }
   });
 
@@ -10350,10 +10385,10 @@ describe("ConversationStore", () => {
     // limit is measured without allocating and never reaches the encoder.
     const settledText = "z".repeat(MAX_ITEM_BYTES + 100);
 
-    function encodesOfSettledText(encode: {
+    function encodesOfSettledText(truncate: {
       mock: { calls: readonly unknown[][] };
     }): number {
-      return cutsOf(encode, "z");
+      return cutsOf(truncate, "z");
     }
 
     it.each([
@@ -10363,26 +10398,26 @@ describe("ConversationStore", () => {
       const items = [agentMessageItem("a1", settledText, "completed")];
       const { store, service, sink } = await openRunningTurn(items);
 
-      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      const truncate = vi.spyOn(project, "truncateText");
       try {
         // Within the conversation the cache holds: a frame republishes the
-        // rows and the unchanged text is taken from it, not re-encoded.
-        encode.mockClear();
+        // rows and the unchanged text is taken from it, not re-cut.
+        truncate.mockClear();
         store.getState().applyNotification({
           method: "thread/status/changed",
           params: { threadId: "thread-1", ref: "ref-1", status: { type: "running" } },
         } as AnyNotification);
-        expect(encodesOfSettledText(encode)).toBe(0);
+        expect(encodesOfSettledText(truncate)).toBe(0);
 
         drop(store);
 
         // The next conversation binds its own text: nothing was carried over.
-        encode.mockClear();
+        truncate.mockClear();
         service.readProjectionResult = makeReadProjectionResult(runningTurnThread(items));
         await store.getState().openProjected(service, sink, "ref-1");
-        expect(encodesOfSettledText(encode)).toBeGreaterThan(0);
+        expect(encodesOfSettledText(truncate)).toBeGreaterThan(0);
       } finally {
-        encode.mockRestore();
+        truncate.mockRestore();
       }
     });
 
@@ -10395,13 +10430,13 @@ describe("ConversationStore", () => {
       const { store, service, sink } = await openRunningTurn(items);
 
       store.getState().suspendProjected();
-      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      const truncate = vi.spyOn(project, "truncateText");
       try {
         service.readProjectionResult = makeReadProjectionResult(runningTurnThread(items));
         await store.getState().resumeProjected(service, sink, "ref-1");
-        expect(encodesOfSettledText(encode)).toBe(0);
+        expect(encodesOfSettledText(truncate)).toBe(0);
       } finally {
-        encode.mockRestore();
+        truncate.mockRestore();
       }
     });
   });

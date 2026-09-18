@@ -509,14 +509,20 @@ export function createConversationStore() {
   function releaseBoundedTextCache(): void {
     boundedText = new Map();
   }
-  // Whether a folded model can change a row. projectConversation reads exactly
-  // one of the model's own fields: `turns` — every turn, item, status and error
-  // a row is made of hangs off it, and the answerable asks are derived from it
-  // too (deriveAskQuestions.ts reads turns alone). Every other field a frame
-  // moves (the status, the name, the queue, the jobs tree, the goal, the wire's
-  // askPending, and lastFrameAt, which moves on EVERY frame) changes no row.
+  // Whether a folded model can change a row. projectConversation reads two of
+  // the model's own fields: `turns` — every turn, item, status and error a row
+  // is made of hangs off it — and `askPending`, the wire fact liveAskQuestions
+  // (deriveAskQuestions.ts) gates its whole item scan on since #1731 (piece A)
+  // round 4: a status frame that flips askPending with no item of its own can
+  // turn an already-projected tool row into a question row, or take one away,
+  // with turns untouched by reference. Every OTHER field a frame moves (the
+  // status word itself, the name, the queue, the jobs tree, the goal, and
+  // lastFrameAt, which moves on EVERY frame) changes no row.
   function changesRows(previous: MobileConversation, applied: ThreadModel): boolean {
-    return applied.turns !== previous.turns;
+    return (
+      applied.turns !== previous.turns ||
+      applied.askPending !== previous.askPending
+    );
   }
 
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
