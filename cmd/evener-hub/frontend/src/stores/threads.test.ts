@@ -9515,7 +9515,6 @@ test("a stale client's ready callback cannot begin a generation for a replaced c
   const stale = new FakeClient("connecting");
   const current = new FakeClient("ready");
   current.on("thread/read", () => readResponse("ref_test"));
-  current.on("thread/resume", () => ({}));
   const staleReady = vi.spyOn(stale, "onReady");
   connectionStore.getState().connect(stale);
   connectionStore.setState({
@@ -9531,24 +9530,24 @@ test("a stale client's ready callback cannot begin a generation for a replaced c
     features: { ...(await current.connect()).features },
   });
   // Seed the current store with a tracked ref so handleReady would refresh it
-  // if the stale callback somehow did trigger. Ensure refs are tracked so
-  // handleReady will subscribe to them on the client it's given.
+  // if the stale callback somehow did trigger.
   await threadsStore.getState().ensureThread("ref_test");
-  // Verify there's at least one tracked ref.
+  // Verify there's at least one tracked ref: if the stale callback ran its body,
+  // it would clear this set to empty via setState({ mutationAuthorityRefs: new Set() }).
   expect(threadsStore.getState().threads.has("ref_test")).toBe(true);
-  const trackedRefsBeforeStale = new Set(threadsStore.getState().threads.keys());
+  expect(threadsStore.getState().mutationAuthorityRefs.size).toBeGreaterThan(0);
+  const authorityRefsSizeBeforeStale = threadsStore.getState().mutationAuthorityRefs.size;
 
   // The race this fixes: `stale`'s own dispatch can snapshot its ready
   // handlers before rewireClient's unsubscribe removes this one, so it
   // still runs - after `current` is already the wired client. Without the
   // guard, the stale callback would run its body: readyEpoch += 1,
   // setState({ mutationAuthorityRefs: new Set() }), then call
-  // handleReady(stale, epoch), which subscribes to tracked refs on the stale client.
+  // handleReady(stale, epoch).
   staleReadyCallback?.(await stale.connect());
 
-  // The stale callback must not have run its body. If it had, it would have
-  // cleared mutationAuthorityRefs via setState({ mutationAuthorityRefs: new Set() })
+  // The stale callback must not have run its body. If it had, mutationAuthorityRefs
+  // would have been cleared to empty via setState({ mutationAuthorityRefs: new Set() })
   // in its first statement after incrementing readyEpoch.
-  const authorityRefsClearedToEmpty = threadsStore.getState().mutationAuthorityRefs.size === 0;
-  expect(authorityRefsClearedToEmpty).toBe(false);
+  expect(threadsStore.getState().mutationAuthorityRefs.size).toBe(authorityRefsSizeBeforeStale);
 });

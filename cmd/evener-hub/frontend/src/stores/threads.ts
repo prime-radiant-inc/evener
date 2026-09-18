@@ -40,10 +40,10 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { connectionStore } from "./connection";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
+import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationIntent,
@@ -2239,19 +2239,23 @@ function rewireClient(client: AppwireClientLike): void {
   wiredClient = client;
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
-    readyGenerationCallback(client, () => wiredClient, () => {
-      readyEpoch += 1;
-      threadsStore.setState({ mutationAuthorityRefs: new Set() });
-      // onReady is the SAME client reconnecting: its old connection's
-      // subscriptions are server-side gone too, even though the client object
-      // survives. handleReady re-subscribes the still-tracked refs.
-      wireSubscribedRefs.clear();
-      retireAllOwnedHydrations();
-      dispatchReadyClient = null;
-      dispatchReadyEpoch = -1;
-      dispatchableMutationRefs.clear();
-      void handleReady(client, readyEpoch);
-    }),
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        readyEpoch += 1;
+        threadsStore.setState({ mutationAuthorityRefs: new Set() });
+        // onReady is the SAME client reconnecting: its old connection's
+        // subscriptions are server-side gone too, even though the client object
+        // survives. handleReady re-subscribes the still-tracked refs.
+        wireSubscribedRefs.clear();
+        retireAllOwnedHydrations();
+        dispatchReadyClient = null;
+        dispatchReadyEpoch = -1;
+        dispatchableMutationRefs.clear();
+        void handleReady(client, readyEpoch);
+      },
+    ),
   );
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
