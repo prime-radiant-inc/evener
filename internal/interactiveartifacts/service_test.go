@@ -106,7 +106,7 @@ func TestServiceHTTPBoundary(t *testing.T) {
 		{name: "oversize", headers: http.Header{"Authorization": {"Bearer " + token}}, body: strings.Repeat(" ", (2<<20)+1), want: 413},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(context.Background(), "POST", s.ready.Endpoint, bytes.NewBufferString(test.body))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.ready.Endpoint, bytes.NewBufferString(test.body))
 			requireNoError(t, err)
 			req.Header = test.headers
 			if test.host != "" {

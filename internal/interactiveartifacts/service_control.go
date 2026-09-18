@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	controlMetrics   = "artifact/metrics"
 	controlBootstrap = "artifact/bootstrap"
 	controlNamespace = "artifact/namespace"
 	controlGrant     = "artifact/grant"
@@ -85,7 +86,7 @@ func serveControl(stream io.ReadWriteCloser, options StoreOptions) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transport := appwire.NewStreamTransport(stream)
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 	// Bootstrap has a connection-wide deadline: a child whose parent never
 	// configures it must not remain an orphaned process.
 	bootCtx, bootCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -147,8 +148,7 @@ func serveControl(stream io.ReadWriteCloser, options StoreOptions) error {
 func sendControl(ctx context.Context, transport appwire.Transport, id appwire.ID, value any, err error) error {
 	result := controlResult{}
 	if err != nil {
-		var domain *DomainError
-		if errors.As(err, &domain) {
+		if domain, ok := errors.AsType[*DomainError](err); ok {
 			result.Error = domain
 		} else {
 			result.Unavailable = true
@@ -163,6 +163,7 @@ func sendControl(ctx context.Context, transport appwire.Transport, id appwire.ID
 }
 func (s *service) controlRouter() *appserver.Router {
 	r := appserver.NewRouter()
+	appserver.HandleTyped(r, controlMetrics, func(context.Context, appwire.EmptyParams) (AdmissionStats, error) { return s.admission.stats(), nil })
 	appserver.HandleTyped(r, controlNamespace, func(ctx context.Context, p NamespacePolicy) (appwire.EmptyResponse, error) {
 		var err error
 		if p.Tombstone {

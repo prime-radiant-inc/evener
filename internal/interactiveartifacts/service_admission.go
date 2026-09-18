@@ -11,7 +11,22 @@ type admissionWaiter struct {
 	ready    chan struct{}
 	admitted bool
 }
+
+// AdmissionStats exposes bounded workload counts without principal identities.
+type AdmissionStats struct {
+	Active     int    `json:"active"`
+	Queued     int    `json:"queued"`
+	PeakActive int    `json:"peakActive"`
+	PeakQueued int    `json:"peakQueued"`
+	Completed  uint64 `json:"completed"`
+}
+
 type admission struct {
+	// onChange is a synchronous observation/fault boundary installed before use.
+	// It must not call back into admission or retain caller authority.
+	onChange  func(AdmissionStats)
+	completed uint64
+
 	mu                    sync.Mutex
 	active                int
 	principals            map[principalKey]int
@@ -37,6 +52,7 @@ func (a *admission) acquire(ctx context.Context, key principalKey) (func(), erro
 		}
 		a.queue = append(a.queue, w)
 		a.peakQueue = max(a.peakQueue, len(a.queue))
+		a.observe()
 	}
 	a.mu.Unlock()
 	select {
@@ -51,6 +67,7 @@ func (a *admission) acquire(ctx context.Context, key principalKey) (func(), erro
 			for i, candidate := range a.queue {
 				if candidate == w {
 					a.queue = append(a.queue[:i], a.queue[i+1:]...)
+					a.observe()
 					break
 				}
 			}
@@ -68,13 +85,16 @@ func (a *admission) admit(w *admissionWaiter) {
 	a.peakActive = max(a.peakActive, a.active)
 	w.admitted = true
 	close(w.ready)
+	a.observe()
 }
 func (a *admission) releaseLocked(key principalKey) {
 	a.active--
+	a.completed++
 	a.principals[key]--
 	if a.principals[key] == 0 {
 		delete(a.principals, key)
 	}
+	a.observe()
 	if a.closed {
 		return
 	}
@@ -101,4 +121,14 @@ func (a *admission) close() {
 		close(w.ready)
 	}
 	a.queue = nil
+}
+
+func (a *admission) statsLocked() AdmissionStats {
+	return AdmissionStats{Active: a.active, Queued: len(a.queue), PeakActive: a.peakActive, PeakQueued: a.peakQueue, Completed: a.completed}
+}
+func (a *admission) stats() AdmissionStats { a.mu.Lock(); defer a.mu.Unlock(); return a.statsLocked() }
+func (a *admission) observe() {
+	if a.onChange != nil {
+		a.onChange(a.statsLocked())
+	}
 }

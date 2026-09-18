@@ -18,11 +18,12 @@ import (
 // is awaited on every run before any grant. A nil policy fails acquisitions
 // closed; the Hub's durable association/deletion owner must supply it.
 type SupervisorOptions struct {
-	Policy  func(context.Context) ([]NamespacePolicy, error)
-	Now     func() time.Time
-	Wait    func(context.Context, time.Duration) error
-	Jitter  func() float64
-	command []string
+	Policy     func(context.Context) ([]NamespacePolicy, error)
+	Now        func() time.Time
+	Wait       func(context.Context, time.Duration) error
+	Jitter     func() float64
+	command    []string
+	extraFiles []*os.File
 }
 
 // ServiceStatus intentionally contains no endpoint credential or artifact data.
@@ -146,7 +147,8 @@ func (s *Supervisor) run() {
 				kept = append(kept, at)
 			}
 		}
-		s.failures = append(kept, now)
+		s.failures = kept
+		s.failures = append(s.failures, now)
 		s.status.Failures = len(s.failures)
 		s.status.State = "backoff"
 		s.status.CircuitOpen = len(s.failures) >= 5
@@ -190,18 +192,18 @@ func (s *Supervisor) start() (_ *ownedService, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
-	defer childRead.Close()
+	defer func() { _ = childRead.Close() }()
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		_ = parentWrite.Close()
 		return nil, err
 	}
-	defer childWrite.Close()
+	defer func() { _ = childWrite.Close() }()
 	life, cancel := context.WithCancel(s.ctx)
 	stream := &pipeStream{reader: parentRead, writer: parentWrite}
 	transport := &lifetimeTransport{Transport: appwire.NewStreamTransport(stream), ctx: life}
-	child := &ownedService{cmd: exec.Command(command[0], command[1:]...), client: appwire.NewClient(transport), done: make(chan struct{}), cancel: cancel}
-	child.cmd.ExtraFiles = []*os.File{childRead, childWrite}
+	child := &ownedService{cmd: exec.CommandContext(context.Background(), command[0], command[1:]...), client: appwire.NewClient(transport), done: make(chan struct{}), cancel: cancel}
+	child.cmd.ExtraFiles = append([]*os.File{childRead, childWrite}, s.options.extraFiles...)
 	if err := child.cmd.Start(); err != nil {
 		cancel()
 		_ = stream.Close()
@@ -353,4 +355,11 @@ func (s *Supervisor) Close() error {
 	s.status.State = "closed"
 	s.mu.Unlock()
 	return nil
+}
+
+// Metrics returns the live owned child's admission counters over private IPC.
+func (s *Supervisor) Metrics(ctx context.Context) (AdmissionStats, error) {
+	var stats AdmissionStats
+	err := s.request(ctx, controlMetrics, struct{}{}, &stats)
+	return stats, err
 }

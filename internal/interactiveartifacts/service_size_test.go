@@ -27,8 +27,8 @@ func TestLargeSavedResultAndWholeEntryPagination(t *testing.T) {
 		t.Fatal("fixture did not exceed request limit")
 	}
 	requireNoError(t, ValidateResult("artifact_read", encoded))
-	for i := 0; i < 4; i++ {
-		_, err = s.Publish(ctx, hash, []byte(fmt.Sprintf(`{"mutationId":"list-%d","title":"%s","summary":"s","html":"ok"}`, i, title)), PublicationOrigin{})
+	for i := range 4 {
+		_, err = s.Publish(ctx, hash, []byte(fmt.Sprintf(`{"mutationId":"list-%d","title":%q,"summary":"s","html":"ok"}`, i, title)), PublicationOrigin{})
 		requireNoError(t, err)
 	}
 	cursor := ""

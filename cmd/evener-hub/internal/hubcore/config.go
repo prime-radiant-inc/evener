@@ -3,8 +3,9 @@ package hubcore
 import (
 	"context"
 	"os"
-	"primeradiant.com/evener/internal/interactiveartifacts"
 	"time"
+
+	"primeradiant.com/evener/internal/interactiveartifacts"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"

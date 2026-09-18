@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -63,7 +64,7 @@ func startService(root string, options StoreOptions) (_ *service, resultErr erro
 			_ = store.Close()
 		}
 	}()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
@@ -139,15 +140,25 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Read the bounded body before queuing. net/http cannot observe a
+		// peer's disconnect behind an unread request body; queued cancellation
+		// therefore requires completing this read first. The ingress gate
+		// includes these readers in its fixed 160-request bound.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
+		if err != nil {
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		release, err := s.admission.acquire(r.Context(), principalKey{scope.RealmID, scope.PrincipalID})
 		if err != nil {
 			writeBusy(w)
 			return
 		}
 		defer release()
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
-		if err != nil {
-			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+		// Grants may expire or be revoked while waiting. Metadata/resource
+		// requests need the same current-authority check as domain operations.
+		if _, err := s.authenticate(r.Context(), hash); err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -159,9 +170,7 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 			http.Error(w, "artifact response unavailable; reconcile mutations by receipt", http.StatusServiceUnavailable)
 			return
 		}
-		for key, values := range bounded.header {
-			w.Header()[key] = values
-		}
+		maps.Copy(w.Header(), bounded.header)
 		status := bounded.status
 		if status == 0 {
 			status = http.StatusOK
