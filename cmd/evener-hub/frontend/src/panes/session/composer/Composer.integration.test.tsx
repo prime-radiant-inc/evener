@@ -27,6 +27,7 @@ import {
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { replaceEditorText, selectEditorText } from "../testing/editor";
+import { ackAskUserCall } from "./askDock/askDock.testFixture";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { readComposerDraft, readDraft } from "./draft";
@@ -897,62 +898,11 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
 
 // --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
 
-function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
-
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   act(() => {
     fake.emitNotification({
       method: "turn/started",
       params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-    });
-  });
-}
-
-function ackAskUserCall(
-  fake: FakeClient,
-  ref: string,
-  turnId: string,
-  itemId: string,
-  callId: string,
-  questions: Array<Record<string, unknown>> = ONE_QUESTION,
-): void {
-  const base = {
-    threadId: `thr_${ref}`,
-    ref,
-    turnId,
-    item: {
-      type: "commandExecution",
-      id: itemId,
-      turnId,
-      toolName: "ask_user",
-      callId,
-      argumentsJson: askArgs(questions),
-    },
-  };
-  act(() => {
-    fake.emitNotification({
-      method: "item/started",
-      params: { ...base, item: { ...base.item, status: "inProgress" } },
-    });
-  });
-  act(() => {
-    fake.emitNotification({
-      method: "item/completed",
-      params: { ...base, item: { ...base.item, status: "completed" } },
-    });
-  });
-  act(() => {
-    // The hub stamps askPending onto the thread/status/changed frame that
-    // goes with the turn ending on this ask_user call
-    // (server/appwire_runtime.go's stampAskPendingOnStatusChange); askPending
-    // is the wire's own source for a pending ask (deriveAskQuestions.ts).
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
     });
   });
 }
@@ -1636,7 +1586,7 @@ test("a pending ask hides and inerts the composer's input row, and the dock is n
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
 
   // Excluded from the accessibility tree by the `hidden` attribute (RTL's
   // byRole queries respect it, matching real assistive-tech behavior) -
@@ -1669,7 +1619,7 @@ test("the composer un-hides once the pending ask resolves through the normal sen
     };
   });
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The dock itself is the transcript's trailing row now, so this test
   // resolves the batch through the same store seam its Send button calls
   // (askDockStore.sendBatch, the real durable send path) rather than a UI
@@ -1714,7 +1664,7 @@ test("resolving the pending ask announces the composer's restoration via this co
   expect(screen.queryByText("Message composer ready.")).toBeNull();
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length ?? 0).toBe(1));
   expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
 
@@ -1743,7 +1693,7 @@ test("the queue strip stays rendered while an ask is pending, with the dock no l
   });
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The queue strip is not part of the ask-pending hide: queued messages
   // stay visible (and manageable) while the input row is replaced.
   const queueHeading = await screen.findByText(/queued messages/i);

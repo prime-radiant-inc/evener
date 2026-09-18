@@ -18,6 +18,7 @@ import {
 } from "../../../../stores/threads";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
+import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDock.testFixture";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 afterEach(() => {
@@ -94,55 +95,10 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
   });
 }
 
-function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
-
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
     params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-  });
-}
-
-function ackAskUserCall(
-  fake: FakeClient,
-  ref: string,
-  turnId: string,
-  itemId: string,
-  callId: string,
-  questions: Array<Record<string, unknown>> = ONE_QUESTION,
-): void {
-  const base = {
-    threadId: `thr_${ref}`,
-    ref,
-    turnId,
-    item: {
-      type: "commandExecution",
-      id: itemId,
-      turnId,
-      toolName: "ask_user",
-      callId,
-      argumentsJson: askArgs(questions),
-    },
-  };
-  fake.emitNotification({
-    method: "item/started",
-    params: { ...base, item: { ...base.item, status: "inProgress" } },
-  });
-  fake.emitNotification({
-    method: "item/completed",
-    params: { ...base, item: { ...base.item, status: "completed" } },
-  });
-  // The hub stamps askPending onto the thread/status/changed frame that goes
-  // with the turn ending on this ask_user call (server/appwire_runtime.go's
-  // stampAskPendingOnStatusChange) - the wire is the only source for the
-  // flag, so a fixture that never sends this frame can never show the dock.
-  fake.emitNotification({
-    method: "thread/status/changed",
-    params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
   });
 }
 
