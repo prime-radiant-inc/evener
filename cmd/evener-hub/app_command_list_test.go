@@ -265,7 +265,7 @@ func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
 	names := []string{"alpha", "bravo", "charlie", "delta", "echo"}
 	const perName = 4
 	var commands []appwire.CommandDescriptor
-	for round := 0; round < perName; round++ {
+	for round := range perName {
 		for _, name := range names {
 			commands = append(commands, appwire.CommandDescriptor{
 				Name:        name,
@@ -280,7 +280,7 @@ func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
 	// round order they were discovered in, so the whole result is determined.
 	var want []string
 	for _, name := range names {
-		for round := 0; round < perName; round++ {
+		for round := range perName {
 			want = append(want, fmt.Sprintf("%s-%02d", name, round))
 		}
 	}
