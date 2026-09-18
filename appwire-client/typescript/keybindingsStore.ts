@@ -27,6 +27,7 @@
 // reply leaves it `writeUncertain` until an authoritative read). Which one a
 // host uses is the host's product decision; the hub state they confirm is one.
 
+import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
 import { createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
@@ -1291,30 +1292,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return { revision: state.revision, rules: state.rawOverrides };
   }
 
-  /** discardDraft's own gate, narrower than assertEditable: discarding needs
-   * no confirmed hub state to compose against, so hubSupport/loaded/
-   * loadError never block it. An unreadable record is the one storage
-   * failure discarding can FIX, so it is not a reason to refuse either -
-   * throwing the record away is exactly what the user is asking for. */
+  /** discardDraft's own gate - see assertDraftDiscardable. */
   function assertDiscardable(): void {
-    const state = getState();
-    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
-      throw new Error(UNAVAILABLE_MESSAGE);
+    assertDraftDiscardable(fence, getState, UNAVAILABLE_MESSAGE);
   }
 
+  /** Persists a freshly composed checkpoint - see persistCheckpointedDraft. */
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
-    try {
-      const checkpoint = { ...input, id: drafts.createId() };
-      // save()'s own refusal (another writer replaced the classified record
-      // since - see createDraftRepository) is treated the same as a storage
-      // exception: either way, this checkpoint was not durably recorded as
-      // the caller (editDraft, saveDraft, rebaseDraft) intended.
-      if (!drafts.save(checkpoint)) throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
-      return checkpoint;
-    } catch {
-      setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });
-      throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
-    }
+    return persistCheckpointedDraft(drafts, input, setState, DRAFT_SAVE_FAILED_MESSAGE);
   }
 
   function editDraft(rules: readonly KeybindingsRule[]): void {
@@ -1531,28 +1516,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function discardDraft(): void {
     assertDiscardable();
-    let removed: boolean;
-    try {
-      removed = drafts.discardClassified();
-    } catch {
-      setState({ storageUnavailable: true });
-      throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
-    }
-    if (!removed) {
-      // The record this store classified is gone, replaced by something
-      // else (another writer, another window): re-read what is actually
-      // there now rather than assume success, so a newer checkpoint surfaces
-      // instead of staying reported as discarded.
-      setState(restoreDraft(getState()));
-      return;
-    }
-    setState({
-      draft: null,
-      draftConflict: false,
-      draftError: null,
-      storageUnavailable: false,
-      draftUnreadable: false,
-    });
+    discardCheckpointedDraft(drafts, getState, setState, restoreDraft, DRAFT_DISCARD_FAILED_MESSAGE);
   }
 
   function rebaseDraft(reviewedRevision: number): void {

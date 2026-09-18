@@ -793,6 +793,22 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
   });
 
+  test("editDraft's persistDraft failure marks draftError, not just storageUnavailable", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.failSave();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+
+    // storageUnavailable alone is invisible to a host that renders draftError
+    // as its banner text (nativePreferences.ts's keybindingsDomain falls back
+    // to a hub-sourced message that says nothing about a local disk error).
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: true,
+      draftError: "Could not save the shortcut draft locally.",
+    });
+  });
+
   test("discardStoredKeybindingDraft removes an unreadable record with no store at all", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();
