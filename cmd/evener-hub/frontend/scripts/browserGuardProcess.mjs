@@ -395,6 +395,12 @@ function signalProcessGroup(processGroupId, signal) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    // EPERM means the group still exists but we are not allowed to signal a
+    // member (a survivor re-parented out from under us, as macOS does). The
+    // liveness probe reads that same errno as "still running", so mirror it
+    // here: report the signal as delivered-but-unconfirmed instead of throwing
+    // out of teardown and failing a guard whose checks all passed (#1429).
+    if (error?.code === "EPERM") return true;
     throw error;
   }
 }
@@ -425,6 +431,10 @@ function signalProfileProcess(processIdentity, signal) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    // Same as signalProcessGroup: a refused signal must not fail the teardown.
+    // The ps-based isProfileRunning probe decides when the helper is really gone
+    // (see killProfileProcess / waitForProfileProcessExit).
+    if (error?.code === "EPERM") return true;
     throw error;
   }
 }
