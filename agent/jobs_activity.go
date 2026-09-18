@@ -80,11 +80,24 @@ const (
 	// a small fraction of the envelope.
 	activityMaxLabelRunes         = 200
 	activityMaxDelegateProseRunes = 4096
+	// activityMaxDelegatePayloadBytes, activityMaxDelegateWarnings and
+	// activityMaxDelegateWarningRunes bound the remaining free-form delegate
+	// fields the projection copies verbatim: the raw terminal-packet payloads
+	// (Message, StructuredResult) and the warnings list. They sit on each
+	// delegate in a continuation page's ancestor chain, which the size trim
+	// cannot drop, so an oversized one is a fixed part of the envelope. An
+	// oversized payload is omitted rather than sliced — slicing would leave
+	// invalid JSON on the wire — and remains available from the delegate's own
+	// transcript.
+	activityMaxDelegatePayloadBytes = 16 << 10
+	activityMaxDelegateWarnings     = 8
+	activityMaxDelegateWarningRunes = 512
 )
 
 // truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
 // truncates so a reader can tell a capped value from a genuinely short one.
-// Rune-safe: never splits a multi-byte character.
+// Rune-safe: never splits a multi-byte character. maxRunes must be positive;
+// every caller passes a package constant.
 func truncateActivityText(s string, maxRunes int) string {
 	// Runes never outnumber bytes, so a string this short cannot need cutting
 	// and does not have to be converted to check.
@@ -92,7 +105,43 @@ func truncateActivityText(s string, maxRunes int) string {
 		return s
 	}
 	runes := []rune(s)
+	// The byte length can exceed maxRunes while the rune count does not (one
+	// multi-byte rune is several bytes), so the byte fast path above is not
+	// enough: without this, runes[:maxRunes-1] would slice past len(runes).
+	if len(runes) <= maxRunes {
+		return s
+	}
 	return string(runes[:maxRunes-1]) + "…"
+}
+
+// boundActivityDelegatePayload clones a terminal-packet payload, or drops it
+// when it alone would dominate the envelope. Dropping beats slicing: the field
+// is json.RawMessage, so a cut would leave invalid JSON on the wire. The full
+// payload stays available from the delegate's own transcript.
+func boundActivityDelegatePayload(payload json.RawMessage) json.RawMessage {
+	if len(payload) > activityMaxDelegatePayloadBytes {
+		return nil
+	}
+	return append(json.RawMessage(nil), payload...)
+}
+
+// capActivityDelegateWarnings bounds both the number of warnings and the length
+// of each so the list cannot dominate the envelope on an ancestor chain the
+// page cannot trim. An over-long list ends with a counted note in place of the
+// warnings it dropped.
+func capActivityDelegateWarnings(warnings []string) []string {
+	if len(warnings) == 0 {
+		return nil
+	}
+	kept := min(len(warnings), activityMaxDelegateWarnings)
+	capped := make([]string, 0, kept+1)
+	for _, warning := range warnings[:kept] {
+		capped = append(capped, truncateActivityText(warning, activityMaxDelegateWarningRunes))
+	}
+	if len(warnings) > kept {
+		capped = append(capped, fmt.Sprintf("%d more warnings omitted", len(warnings)-kept))
+	}
+	return capped
 }
 
 // activityContinuation is a real, checked cursor position: resuming from
@@ -1132,7 +1181,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		Status:              string(row.lifecycle),
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
-		NotResumableReason:  row.notResumableReason,
+		NotResumableReason:  truncateActivityText(row.notResumableReason, activityMaxDelegateProseRunes),
 		Mandate:             truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
 		Task:                truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
 		Description:         truncateActivityText(descriptor.Description, activityMaxDelegateProseRunes),
@@ -1170,10 +1219,15 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	if packet := row.latestPacket; packet != nil {
 		delegate.PacketKind = string(packet.Kind)
-		delegate.Message = append(json.RawMessage(nil), packet.Message...)
-		delegate.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
-		delegate.StructuredReason = packet.StructuredResultReason
-		delegate.Warnings = append([]string(nil), packet.Warnings...)
+		delegate.Message = boundActivityDelegatePayload(packet.Message)
+		delegate.StructuredResult = boundActivityDelegatePayload(packet.StructuredResult)
+		delegate.StructuredReason = truncateActivityText(packet.StructuredResultReason, activityMaxDelegateProseRunes)
+		delegate.Warnings = capActivityDelegateWarnings(packet.Warnings)
+		messageDropped := len(packet.Message) > activityMaxDelegatePayloadBytes
+		resultDropped := len(packet.StructuredResult) > activityMaxDelegatePayloadBytes
+		if messageDropped || resultDropped {
+			delegate.Diagnostics = append(delegate.Diagnostics, "terminal packet payload omitted: too large for the activity envelope")
+		}
 		if packet.StructuredResultValid != nil {
 			valid := *packet.StructuredResultValid
 			delegate.StructuredValid = &valid
@@ -1405,10 +1459,19 @@ func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
 	case 0:
 		return ""
 	case 1:
-		return fmt.Sprintf("job %q has unsupported type %q", firstID, firstType)
+		return fmt.Sprintf("job %q has unsupported type %q", offenderID(firstID), offenderType(firstType))
 	default:
-		return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, firstID, firstType)
+		return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, offenderID(firstID), offenderType(firstType))
 	}
+}
+
+// offenderID and offenderType bound the identifiers a collapsed error copies.
+// Job IDs and types are ordinarily short, but the error is fixed content the
+// envelope cannot trim, so neither is copied without a cap.
+func offenderID(id string) string { return truncateActivityText(id, activityMaxLabelRunes) }
+
+func offenderType(typ jobstore.JobType) string {
+	return truncateActivityText(string(typ), activityMaxLabelRunes)
 }
 
 func activityOutcome(status jobstore.Status) (bool, string) {

@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
@@ -131,6 +133,103 @@ func TestMarkActivityEnvelopeTooLarge_WithdrawsTheContinuation(t *testing.T) {
 	}
 	if strings.Contains(session.Branch.Error, "job") {
 		t.Fatalf("branch error = %q mentions an entry, want it to blame the envelope", session.Branch.Error)
+	}
+}
+
+// TestTruncateActivityText_IsRuneSafe pins the two multi-byte cases the byte
+// fast path alone gets wrong: a string whose byte length exceeds the cap while
+// its rune count does not (which used to slice past len(runes) and panic), and
+// one that genuinely needs cutting (which must land on a rune boundary).
+func TestTruncateActivityText_IsRuneSafe(t *testing.T) {
+	t.Parallel()
+	// 150 runes, 300 bytes: over the 200-byte fast path, under the 200-rune cap.
+	withinRunes := strings.Repeat("é", 150)
+	if got := truncateActivityText(withinRunes, activityMaxLabelRunes); got != withinRunes {
+		t.Fatalf("150-rune string was altered to %q", got)
+	}
+
+	long := strings.Repeat("é", activityMaxLabelRunes+50)
+	got := truncateActivityText(long, activityMaxLabelRunes)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncation split a multi-byte rune: %q", got)
+	}
+	if n := len([]rune(got)); n != activityMaxLabelRunes {
+		t.Fatalf("truncated to %d runes, want %d", n, activityMaxLabelRunes)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated value %q does not say it was cut", got)
+	}
+}
+
+// TestProjectActivitySession_CapsDelegatePayloads pins that the remaining
+// free-form delegate fields — the raw terminal-packet payloads and the
+// warnings list — are bounded too. They are fixed parts of a continuation
+// page's ancestor chain, so an oversized one cannot be trimmed away, and a raw
+// payload is dropped rather than sliced so the wire never carries invalid JSON.
+func TestProjectActivitySession_CapsDelegatePayloads(t *testing.T) {
+	t.Parallel()
+	row := stableActivitySnapshot("dlg_1", "root", "child", "brief")
+	warnings := make([]string, activityMaxDelegateWarnings+4)
+	for i := range warnings {
+		warnings[i] = strings.Repeat("w", activityMaxDelegateWarningRunes*2)
+	}
+	row.latestPacket = &delegatestore.TerminalPacket{
+		Message:                json.RawMessage(`"` + strings.Repeat("m", activityMaxDelegatePayloadBytes) + `"`),
+		StructuredResult:       json.RawMessage(`"` + strings.Repeat("s", activityMaxDelegatePayloadBytes) + `"`),
+		StructuredResultReason: strings.Repeat("r", activityMaxDelegateProseRunes*2),
+		Warnings:               warnings,
+	}
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+	}
+	got := projectActivitySession(snap, newActivityBudget())
+	delegate := got.Entries[0].Delegate
+	if delegate.Message != nil {
+		t.Fatalf("Message = %d bytes, want it omitted over the %d-byte cap", len(delegate.Message), activityMaxDelegatePayloadBytes)
+	}
+	if delegate.StructuredResult != nil {
+		t.Fatalf("StructuredResult = %d bytes, want it omitted over the %d-byte cap", len(delegate.StructuredResult), activityMaxDelegatePayloadBytes)
+	}
+	if n := len([]rune(delegate.StructuredReason)); n > activityMaxDelegateProseRunes {
+		t.Fatalf("StructuredReason = %d runes, want at most %d", n, activityMaxDelegateProseRunes)
+	}
+	if len(delegate.Warnings) != activityMaxDelegateWarnings+1 {
+		t.Fatalf("Warnings = %d entries, want %d plus the omission note", len(delegate.Warnings), activityMaxDelegateWarnings)
+	}
+	if last := delegate.Warnings[len(delegate.Warnings)-1]; !strings.Contains(last, "more warnings omitted") {
+		t.Fatalf("last warning = %q, want it to note the omitted ones", last)
+	}
+	found := false
+	for _, diagnostic := range delegate.Diagnostics {
+		if strings.Contains(diagnostic, "payload omitted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics %q, want one naming the omitted payload", delegate.Diagnostics)
+	}
+}
+
+// TestProjectActivitySession_BoundsTheCollapsedOffenderIdentifier pins that
+// the counted unsupported-type error cannot itself become fixed envelope
+// content: the offender's ID and type are capped like every other projection
+// string.
+func TestProjectActivitySession_BoundsTheCollapsedOffenderIdentifier(t *testing.T) {
+	t.Parallel()
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root",
+		Jobs: []*jobstore.JobRecord{{
+			JobID: strings.Repeat("j", 4<<10), Type: jobstore.JobType("unknown"),
+			OwnerSessionID: "root", Status: jobstore.StatusRunning,
+		}},
+	}
+	got := projectActivitySession(snap, newActivityBudget())
+	if !strings.Contains(got.Branch.Error, "…") {
+		t.Fatalf("branch error = %q, want the offender identifier capped", got.Branch.Error)
+	}
+	if len(got.Branch.Error) > 4*activityMaxLabelRunes {
+		t.Fatalf("branch error is %d bytes, want it bounded by the identifier caps", len(got.Branch.Error))
 	}
 }
 
