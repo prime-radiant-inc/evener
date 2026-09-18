@@ -21,6 +21,7 @@ import { useConnection } from "./ConnectionProvider";
 import {
 	draftUnreadableAfterDiscard,
 	localDraftIsUnreadable,
+	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
@@ -53,13 +54,11 @@ interface Preferences {
 }
 const Context = createContext<Preferences | null>(null);
 /** Synchronous compare cannot interleave with a newer model's checkpoint,
- * so deleteIf and replaceIf below share it as their one atomic check. An
- * unreadable record is handed back to us as the raw bytes `get` returned
- * (never re-parsed), so those bytes are what the comparison is against too;
- * a decoded checkpoint still compares by its own re-encoding as before. */
+ * so deleteIf and replaceIf below share it as their one atomic check. See
+ * matchesStoredBytes for why a byte-for-byte re-encoding compare is not
+ * enough on its own. */
 function matches(key: string, value: unknown): boolean {
-	const stored = Storage.getItemSync(key);
-	return stored !== null && (stored === value || stored === JSON.stringify(value));
+	return matchesStoredBytes(Storage.getItemSync(key), value);
 }
 const backend = {
 	createId: () => Crypto.randomUUID(),

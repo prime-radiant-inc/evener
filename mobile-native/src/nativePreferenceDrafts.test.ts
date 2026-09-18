@@ -3,6 +3,7 @@ import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	draftUnreadableAfterDiscard,
 	localDraftIsUnreadable,
+	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
@@ -186,6 +187,38 @@ describe("localDraftIsUnreadable", () => {
 
 	it("is true when a record is present but does not decode", () => {
 		expect(localDraftIsUnreadable("{not json", isReadable)).toBe(true);
+	});
+});
+
+describe("matchesStoredBytes", () => {
+	it("is false when nothing is stored", () => {
+		expect(matchesStoredBytes(null, "{not json")).toBe(false);
+	});
+
+	it("matches raw bytes this build cannot parse at all", () => {
+		expect(matchesStoredBytes("{not json", "{not json")).toBe(true);
+	});
+
+	it("matches a decoded value against its exact re-encoding", () => {
+		const value = { id: "d1", value: "a" };
+		expect(matchesStoredBytes(JSON.stringify(value), value)).toBe(true);
+	});
+
+	// A record that parses as JSON but is not a valid checkpoint (still
+	// "unreadable" - see isReadableKeybindingDraft) comes back from
+	// parseDraftBytes as the PARSED value, not raw bytes - JSON.parse
+	// succeeded, so parseDraftBytes has no reason to preserve the original
+	// bytes. Noncanonical formatting in the stored bytes (key order,
+	// whitespace) then defeats a byte-for-byte JSON.stringify compare even
+	// though the value is unchanged.
+	it("matches a parsed value against noncanonically formatted stored bytes", () => {
+		const stored = '{\n  "value": "a",\n  "id": "d1"\n}';
+		const value = JSON.parse(stored) as unknown;
+		expect(matchesStoredBytes(stored, value)).toBe(true);
+	});
+
+	it("does not match a genuinely different value", () => {
+		expect(matchesStoredBytes(JSON.stringify({ id: "d1" }), { id: "d2" })).toBe(false);
 	});
 });
 

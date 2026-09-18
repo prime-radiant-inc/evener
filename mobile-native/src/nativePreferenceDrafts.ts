@@ -28,6 +28,30 @@ export function parseDraftBytes(raw: string): unknown {
   return parsed === null ? raw : parsed;
 }
 
+/** Whether `stored` (the exact bytes a backend's get() read, or null for no
+ * key) names `value` - the compare deleteIf/replaceIf run before touching
+ * storage. `value` is usually a checkpoint this build produced (JSON.stringify
+ * round-trips it), but discardStoredDraft() also hands it the RAW value
+ * get() returned for a record no build can decode - which is the original
+ * bytes verbatim ONLY when JSON.parse itself failed (parseDraftBytes). A
+ * record that parses as JSON but is not a valid checkpoint (still
+ * "unreadable" - see isReadableKeybindingDraft) comes back as the PARSED
+ * value instead, since parseDraftBytes has no reason to preserve raw bytes
+ * once JSON.parse succeeds - so `value` there is an object, and a
+ * byte-for-byte JSON.stringify compare against noncanonically formatted
+ * stored bytes (key order, whitespace) would wrongly refuse to match it.
+ * Parsing `stored` back and comparing its own re-encoding against `value`'s
+ * handles both cases without needing to know which one `value` is. */
+export function matchesStoredBytes(stored: string | null, value: unknown): boolean {
+	if (stored === null) return false;
+	if (stored === value) return true;
+	try {
+		return JSON.stringify(JSON.parse(stored)) === JSON.stringify(value);
+	} catch {
+		return false;
+	}
+}
+
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;
