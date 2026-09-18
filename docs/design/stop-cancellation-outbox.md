@@ -127,6 +127,16 @@ cancel.
   (existing `clearThread`/deletion paths), and on explicit Retry. No TTL, no GC
   pass. Growth is bounded by the number of sends a user cancels and never retries,
   which is user-visible and small.
+- **Note rows are the exception with a third exit.** QueueStrip deliberately
+  leaves `notes/human/set` rows to the note editor, whose only retry branch is
+  gated on `blockedUnknown` - a canceled note row would otherwise sit pinned
+  (with its note text) until the thread goes away. The user's next save is the
+  retry: when a newer `notes/human/set` for the ref reaches canonical
+  settlement (`settleReceipt`/`settleApplied`), the settlement write discards
+  the ref's earlier canceled note rows, mirroring the existing
+  `#discardSupersededNoteRecovery` supersede for refused note recovery rows.
+  Delivery-uncertain note rows are never discarded this way - a newer save
+  supersedes nothing that may already be on the wire.
 - **Display:** `canceled` rows surface in the same UI slot as today's blocked rows
   with "Canceled by Stop" copy and the Retry affordance. Small Composer change.
 

@@ -282,6 +282,7 @@ export class MutationOutboxIndexedDB {
       const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
       if (!source) return false;
       await this.#discardSupersededNoteRecovery(transaction, source);
+      await this.#discardSupersededCanceledNotes(transaction, source);
 
       const display = source.optimisticDisplay;
       const retainsOptimisticDisplay =
@@ -330,6 +331,7 @@ export class MutationOutboxIndexedDB {
       ]);
       if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
       await this.#discardSupersededNoteRecovery(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
+      await this.#discardSupersededCanceledNotes(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
       if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
       if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
       if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
@@ -347,6 +349,32 @@ export class MutationOutboxIndexedDB {
       if (
         record.method === "notes/human/set" &&
         record.targetRef === source.targetRef &&
+        record.intentSequence < source.intentSequence
+      ) {
+        await requestResult(store.delete(record.clientMutationId));
+      }
+    }
+  }
+
+  // The same supersede, for the ref's earlier stop-canceled note rows: a
+  // canceled row provably never left the client, and the note editor's only
+  // "retry" is the user's next save (its retry branch is gated on
+  // blockedUnknown), so without this discard the canceled row - still holding
+  // its note text - would pin listTargetRefs until the thread is cleared or
+  // deleted. Only canceled rows leave: a newer save supersedes nothing that is
+  // delivery-uncertain.
+  async #discardSupersededCanceledNotes(
+    transaction: IDBTransaction,
+    source: MutationRecord | undefined,
+  ): Promise<void> {
+    if (source?.method !== "notes/human/set") return;
+    const store = transaction.objectStore(OUTBOX_STORE);
+    const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+    for (const record of records) {
+      if (
+        record.method === "notes/human/set" &&
+        record.targetRef === source.targetRef &&
+        record.state === "canceled" &&
         record.intentSequence < source.intentSequence
       ) {
         await requestResult(store.delete(record.clientMutationId));

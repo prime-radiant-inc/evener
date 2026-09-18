@@ -10467,4 +10467,47 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     );
     expect(queuedSends).toBe(1);
   });
+
+  // RoboRev PR #1873 medium: a canceled note row's only exits were an explicit
+  // user Retry (the note editor never offers one - its retry branch is gated
+  // on blockedUnknown) and the thread going away. The user's next blur-save IS
+  // the retry: when that newer notes/human/set commits, the canceled row it
+  // supersedes must leave the outbox with it, or it pins the ref (with its
+  // note text in durable storage) until the thread is cleared or deleted.
+  test("a newer committed note save discards the canceled note row it supersedes", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", note: "stopped before saving" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop's cancellation to land",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // The note editor's next save after the Stop: a fresh intent for the same
+    // note, exactly what blurHumanNote enqueues (its blockedUnknown-gated
+    // retry branch cannot release a canceled row).
+    fake.on("notes/human/set", (params) => ({
+      note: params.note ?? "",
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    await threadsStore.getState().setHumanNote("ref_a", "saved after the stop");
+
+    // The newer save commits and takes the superseded canceled row with it:
+    // the ref no longer carries any note row at all.
+    await flushUntilArrived("the canceled note row to leave with the newer save's commit", async () =>
+      (await storage.listOutbox("ref_a")).every((record) => record.method !== "notes/human/set"),
+    );
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+  });
 });

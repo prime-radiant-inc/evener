@@ -34,6 +34,17 @@ function interruptIntent(targetRef = TARGET): MutationIntent {
   };
 }
 
+function noteIntent(note: string, targetRef = TARGET): MutationIntent {
+  return {
+    targetRef,
+    threadId: "thread-1",
+    method: "notes/human/set",
+    payload: { ref: targetRef, expectedInstanceId: "thread-1", note },
+    attachments: [],
+    optimisticDisplay: null,
+  };
+}
+
 function idSequence(prefix = "mutation") {
   let next = 0;
   return () => `${prefix}-${++next}`;
@@ -198,6 +209,51 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     const surviving = await storage.getOutbox(legacy.clientMutationId);
     expect(surviving).toMatchObject({ state: "submitting" });
     expect("attempted" in (surviving ?? {})).toBe(false);
+    storage.close();
+  });
+
+  test("a settled newer note save discards the canceled note rows it supersedes", async () => {
+    const storage = store();
+    const superseded = await storage.enqueueIntent(noteIntent("the stop-canceled note"));
+    const canceledTurn = await storage.enqueueIntent(intent("canceled turn row"));
+    const uncertainNote = await storage.enqueueIntent(noteIntent("uncertain attempted note"));
+    await storage.markAttempted(uncertainNote.clientMutationId);
+    await storage.markUnknown(uncertainNote.clientMutationId, "blockedUnknown");
+    const otherRefNote = await storage.enqueueIntent(noteIntent("other ref's note", OTHER));
+    await storage.cancelUnattempted(TARGET);
+    await storage.cancelUnattempted(OTHER);
+
+    // The blur-save the note editor makes after the Stop: a newer note intent,
+    // which is the only retry the note UI ever offers (its retry branch is
+    // gated on blockedUnknown). When this save commits, the row the Stop
+    // canceled is superseded and must leave with it - not stay pinned (with its
+    // note text) until the thread is cleared or deleted.
+    const newerNote = await storage.enqueueIntent(noteIntent("the newer save"));
+    expect(await storage.settleReceipt(newerNote.clientMutationId, "reflected")).toBe(true);
+
+    expect(await storage.getOutbox(superseded.clientMutationId)).toBeUndefined();
+    expect(await storage.getOutbox(newerNote.clientMutationId)).toBeUndefined();
+    // Scoped: another ref's canceled note row, a canceled non-note row, and a
+    // delivery-uncertain attempted note row all keep their state.
+    expect((await storage.getOutbox(otherRefNote.clientMutationId))?.state).toBe("canceled");
+    expect((await storage.getOutbox(canceledTurn.clientMutationId))?.state).toBe("canceled");
+    expect((await storage.getOutbox(uncertainNote.clientMutationId))?.state).toBe("blockedUnknown");
+    storage.close();
+  });
+
+  test("a note save reconciled as applied also discards the canceled note rows it supersedes", async () => {
+    const storage = store();
+    const superseded = await storage.enqueueIntent(noteIntent("the stop-canceled note"));
+    await storage.cancelUnattempted(TARGET);
+
+    // evener/notes/updated settles the newer save through reconcileIdentities'
+    // settleApplied, not its own response receipt: the same supersede must run
+    // there, or the pinned row survives every commit path but one.
+    const newerNote = await storage.enqueueIntent(noteIntent("the newer save"));
+    expect(await storage.settleApplied(newerNote.clientMutationId)).toBe(true);
+
+    expect(await storage.getOutbox(superseded.clientMutationId)).toBeUndefined();
+    expect(await storage.getOutbox(newerNote.clientMutationId)).toBeUndefined();
     storage.close();
   });
 
