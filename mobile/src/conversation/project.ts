@@ -27,7 +27,6 @@ import type {
 import {
   hasItemFailure,
   isActiveItem,
-  isInProgressStatus,
   joinedReasoningParagraphs,
   joinWarningParts,
   liveAskQuestions,
