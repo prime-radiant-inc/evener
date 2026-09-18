@@ -29,29 +29,37 @@ process_descendants() {
 # a one-shot snapshot, and killing the parent first would reparent the rest to
 # init where no rescan can find them.
 stop_process_tree() {
-	local pid="$1" descendant grace alive seen
+	local pid="$1" p grace alive seen
 	seen=""
 	grace=$((SECONDS + 5))
 	while [ "$SECONDS" -lt "$grace" ]; do
-		alive=0
-		for descendant in $(process_descendants "$pid"); do
-			seen="$seen $descendant"
-			kill -TERM "$descendant" 2>/dev/null && alive=1
+		for p in $(process_descendants "$pid"); do
+			seen="$seen $p"
 		done
-		kill -TERM "$pid" 2>/dev/null && alive=1
+		# TERM children before the root so a surviving tree is nudged from the
+		# leaves up, then decide the grace from the root AND every pid ever
+		# discovered: if the root exits on TERM, a child that ignored it is
+		# reparented and would otherwise read as "nothing left" on the next
+		# scan, cutting its grace to one pass.
+		for p in $(process_descendants "$pid"); do
+			kill -TERM "$p" 2>/dev/null || :
+		done
+		kill -TERM "$pid" 2>/dev/null || :
+		alive=0
+		for p in "$pid" $seen; do
+			[ -n "$p" ] || continue
+			kill -0 "$p" 2>/dev/null && alive=1
+		done
 		[ "$alive" -eq 0 ] && break
 		sleep 0.1
 	done
-	# KILL every pid ever discovered, not just the ones a final rescan can still
-	# see: when the parent dies on TERM, a child that ignored it is reparented
-	# and vanishes from later scans, and a one-shot list would have missed it
-	# too. The parent goes last so its children stay discoverable as long as it
-	# lives.
-	for descendant in $seen; do
-		kill -KILL "$descendant" 2>/dev/null || :
-	done
-	for descendant in $(process_descendants "$pid"); do
-		kill -KILL "$descendant" 2>/dev/null || :
+	# Snapshot descendants once more before any KILL: an intermediate parent's
+	# death reparents any child it forked since the last scan, out of view of a
+	# later rescan. Kill the snapshot and the accumulated survivors first, the
+	# root last so its children stay discoverable as long as it lives.
+	for p in $(process_descendants "$pid") $seen; do
+		[ -n "$p" ] || continue
+		kill -KILL "$p" 2>/dev/null || :
 	done
 	kill -KILL "$pid" 2>/dev/null || :
 }

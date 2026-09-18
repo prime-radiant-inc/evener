@@ -100,6 +100,21 @@ rm -rf "$dir"
 	}
 }
 
+// pollGoneSnippet waits, bounded, for a pid to disappear. A killed child whose
+// parent is gone is reparented and reaped by whatever adopts it, which may not
+// reap promptly, so a zombie counts as terminated: kill -0 would still succeed
+// for it, and PID 1 in a container is not obliged to reap.
+const pollGoneSnippet = `
+poll_gone() {
+	for _ in $(seq 1 100); do
+		st=$(ps -o stat= -p "$1" 2>/dev/null || true)
+		case "$st" in ''|Z*) return 0;; esac
+		sleep 0.05
+	done
+	return 1
+}
+`
+
 // TestStopProcessTreeCatchesALateFork is the reason for rescanning: a parent
 // that ignores TERM and forks a child after cleanup has begun puts that child
 // behind a one-shot snapshot, so a single snapshot would let it escape to init.
@@ -107,30 +122,28 @@ func TestStopProcessTreeCatchesALateFork(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+`+pollGoneSnippet+`
 dir=$(mktemp -d)
-LATE="$dir/late" READY="$dir/ready" bash -c '
+cat > "$dir/child.sh" <<'CHILD'
+trap "" TERM
+exec sleep 60
+CHILD
+cat > "$dir/parent.sh" <<'PARENT'
 trap "" TERM
 : > "$READY"
 sleep 1
-sleep 60 &
+bash "$DIR/child.sh" &
 echo $! > "$LATE"
 wait
-' &
+PARENT
+DIR="$dir" READY="$dir/ready" LATE="$dir/late" bash "$dir/parent.sh" &
 pid=$!
 for _ in $(seq 1 100); do [ -f "$dir/ready" ] && break; sleep 0.05; done
 stop_process_tree "$pid"
 for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
-late=""
-[ -s "$dir/late" ] && late=$(cat "$dir/late")
+late=$(cat "$dir/late" 2>/dev/null)
 state=unknown
-if [ -n "$late" ]; then
-	# SIGKILL is asynchronous, and kill -0 also succeeds for a zombie, so poll
-	# for the pid to disappear rather than checking once.
-	for _ in $(seq 1 100); do
-		if ! kill -0 "$late" 2>/dev/null; then state=gone; break; fi
-		sleep 0.05
-	done
-fi
+[ -n "$late" ] && { if poll_gone "$late"; then state=gone; else state=alive; fi; }
 printf 'late=%s state=%s\n' "$late" "$state"
 kill -KILL "$pid" "$late" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
@@ -144,28 +157,32 @@ rm -rf "$dir"
 // TestStopProcessTreeReapsAChildWhenTheParentExits pins the accumulated list: a
 // parent that dies on TERM leaves behind a child that ignores TERM, which is
 // reparented and invisible to every later rescan. Only a list kept from when
-// the child was still discoverable reaches it.
+// the child was still discoverable reaches it. The child installs its TERM
+// handler and signals readiness before cleanup starts, so this cannot pass by
+// killing a child that had not yet ignored TERM.
 func TestStopProcessTreeReapsAChildWhenTheParentExits(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+`+pollGoneSnippet+`
 dir=$(mktemp -d)
-LATE="$dir/late" bash -c "
-bash -c \"trap \\\"\\\" TERM; exec sleep 60\" &
-echo \$! > \$LATE
+cat > "$dir/child.sh" <<'CHILD'
+trap "" TERM
+: > "$CHILD_READY"
+exec sleep 60
+CHILD
+cat > "$dir/parent.sh" <<'PARENT'
+bash "$DIR/child.sh" &
+echo $! > "$LATE"
 wait
-" &
+PARENT
+DIR="$dir" LATE="$dir/late" CHILD_READY="$dir/child-ready" bash "$dir/parent.sh" &
 pid=$!
-for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
+for _ in $(seq 1 100); do [ -s "$dir/late" ] && [ -f "$dir/child-ready" ] && break; sleep 0.05; done
 late=$(cat "$dir/late" 2>/dev/null)
 stop_process_tree "$pid"
 state=unknown
-if [ -n "$late" ]; then
-	for _ in $(seq 1 100); do
-		if ! kill -0 "$late" 2>/dev/null; then state=gone; break; fi
-		sleep 0.05
-	done
-fi
+[ -n "$late" ] && { if poll_gone "$late"; then state=gone; else state=alive; fi; }
 printf 'late=%s state=%s\n' "$late" "$state"
 kill -KILL "$pid" "$late" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
