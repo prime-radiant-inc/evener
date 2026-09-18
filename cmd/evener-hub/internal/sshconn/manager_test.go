@@ -40,10 +40,8 @@ func goodStartFn(t *testing.T) func(context.Context, []string, io.Writer) (Stdio
 // gateHook replaces the fixed sleeps that used to order a test goroutine against
 // a host gate the test holds. Its hook signals arrival at the gate and parks the
 // caller until open, so the test decides which contender runs first rather than
-// hoping a sleep was long enough. A test must arm it before triggering the race:
-// routing a call through the hook before arm is a test bug, since the hook would
-// return silently and the manager would pass the gate the test thinks it holds.
-// hook makes that loud instead of leaving it to a later timeout.
+// hoping a sleep was long enough. A test must arm it before triggering the race;
+// hook panics on an earlier call, so arming too late fails loudly.
 type gateHook struct {
 	arrived  chan struct{}
 	release  chan struct{}
