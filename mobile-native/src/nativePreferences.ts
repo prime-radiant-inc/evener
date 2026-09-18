@@ -116,6 +116,7 @@ function postApplyPatch(
 		return undefined;
 	const data = error.data;
 	if (!isRecord(data)) return undefined;
+	if (data.layout !== "mobile") return undefined;
 	try {
 		return decodeTranscriptPatch(data.applied);
 	} catch {

@@ -560,6 +560,36 @@ it("resolves a post-apply PATCH failure by adopting the applied value, without b
 	await f.model.editTranscript(config);
 });
 
+it("rejects a post-apply error when the layout does not match", async () => {
+	// The postApplyPatch reply is only valid when layout matches the
+	// receiving client's own layout. A desktop error received by the mobile
+	// store must be treated as an unconfirmed write, retaining the draft.
+	const f = persistedPreferences();
+	await f.model.refresh();
+	f.client.handlers.set(transcriptPatch, () => {
+		throw new WireError(
+			"transcript display applied then a follow-up step failed",
+			-32603,
+			{
+				evenerErrorInfo: "transcriptDisplayPostApply",
+				layout: "desktop",
+				applied: { revision: 5, config: toWireConfig(proposedConfig) },
+			},
+		);
+	});
+	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: true,
+		writeUncertain: true,
+		draft: { config: proposedConfig },
+		error: "The hub request could not be confirmed.",
+	});
+	expect(f.storage.load()).toMatchObject({
+		writeUncertain: true,
+		config: proposedConfig,
+	});
+});
+
 it("a corrupt local draft blocks writes until it can be restored", async () => {
 	const original = draftStorage().storage;
 	let healthy = false;
