@@ -82,7 +82,14 @@ export function nativeTranscriptDrafts(
 		createId: () => backend.createId(),
 		load: () => {
 			const value = backend.get(key);
-			return value === undefined ? null : (value as TranscriptDraftCheckpoint);
+			// A stored JSON `null` comes back from the shared backend.get() as
+			// the raw string "null" (parseDraftBytes preserves it so the
+			// KEYBINDINGS port can classify it as a present-but-unreadable
+			// record - see nativeKeybindingDrafts). The transcript port has no
+			// unreadable-record recovery path, so it keeps treating a stored
+			// null as no draft, the same as a plain JSON.parse always did.
+			if (value === undefined || value === null || value === "null") return null;
+			return value as TranscriptDraftCheckpoint;
 		},
 		save: (checkpoint) => backend.set(key, checkpoint),
 		remove: () => backend.delete(key),

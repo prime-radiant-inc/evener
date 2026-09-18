@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
-import { nativeKeybindingDrafts, parseDraftBytes } from "./nativePreferenceDrafts";
+import { nativeKeybindingDrafts, nativeTranscriptDrafts, parseDraftBytes } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
 // a discard or a rebase adopting a checkpoint replaced under them) branch on
@@ -10,6 +10,44 @@ import { nativeKeybindingDrafts, parseDraftBytes } from "./nativePreferenceDraft
 // backend's own deleteIf/replaceIf verdict faithfully, never silently
 // reporting a refusal as if it had written the record (or vice versa).
 const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
+
+// Mirrors the real backend's own get() (NativePreferencesProvider.tsx), which
+// is Storage-backed and cannot be reached directly from this package's tests
+// - a Map of raw bytes plus parseDraftBytes stands in for it, the same
+// round-trip the real backend runs on stringified values. Shared by both
+// drafts' describe blocks: keybindings and transcript drafts go through the
+// SAME backend.get() in production.
+function rawBytesBackend() {
+	const raw = new Map<string, string>();
+	const b = {
+		createId: () => "draft-1",
+		get: (key: string) => {
+			const value = raw.get(key);
+			return value === undefined ? null : parseDraftBytes(value);
+		},
+		set: (key: string, value: unknown) => {
+			raw.set(key, JSON.stringify(value));
+		},
+		delete: (key: string) => {
+			raw.delete(key);
+		},
+		deleteIf: (key: string, value: unknown): boolean => {
+			const stored = raw.get(key);
+			if (stored === undefined) return false;
+			if (stored !== value && stored !== JSON.stringify(value)) return false;
+			raw.delete(key);
+			return true;
+		},
+		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
+			const stored = raw.get(key);
+			if (stored === undefined) return false;
+			if (stored !== expected && stored !== JSON.stringify(expected)) return false;
+			raw.set(key, JSON.stringify(next));
+			return true;
+		},
+	};
+	return { raw, b };
+}
 
 describe("nativeKeybindingDrafts", () => {
 	it("propagates a refused deleteIf as false through removeIf, leaving the stored record intact", () => {
@@ -29,42 +67,6 @@ describe("nativeKeybindingDrafts", () => {
 		expect(storage.removeIf(checkpoint)).toBe(true);
 		expect(b.store.has("evener.native.keybinding-draft.hub")).toBe(false);
 	});
-
-	// Mirrors the real backend's own get() (NativePreferencesProvider.tsx),
-	// which is Storage-backed and cannot be reached directly from this
-	// package's tests - a Map of raw bytes plus parseDraftBytes stands in for
-	// it, the same round-trip the real backend runs on stringified values.
-	function rawBytesBackend() {
-		const raw = new Map<string, string>();
-		const b = {
-			createId: () => "draft-1",
-			get: (key: string) => {
-				const value = raw.get(key);
-				return value === undefined ? null : parseDraftBytes(value);
-			},
-			set: (key: string, value: unknown) => {
-				raw.set(key, JSON.stringify(value));
-			},
-			delete: (key: string) => {
-				raw.delete(key);
-			},
-			deleteIf: (key: string, value: unknown): boolean => {
-				const stored = raw.get(key);
-				if (stored === undefined) return false;
-				if (stored !== value && stored !== JSON.stringify(value)) return false;
-				raw.delete(key);
-				return true;
-			},
-			replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
-				const stored = raw.get(key);
-				if (stored === undefined) return false;
-				if (stored !== expected && stored !== JSON.stringify(expected)) return false;
-				raw.set(key, JSON.stringify(next));
-				return true;
-			},
-		};
-		return { raw, b };
-	}
 
 	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
 		// The real backend hands back a value it cannot parse as its RAW bytes
@@ -116,6 +118,32 @@ describe("nativeKeybindingDrafts", () => {
 
 		expect(storage.replaceIf(checkpoint, next)).toBe(true);
 		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(next);
+	});
+});
+
+describe("nativeTranscriptDrafts", () => {
+	it("treats a stored JSON null as no draft, not an unreadable record", () => {
+		// Both drafts share one backend.get(): parseDraftBytes hands back the
+		// RAW string "null" for a stored JSON null so the KEYBINDINGS port can
+		// classify it as a present-but-unreadable record (see above). The
+		// transcript port has no unreadable-record recovery path, so it keeps
+		// the pre-existing meaning of a stored null - no draft - rather than
+		// have TranscriptDraftRepository's validateCheckpoint throw on it and
+		// strand the section in storageUnavailable.
+		const { raw, b } = rawBytesBackend();
+		raw.set("evener.native.transcript-draft.hub", "null");
+		const storage = nativeTranscriptDrafts("hub", b);
+
+		expect(storage.load()).toBeNull();
+	});
+
+	it("still loads a real stored checkpoint", () => {
+		const { raw, b } = rawBytesBackend();
+		const transcriptCheckpoint = { id: "t1", baseRevision: 2, config: {}, writeUncertain: false };
+		raw.set("evener.native.transcript-draft.hub", JSON.stringify(transcriptCheckpoint));
+		const storage = nativeTranscriptDrafts("hub", b);
+
+		expect(storage.load()).toEqual(transcriptCheckpoint);
 	});
 });
 
