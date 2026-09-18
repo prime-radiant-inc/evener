@@ -1639,4 +1639,39 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
+
+  // A superseded save that edited an endpoint-affecting field lands in the
+  // store's own listing: the derived endpointFingerprint is the digest of the
+  // change this save produced, so the seeded identity anchor — taken before the
+  // save — no longer matches the entry that carries it. Without re-anchoring,
+  // the next Save refuses with the replacement error for an instance nothing
+  // replaced. The draft is the user's own landed change: re-anchoring keeps it
+  // and lets the retry through instead of reporting a replacement that never
+  // happened.
+  test("a superseded endpoint save re-anchors so the next save is not refused as a replacement", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+
+    // The refresh that started after the save answers first, so the store
+    // discards the save's own response as superseded while its listing already
+    // holds the endpoint the save produced.
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
 });

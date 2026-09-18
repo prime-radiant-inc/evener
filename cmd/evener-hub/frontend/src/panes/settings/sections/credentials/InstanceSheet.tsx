@@ -202,6 +202,34 @@ function renamedInstanceLanded(
   return matches ? newName : undefined;
 }
 
+/** The entry the store's own listing carries for a plain (non-rename) save
+ * whose response it superseded, or undefined when the listing does not carry
+ * this save's declaration. A refresh that starts after a save answers first,
+ * and the store discards the save's response as superseded while its listing
+ * already holds the change the save declared. The seeded identity anchor was
+ * taken before the save, so the derived endpointFingerprint the save produced
+ * no longer matches it, and the next save would refuse with the replacement
+ * error for an instance nothing replaced. The declaration confirms the listing
+ * the same way a rename does: every identity field this save did not touch is
+ * carried over, and the digest is not compared as untouched when the save
+ * edited a field it derives from (ENDPOINT_AFFECTING_FIELDS). */
+function supersededSaveLanded(
+  instances: InstanceEntry[],
+  before: InstanceEntry,
+  params: InstanceEditParams,
+): InstanceEntry | undefined {
+  if (params.newName !== undefined) return undefined;
+  const listed = instances.find((instance) => instance.name === before.name);
+  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
+  const changed = changedFields(params);
+  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
+  const untouched = RENAME_IDENTITY_FIELDS.filter(
+    (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
+  );
+  const matches = untouched.every((field) => fieldValue(before, field) === fieldValue(listed, field));
+  return matches ? listed : undefined;
+}
+
 export interface InstanceSheetProps {
   name: string | null;
   onClose: () => void;
@@ -415,6 +443,16 @@ export function InstanceSheet({
         if (listedRename !== undefined) {
           onRenamed(listedRename);
         } else {
+          // The store's listing may already hold this plain save's own change:
+          // a refresh that started after the save answers first, and the store
+          // discards the response as superseded while its entry carries what
+          // this save declared. The draft is still the user's, but the seeded
+          // identity anchor predates the change, so re-anchor it to the entry
+          // the save landed as — without reseeding, which would discard the
+          // draft. The next Save then compares like against like instead of
+          // refusing an instance that was never replaced.
+          const landed = supersededSaveLanded(credentialsStore.getState().instances, instance, params);
+          if (landed !== undefined) seededIdentity.current = draftIdentity(landed);
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);
         }
