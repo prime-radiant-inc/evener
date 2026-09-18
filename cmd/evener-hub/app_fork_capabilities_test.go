@@ -540,9 +540,9 @@ func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
 				if !ok || wire.Code != appwire.CodeUnavailable {
 					t.Fatalf("live delegate fork error=%v, want structured unavailable", err)
 				}
-					if isSessionRecoveryAdmissionError(err) {
-						t.Errorf("live delegate fork error=%v is reported as a recovery refusal; an explicit thread/resume cannot clear a live delegate", err)
-					}
+				if isSessionRecoveryAdmissionError(err) {
+					t.Errorf("live delegate fork error=%v is reported as a recovery refusal; an explicit thread/resume cannot clear a live delegate", err)
+				}
 			})
 		}
 	}
