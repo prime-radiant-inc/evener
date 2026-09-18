@@ -25,11 +25,11 @@ package dev
 // command runs, and the gate has already anchored the enumeration to each
 // module's own directory, so applying it to only one of `go list` and `go test`
 // would recreate the tree mismatch this exists to prevent. A selection-flag
-// value that is empty, contains whitespace, or contains a shell glob
-// metacharacter cannot be forwarded intact either: the gate word-splits and
-// pathname-expands its `go test` invocation, so the two commands would see
-// different values (an empty value would vanish entirely from the line-per-flag
-// handover to the shell, and a glob would expand to whatever filenames match).
+// value cannot be forwarded intact either when it is empty as a separate
+// argument, contains whitespace, or contains a shell glob metacharacter: the
+// gate word-splits and pathname-expands its `go test` invocation, so the two
+// commands would see different values (a separate empty argument would vanish
+// entirely, and a glob would expand to whatever filenames match).
 
 import (
 	"errors"
@@ -78,15 +78,23 @@ func packageSelectionFlags(args []string) ([]string, error) {
 		}
 		switch {
 		case packageSelectionValueFlags[name]:
-			if !inline {
+			separate := !inline
+			if separate {
 				if i+1 >= len(args) {
 					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
 				}
 				i++
 				value = args[i]
 			}
-			if err := checkSelectionValue(name, value); err != nil {
-				return nil, err
+			// An inline empty value (`-tags=`) is a single argv word that
+			// survives the gate's word splitting, so it is allowed and clears
+			// inherited tags. A separate empty argument (`-tags ""`) is the
+			// form that disappears, and checkSelectionValue refuses it; a
+			// non-empty value is checked for whitespace and globs either way.
+			if separate || value != "" {
+				if err := checkSelectionValue(name, value); err != nil {
+					return nil, err
+				}
 			}
 			out = append(out, name+"="+value)
 		case packageSelectionBareFlags[name]:
@@ -102,9 +110,11 @@ func packageSelectionFlags(args []string) ([]string, error) {
 // checkSelectionValue refuses a value the gate's word-split `go test`
 // invocation cannot carry whole: `go list` would be given it intact and
 // `go test` would not, so the two would enumerate and build different trees. An
-// empty value is covered too, since an empty argv word is lost entirely to that
-// split, and a glob metacharacter is covered because `go test`'s unquoted
-// expansion pathname-expands it into whatever filenames match.
+// empty value written as a separate argument is covered too, since that argv
+// word is lost entirely to the split, and a glob metacharacter is covered
+// because `go test`'s unquoted expansion pathname-expands it into whatever
+// filenames match. An inline empty value is not this function's business: it is
+// one word and survives.
 func checkSelectionValue(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("the %s value is empty, which the gate's word-split go test invocation drops; pass a non-empty value or omit the flag", name)

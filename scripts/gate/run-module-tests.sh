@@ -296,18 +296,19 @@ tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"
 # and a retry command anchored at the repository root, so a timeout in the flag
 # derivation or in any module's enumeration reads the same way.
 package_list_timeout_diagnostic() {
-	local what="$1" bound="$2" module="$3" log_file="$4" worktree gocache gomodcache
+	local what="$1" bound="$2" module="$3" log_file="$4" worktree gocache gomodcache retry
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
+	retry="$repo_root/scripts/gate/run-module-tests.sh"
 	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$bound" >&2
 	printf 'run-module-tests.sh: worktree: %s (module %s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained log: %s\n' "$log_file" >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
-	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %s/scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$repo_root" >&2
+	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %q -short -count=1\n' \
+		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$retry" >&2
 }
 
 # run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the

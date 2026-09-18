@@ -53,8 +53,11 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		// reach go list.
 		{name: "a whitespace value is refused", args: []string{"-tags", "a b"}, wantErr: true},
 		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, wantErr: true},
-		{name: "an empty value is refused", args: []string{"-tags", ""}, wantErr: true},
-		{name: "and an inline empty value too", args: []string{"-tags="}, wantErr: true},
+		{name: "a separate empty value is refused", args: []string{"-tags", ""}, wantErr: true},
+		// An inline empty value is one argv word that survives the gate's word
+		// splitting, and is the normal way to clear tags inherited via GOFLAGS.
+		{name: "an inline empty value clears tags", args: []string{"-tags="}, want: []string{"-tags="}},
+		{name: "and an inline empty overlay too", args: []string{"-overlay="}, want: []string{"-overlay="}},
 		// A glob metacharacter would pathname-expand for go test but not for
 		// the quoted go list, so the two would see different values.
 		{name: "a glob metacharacter is refused", args: []string{"-overlay", "a*b"}, wantErr: true},
@@ -114,7 +117,15 @@ func TestListBuildFlagsPrintsOnePerLine(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	if code := listBuildFlags([]string{"--", "-tags", ""}, &stdout, &stderr); code == 0 {
-		t.Fatalf("listBuildFlags with an empty value = 0, want nonzero; stdout = %q", stdout.String())
+		t.Fatalf("listBuildFlags with a separate empty value = 0, want nonzero; stdout = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := listBuildFlags([]string{"--", "-tags=", "-race"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("listBuildFlags with an inline empty value = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "-tags=\n-race\n" {
+		t.Fatalf("stdout = %q, want the inline empty value preserved", got)
 	}
 }
 
