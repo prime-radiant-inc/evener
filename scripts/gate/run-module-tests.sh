@@ -162,6 +162,25 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 root_skip="$fuzz_test_skip"
 
 flags="$*"
+
+# `go list` and `go test` do not see the same tree: -tags selects files, and
+# -race, -msan and -asan each set a build tag of their own, so a package whose
+# files all sit behind one of those exists for the test run and not for a plain
+# enumeration. The gate hands `go test` the list the enumeration produced, so
+# anything the enumeration cannot see is not tested and nothing says so.
+# evener-dev decides which of the caller's flags the enumeration also needs; it
+# prints one per line so a value with a space in it survives into the array.
+list_flags=()
+repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+if list_flags_output="$(cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- "$@")"; then
+	while IFS= read -r list_flag; do
+		[ -n "$list_flag" ] && list_flags+=("$list_flag")
+	done <<<"$list_flags_output"
+else
+	printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
+	exit 2
+fi
+
 module_test_flags() {
 	local m="$1" flag selected=""
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
@@ -292,7 +311,7 @@ root_package_list_timeout_diagnostic() {
 run_root_package_list() {
 	local package_list="$1" package_list_stderr list_pid started_at list_status
 	package_list_stderr="${package_list}.stderr"
-	( go list ./... >"$package_list" 2>"$package_list_stderr" ) &
+	( go list ${list_flags[@]+"${list_flags[@]}"} ./... >"$package_list" 2>"$package_list_stderr" ) &
 	list_pid="$!"
 	started_at=$SECONDS
 	while kill -0 "$list_pid" 2>/dev/null; do
@@ -361,7 +380,7 @@ run_module() {
 		local pkg
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done < <(go list ./...)
+		done < <(go list ${list_flags[@]+"${list_flags[@]}"} ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
