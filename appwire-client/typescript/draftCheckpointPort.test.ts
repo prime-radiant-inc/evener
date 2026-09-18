@@ -69,7 +69,7 @@ describe("createDraftRepository", () => {
     // Another writer saves directly to the port after this repository
     // classified the store as empty - a record it never classified.
     drafts.storage.save({ id: "external", value: "x" });
-    repo.discardClassified();
+    expect(repo.discardClassified()).toBe(false);
 
     expect(drafts.stored()).toEqual({ id: "external", value: "x" });
   });
@@ -80,9 +80,26 @@ describe("createDraftRepository", () => {
 
     const loaded = repo.load() as Checkpoint;
     repo.save(loaded);
-    repo.removeIf(loaded);
 
+    expect(repo.removeIf(loaded)).toBe(true);
     expect(drafts.stored()).toBeNull();
+  });
+
+  it("removeIf on the same reference load() returned matches what a later save() actually wrote", () => {
+    const { storage } = memoryDraftStorage<Checkpoint>({ id: "a", value: "one" });
+    const repo = createDraftRepository(storage, decode);
+    const loaded = repo.load();
+    if (loaded === null) throw new Error("test setup: expected a stored checkpoint");
+
+    // A store that classifies a record, edits it in place and saves it back
+    // - the SAME reference load() returned, now holding different content.
+    loaded.value = "two";
+    repo.save(loaded);
+
+    // removeIf, given that SAME reference, must match what is now actually
+    // stored (the edited bytes) - not the pre-edit bytes rawFrom recorded
+    // when load() first classified it.
+    expect(repo.removeIf(loaded)).toBe(true);
   });
 });
 

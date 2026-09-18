@@ -27,6 +27,11 @@ interface Preferences {
 	connected: boolean;
 }
 const Context = createContext<Preferences | null>(null);
+/** Synchronous compare cannot interleave with a newer model's checkpoint,
+ * so deleteIf and replaceIf below share it as their one atomic check. */
+function matches(key: string, value: unknown): boolean {
+	return Storage.getItemSync(key) === JSON.stringify(value);
+}
 const backend = {
 	createId: () => Crypto.randomUUID(),
 	get(key: string): unknown {
@@ -39,10 +44,15 @@ const backend = {
 	delete(key: string) {
 		Storage.removeItemSync(key);
 	},
-	deleteIf(key: string, value: unknown) {
-		// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
-		if (Storage.getItemSync(key) === JSON.stringify(value))
-			Storage.removeItemSync(key);
+	deleteIf(key: string, value: unknown): boolean {
+		if (!matches(key, value)) return false;
+		Storage.removeItemSync(key);
+		return true;
+	},
+	replaceIf(key: string, expected: unknown, next: unknown): boolean {
+		if (!matches(key, expected)) return false;
+		Storage.setItemSync(key, JSON.stringify(next));
+		return true;
 	},
 };
 
