@@ -1857,12 +1857,27 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
+          // D18 B3 round 4 (2): the reread's own turns cover only its
+          // itemLimit-bounded window, so a turn loaded via an earlier
+          // loadOlder (outside that window) is absent from it. Preserve those
+          // turns under the SAME gate and shape as the item-history merge
+          // above (preservePageHistory: same instanceId, and there is
+          // page-owned history to preserve) — deduped by id, older first —
+          // or a session with no cumulative usage loses everything loadOlder
+          // added the moment the next rehydrate runs.
+          let mergedTurns = conversation.turns;
+          if (preservePageHistory && currentConvForMerge !== null) {
+            const rereadTurnIds = new Set(conversation.turns.map((turn) => turn.id));
+            const olderTurns = currentConvForMerge.turns.filter((turn) => !rereadTurnIds.has(turn.id));
+            mergedTurns = [...olderTurns, ...conversation.turns];
+          }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
           // live/page merge above.
           const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
+            turns: mergedTurns,
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -2031,15 +2046,19 @@ export function createConversationStore() {
             // store's own olderCursor, or a session with no cumulative usage
             // keeps summing only the first page after older turns load.
             // result.turns is this page's own turns (deduped against what's
-            // already loaded, by id) and olderCursor mirrors the same cursor
-            // that governs whether there is more history to page in.
+            // already loaded, by id).
             const existingTurnIds = new Set(currentConv.turns.map((turn) => turn.id));
             const mergedTurns = [
               ...(result.turns ?? []).filter((turn) => !existingTurnIds.has(turn.id)),
               ...currentConv.turns,
             ];
             set({
-              conversation: { ...currentConv, items: merged, turns: mergedTurns, olderCursor: nextCursor ?? undefined },
+              // D18 B3 round 4 (1): conversation.olderCursor is the WIRE
+              // truth (result.nextCursor), never the capped nextCursor above.
+              // atCap only stops the STORE's own paging honestly (F8); it says
+              // nothing about whether the daemon actually has more history, so
+              // sessionTokens must not read it as "this is the whole session".
+              conversation: { ...currentConv, items: merged, turns: mergedTurns, olderCursor: result.nextCursor },
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false

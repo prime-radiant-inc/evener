@@ -3992,6 +3992,87 @@ describe("ConversationStore", () => {
       // The already-held t2 keeps its own version, not the incoming duplicate.
       expect(conv.turns.find((t) => t.id === "t2")?.usage).toEqual({ inputTokens: 1, outputTokens: 1 });
     });
+
+    // D18 B3 round 4 (1): the item cap forces the STORE's own olderCursor to
+    // null so paging stops honestly (F8), but conversation.olderCursor must
+    // still tell sessionTokens the WIRE truth — the daemon has more history
+    // even though this client has decided not to fetch it further.
+    it("keeps conversation.olderCursor at the wire's cursor even when the item cap stops paging", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const items: MobileConversation["items"] = [];
+      for (let i = 100; i < 500; i++) {
+        items.push({ kind: "user", id: `item-${i}`, text: "" });
+      }
+      service.openConv = makeConversation({
+        usage: null,
+        items,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // 200 more items — total 600, capped to 500 (F8's existing test).
+      const olderItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 200; i++) {
+        olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
+      }
+      service.olderItems = {
+        items: olderItems,
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        nextCursor: "more", // the wire says there IS more history...
+      };
+      await store.getState().loadOlder(service);
+
+      // ...even though the cap disables further paging in the UI.
+      expect(store.getState().olderCursor).toBeNull();
+      const conv = store.getState().conversation!;
+      expect(conv.olderCursor).toBe("more");
+      expect(sessionTokens(conv)?.scope).toBe("loaded");
+    });
+
+    // D18 B3 round 4 (2): a same-session rehydrate's reread window only
+    // covers the current itemLimit-bounded turns, so a turn loaded via an
+    // earlier loadOlder falls outside it — the same reason the item-history
+    // merge above (preservePageHistory) exists for items.
+    it("rehydrate preserves the older turns loaded via loadOlder", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const latest = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        items: [{ kind: "user", id: "new", text: "new" }],
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+      });
+      service.readProjectionResult = {
+        conversation: latest,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      service.olderItems = {
+        items: [{ kind: "user", id: "old", text: "old" }],
+        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // The existing item-history merge (preservePageHistory) already keeps
+      // "old" prepended; the same gate must keep t1 too.
+      expect(conv.items.map((i) => i.id)).toEqual(["old", "new"]);
+      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      // Both turns still count (not just the fresh reread's own window). The
+      // scope label is asserted separately: conversation.olderCursor here is
+      // the fresh reread's own cursor, which does not account for the merged
+      // -in page history's own remaining cursor.
+      expect(sessionTokens(conv)).toMatchObject({ inputTokens: 560, outputTokens: 60 });
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
