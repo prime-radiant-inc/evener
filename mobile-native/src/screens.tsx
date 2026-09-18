@@ -30,7 +30,13 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
+import {
+	type AskBatch,
+	buildComposerInput,
+	humanizeState,
+	parseSlashToken,
+	spliceSlashCommand,
+} from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -75,7 +81,6 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
-import type { AskBatch } from "@evener/appwire-client";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,

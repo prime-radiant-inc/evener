@@ -239,21 +239,21 @@ export function QuestionSheet({
                 <View key={question.key} style={{ gap: 12 }}>
                   <Copy muted>{display.header}</Copy>
                   <Copy>{display.question}</Copy>
-                  {question.why ? <Copy muted>{display.why}</Copy> : null}
+                  {display.why ? <Copy muted>{display.why}</Copy> : null}
                   {question.multiSelect ? (
                     <Copy muted>Choose any that apply.</Copy>
                   ) : null}
                   {question.options
                     .map((option, index) => ({
                       option,
-                      display: display.options[index],
+                      optionDisplay: display.options[index],
                     }))
                     .sort(
                       (a, b) =>
                         Number(!!b.option.recommended) -
                         Number(!!a.option.recommended),
                     )
-                    .map(({ option, display }) => {
+                    .map(({ option, optionDisplay }) => {
                       const checked =
                         answer?.resolution?.kind === "option" &&
                         answer.resolution.labels.includes(option.label);
@@ -302,11 +302,11 @@ export function QuestionSheet({
                         >
                           <Copy>
                             {checked ? "✓ " : ""}
-                            {display.label}
+                            {optionDisplay.label}
                             {option.recommended ? " · Recommended" : ""}
                           </Copy>
-                          {option.detail ? (
-                            <Copy muted>{display.detail}</Copy>
+                          {optionDisplay.detail ? (
+                            <Copy muted>{optionDisplay.detail}</Copy>
                           ) : null}
                         </Pressable>
                       );

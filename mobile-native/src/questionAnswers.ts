@@ -68,12 +68,22 @@ function questionHash(text: string): string {
 // unaffected render or keystroke never rehashes at all.
 const questionsIdentityMemo = new WeakMap<AskQuestionRef[], string>();
 
+// A JSON array of {key, digest}, not a bare hash string: draftRepository.ts's
+// questionDefinitions parses this signature expecting an array it can index
+// per key (JSON.parse(signature) -> question.key), the same contract a
+// bounded-and-stringified question array satisfied before this identity was
+// hashed. A bare hash string parses as neither an array nor an object with a
+// key, so writeQuestions/readQuestions would throw on every call the moment
+// the identity changed shape (#1731 piece E round 4's own High).
 export function questionsIdentity(questions: AskQuestionRef[]): string {
   const cached = questionsIdentityMemo.get(questions);
   if (cached !== undefined) return cached;
-  const identity = questions
-    .map((question) => `${question.key}:${questionHash(JSON.stringify(question))}`)
-    .join("|");
+  const identity = JSON.stringify(
+    questions.map((question) => ({
+      key: question.key,
+      digest: questionHash(JSON.stringify(question)),
+    })),
+  );
   questionsIdentityMemo.set(questions, identity);
   return identity;
 }
