@@ -510,12 +510,12 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	// new name would be orphaned by the next refresh, which reclones the
 	// recorded source at the recorded path.
 	if renaming {
-		// saveRename names whichever file (known_marketplaces.json or
-		// installed_plugins.json) actually failed, so the scrub below names
-		// the right one instead of assuming known_marketplaces.json, before
-		// fail decides whether the outer rollback also needs reporting.
-		if failedFile, err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
-			return fail(m.saveFailed(name, failedFile, err))
+		// saveRename already returns a scrubbed error, naming whichever file
+		// (known_marketplaces.json or installed_plugins.json) actually
+		// failed, before fail decides whether the outer rollback also needs
+		// reporting.
+		if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
+			return fail(err)
 		}
 	} else {
 		mk[name] = ref
@@ -632,24 +632,25 @@ var errRenameRollbackIncomplete = errors.New("a failed move could not be put bac
 // error says so and carries errStoreBetweenNames, which is how a rename that
 // wrote a marker knows the marker is still needed.
 //
-// failedFile is empty on success and otherwise names whichever store file
-// (known_marketplaces.json or installed_plugins.json) the returned error's
-// own text can carry this machine's absolute path for - a caller that scrubs
-// the error before it reaches an RPC caller needs to know which one it was,
-// rather than assuming known_marketplaces.json.
-func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref MarketplaceRef, reg, registryAsFound Registry) (failedFile string, err error) {
+// The returned error is already scrubbed through saveFailed, naming whichever
+// store file (known_marketplaces.json or installed_plugins.json) actually
+// failed instead of the raw *fs.PathError, so no caller — EditMarketplace or
+// a migration recovery reached from ListMarketplaces/List, which can surface
+// its error over RPC just as directly — can forget to scrub before the
+// absolute plugin-store path in the raw error reaches an RPC caller.
+func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref MarketplaceRef, reg, registryAsFound Registry) error {
 	if err := m.saveRegistry(reg); err != nil {
-		return registryFileName, err
+		return m.saveFailed(name, registryFileName, err)
 	}
 	delete(mk, name)
 	mk[newName] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if restoreErr := m.saveRegistry(registryAsFound); restoreErr != nil {
-			return marketplacesFileName, fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so %w: it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, errStoreBetweenNames, newName)
+			return m.saveFailed(name, marketplacesFileName, fmt.Errorf("saving %s failed (%w); restoring %s failed (%w), so %w: it still keys this marketplace's plugins under %q", marketplacesFileName, err, registryFileName, restoreErr, errStoreBetweenNames, newName))
 		}
-		return marketplacesFileName, fmt.Errorf("marketplace %q not renamed: saving %s failed, so the store is back as it was: %w", name, marketplacesFileName, err)
+		return m.saveFailed(name, marketplacesFileName, err)
 	}
-	return "", nil
+	return nil
 }
 
 // refuseLeftoversUnder rejects a rename onto a name that a removed

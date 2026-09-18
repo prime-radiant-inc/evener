@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -400,6 +401,38 @@ func TestEditMarketplaceRenameBetweenNamesErrorSurvivesIdentity(t *testing.T) {
 	}
 	if !errors.Is(err, errStoreBetweenNames) {
 		t.Fatalf("err = %v, want errors.Is(err, errStoreBetweenNames)", err)
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, marketplacesFileName)
+	}
+}
+
+// A ListMarketplaces call that finds a legacy-named marketplace reaches
+// saveRename through the migration barrier (migrateMarketplaceName), not
+// through EditMarketplace - and its error surfaces to an RPC caller just as
+// directly. saveRename's own scrub has to cover this caller too, not only
+// EditMarketplace's.
+func TestMigrationTriggeredSaveFailureNamesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+
+	path := m.marketplacesFile()
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(p string, data []byte, perm os.FileMode) error {
+		if filepath.Base(p) == marketplacesFileName {
+			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+		}
+		return origWrite(p, data, perm)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("ListMarketplaces = nil, want the migration's failed save reported")
 	}
 	if strings.Contains(err.Error(), path) {
 		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)

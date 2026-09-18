@@ -2688,8 +2688,11 @@ func TestMarketplaceNameMigration_ARecoveryThatRollsBackRemovesTheMarker(t *test
 	}
 	// The error has to carry the save failure the rollback was recovering
 	// from; wrapping a nil here would report a cause that never happened.
-	if !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("recovery error = %v, want the failed save it rolled back from", err)
+	// saveRename scrubs the raw error (this machine's absolute plugin-store
+	// path) before it reaches this caller, so the file it names is what
+	// proves the cause is real rather than a nil silently joined in.
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("recovery error = %v, want it to name the failed save's file (%s)", err, marketplacesFileName)
 	}
 	marketplaceAtomicWriteFile = orig
 	mustNotExist(t, renameMarkerFile(m))
