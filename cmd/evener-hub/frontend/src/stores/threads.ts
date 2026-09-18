@@ -53,6 +53,7 @@ import {
   type MutationRecoveryRecord,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
@@ -603,6 +604,11 @@ let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+
+// This store's own guard: keybindings.ts and transcriptDisplay.ts wire the
+// same connectionStore client through their own instances, so the three never
+// contend over one shared registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
@@ -2244,19 +2250,25 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   wiredClient = client;
   unwireNotification = client.onNotification(handleNotification);
-  unwireReady = client.onReady(() => {
-    readyEpoch += 1;
-    threadsStore.setState({ mutationAuthorityRefs: new Set() });
-    // onReady is the SAME client reconnecting: its old connection's
-    // subscriptions are server-side gone too, even though the client object
-    // survives. handleReady re-subscribes the still-tracked refs.
-    wireSubscribedRefs.clear();
-    retireAllOwnedHydrations();
-    dispatchReadyClient = null;
-    dispatchReadyEpoch = -1;
-    dispatchableMutationRefs.clear();
-    void handleReady(client, readyEpoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        readyEpoch += 1;
+        threadsStore.setState({ mutationAuthorityRefs: new Set() });
+        // onReady is the SAME client reconnecting: its old connection's
+        // subscriptions are server-side gone too, even though the client object
+        // survives. handleReady re-subscribes the still-tracked refs.
+        wireSubscribedRefs.clear();
+        retireAllOwnedHydrations();
+        dispatchReadyClient = null;
+        dispatchReadyEpoch = -1;
+        dispatchableMutationRefs.clear();
+        void handleReady(client, readyEpoch);
+      },
+    ),
+  );
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
   // does NOT fire retroactively for a client that is already ready by the
