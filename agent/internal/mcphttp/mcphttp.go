@@ -6,6 +6,7 @@
 package mcphttp
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -47,8 +48,9 @@ func (h *HeaderRoundTripper) CloseIdleConnections() {
 }
 
 // originOf returns u's normalized origin — lowercased scheme and hostname plus
-// the effective port (the scheme default when u omits one). It returns "" when
-// u has no scheme or hostname, which callers treat as "injects nothing".
+// the effective port (the scheme default when u omits one) — joined with
+// net.JoinHostPort so an IPv6 host is bracketed unambiguously. It returns ""
+// when u has no scheme or hostname, which callers treat as "injects nothing".
 func originOf(u *url.URL) string {
 	if u == nil {
 		return ""
@@ -69,7 +71,7 @@ func originOf(u *url.URL) string {
 			return ""
 		}
 	}
-	return scheme + "://" + host + ":" + port
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 // ClientWithHeaders returns a copy of base (a fresh client when base is nil)

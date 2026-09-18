@@ -244,6 +244,46 @@ func TestClientWithHeaders_SameOriginRedirectKeepsHeaders(t *testing.T) {
 	}
 }
 
+// IPv6 origins must be normalized with net.JoinHostPort so a bare host and a
+// bracketed host:port cannot collide. A distinct IPv6 origin must not receive
+// the configured credentials.
+func TestClientWithHeaders_IPv6OriginsDistinct(t *testing.T) {
+	client := mcphttp.ClientWithHeaders(nil, "https://[::1]/mcp", map[string]string{"Authorization": "Bearer secret"})
+	rt, ok := client.Transport.(*mcphttp.HeaderRoundTripper)
+	if !ok {
+		t.Fatalf("transport = %T, want *mcphttp.HeaderRoundTripper", client.Transport)
+	}
+	if rt.Origin != "https://[::1]:443" {
+		t.Fatalf("IPv6 origin = %q, want %q", rt.Origin, "https://[::1]:443")
+	}
+
+	rec := &recordingRoundTripper{}
+	rt.Base = rec
+
+	same, err := http.NewRequest(http.MethodGet, "https://[::1]:443/mcp", nil)
+	if err != nil {
+		t.Fatalf("new same-origin request: %v", err)
+	}
+	if _, err := rt.RoundTrip(same); err != nil {
+		t.Fatalf("same-origin round trip: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer secret" {
+		t.Errorf("same IPv6 origin Authorization = %q, want injected value", got)
+	}
+
+	rec.got = nil
+	other, err := http.NewRequest(http.MethodGet, "https://[::1:1]/mcp", nil)
+	if err != nil {
+		t.Fatalf("new distinct-origin request: %v", err)
+	}
+	if _, err := rt.RoundTrip(other); err != nil {
+		t.Fatalf("distinct-origin round trip: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "" {
+		t.Errorf("distinct IPv6 origin Authorization = %q, want none", got)
+	}
+}
+
 // An unparseable or hostless endpoint must fail closed: the returned client
 // injects nothing rather than leaking credentials to every host.
 func TestClientWithHeaders_HostlessEndpointFailsClosed(t *testing.T) {
