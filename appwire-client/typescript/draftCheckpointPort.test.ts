@@ -56,9 +56,39 @@ describe("createDraftRepository", () => {
     const repo = createDraftRepository(drafts.storage, decode);
 
     drafts.corrupt();
-    repo.discardClassified();
+    expect(repo.discardClassified()).toBe(true);
 
     expect(drafts.stored()).toBeNull();
+  });
+
+  it("discardClassified refuses a readable record nothing has classified yet, rather than removing it blind", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "external", value: "x" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    // This repository has never called load() or save(): the record was
+    // never shown to a user through it, so it is not this call's to discard.
+    expect(repo.discardClassified()).toBe(false);
+
+    expect(drafts.stored()).toEqual({ id: "external", value: "x" });
+  });
+
+  it("replaceClassified falls back to a fresh reload and writes over a corrupt record nothing has classified yet", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    drafts.corrupt();
+    expect(repo.replaceClassified({ id: "d1", value: "a" })).toBe(true);
+
+    expect(drafts.stored()).toEqual({ id: "d1", value: "a" });
+  });
+
+  it("replaceClassified refuses a readable record nothing has classified yet, rather than overwriting it blind", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "external", value: "x" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    expect(repo.replaceClassified({ id: "d1", value: "a" })).toBe(false);
+
+    expect(drafts.stored()).toEqual({ id: "external", value: "x" });
   });
 
   it("discardClassified is a no-op after load() observes empty storage, even when another writer saves afterward", () => {

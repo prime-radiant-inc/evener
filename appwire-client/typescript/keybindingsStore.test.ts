@@ -776,6 +776,27 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
+  test("a checkpointed write is refused while a direct write owns the payload", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const direct = store.getState().patchOverrides(rules);
+    await vi.waitFor(() => expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1));
+
+    // The reverse of the case above: a checkpointed save starting here would
+    // claim a NEWER write token, fencing the direct write's own reply out as
+    // superseded even though the hub may have already applied it.
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow("unavailable");
+
+    reply.resolve(payload(4, rules));
+    await direct;
+    expect(store.getState()).toMatchObject({ revision: 4 });
+    // The gate lifts once the direct write has settled.
+    await expect(store.getState().saveDraft(rules)).resolves.toBeDefined();
+  });
+
   test("an older save's late reply does not clear a newer save's saving flag", async () => {
     const client = clientServing(3);
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();

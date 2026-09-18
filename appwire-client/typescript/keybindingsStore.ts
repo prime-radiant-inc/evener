@@ -67,12 +67,16 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still this one; reports
+  /** Removes the stored checkpoint only if it is still named by `identity`;
+   * reports whether it did. `identity` is usually a checkpoint this port
+   * itself produced, but the unreadable-record recovery also hands it the
+   * RAW value load() returned - typed `unknown`, not the checkpoint shape,
+   * so a conforming port never assumes it can decode what it is given. */
+  removeIf(identity: unknown): boolean;
+  /** Replaces the stored checkpoint with `next` only if `expected` (the same
+   * raw-or-decoded identity removeIf takes) is still the one stored; reports
    * whether it did. */
-  removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
-  /** Replaces the stored checkpoint with `next` only if `expected` is still
-   * the one stored; reports whether it did. */
-  replaceIf(expected: KeybindingDraftCheckpoint, next: KeybindingDraftCheckpoint): boolean;
+  replaceIf(expected: unknown, next: KeybindingDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
@@ -614,6 +618,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * rest of the wiring state so a never-resolving write cannot leak into the
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
+  /** True from the moment a direct write claims its write token until its
+   * own reply (or fencing) settles. Both write paths share one write token
+   * (fence.claimWrite): a checkpointed save starting here would claim a
+   * NEWER one, fencing the direct write's own reply out as superseded even
+   * though the hub may have already applied it. saveDraft refuses while
+   * this is true, the same posture patchOverrides takes on `saving`. */
+  let directWriteInFlight = false;
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
@@ -1121,39 +1132,48 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // A response landing after support loss must not re-apply - the
       // unsupported branch already un-applied and retired the hub state.
       const stillMine = () => fence.writeStillMine(generation, token);
+      // Marks this write as the shared token's current owner from the
+      // moment it is claimed until this call's own settlement - every exit
+      // path clears it, so saveDraft's sibling gate never stays refused
+      // over a write that has already landed or failed.
+      directWriteInFlight = true;
       try {
-        const result = await client.request("evener/settings/keybindings/patch", {
-          expectedRevision: state.revision,
-          config: { version: 1, rules: cloneRules(rules) },
-        });
-        if (!stillMine()) {
-          const current = getState();
-          return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
-        }
-        const payload = fromWireOverrides(result);
-        if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
-        applyHubOverrides(payload);
-        return payload;
-      } catch (error) {
-        if (stillMine()) {
-          // Post-rename durable failure: the patch APPLIED on the hub (the
-          // error carries the canonical applied state, and the broadcast
-          // reconciles every client). Apply locally and report success -
-          // surfacing hubError here would disable editing over bindings that
-          // are already live.
-          const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
-          if (applied !== undefined) {
-            applyHubOverrides(applied);
-            return applied;
+        try {
+          const result = await client.request("evener/settings/keybindings/patch", {
+            expectedRevision: state.revision,
+            config: { version: 1, rules: cloneRules(rules) },
+          });
+          if (!stillMine()) {
+            const current = getState();
+            return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
           }
-          // A lost revision race: the rejection carries the server's current
-          // state, so refresh to it and surface the conflict.
-          const current = rejectionPayload(error, "conflict", "current");
-          if (current !== undefined) applyHubOverrides(current);
-          const message = errorText(error);
-          setState({ hubError: message, ...(current === undefined ? {} : { conflict: message }) });
+          const payload = fromWireOverrides(result);
+          if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
+          applyHubOverrides(payload);
+          return payload;
+        } catch (error) {
+          if (stillMine()) {
+            // Post-rename durable failure: the patch APPLIED on the hub (the
+            // error carries the canonical applied state, and the broadcast
+            // reconciles every client). Apply locally and report success -
+            // surfacing hubError here would disable editing over bindings that
+            // are already live.
+            const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
+            if (applied !== undefined) {
+              applyHubOverrides(applied);
+              return applied;
+            }
+            // A lost revision race: the rejection carries the server's current
+            // state, so refresh to it and surface the conflict.
+            const current = rejectionPayload(error, "conflict", "current");
+            if (current !== undefined) applyHubOverrides(current);
+            const message = errorText(error);
+            setState({ hubError: message, ...(current === undefined ? {} : { conflict: message }) });
+          }
+          throw error;
         }
-        throw error;
+      } finally {
+        directWriteInFlight = false;
       }
     };
     // Chain behind the previous write's SETTLEMENT: a failed write must not
@@ -1260,6 +1280,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   async function saveDraft(rules?: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
     const current = assertEditable();
+    // Both write paths share one write token (patchOverrides' sibling gate
+    // on saving/writeUncertain is the reverse of this): claiming a NEWER
+    // token here while a direct write is in flight would fence that write's
+    // own reply out as superseded, racing or conflicting with whichever
+    // PATCH the hub actually processes first.
+    if (directWriteInFlight) throw new Error(UNAVAILABLE_MESSAGE);
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
     const checked = keybindingRules(rules ?? existing?.rules ?? current.rules, invalidUserRules);
@@ -1424,6 +1450,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       missedChangeNotification = false;
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();
+      directWriteInFlight = false;
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).

@@ -12,15 +12,21 @@ export interface DraftPort<Checkpoint> {
   createId(): string;
   load(): unknown;
   save(checkpoint: Checkpoint): void;
-  /** Removes the stored record only if `checkpoint` still names it; reports
-   * whether it did. */
-  removeIf(checkpoint: Checkpoint): boolean;
+  /** Removes the stored record only if `identity` still names it; reports
+   * whether it did. `identity` is usually a Checkpoint this port itself
+   * produced (via load() or save()), but discardStoredDraft() also hands it
+   * the RAW value load() returned for a record no build can decode - typed
+   * `unknown`, not Checkpoint, so a conforming port never assumes the
+   * declared checkpoint shape and compares by whatever bytes it actually
+   * holds. */
+  removeIf(identity: unknown): boolean;
   /** Replaces the stored record with `next` only if `expected` still names
-   * it; reports whether it did. The atomic twin of removeIf: a load-then-
-   * save pair has the identical race a load-then-remove pair would (the
-   * reason removeIf exists at all) - a concurrent writer's checkpoint landing
-   * between the two would be silently overwritten by an unconditional save. */
-  replaceIf(expected: Checkpoint, next: Checkpoint): boolean;
+   * it (the same raw-or-decoded identity removeIf takes); reports whether it
+   * did. The atomic twin of removeIf: a load-then-save pair has the
+   * identical race a load-then-remove pair would (the reason removeIf exists
+   * at all) - a concurrent writer's checkpoint landing between the two would
+   * be silently overwritten by an unconditional save. */
+  replaceIf(expected: unknown, next: Checkpoint): boolean;
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from
@@ -38,7 +44,7 @@ export class UnreadableDraftError extends Error {}
 export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): boolean {
   const value = storage.load();
   if (value === null || value === undefined) return false;
-  return storage.removeIf(value as Checkpoint);
+  return storage.removeIf(value);
 }
 
 export interface DraftRepository<Checkpoint> {
@@ -137,30 +143,52 @@ export function createDraftRepository<Checkpoint extends object>(
       rawFrom.set(checkpoint as object, decoded);
     },
     removeIf(checkpoint: Checkpoint): boolean {
-      return storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);
+      return storage.removeIf(rawFrom.get(checkpoint as object) ?? decode(checkpoint));
     },
     /** Removes the record load() most recently classified, readable or not,
      * by the identity of the bytes it was classified from - never a fresh
      * reload, which could name a record another writer has since replaced.
      * A load() that classified the store as EMPTY removes nothing (there is
      * no record this repository classified to discard) and reports false.
-     * Reports whether removal actually happened otherwise too: a byte-aware
-     * port's own compare (removeIf) refuses on its own if that record is
-     * gone, and this falls back to discardStoredDraft's fresh-reload
-     * behavior only when nothing has been classified AT ALL (defensive: a
-     * store never calls this without classifying first). */
+     * Nothing classified AT ALL (defensive: a store never calls this
+     * without classifying first) has no identity to act on either, so this
+     * classifies NOW via a fresh load() rather than removing blind: a
+     * readable record is not this call's to discard (some writer stored it
+     * without this repository ever showing it to a user) and is left alone;
+     * only an unreadable one - nothing any build could have shown - is
+     * removed, matching discardStoredDraft's own contract. */
     discardClassified(): boolean {
-      if (!hasClassified) return discardStoredDraft(storage);
       if (classifiedAbsent) return false;
-      return storage.removeIf(lastClassified as Checkpoint);
+      if (hasClassified) return storage.removeIf(lastClassified);
+      const value = storage.load();
+      if (value === null || value === undefined) return false;
+      try {
+        decode(value);
+        return false;
+      } catch {
+        return storage.removeIf(value);
+      }
     },
+    /** Settles the classified record onto `next` atomically. Nothing
+     * classified yet (or classified as absent) has no identity to be atomic
+     * against - the same case discardClassified treats as nothing-to-act-on
+     * - but rather than overwriting blind, this classifies NOW via a fresh
+     * load(): a readable record found there is not this call's to replace
+     * (refuses, so the caller re-reads/surfaces it, the same posture a
+     * refused replaceIf gets below); only empty or unreadable storage is
+     * fair game to write over unconditionally. */
     replaceClassified(next: Checkpoint): boolean {
       const decoded = decode(next);
-      // Nothing classified yet, or classified as absent: there is no
-      // identity to be atomic against (the same case discardClassified
-      // treats as nothing-to-act-on) - the write itself is the first real
-      // classification.
       if (!hasClassified || classifiedAbsent) {
+        const value = storage.load();
+        if (value !== null && value !== undefined) {
+          try {
+            decode(value);
+            return false;
+          } catch {
+            // Unreadable: nothing readable to lose, fall through to write.
+          }
+        }
         storage.save(decoded);
         lastClassified = decoded;
         hasClassified = true;
@@ -168,7 +196,7 @@ export function createDraftRepository<Checkpoint extends object>(
         rawFrom.set(next as object, decoded);
         return true;
       }
-      const replaced = storage.replaceIf(lastClassified as Checkpoint, decoded);
+      const replaced = storage.replaceIf(lastClassified, decoded);
       if (replaced) {
         lastClassified = decoded;
         hasClassified = true;

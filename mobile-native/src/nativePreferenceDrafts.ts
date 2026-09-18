@@ -12,10 +12,13 @@ export interface NativePreferenceDraftBackend {
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	delete(key: string): void;
-	deleteIf(
-		key: string,
-		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
-	): boolean;
+	/** Removes the record at `key` only if it is still named by `identity`;
+	 * reports whether it did. `identity` is usually a checkpoint this
+	 * backend itself produced, but the unreadable-record recovery also hands
+	 * it the RAW value get() returned - typed `unknown`, not either
+	 * checkpoint shape, so a conforming backend never assumes it can decode
+	 * what it is given. */
+	deleteIf(key: string, identity: unknown): boolean;
 }
 
 /** The keybindings draft port settles atomically (a save that adopts a
@@ -27,7 +30,7 @@ export interface NativePreferenceDraftBackend {
 export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
 	replaceIf(
 		key: string,
-		expected: KeybindingDraftCheckpoint,
+		expected: unknown,
 		next: KeybindingDraftCheckpoint,
 	): boolean;
 }
