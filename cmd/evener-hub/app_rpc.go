@@ -1208,11 +1208,12 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// Every instance write answers the same way: a write that applied is
 	// announced, whether or not the step after it failed (writeDidApply), and
 	// the error still goes back to the client that asked, which is the only
-	// one that can act on what was left behind.
-	instanceWrite := func(apply func() error) (appwire.InstanceListResponse, error) {
+	// one that can act on what was left behind. The broadcast echoes the
+	// caller's own originClientId so that client recognizes its own change.
+	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
 		err := apply()
 		if writeDidApply(err) {
-			notifyInstanceUpdated(server)
+			notifyInstanceUpdated(server, originClientId)
 		}
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
@@ -1220,22 +1221,22 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		return instancesController.List(), nil
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.Create(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.Edit(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.Edit(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.Remove(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.Remove(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.SetDefault(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetDefault(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetModelDisabled(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.RefreshModels(ctx, params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.RefreshModels(ctx, params) })
 	})
 }
 
@@ -1525,23 +1526,29 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 	case err == nil:
 		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
 	case writeDidApply(err):
-		notifyInstanceUpdated(server)
+		notifyInstanceUpdated(server, originClientID)
 	}
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all
 // connected clients after a provider-instance CRUD mutation (create, edit,
-// remove, setDefault). It deliberately reuses the auth/updated channel rather
-// than minting a new notification type: the client-side handler
+// remove, setDefault, setModelDisabled, refreshModels), and it is also the
+// no-data form notifyAuthWrite uses for a credential write that applied but
+// whose status read failed. It deliberately reuses the auth/updated channel
+// rather than minting a new notification type: the client-side handler
 // (notifications.js) already treats evener/auth/updated as payload-agnostic —
 // "credentials or instances changed, refetch" — reloading both the instances
-// panel and the providers settings tab on receipt, regardless of payload
-// content. An empty payload mirrors notifyMarketplaceUpdated/
-// notifyPluginUpdated below, which broadcast the same way for the same
-// reason: there is no single provider/activeSource pair that honestly
-// summarizes "the instance list changed."
-func notifyInstanceUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
+// panel and the providers settings tab on receipt.
+//
+// Provider and activeSource stay empty: there is no single provider/activeSource
+// pair that honestly summarizes "the instance list changed." originClientId is
+// the originating client's own id, echoed back from the mutation that produced
+// this broadcast so that client can recognize its own echo by id instead of
+// refetching as if another client had changed the list; empty when the caller
+// sent none (an older build, the TUI), which leaves the payload exactly as it
+// was before the field existed.
+func notifyInstanceUpdated(server *appserver.Server, originClientId string) {
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{OriginClientId: originClientId})
 }
 
 // notifyLaunchUpdated broadcasts a evener/launch/updated notification to all connected clients.

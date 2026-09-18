@@ -818,6 +818,7 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -837,6 +838,7 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEntry`
@@ -893,6 +895,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceRemoveParams`
@@ -901,6 +904,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -908,6 +912,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetModelDisabledParams`
@@ -917,6 +922,7 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `ItemLifecycleParams`

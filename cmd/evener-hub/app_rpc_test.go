@@ -11848,6 +11848,48 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceCreateBroadcastEchoesOriginClientId is the instance-side
+// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: an
+// evener/instance/create from a client that names itself must broadcast an
+// evener/auth/updated carrying that same id, so the originator recognizes its
+// own echo by id instead of treating its own mutation as another client's
+// change and refetching.
+func TestHubRPCInstanceCreateBroadcastEchoesOriginClientId(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	params := waitForAuthUpdated(t, client)
+	if params.OriginClientId != "tab-a" {
+		t.Errorf("%s params=%+v: originClientId=%q, want %q (the caller's own id echoed back)",
+			appwire.NotifyEvenerAuthUpdated, params, params.OriginClientId, "tab-a")
+	}
+}
+
+// TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
+// for TestHubRPCInstanceCreateBroadcastEchoesOriginClientId: the identical
+// create with no id must broadcast an empty one, so the id the first test
+// observes is the caller's value rather than one the hub supplies on its own.
+func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	params := waitForAuthUpdated(t, client)
+	if params.OriginClientId != "" {
+		t.Errorf("%s params=%+v: originClientId=%q, want empty: this caller sent none, so the broadcast must not name one",
+			appwire.NotifyEvenerAuthUpdated, params, params.OriginClientId)
+	}
+}
+
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
 // of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
 // evener/auth/updated is the right (reused) notification.

@@ -994,6 +994,7 @@ export interface InstanceCreateParams {
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
+  originClientId?: string;
 }
 
 export interface InstanceEditParams {
@@ -1010,6 +1011,7 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  originClientId?: string;
 }
 
 export interface InstanceEntry {
@@ -1105,6 +1107,7 @@ export interface InstanceModelEntry {
 
 export interface InstanceRefreshModelsParams {
   name: string;
+  originClientId?: string;
 }
 
 export interface InstanceRemoveParams {
@@ -1117,16 +1120,19 @@ export interface InstanceRemoveParams {
    * have its replacement instance removed. Empty asserts nothing.
    */
   expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface InstanceSetDefaultParams {
   name: string;
+  originClientId?: string;
 }
 
 export interface InstanceSetModelDisabledParams {
   name: string;
   model: string;
   disabled: boolean;
+  originClientId?: string;
 }
 
 export interface ItemLifecycleParams {

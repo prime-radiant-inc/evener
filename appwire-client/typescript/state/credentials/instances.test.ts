@@ -130,7 +130,10 @@ describe("listing reads and writes", () => {
 
     expect(await store.getState().setDefault("work")).toBe(true);
     expect(store.getState().instances[0]?.isDefault).toBe(false);
-    expect(fake.calls.at(-1)).toEqual({ method: "evener/instance/setDefault", params: { name: "work" } });
+    expect(fake.calls.at(-1)).toEqual({
+      method: "evener/instance/setDefault",
+      params: { name: "work", originClientId: "tab-1" },
+    });
   });
 
   test("a write from a replaced connection's listing is refused with the shared words until this connection reads", async () => {
@@ -585,5 +588,79 @@ describe("credential mutations", () => {
     });
     await vi.advanceTimersByTimeAsync(300);
     expect(listReads(firstClient)).toBe(1);
+  });
+});
+
+describe("instance mutations and their own echo", () => {
+  // An instance mutation's hub broadcast carries no provider - no single
+  // provider/activeSource pair summarizes "the list changed" - so before this
+  // correlation the originator read its own echo as another client's change and
+  // refetched, and the web's ProviderConnection invalidated on that foreign
+  // read. The mutation now stamps originClientId, and the echo carrying this
+  // client's own id is consumed as a self-marked refresh.
+  test("a mutation stamps originClientId and its provider-less own echo is self-marked, not foreign", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/instance/create", () => LISTING);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // The wire stamp itself is pinned by the sibling test below; this one is
+    // about what the echo carrying it does.
+    await store.getState().create({ name: "work", base: "anthropic" });
+
+    // Watch only the echo-driven read: the create's own applied answer is a
+    // listing change a flow is right to invalidate on.
+    const marked = store.getState().selfRefresh;
+    const foreign: boolean[] = [];
+    store.subscribe((state, previous) => foreign.push(foreignListingChange(state, previous)));
+
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+    expect(foreign.some(Boolean)).toBe(false);
+
+    // A notification naming another client is foreign however provider-less it
+    // is: it refetches, and the transition is not the store's own refresh.
+    const afterOwn = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-2" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(3);
+    expect(store.getState().selfRefresh).toBe(afterOwn);
+    expect(foreign.some(Boolean)).toBe(true);
+  });
+
+  test("every instance mutation stamps originClientId", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/instance/create", () => LISTING);
+    fake.on("evener/instance/edit", () => LISTING);
+    fake.on("evener/instance/remove", () => LISTING);
+    fake.on("evener/instance/setDefault", () => LISTING);
+    fake.on("evener/instance/setModelDisabled", () => LISTING);
+    fake.on("evener/instance/refreshModels", () => LISTING);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    await store.getState().create({ name: "work", base: "anthropic" });
+    await store.getState().edit({ name: "work", newName: "work-2" });
+    await store.getState().remove("work", "fp-1");
+    await store.getState().setDefault("work");
+    await store.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await store.getState().refreshModels("work");
+
+    for (const method of [
+      "evener/instance/create",
+      "evener/instance/edit",
+      "evener/instance/remove",
+      "evener/instance/setDefault",
+      "evener/instance/setModelDisabled",
+      "evener/instance/refreshModels",
+    ]) {
+      const call = fake.calls.filter((candidate) => candidate.method === method).at(-1);
+      expect((call?.params as { originClientId?: string } | undefined)?.originClientId, method).toBe("tab-1");
+    }
   });
 });
