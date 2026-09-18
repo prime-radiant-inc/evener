@@ -140,9 +140,12 @@ cancel.
   gated on `blockedUnknown` - a canceled note row would otherwise sit pinned
   (with its note text) until the thread goes away. The user's next save is the
   retry: when a newer `notes/human/set` for the ref reaches canonical
-  settlement (`settleReceipt`/`settleApplied`), the settlement write discards
-  the ref's earlier canceled note rows, mirroring the existing
-  `#discardSupersededNoteRecovery` supersede for refused note recovery rows.
+  settlement (`settleReceipt`/`settleApplied`), a best-effort write right after
+  the settlement commits discards the ref's earlier canceled note rows, mirroring
+  the existing `#discardSupersededNoteRecovery` supersede for refused note
+  recovery rows. (After the commit, not inside it: an in-transaction scan delayed
+  the commit boundary the note editor's parked-save replay stages against.)
+  A failed discard leaves the rows for the next settle, clear, or delete.
   Delivery-uncertain note rows are never discarded this way - a newer save
   supersedes nothing that may already be on the wire.
 - **Display:** `canceled` rows surface in the same UI slot as today's blocked rows
