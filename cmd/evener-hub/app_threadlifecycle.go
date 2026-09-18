@@ -386,6 +386,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
 	}
 	requestedID := sessionID
+	var ownershipAliases []string
 	if cfg.ResumeLocks != nil {
 		epoch := sessionRequestRecoveryEpoch(ctx, cfg, "", requestedID)
 		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
@@ -397,6 +398,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
+		ownershipAliases = aliases
 		if err := cfg.ResumeLocks.ResumeCleanupError(aliases); err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
@@ -442,6 +444,12 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		lockDone(nil)
 		heldStarted = time.Now()
 		trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
+		// A deletion record may name any alias in the resolved ownership
+		// group, so the whole group is fenced here, under the locks that make
+		// the check final, before live-owner reuse or launching below.
+		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
 		for _, id := range aliases {
 			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
 				return appwire.ThreadResumeResponse{}, err
@@ -479,20 +487,11 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()
-		if requestedID != sessionID {
-			// resumeThreadLocked fences the resolved target and the ref; keep
-			// the original request's deletion fence under the same ownership
-			// locks.
-			if err := deletionFenceError(cfg, "", requestedID, ""); err != nil {
-				return appwire.ThreadResumeResponse{}, err
-			}
-		}
-
 	}
 
 	lockedParams := params
 	lockedParams.Session = sessionID
-	launch := resumeLaunch{active: activeResume, completionOwned: !automatic}
+	launch := resumeLaunch{active: activeResume, completionOwned: !automatic, aliases: ownershipAliases}
 	launched, launchErr := resumeThreadLockedLaunch(ctx, cfg, sources, lockedParams, &launch)
 	cleanupErr = launch.cleanupErr
 	return launched, launchErr
@@ -521,6 +520,11 @@ type resumeLaunch struct {
 	active          *hubcore.ActiveResume
 	completionOwned bool
 	cleanupErr      error
+	// aliases is the caller's resolved ownership group when it holds one (the
+	// explicit Resume wrapper); the retirement wrapper holds no group and
+	// leaves it nil, and the launcher falls back to the requested/resolved
+	// pair its caller always has.
+	aliases []string
 }
 
 // resumeThreadLockedLaunch is resumeThreadLocked for a caller that holds a
@@ -546,7 +550,11 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	if err := deletionFenceError(cfg, params.Ref, requestedID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	if err := deletionFenceErrorForGroup(cfg, []string{requestedID, sessionID}); err != nil {
+	group := launch.aliases
+	if len(group) == 0 {
+		group = []string{requestedID, sessionID}
+	}
+	if err := deletionFenceErrorForGroup(cfg, group); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
 

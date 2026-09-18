@@ -948,6 +948,62 @@ func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
 	}
 }
 
+// TestRetirementResumeSiblingAliasDeletionFencesOwnershipGroup pins the same
+// ownership-group fence on the retirement path: the deletion record names only
+// a sibling alias in the resolved group while the path validated only the
+// resolved target, so the whole group must be fenced under the alias locks
+// before live-owner reuse or replacement.
+func TestRetirementResumeSiblingAliasDeletionFencesOwnershipGroup(t *testing.T) {
+	requested := hubtest.SessionID(t)
+	target := hubtest.SessionID(t)
+	sibling := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	// A completed clear over a three-alias ownership group, with the resolved
+	// routing recorded requested -> target. The fence names only the sibling.
+	if err := locks.PersistForceStop([]string{requested, target, sibling}, target); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(requested).Epoch
+	if err := locks.ExplicitResumeCompleted(target, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(requested, target, epoch)
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(filepath.Base(hubtest.ProjectDir(t, t.TempDir(), "deleted")), []hubcore.DeletionTarget{{Ref: "local:" + sibling, ThreadID: sibling}}); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	runDir := t.TempDir()
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+	cfg := hubcore.WebConfig{
+		RunDir:        runDir,
+		Roster:        hubcore.NewRoster(runDir, nil),
+		ResumeLocks:   locks,
+		DeletionStore: store,
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			launches++
+			return rendezvous.Entry{}, errors.New("sibling-deleted group reached launcher")
+		}},
+	}
+	err = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("sibling deletion fence error=%v", err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.MutationOutcome != appwire.MutationOutcomeTargetDeleted {
+		t.Errorf("deletion outcome=%#v", wire.Data)
+	}
+	if launches != 0 {
+		t.Fatalf("sibling-deleted group launch count=%d", launches)
+	}
+}
+
 // TestResumeAfterConfirmedRetirementRecordsResolvedSession is the round-16
 // regression: a successful retirement recovery must record the replacement the
 // alias resolved to, or the alias keeps walking a stale hop. The recorded chain

@@ -181,13 +181,14 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 		}
 		acquired++
 	}
+	// A deletion record may name any alias in the resolved ownership
+	// group, so the whole group is fenced under the locks that make the
+	// check final, before live-owner reuse or replacement below.
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return err
+	}
 	for _, id := range aliases {
 		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
-			return err
-		}
-	}
-	if target != sessionID {
-		if err := deletionFenceError(cfg, "", target, ""); err != nil {
 			return err
 		}
 	}

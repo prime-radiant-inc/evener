@@ -422,6 +422,42 @@ func TestAliasResumeHonorsRequestedAndResolvedDeletionFences(t *testing.T) {
 	}
 }
 
+// TestExplicitResumeSiblingAliasDeletionFencesOwnershipGroup is the group half
+// of TestAliasResumeHonorsRequestedAndResolvedDeletionFences: the fence names
+// a THIRD alias in the resolved ownership group, neither the requested ref nor
+// the resolved target. A fence check covering only those two lets the resume
+// launch into a deleted group, so once every resolved alias is locked the
+// whole group must be validated before live-owner reuse or launching.
+func TestExplicitResumeSiblingAliasDeletionFencesOwnershipGroup(t *testing.T) {
+	stable, current, sibling := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(filepath.Base(hubtest.ProjectDir(t, t.TempDir(), "deleted")), []hubcore.DeletionTarget{{Ref: "local:" + sibling, ThreadID: sibling}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: hubcore.NewResumeLocks(), DeletionStore: store}
+	writeRendezvous(t, cfg.RunDir, rendezvous.Entry{PID: 101, SessionID: current, ThreadID: sibling, WorkspaceRef: "local:" + stable})
+	launches := 0
+	cfg.Spawner = &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		launches++
+		return rendezvous.Entry{}, errors.New("sibling-deleted group reached launcher")
+	}}
+	_, err = hubThreadResume(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: "local:" + stable})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("sibling deletion fence error=%v", err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.MutationOutcome != appwire.MutationOutcomeTargetDeleted {
+		t.Errorf("deletion outcome=%#v", wire.Data)
+	}
+	if launches != 0 {
+		t.Fatalf("sibling-deleted group launch count=%d", launches)
+	}
+}
+
 func TestCompletedResumeMappingDefersToCurrentIdentity(t *testing.T) {
 	for _, newerRecovery := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fresh marker", true: "newer recovery"}[newerRecovery], func(t *testing.T) {
