@@ -1,11 +1,15 @@
-// A summary-less two-level row's body trigger shares the intent line with a
-// BARE intent span (no overlay trigger, no .intentTriggerContent wrapper - the
-// delegate row with no trailing affordance). Two invariants:
+// A summary-less two-level row's body trigger shares the intent line with the
+// row's bare content line (.intentLine: rail icon, status, and the intent - no
+// overlay trigger, no Open affordance; the delegate row with no trailing
+// affordance). Two invariants:
 //
 //   1. SAME LINE. The body trigger must share the intent's FIRST line. Without
-//      the .row[data-intent-trailing="true"] > .intent max-width reservation a
-//      long intent's flex base is max-content; flex line-breaking happens
-//      before shrink, so it claims the whole line and the trigger wraps.
+//      the .row[data-intent-trailing="true"] > .intentLine max-width
+//      reservation a long intent's flex base is max-content; flex line-breaking
+//      happens before shrink, so it claims the whole line and the trigger wraps.
+//      The reservation bounds the WHOLE line, so the rail icon's full outer
+//      width below the 700px breakpoint (where its negative-gutter pull is off)
+//      counts too (roborev).
 //
 //   2. TEXT-EDGE ADJACENCY. In short fixtures with slack, the trigger's left
 //      edge is one column-gap after the intent TEXT edge (a Range rect). A

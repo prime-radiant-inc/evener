@@ -75,6 +75,7 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   trigger: requireClass(styles.trigger, "toolcallitem.module.css", "trigger"),
   intentTriggerContent: requireClass(styles.intentTriggerContent, "toolcallitem.module.css", "intentTriggerContent"),
+  intentLine: requireClass(styles.intentLine, "toolcallitem.module.css", "intentLine"),
   intentOverlayTrigger: requireClass(styles.intentOverlayTrigger, "toolcallitem.module.css", "intentOverlayTrigger"),
   summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
@@ -954,14 +955,20 @@ export function ToolRow({
           {!intentControlSuppressed && chevron}
         </>
       ) : hasIntent && intentControlSuppressed ? (
-        <>
+        // The whole line - rail icon, status, and the bare intent - rides ONE
+        // flex item so the reservation that keeps the body trigger on line 1
+        // bounds the icon's full outer width too (see .intentLine). A bare
+        // .intent direct child would start AFTER the icon, leaving the icon's
+        // ~34px unbounded below the 700px breakpoint and wrapping the trigger
+        // on a phone column (#1253 review).
+        <span className={CLASS.intentLine} data-testid="tool-row-intent-line">
           {iconNode}
           {failureNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
             {statedIntent}
           </span>
-        </>
+        </span>
       ) : hasIntent ? (
         <button
           type="button"

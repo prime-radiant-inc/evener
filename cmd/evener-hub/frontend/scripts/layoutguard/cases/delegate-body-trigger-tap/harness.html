@@ -16,30 +16,56 @@
   }
   .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
-  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+  /* Production reserves the rail gutter only at/above the 700px breakpoint
+   * (turnblock.module.css .runContent / session.module.css .intentGroupItems,
+   * both @media (min-width: 700px)); below it the .rowIcon's negative pull is
+   * off and there is no gutter. At this case's 390px viewport that is exactly
+   * the condition under test, so the fixture must not pad. */
+  .railBox { box-sizing: border-box; }
+  @media (min-width: 700px) {
+    .railBox { padding-left: var(--speaker-gutter); }
+  }
 </style>
 </head>
 <body data-font-size="m">
 <!-- The summary-less two-level row (ToolRow's intentControlSuppressed arm) at a
      phone viewport, where tokens.css declares --tap-min: 44px. The body trigger
      is the row's ONLY control; the @media (max-width: 899px) .bodyTrigger block
-     must grow it to the tap floor, and the .row[data-intent-trailing="true"] >
-     .intent reservation (var(--tap-min, 14px)) must reserve that grown width so
-     the bare intent still shares line 1:
+     must grow it to the tap floor, and the line's reservation must reserve that
+     grown width so the bare intent still shares line 1.
+
+     The row reproduces PRODUCTION's siblings, not just .intent + .bodyTrigger:
+     every delegate row carries a .rowIcon (icon: "delegate") and a live/settled
+     one a .status dot. Below the 700px breakpoint .rowIcon's negative-gutter
+     pull does NOT apply, so the icon contributes its full outer width (24px
+     slot + 2px margin-right + one column-gap = 34px, --speaker-gutter) to the
+     line. A reservation that bounds only the .intent - which begins AFTER the
+     icon - lets the line sum 100% + 34px and wraps the body trigger to its own
+     line, which is exactly the failure this case exists to catch (roborev):
 
        <div class="row" data-intent="true" data-intent-trailing="true"
             data-body-trigger-intent="true">
-         <span class="intent">{statedIntent}</span>
+         <span class="intentLine">
+           <span class="rowIcon">…</span>
+           <span class="status">…</span>
+           <span class="intent">{statedIntent}</span>
+         </span>
          <button class="bodyTrigger"><span class="chevron">…</span></button>
        </div> -->
 <div class="fixtures"></div>
 <script>
 const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.5" fill="none"></circle></svg>';
+const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--ink-mid)"></span>';
 
 function rowHtml(id, intent) {
   return `
     <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
-      <span class="intent" id="intent-${id}">${intent}</span>
+      <span class="intentLine" id="line-${id}">
+        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="status" id="status-${id}">${STATUS_DOT}</span>
+        <span class="intent" id="intent-${id}">${intent}</span>
+      </span>
       <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="true">
         <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span>
       </button>

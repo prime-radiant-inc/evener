@@ -139,17 +139,27 @@
   max-width: calc(100% - var(--tap-min, 14px) - var(--space-2));
 }
 
-/* A summary-less two-level row renders its intent as a BARE direct child (no
- * overlay trigger, no .intentTriggerContent wrapper) while the body trigger
- * shares the line - the delegate row's shape when it has no trailing
- * affordance (issue #1253). Same constraint as the wrapper rules above: the
- * intent
- * must shrink to its text and leave room for the body chevron, never grow to
- * fill the line and spring the chevron to the far edge. The reservation is the
- * body trigger's own width: the 14px chevron on desktop, --tap-min when the
- * phone block below grows it. */
-.row[data-intent-trailing="true"] > .intent {
+/* A summary-less two-level row renders its intent as a BARE line while the
+ * body trigger shares it - the delegate row's shape when it has no trailing
+ * affordance (issue #1253). The line is not the .intent alone: the rail icon
+ * and status siblings lead it, and below the 700px breakpoint the .rowIcon's
+ * negative-gutter pull does not apply, so the icon contributes its full outer
+ * width (24px slot + 2px margin-right + one column-gap = 34px, one
+ * --speaker-gutter) to the line. A max-width on the bare .intent would begin
+ * AFTER that icon and leave it unbounded, so the line sums 100% + 34px and flex
+ * line-breaking wraps the body trigger to its own line (roborev). Bound the
+ * WHOLE line - icon through intent - in one flex item instead. Same intent as
+ * the wrapper rules above: it shrinks to its text and leaves room for the body
+ * trigger, never grows to fill the line and spring the chevron to the far edge.
+ * The reservation is the body trigger's own width: the 14px chevron on desktop,
+ * --tap-min when the phone block below grows it. */
+.row[data-intent-trailing="true"] > .intentLine {
   flex: 0 1 auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
   min-width: 0;
   max-width: calc(100% - var(--tap-min, 14px) - var(--space-2));
 }

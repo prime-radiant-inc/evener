@@ -15,32 +15,46 @@
   }
   .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
-  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+  /* Production reserves the rail gutter only at/above the 700px breakpoint
+   * (turnblock.module.css .runContent / session.module.css .intentGroupItems,
+   * both @media (min-width: 700px)); below it the .rowIcon's negative pull is
+   * off and there is no gutter. Mirror that so each fixture width sees the real
+   * line box. */
+  .railBox { box-sizing: border-box; }
+  @media (min-width: 700px) {
+    .railBox { padding-left: var(--speaker-gutter); }
+  }
 </style>
 </head>
 <body data-font-size="m">
 <!-- Reproduces ToolRow.tsx's summary-less two-level branch (ToolRow's
      intentControlSuppressed arm): a delegate row with NO trailing affordance
-     renders the intent as a bare direct child of .row, with the two-level body
-     trigger sharing the line:
+     renders the intent as a BARE line, with the two-level body trigger sharing
+     it:
 
        <div class="row" data-intent="true" data-intent-trailing="true"
             data-body-trigger-intent="true">
-         <span class="intent">{statedIntent}</span>
+         <span class="intentLine">
+           <span class="rowIcon">…</span>
+           <span class="status">…</span>
+           <span class="intent">{statedIntent}</span>
+         </span>
          <button class="bodyTrigger"><span class="chevron">…</span></button>
        </div>
 
-     No overlay trigger and no .intentTriggerContent wrapper exist in this
-     shape, so the ONLY rule constraining the bare .intent is
-     `.row[data-intent-trailing="true"] > .intent`. Two intent lengths x two
-     column widths:
+     The row reproduces PRODUCTION's siblings: every delegate row carries a
+     .rowIcon and a live/settled one a .status dot, and below the 700px
+     breakpoint the .rowIcon's negative-gutter pull does not apply, so the icon
+     contributes its full outer width (34px) to the line. The whole line's
+     reservation must bound that icon, not just the .intent that begins after
+     it. Two intent lengths x two column widths:
        short intent - the intent must hug its text edge (flex:0 1 auto): with
          flex-grow it absorbs the slack and springs the body chevron to the
          line's far edge;
-       long intent  - the binding case: without the max-width reservation the
-         intent's flex base is max-content, so it claims the line and the body
-         trigger wraps to line 2; the reservation makes the intent wrap INSIDE
-         itself so the trigger stays on line 1.
+       long intent  - the binding case: without the reservation the intent's
+         flex base is max-content, so it claims the line and the body trigger
+         wraps to line 2; the reservation makes the intent wrap INSIDE itself
+         so the trigger stays on line 1.
 
      The measure reports line membership via a Range over the intent's first
      line (not a pixel snapshot), the body trigger's adjacency to that text
@@ -48,11 +62,17 @@
 <div class="fixtures"></div>
 <script>
 const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.5" fill="none"></circle></svg>';
+const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--ink-mid)"></span>';
 
 function rowHtml(id, intent) {
   return `
     <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
-      <span class="intent" id="intent-${id}">${intent}</span>
+      <span class="intentLine" id="line-${id}">
+        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="status" id="status-${id}">${STATUS_DOT}</span>
+        <span class="intent" id="intent-${id}">${intent}</span>
+      </span>
       <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="true">
         <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span>
       </button>
