@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,7 +26,40 @@ func TestMain(m *testing.M) {
 		_, _ = fmt.Fprintf(os.Stderr, "shardfixture TestMain: %v\n", err)
 		os.Exit(2)
 	}
-	os.Exit(m.Run())
+	done := announceLiveShard()
+	code := m.Run()
+	if done != nil {
+		done()
+	}
+	os.Exit(code)
+}
+
+// announceLiveShard, when SHARD_FIXTURE_LIVE_DIR is set, records this test
+// binary as a live process for as long as it runs. A run executes one binary
+// per shard, so no single binary can see how many of its peers are alive; each
+// process drops a live.<pid> marker, holds long enough that concurrently
+// started peers really do overlap, and writes its own observed population to
+// seen.<pid>. The agent-shards e2e test takes the maximum of those to prove how
+// many shards run at once. Inert unless the test asks for it.
+func announceLiveShard() func() {
+	dir := os.Getenv("SHARD_FIXTURE_LIVE_DIR")
+	if dir == "" {
+		return nil
+	}
+	live := filepath.Join(dir, fmt.Sprintf("live.%d", os.Getpid()))
+	if err := os.WriteFile(live, []byte("live\n"), 0o644); err != nil {
+		return nil
+	}
+	// Hold before running any test so a run that starts every shard at once has
+	// all of their markers on disk together, while a capped run keeps them
+	// strictly apart.
+	time.Sleep(250 * time.Millisecond)
+	seen, err := filepath.Glob(filepath.Join(dir, "live.*"))
+	if err == nil {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", os.Getpid())),
+			[]byte(strconv.Itoa(len(seen))+"\n"), 0o644)
+	}
+	return func() { _ = os.Remove(live) }
 }
 
 func configureShardRunFile() error {

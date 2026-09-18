@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -480,6 +481,66 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	}
 }
 
+// TestAgentShardsBoundsTotalShardConcurrency is the issue #1191 regression:
+// each shard is one OS process, and the runner used to start all of them at
+// once. AGENT_SHARD_PARALLEL therefore bounded only the tests within a shard,
+// and a one-CPU cgroup still got one live process per shard. The fixture
+// reports the peak population of live shard binaries, so the uncapped case
+// shows the probe can see every shard at once and the capped case proves it
+// never does.
+func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		concurrency int
+		wantPeak    int
+	}{
+		{"uncapped runs every shard at once", 0, 2},
+		{"capped serializes the shards", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.noSurvey = true
+			cfg.concurrency = tc.concurrency
+			liveDir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
+			if rc := runShards(cfg); rc != 0 {
+				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+			}
+			if got := peakLiveShards(t, liveDir); got != tc.wantPeak {
+				t.Fatalf("peak concurrent shard processes = %d, want %d\nstdout:\n%s", got, tc.wantPeak, stdout)
+			}
+		})
+	}
+}
+
+// peakLiveShards is the largest population any shard binary observed while it
+// was alive, read from the markers announceLiveShard left behind.
+func peakLiveShards(t *testing.T, dir string) int {
+	t.Helper()
+	seen, err := filepath.Glob(filepath.Join(dir, "seen.*"))
+	if err != nil {
+		t.Fatalf("globbing liveness observations: %v", err)
+	}
+	peak := 0
+	for _, file := range seen {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
+		}
+		if n > peak {
+			peak = n
+		}
+	}
+	if peak == 0 {
+		t.Fatalf("no shard binary reported its liveness; the probe never ran")
+	}
+	return peak
+}
+
 func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	cfg, _, stderr, _ := e2eConfig(t)
 	cfg.agentDir = filepath.Join(t.TempDir(), "no-such-module")
@@ -535,6 +596,8 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		{"AGENT_SHARD_COUNT", "banana"},
 		{"AGENT_SHARD_COUNT", "0"},
 		{"AGENT_SHARD_PARALLEL", "-3"},
+		{"AGENT_SHARD_CONCURRENCY", "banana"},
+		{"AGENT_SHARD_CONCURRENCY", "-1"},
 	} {
 		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot
