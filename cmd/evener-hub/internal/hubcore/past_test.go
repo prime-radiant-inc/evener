@@ -104,6 +104,27 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_LegacyRowOrdersByTimestampAgainstRevisioned pins that a
+// row written before the Revision field existed (Revision 0) is ordered by its
+// timestamps, not treated as older than every revisioned row. A legacy probe
+// with a newer UpdatedAt must replace an older revisioned indexed row.
+func fuzzScenarioPastIndex_LegacyRowOrdersByTimestampAgainstRevisioned(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "indexed", UpdatedAt: base, Revision: 5}})
+
+	idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base.Add(time.Minute)}})
+
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index after the fold")
+	}
+	if got.Meta.Name != "probe" {
+		t.Fatalf("legacy probe with a newer UpdatedAt was discarded for a revisioned row: Name=%q, want %q", got.Meta.Name, "probe")
+	}
+}
+
 // fuzzScenarioPastIndex_StaleProbeDoesNotClobberNewerIndexedRow pins the
 // tie-break direction: with equal timestamps a stale probe must not overwrite a
 // newer indexed row. The probe reads v1, an external timestamp-neutral re-save

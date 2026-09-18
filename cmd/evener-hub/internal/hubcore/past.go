@@ -1212,7 +1212,10 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 // existed, and an undecidable tie returns false so foldOne keeps the indexed row
 // rather than clobbering it with a probe whose order cannot be established.
 func metaNewer(a, b schema.SessionMeta) bool {
-	if a.Revision != b.Revision {
+	// Revision orders two revisioned rows. A row written before the field
+	// existed has Revision 0 and no revision order, so it must fall back to
+	// timestamps rather than lose to every revisioned row.
+	if a.Revision != 0 && b.Revision != 0 && a.Revision != b.Revision {
 		return a.Revision > b.Revision
 	}
 	if a.UpdatedAt.After(b.UpdatedAt) {
