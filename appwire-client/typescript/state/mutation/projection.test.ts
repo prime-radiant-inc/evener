@@ -66,7 +66,7 @@ describe("createMutationProjectionFence", () => {
     const snapshot = { ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] };
     const result = await fence.refresh(fakePort(snapshot), "ref-a");
     if (result === false) throw new Error("expected the refresh to be accepted");
-    expect(result.targets).toEqual(new Set(["ref-a"]));
+    expect(result.apply()).toEqual(new Set(["ref-a"]));
     expect(result.snapshot).toBe(snapshot);
   });
 
@@ -79,7 +79,7 @@ describe("createMutationProjectionFence", () => {
     };
     const result = await fence.refresh(fakePort(snapshot));
     if (result === false) throw new Error("expected the refresh to be accepted");
-    expect(result.targets).toEqual(new Set(["ref-a", "ref-b"]));
+    expect(result.apply()).toEqual(new Set(["ref-a", "ref-b"]));
   });
 
   test("a port read failure is reported as an unaccepted refresh", async () => {
@@ -108,7 +108,9 @@ describe("createMutationProjectionFence", () => {
   // Mirrors the web's own oracle (pendingTurnsStore.test.ts "an older
   // all-target projection cannot erase a newly committed send"): a live
   // commit's `advance` for one ref must out-rank a slower all-targets read
-  // that started before it but resolves after.
+  // that started before it but resolves after - for that ref only. A
+  // snapshot that discarded ALL its targets whenever ANY of them went stale
+  // would also pass this without the second, unaffected ref (ref-b).
   test("advance out-ranks a slower in-flight all-targets refresh for that one ref", async () => {
     const fence = createMutationProjectionFence();
     let resolveRead: ((snapshot: MutationPersistenceSnapshot) => void) | undefined;
@@ -120,10 +122,49 @@ describe("createMutationProjectionFence", () => {
     };
     const stale = fence.refresh(port);
     fence.advance("ref-a");
-    resolveRead?.({ ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] });
+    resolveRead?.({
+      ...emptySnapshot(),
+      outbox: [outboxRecord({ targetRef: "ref-a" }), outboxRecord({ clientMutationId: "cmid-2", targetRef: "ref-b" })],
+    });
     const result = await stale;
     if (result === false) throw new Error("expected the refresh to be accepted for its other targets");
-    expect(result.targets.has("ref-a")).toBe(false);
+    const accepted = result.apply();
+    expect(accepted.has("ref-a")).toBe(false);
+    expect(accepted.has("ref-b")).toBe(true);
+  });
+
+  // The generation floor for a target can move between `refresh` resolving
+  // (when candidates are first decided) and the caller getting around to
+  // calling `apply()` - a live commit's `advance` is exactly that kind of
+  // move. `apply()` must re-check at call time, not hand back a decision
+  // frozen at resolution.
+  test("advance landing after refresh resolves still out-ranks a stale apply", async () => {
+    const fence = createMutationProjectionFence();
+    const snapshot = { ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] };
+    const result = await fence.refresh(fakePort(snapshot), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    // A live commit for ref-a lands after the read resolved but before the
+    // caller applied it.
+    fence.advance("ref-a");
+    expect(result.apply().has("ref-a")).toBe(false);
+  });
+
+  test("a newer refresh that fails still raises the generation floor for an older in-flight refresh", async () => {
+    const fence = createMutationProjectionFence();
+    let resolveOlder: ((snapshot: MutationPersistenceSnapshot) => void) | undefined;
+    const olderPort: MutationPersistencePort = {
+      read: () =>
+        new Promise((resolve) => {
+          resolveOlder = resolve;
+        }),
+    };
+    const older = fence.refresh(olderPort, "ref-a");
+    const newer = fence.refresh({ read: () => Promise.reject(new Error("storage read failed")) }, "ref-a");
+    expect(await newer).toBe(false);
+    resolveOlder?.({ ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] });
+    const result = await older;
+    if (result === false) throw new Error("expected the older refresh to still resolve with a decision");
+    expect(result.apply().has("ref-a")).toBe(false);
   });
 
   test("epoch reports the fence's current epoch and moves on reset", () => {
