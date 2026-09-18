@@ -194,17 +194,15 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			caps := s.appCapabilities(tc.state, tc.processing)
 			working := status == appwire.ThreadStatusActive
 
-			// Steer and Interrupt are harness support, withheld only by
-			// closed: they do not follow `working`, and here the harness is
-			// wired for both (see
-			// TestAppCapabilities_SteerAdvertisesHarnessSupport and
-			// TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport).
-			wantSteer := status != appwire.ThreadStatusClosed
-			if caps.Steer != wantSteer {
-				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
+			// Steer and Interrupt advertise harness support, withheld only by
+			// closed: they do not follow `working`. The harness is wired for
+			// both (see TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport).
+			wantHarnessSupport := status != appwire.ThreadStatusClosed
+			if caps.Steer != wantHarnessSupport {
+				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantHarnessSupport)
 			}
-			if caps.Interrupt != wantSteer {
-				t.Fatalf("status=%q but interrupt=%v, want %v (harness support, closed withholds)", status, caps.Interrupt, wantSteer)
+			if caps.Interrupt != wantHarnessSupport {
+				t.Fatalf("status=%q but interrupt=%v, want %v (harness support, closed withholds)", status, caps.Interrupt, wantHarnessSupport)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed
