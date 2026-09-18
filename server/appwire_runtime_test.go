@@ -58,7 +58,7 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			if tc.setSteer {
-				s.SetSteerFunc(func(string) error { ; return nil })
+				wireRetrySafeCapabilities(s)
 			}
 			if tc.reserved {
 				s.appActiveTurnID = "turn_reserved"
@@ -106,6 +106,24 @@ func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
 	closed := s.appCapabilities(appwire.ThreadStatusClosed, false)
 	if closed.Queue || closed.Steer {
 		t.Fatalf("closed thread advertised queue/steer: %+v", closed)
+	}
+}
+
+// The mirror of the case above, and the one the review flagged: a server wired
+// only through the legacy SetSteerFunc/SetQueueFunc pair - which no handler
+// reads - must NOT advertise the action. turn/steer and turn/queue dispatch
+// through the retry-safe callbacks alone and would answer Unavailable, so
+// advertising it offered a control that could only fail.
+func TestAppCapabilities_IgnoresTheLegacySettersNoHandlerReads(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetSteerFunc(func(string) error { return nil })
+	s.SetSteerWithImagesFunc(func(string, []ImageAttachment) error { return nil })
+	s.SetQueueFunc(func(string) error { return nil })
+	s.SetQueueWithImagesFunc(func(string, []ImageAttachment) error { return nil })
+	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
+	if caps.Steer || caps.Queue {
+		t.Fatalf("legacy-only wiring advertised actions the RPC cannot serve: %+v", caps)
 	}
 }
 
@@ -178,7 +196,11 @@ func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) 
 				s.SetCancelFunc(func() {})
 			}
 			if tc.queueWired {
-				s.SetQueueFunc(func(string) error { return nil })
+				s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+					Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+						return appwire.TurnQueueResponse{}, nil
+					},
+				})
 			}
 			got := s.appCapabilities(tc.state, tc.processing)
 			if got.Interrupt != tc.wantInterrupt {
@@ -262,9 +284,8 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetSteerFunc(func(string) error { ; return nil })
+			wireRetrySafeCapabilities(s)
 			s.SetCancelFunc(func() {})
-			s.SetQueueFunc(func(string) error { return nil })
 			s.appReservedTurnID = tc.reserved
 
 			status := appStatus(tc.state, tc.processing, strings.TrimSpace(tc.reserved) != "")

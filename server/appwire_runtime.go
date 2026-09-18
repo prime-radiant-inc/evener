@@ -2811,11 +2811,11 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	status := appStatus(state, processing, strings.TrimSpace(s.appReservedTurnID) != "")
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
-	// steerAvailable takes either registration, for the same reason Queue does
-	// below: handleAppTurnSteer dispatches through retrySafeTurns.Steer, while
-	// SetSteerFunc/SetSteerWithImagesFunc are the legacy seam wired alongside
-	// it. Reading only the legacy pair hid a steer the daemon could take.
-	steerAvailable := s.retrySafeTurns.Steer != nil || s.steerFunc != nil || s.steerWithImagesFunc != nil
+	// steerAvailable reads the retry-safe callback because that is the seam
+	// handleAppTurnSteer dispatches through; the legacy SetSteerFunc pair is
+	// wired alongside it and read nowhere else, so counting it advertised a
+	// steer the RPC would answer Unavailable ("steer not available").
+	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
 		Send: !active && !closed,
@@ -2863,14 +2863,12 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// meaningful only mid-turn), the uniform rule Steer and Interrupt
 		// follow (#1375). It was the "active turn" gate of kata 111a.
 		//
-		// Either registration is a witness, because the two are wired together:
-		// handleAppTurnQueue dispatches through retrySafeTurns.Queue, and
-		// SetQueueFunc is the legacy seam a caller wires alongside it
-		// (cmd/evener/serve.go sets both). Reading only the legacy pair made a
-		// server wired solely through the retry-safe callback advertise
-		// queue:false while turn/queue worked, so clients suppressed a queue the
-		// daemon could take.
-		Queue: (s.retrySafeTurns.Queue != nil || s.queueFunc != nil) && !closed,
+		// Queue reads the retry-safe callback for the same reason steerAvailable
+		// does: handleAppTurnQueue dispatches through retrySafeTurns.Queue, and
+		// the legacy SetQueueFunc pair is wired alongside it and read nowhere
+		// else. Counting the legacy pair advertised a queue the RPC would answer
+		// Unavailable ("queue not available").
+		Queue: s.retrySafeTurns.Queue != nil && !closed,
 		// Goal is available whenever the engine is wired and the session is
 		// open. It is intentionally NOT gated on !active: a goal may be set
 		// mid-turn (it arms for the next continuation), unlike Send.

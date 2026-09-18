@@ -2382,10 +2382,11 @@ func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetQueueFunc(func(string) error { return nil })
+	wireRetrySafeCapabilities(srv)
 
-	// Idle: capabilities.queue is true with QueueFunc wired, exactly as steer
-	// and interrupt are. The harness supports queuing; nothing is in flight.
+	// Idle: capabilities.queue is true with the queue seam wired, exactly as
+	// steer and interrupt are. The harness supports queuing; nothing is in
+	// flight.
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	if caps := srv.appCapabilities("idle", false); !caps.Queue {
@@ -2419,12 +2420,12 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 		t.Fatalf("Queue should be false on a closed thread")
 	}
 
-	// No QueueFunc registered: Queue stays false.
+	// No queue seam registered: Queue stays false.
 	srv2 := NewServer(ServerConfig{})
 	srv2.SetAppIdentity("local", "th_2")
 	srv2.SetProcessing(true)
 	if caps2 := srv2.appCapabilities("active", true); caps2.Queue {
-		t.Fatalf("Queue should be false without QueueFunc registered")
+		t.Fatalf("Queue should be false without the queue seam registered")
 	}
 }
 

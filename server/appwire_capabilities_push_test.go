@@ -19,8 +19,7 @@ import (
 func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) error { ; return nil })
-	srv.SetQueueFunc(func(string) error { return nil })
+	wireRetrySafeCapabilities(srv)
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
@@ -83,8 +82,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) error { ; return nil })
-	srv.SetQueueFunc(func(string) error { return nil })
+	wireRetrySafeCapabilities(srv)
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "shutdown", State: "closed"}})
