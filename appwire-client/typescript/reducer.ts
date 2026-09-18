@@ -893,9 +893,38 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
 // close — retires the card. So a client merely watching the session drops its
 // now-stale copy live off the broadcast instead of waiting for its next
 // snapshot.
-export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
+// The fields a caller adds on top of ThreadModel, and ONLY those. ThreadModel's
+// own fields are deliberately taken from ThreadModel, not from M: the reducer
+// owns and rewrites them (clearing modelRetry, restamping lastFrameAt,
+// replacing status), so a caller that intersects one to a narrower type gets
+// ThreadModel's type back rather than a contract the fold is about to break.
+//
+// The conditional distributes over a union M: a plain Omit collapses a union to
+// its members' COMMON keys and drops each member's own extras, so a caller
+// whose model is a union would lose the field it distinguishes the members by.
+type ModelExtras<M extends ThreadModel> = M extends unknown ? Omit<M, keyof ThreadModel> : never;
+
+// Re-attaches ModelExtras at the exported boundary. The fold works on the
+// concrete model M — every case spreads it, so the runtime value already
+// carries the caller's extras — but TS cannot prove a bare generic M assignable
+// to the conditional type above, so the public entry points convert here.
+function publicModel<M extends ThreadModel>(value: unknown): ThreadModel & ModelExtras<M> {
+  return value as ThreadModel & ModelExtras<M>;
+}
+
+// The fold's own form of resolvePendingEscalation: returns the concrete model,
+// which is what applyNotificationToThread composes with. The exported wrapper
+// below presents the distributive type.
+function resolvePendingEscalationModel<M extends ThreadModel>(model: M, escalationId: string): M {
   if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
+}
+
+export function resolvePendingEscalation<M extends ThreadModel>(
+  model: M,
+  escalationId: string,
+): ThreadModel & ModelExtras<M> {
+  return publicModel<M>(resolvePendingEscalationModel(model, escalationId));
 }
 
 // notificationRoutingKey extracts the identity a frame routes by, from the
@@ -1074,7 +1103,7 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // and lose the item-routing anchor for a turn that is still in flight. The
 // snapshot reduction clears its own active turn only on an id match, for the
 // same reason.
-function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
+function foldNonActiveTurnCompleted<M extends ThreadModel>(model: M, turnId: string, stamp: Turn, now: number): M {
   const existing = model.turns.find((t) => t.id === turnId);
   const settled = mergeTurnCompletionStamp(
     existing,
@@ -1161,21 +1190,33 @@ function warningMessage(params: WarningParams): string {
 // model's active turn: the active turn's own settle ends the turn, while any
 // other turn's is the no-active-turn announcement path and folds through
 // foldNonActiveTurnCompleted instead.
-export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+//
+// Generic over the model: every case builds its result by spreading `model`
+// and overriding only the fields it owns, so a caller's extra fields (native's
+// MobileConversation = ThreadModel & { items }, say) survive the fold at
+// runtime AND in the return type — the caller needs no cast and no re-spread.
+// The return is ThreadModel & ModelExtras<M>, so this holds for extra fields
+// while the fields the fold rewrites keep ThreadModel's types.
+export function applyNotification<M extends ThreadModel>(
+  model: M,
+  n: AnyNotification,
+  now: number,
+): ThreadModel & ModelExtras<M> {
   const next = applyNotificationToThread(model, n, now);
-  if (!next.modelRetry || !notificationTargetsThread(n, model)) return next;
+  if (!next.modelRetry || !notificationTargetsThread(n, model)) return publicModel<M>(next);
   // A pending retry is sticky (design doc Component 1): it survives deltas
   // and other mid-grind item completions, clearing only on a turn boundary or
   // the completion of the model's own output item — otherwise a provider
   // grinding through retries looks like the indicator vanished for no reason.
   const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
   const modelOutputCompleted = n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type);
-  if (!turnBoundary && !modelOutputCompleted) return next;
-  const { modelRetry: _superseded, ...cleared } = next;
-  return cleared;
+  if (!turnBoundary && !modelOutputCompleted) return publicModel<M>(next);
+  const cleared = { ...next };
+  delete cleared.modelRetry;
+  return publicModel<M>(cleared);
 }
 
-function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
@@ -1575,7 +1616,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     // targeted live frame still stamps lastFrameAt like every other case here.
     case "evener/sandbox/escalation/resolved": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...resolvePendingEscalation(model, n.params.escalationId), lastFrameAt: now };
+      return { ...resolvePendingEscalationModel(model, n.params.escalationId), lastFrameAt: now };
     }
 
     // The model holds no job LIST at this layer, so the lifecycle pair leaves

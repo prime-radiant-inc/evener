@@ -6751,3 +6751,152 @@ test("item/completed carrying an explicit empty outputImages list clears the ima
   model = settle([], 1004, model);
   expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
 });
+
+// applyNotification is generic over the model: a caller whose model is a
+// ThreadModel plus its own fields (native's MobileConversation = ThreadModel
+// & { items }, say) gets that SAME type back, extra fields intact — at runtime
+// and in the type. The WrappedModel annotations are the compile-time half of
+// this test: if applyNotification returned ThreadModel again, these assignments
+// would not typecheck, and `npm run typecheck` (the frontend's tsc program,
+// which includes the package's test files) is what fails then.
+type WrappedModel = ThreadModel & { wrapperMarker: number };
+
+test("applyNotification keeps a wrapper model's extra fields and type through every fold shape", () => {
+  const wrapped: WrappedModel = { ...testHydrate(), wrapperMarker: 7 };
+
+  // turn/started builds its result from `{ ...model, ... }` — the case the
+  // wrapper used to need a cast for.
+  const started: WrappedModel = applyNotification(
+    wrapped,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  expect(started.wrapperMarker).toBe(7);
+  expect(started.activeTurnId).toBe("turn_1");
+
+  // A scalar patch spreads the same way.
+  const status: WrappedModel = applyNotification(
+    started,
+    { method: "thread/status/changed", params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } } },
+    1002,
+  );
+  expect(status.wrapperMarker).toBe(7);
+  expect(status.status).toEqual({ type: "active" });
+
+  // A frame for another thread is the same-reference no-op; the extra field
+  // rides along because the object is the same one.
+  const untouched: WrappedModel = applyNotification(
+    status,
+    { method: "thread/status/changed", params: { threadId: "thr_other", ref: "ref_other", status: { type: "idle" } } },
+    1003,
+  );
+  expect(untouched).toBe(status);
+  expect(untouched.wrapperMarker).toBe(7);
+
+  // The modelRetry-clearing branch rebuilds the model without its retry field;
+  // the wrapper field survives that rebuild too, and the cleared key is gone
+  // rather than present-and-undefined.
+  const retrying: WrappedModel = applyNotification(
+    started,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 500,
+        attemptCap: 3,
+      },
+    },
+    1004,
+  );
+  expect(retrying.modelRetry).toBeDefined();
+  const cleared: WrappedModel = applyNotification(
+    retrying,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "completed", text: "done" },
+      },
+    },
+    1005,
+  );
+  expect(cleared.wrapperMarker).toBe(7);
+  expect(cleared.modelRetry).toBeUndefined();
+  expect("modelRetry" in cleared).toBe(false);
+});
+
+// The generic preserves the caller's OWN extra fields, not a narrowing of
+// ThreadModel's. The reducer owns and rewrites lastFrameAt/modelRetry/status,
+// so its return types those as ThreadModel's — a caller that intersects one to
+// a narrower type must not read the narrowed type back off the result.
+type NarrowedRetryModel = ThreadModel & { modelRetry: NonNullable<ThreadModel["modelRetry"]> };
+
+test("applyNotification returns ThreadModel's type for the fields the fold owns, not the caller's narrowing", () => {
+  const narrowed: NarrowedRetryModel = {
+    ...testHydrate(),
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 1000,
+      groupElapsedMs: 0,
+      attemptCap: 3,
+      receivedAt: 1000,
+    },
+  };
+  // turn/started is a turn boundary: the fold clears modelRetry.
+  const folded = applyNotification(
+    narrowed,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // @ts-expect-error the fold owns modelRetry: the return types it as ThreadModel["modelRetry"] (possibly undefined), not the caller's required narrowing.
+  const stillRequired: NonNullable<ThreadModel["modelRetry"]> = folded.modelRetry;
+  expect(stillRequired).toBeUndefined();
+});
+
+// ModelExtras must DISTRIBUTE over a union M. A plain Omit collapses
+// Omit<A | B, keyof ThreadModel> to the members' common keys, so the return
+// would degrade to bare ThreadModel and drop each member's own extra field.
+type WrappedA = ThreadModel & { extraA: number };
+type WrappedB = ThreadModel & { extraB: string };
+
+// Widening through a declared union return defeats control-flow narrowing:
+// `const u: WrappedA | WrappedB = <a WrappedA literal>` is narrowed to
+// WrappedA at its use, so the argument would never be the union the review
+// asked about.
+function asUnion(model: WrappedA): WrappedA | WrappedB {
+  return model;
+}
+
+test("applyNotification distributes a union model's extra fields member by member", () => {
+  const folded = applyNotification(
+    asUnion({ ...testHydrate(), extraA: 1 }),
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // The compile-time half: the return is
+  // (ThreadModel & { extraA }) | (ThreadModel & { extraB }), so it is assignable
+  // to that distributive union. A non-distributive Omit types it as bare
+  // ThreadModel and this assignment does not typecheck.
+  const distributed: (ThreadModel & { extraA: number }) | (ThreadModel & { extraB: string }) = folded;
+  expect(distributed).toBe(folded);
+  expect("extraA" in folded && folded.extraA).toBe(1);
+});

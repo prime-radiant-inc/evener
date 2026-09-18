@@ -864,7 +864,7 @@ export function createConversationStore() {
     conversation: MobileConversation,
     n: AnyNotification,
   ): MobileConversation {
-    return applyNotification(conversation, n, Date.now()) as MobileConversation;
+    return applyNotification(conversation, n, Date.now());
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
