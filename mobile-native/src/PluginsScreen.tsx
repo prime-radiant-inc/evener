@@ -61,14 +61,15 @@ export function PluginsScreen({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(state, fatal);
+  const display = useConnectionDisplay(route.params.hubId, state, fatal);
   const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
   // hubConnection.ts), but a manual retry briefly clears it while it opens a
   // fresh one; the last client this screen had keeps the list mounted
   // through that gap too, rather than dropping to the wall for a moment the
-  // banner should cover just as well as a passive reconnect does.
-  const renderClient = useRenderClient(client);
+  // banner should cover just as well as a passive reconnect does. Scoped to
+  // the hub: see useRenderClient's own doc.
+  const renderClient = useRenderClient(client, route.params.hubId);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -131,6 +132,19 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // Tells the store which connection its list belongs to, on every
+  // transition that connection reports - a passive flap keeps `client`
+  // itself unchanged (this effect's other dep), so the mount effect below is
+  // never rebuilt for one, and only this call tells the store the flap
+  // happened and to recover once ready again (storeLifecycle.ts's
+  // connectionChanged). Declared BEFORE the mount effect: on mount, nothing
+  // has asked for the list yet, so this call's own "does anything want the
+  // list" check (wantsList) is answered honestly before fetchPlugins() below
+  // says yes - reversed, this call would see fetchPlugins()'s read already
+  // marked live and refetch a second time for the same first load.
+  useEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchPlugins();
