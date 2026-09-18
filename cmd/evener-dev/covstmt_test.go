@@ -242,3 +242,44 @@ func TestCovstmtGapsRequiresExactlyOneProfile(t *testing.T) {
 		t.Fatalf("stderr does not print usage: %q", errOut.String())
 	}
 }
+
+// TestCovstmtGapsRejectsNegativeTop: a negative --top is a typo, not "show
+// nothing". Clamping it to zero would exit 0 with an empty table that reads as
+// a clean report, so it is rejected like any other unusable flag value — and no
+// partial table is printed.
+func TestCovstmtGapsRejectsNegativeTop(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, gapsFixture)
+
+	var out, errOut strings.Builder
+	if code := covstmtRun([]string{"--gaps", "--top", "-1", profile}, &out, &errOut); code != 2 {
+		t.Fatalf("covstmtRun with --top -1 exits %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "--top must not be negative") {
+		t.Fatalf("stderr does not explain the negative --top: %q", errOut.String())
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("stdout on negative --top = %q, want empty", got)
+	}
+}
+
+// TestPyReprMatchesPython pins pyRepr against Python's repr() for the shapes an
+// --in pattern can take, including the control bytes that would otherwise reach
+// the terminal raw.
+func TestPyReprMatchesPython(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"file.go", "'file.go'"},
+		{"a'b", `"a'b"`},      // single quote only: switch to double
+		{`a'b"c`, `'a\'b"c'`}, // both: stay single, escape the single
+		{`back\slash`, `'back\\slash'`},
+		{"tab\there", `'tab\there'`},
+		{"esc\x1b[31m", `'esc\x1b[31m'`},
+		{"nul\x00end", `'nul\x00end'`},
+		{"café", "'café'"}, // printable non-ASCII stays literal
+	}
+	for _, tc := range tests {
+		if got := pyRepr(tc.in); got != tc.want {
+			t.Errorf("pyRepr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

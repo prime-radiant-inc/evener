@@ -237,3 +237,26 @@ func TestBlocksMissingFile(t *testing.T) {
 		t.Fatalf("Blocks(%q) on a missing file: want error, got nil", path)
 	}
 }
+
+// TestBlocksOrderIsTotalOverColumns pins the determinism the stable-order
+// contract promises: two blocks that share file and line span but differ in a
+// column must come back in a fixed order, not map-iteration order. Ordered by
+// startCol, the 10.1 block (uncovered) precedes the 10.5 block (covered); a
+// sort keyed only on (file, startLine, endLine) would let these swap run to run.
+func TestBlocksOrderIsTotalOverColumns(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/f.go:10.1,20.2 1 0\n" +
+		"pkg/f.go:10.5,20.9 1 1\n"
+	for i := 0; i < 100; i++ {
+		blocks, err := BlocksReader(strings.NewReader(profile))
+		if err != nil {
+			t.Fatalf("BlocksReader: %v", err)
+		}
+		if len(blocks) != 2 {
+			t.Fatalf("BlocksReader returned %d blocks, want 2: %+v", len(blocks), blocks)
+		}
+		if blocks[0].Covered || !blocks[1].Covered {
+			t.Fatalf("iteration %d: blocks out of position order: %+v", i, blocks)
+		}
+	}
+}

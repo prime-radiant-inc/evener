@@ -165,8 +165,33 @@ func BlocksReader(r io.Reader) ([]Block, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Block, 0, len(seen))
-	for p, e := range seen {
+	// Order by the FULL position, columns included. The dedup key distinguishes
+	// blocks that share a file and line span but differ in a column, so ordering
+	// by (file, startLine, endLine) alone leaves those in map-iteration order —
+	// the opposite of the stable-order contract this function promises.
+	positions := make([]blockPos, 0, len(seen))
+	for p := range seen {
+		positions = append(positions, p)
+	}
+	sort.Slice(positions, func(i, j int) bool {
+		a, b := positions[i], positions[j]
+		if a.file != b.file {
+			return a.file < b.file
+		}
+		if a.startLine != b.startLine {
+			return a.startLine < b.startLine
+		}
+		if a.startCol != b.startCol {
+			return a.startCol < b.startCol
+		}
+		if a.endLine != b.endLine {
+			return a.endLine < b.endLine
+		}
+		return a.endCol < b.endCol
+	})
+	out := make([]Block, 0, len(positions))
+	for _, p := range positions {
+		e := seen[p]
 		out = append(out, Block{
 			File:      p.file,
 			StartLine: p.startLine,
@@ -175,15 +200,5 @@ func BlocksReader(r io.Reader) ([]Block, error) {
 			Covered:   e.covered,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		if a.StartLine != b.StartLine {
-			return a.StartLine < b.StartLine
-		}
-		return a.EndLine < b.EndLine
-	})
 	return out, nil
 }

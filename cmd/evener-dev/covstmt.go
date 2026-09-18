@@ -16,6 +16,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 
 	"primeradiant.com/evener/internal/devtool/covstmt"
 )
@@ -80,6 +81,13 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 func covstmtGapsRun(profile, by string, top int, zeroOnly bool, inPattern string, stdout, stderr io.Writer) int {
 	if by != "package" && by != "file" {
 		_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --by must be package or file (got %s)\n", by)
+		return 2
+	}
+	if top < 0 {
+		// A negative count is a typo, not "show nothing": clamping it to zero
+		// would exit 0 with an empty report, which reads as a clean run. Reject
+		// it like any other unusable flag value, so the caller sees the mistake.
+		_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --top must not be negative (got %d)\n", top)
 		return 2
 	}
 	blocks, err := covstmt.Blocks(profile)
@@ -235,34 +243,41 @@ func pctOf(covered, total int) float64 {
 	return 100.0 * float64(covered) / float64(total)
 }
 
-// pyRepr renders s the way Python's repr() does for the file-path substrings
-// this report ever prints: single-quoted, switching to double quotes when the
-// string contains a single quote but no double quote, with backslashes and the
-// chosen quote escaped. (Python additionally \x-escapes control characters;
-// no coverage file path carries one.)
+// pyRepr renders s the way Python's repr() does: single-quoted, switching to
+// double quotes when the string contains a single quote but no double quote,
+// with backslashes, the chosen quote, and every non-printable rune escaped.
+// Escaping the non-printables (\xNN, \uNNNN, \UNNNNNNNN) matters even though no
+// coverage file path carries one: an --in pattern is caller-supplied, and a raw
+// ESC or NUL would otherwise reach the terminal and diverge from the Python
+// this report replaced.
 func pyRepr(s string) string {
-	quote := byte('\'')
+	quote := '\''
 	if strings.Contains(s, "'") && !strings.Contains(s, `"`) {
 		quote = '"'
 	}
 	var b strings.Builder
-	b.WriteByte(quote)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
-		case '\\', quote:
+	b.WriteRune(quote)
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == quote:
 			b.WriteByte('\\')
-			b.WriteByte(c)
-		case '\n':
+			b.WriteRune(r)
+		case r == '\n':
 			b.WriteString(`\n`)
-		case '\r':
+		case r == '\r':
 			b.WriteString(`\r`)
-		case '\t':
+		case r == '\t':
 			b.WriteString(`\t`)
+		case unicode.IsPrint(r):
+			b.WriteRune(r)
+		case r <= 0xff:
+			_, _ = fmt.Fprintf(&b, `\x%02x`, r)
+		case r <= 0xffff:
+			_, _ = fmt.Fprintf(&b, `\u%04x`, r)
 		default:
-			b.WriteByte(c)
+			_, _ = fmt.Fprintf(&b, `\U%08x`, r)
 		}
 	}
-	b.WriteByte(quote)
+	b.WriteRune(quote)
 	return b.String()
 }

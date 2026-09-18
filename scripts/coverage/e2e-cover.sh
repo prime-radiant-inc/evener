@@ -165,7 +165,18 @@ if $merge_unit; then
 	# drift from the ratchet's. Missing inputs are skipped, as the Python did.
 	combined="$workdir/combined.prof"
 	cat "$unit_prof" "$e2e_prof" 2>/dev/null >"$combined"
-	read -r cov tot < <(go run ./cmd/evener-dev/bin dev covstmt "$combined" | tr '\n' ' ')
+	# Capture the count and check its status before parsing: a failed `go run`
+	# or covstmt must fail this report loudly, not leave `read` with empty
+	# fields that print as a malformed, successful-looking coverage line.
+	if ! cov_line="$(go run ./cmd/evener-dev/bin dev covstmt "$combined")"; then
+		echo "e2e-cover: covstmt failed on the combined profile $combined" >&2
+		exit 1
+	fi
+	read -r cov tot <<<"$cov_line"
+	if ! [[ "$cov" =~ ^[0-9]+$ && "$tot" =~ ^[0-9]+$ ]]; then
+		echo "e2e-cover: covstmt did not print a 'covered total' line for $combined: $cov_line" >&2
+		exit 1
+	fi
 	echo "COMBINED unit+e2e union: covered=$cov total=$tot pct=$(awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')%"
 fi
 
