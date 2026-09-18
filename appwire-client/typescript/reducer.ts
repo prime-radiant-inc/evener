@@ -1214,7 +1214,7 @@ function warningMessage(params: WarningParams): string {
 // title/hint, so the raw-frame fallback below and the structured fields it
 // would otherwise duplicate never disagree about which one has something to
 // show.
-function hasWarningText(value: unknown): boolean {
+export function hasWarningText(value: unknown): boolean {
   return typeof value === "string" && value.trim() !== "";
 }
 
@@ -1729,7 +1729,17 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
               warningMessage(params) ||
               (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
             status: "completed",
-            warning: { source: params.source, title: params.title, hint: params.hint },
+            // params is unknown on the wire (WarningParams.title/hint are
+            // declared string but never runtime-checked), so a malformed
+            // frame can carry any JSON value here. Every consumer of
+            // ItemModel.warning.title/hint reads it as a string (WarningItem.
+            // tsx renders it as a React child), so a non-string value folds
+            // to undefined rather than riding through verbatim.
+            warning: {
+              source: params.source,
+              title: typeof params.title === "string" ? params.title : undefined,
+              hint: typeof params.hint === "string" ? params.hint : undefined,
+            },
           };
           return { ...turn, items: [...turn.items, item] };
         }),

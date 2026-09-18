@@ -297,6 +297,7 @@ export type { NotificationRoutingKey } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
   joinedReasoningParagraphs,

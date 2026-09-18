@@ -29,6 +29,7 @@ import {
 import type {
   AnyNotification,
   InputItem,
+  ItemModel,
   MutationReceipt,
   ThreadItem,
 } from "@evener/appwire-client";
@@ -41,6 +42,7 @@ import type {
 import {
   activityState,
   clusterActivities,
+  itemAttachments,
   projectItemAttachments,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
@@ -744,6 +746,29 @@ function containingTurnStatus(
     return undefined;
   }
   return "inProgress";
+}
+
+// The reducer's own item/started and item/completed folds (applyNotification,
+// via mergeItemImages) already resolved this item's images against whatever
+// the model held before it — a raw wire item carrying no images field means
+// "unchanged", never "removed" (the same rule imagesToItemImagesForSession
+// documents). Finds that folded ItemModel in conv (already updated by
+// applyThreadNotification before this call) by the reducer's own identity
+// rule: transcriptKey when both sides carry one, else id.
+function findFoldedItem(
+  conv: MobileConversation,
+  item: ThreadItem,
+): ItemModel | undefined {
+  for (const turn of conv.turns) {
+    for (const candidate of turn.items) {
+      if (item.transcriptKey && candidate.transcriptKey) {
+        if (candidate.transcriptKey === item.transcriptKey) return candidate;
+      } else if (candidate.id === item.id) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
 }
 
 // Project a wire ThreadItem into a mobile timeline item for insertion from
@@ -2524,7 +2549,10 @@ export function createConversationStore() {
                 truncateAndRecordSingle(projectedWithReasoning),
               ];
               const attachmentId = `${params.item.id}:attachments`;
-              const attachments = projectItemAttachments(params.item);
+              const foldedItem = findFoldedItem(conv, params.item);
+              const attachments = foldedItem
+                ? itemAttachments(foldedItem)
+                : projectItemAttachments(params.item);
               markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
                 replacement.push({
@@ -2809,12 +2837,33 @@ export function createConversationStore() {
 
           case "warning": {
             const params = n.params as { message?: string; title?: string };
+            // The reducer's own "warning" fold (applyThreadNotification,
+            // above) already appended the wire-true item to the active
+            // turn, applying its message/title/hint precedence (a message
+            // wins; else title or hint alone is real content and leaves
+            // text blank rather than duplicating the raw frame). It always
+            // appends to the end of that turn's items, and nothing else
+            // touches the turn during this single-notification dispatch, so
+            // the last item there — when its type is "warning" — is the one
+            // this fold just produced. Route the row through it instead of
+            // params.message alone, which drops title/hint-only content.
+            const foldedTurn = conv.activeTurnId
+              ? conv.turns.find((t) => t.id === conv.activeTurnId)
+              : undefined;
+            const foldedItem = foldedTurn?.items.at(-1);
+            const usesFold = foldedItem?.type === "warning";
+            const title =
+              (usesFold ? foldedItem.warning?.title : params.title) ??
+              "Warning";
+            const detail = usesFold
+              ? foldedItem.text || (foldedItem.warning?.hint ?? "")
+              : (params.message ?? "");
             const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,
-              title: params.title ?? "Warning",
-              detail: params.message ?? "",
+              title,
+              detail,
             };
             // Residual 2: Mark as live-owned — created by an actual live
             // notification.

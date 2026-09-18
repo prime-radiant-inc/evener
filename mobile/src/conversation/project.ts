@@ -33,6 +33,7 @@ import {
   hasItemFailure,
   isActiveItem,
   isInProgressStatus,
+  joinedReasoningParagraphs,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -256,7 +257,11 @@ function attachmentRows(
   return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
 }
 
-function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
+// Exported for the live store (state/conversation.ts): the folded model item
+// (reducer.applyNotification's mergeItemImages) already carries the
+// "absent/empty input images means unchanged" rule projectItemAttachments
+// below cannot honor from a raw wire item alone.
+export function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     return attachmentRows(item.id, item.images);
@@ -396,6 +401,14 @@ function projectItem(
     const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
+    // A mid-stream reasoning item's live deltas accumulate in
+    // reasoningSummaries (reducer.ts's appendReasoningDelta), never in
+    // text — only a settle with real wire text populates that. Read the
+    // same joined-paragraphs source the web's think block reads, falling
+    // back to text for a settled item hydrated with no reasoningSummaries.
+    const reasoningOutput =
+      joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n") ||
+      item.text;
     return {
       kind: "activity",
       pre: {
@@ -406,7 +419,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: item.text },
+          detail: { ...activityDetail(item), output: reasoningOutput },
         },
       },
     };

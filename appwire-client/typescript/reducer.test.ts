@@ -4576,6 +4576,42 @@ test("warning mid-turn appends an item to the active turn with text=message and 
   });
 });
 
+test("a runtime non-string title/hint folds to undefined, never an object ItemModel.warning claims is a string", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "warning",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        message: "rate limit approaching",
+        source: "provider",
+        // A malformed frame from a producer that doesn't honor the wire's
+        // declared string type — the reducer must not carry these through
+        // verbatim, since ItemModel.warning.title/hint are read as strings
+        // by every consumer (WarningItem.tsx renders them as React children).
+        title: { nested: "object" } as unknown as string,
+        hint: 42 as unknown as string,
+      },
+    },
+    1002,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items[0]?.warning?.title).toBeUndefined();
+  expect(items[0]?.warning?.hint).toBeUndefined();
+});
+
 test("two warnings in one turn get distinct ids in arrival order", () => {
   let model = testHydrate();
   model = applyNotification(

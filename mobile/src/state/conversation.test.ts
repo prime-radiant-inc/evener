@@ -2471,6 +2471,62 @@ describe("ConversationStore", () => {
         store.getState().getTruncatedItemIds().has("reason-truncated-1"),
       ).toBe(false);
     });
+
+    it("preserves existing attachments when item/completed for the same user message carries no images field", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        turns: [
+          {
+            id: "t1",
+            status: "inProgress",
+            items: [
+              {
+                id: "msg-1",
+                turnId: "t1",
+                type: "userMessage",
+                text: "hello",
+                images: [{ src: "https://hub.test/image" }],
+              },
+            ],
+          },
+        ],
+        items: [
+          { kind: "user", id: "msg-1", text: "hello" },
+          {
+            kind: "attachments",
+            id: "msg-1:attachments",
+            items: [{ id: "image", src: "https://hub.test/image" }],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "msg-1",
+            text: "hello",
+            status: "completed",
+            // No images field: an absent input-image list means "unchanged",
+            // not "removed" (the same rule the package reducer's
+            // mergeItemImages already applies — #1731 piece 2 round 2 High
+            // finding).
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.find(
+          (item): item is Extract<MobileTimelineItem, { kind: "attachments" }> =>
+            item.kind === "attachments" && item.id === "msg-1:attachments",
+        )?.items,
+      ).toEqual([{ id: "msg-1:0", src: "https://hub.test/image" }]);
+    });
   });
 
   describe("assistant delta appends to item", () => {
@@ -6954,6 +7010,27 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation;
       expect(conv?.turns.flatMap((turn) => turn.items).filter((item) => item.type === "warning")).toEqual([]);
       expect(conv?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
+    });
+
+    // #1731 piece 2 round 2 Medium finding: the live row must show the
+    // reducer-folded warning item's text/hint, not just params.message —
+    // a title/hint-only frame (no top-level message) folds to a non-blank
+    // text in the model (the hint), but the row applier was building its
+    // failure row from params.message alone and losing it.
+    it("shows the reducer-folded hint text for a title/hint-only warning with an active turn", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "Provider warning", hint: "slow down" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({
+        kind: "failure",
+        title: "Provider warning",
+        detail: "slow down",
+      });
     });
   });
 
