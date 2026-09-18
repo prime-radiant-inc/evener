@@ -1,22 +1,20 @@
 // Tracks a host's own set of in-flight durable projection reads/writes, so a
 // caller can ask "is anything still outstanding" without polling storage
 // itself, and bounds that wait with a tripwire: work whose completion never
-// lands (a stalled test double, a storage transaction the test itself is
-// holding open) must fail loudly rather than hang the caller forever. A
-// round waits on real durable work, so its wall time scales with machine
-// load - but no amount of load turns work that has no completion left into
-// work that finishes. This is what turns a stalled flush into one named
-// failure in the test that caused it, rather than an abandoned wait that
-// leaves every later test in the file failing too (issue #1187).
+// lands (a storage transaction or transport the caller itself is holding
+// open) must fail loudly rather than hang forever.
 //
 // `setTimeout`/`clearTimeout` and the macrotask yield are host ports: no
-// browser or Node global is named here. The web binds the yield to a
-// MessageChannel hop, which drains every pending microtask so that work
-// chained onto an operation that just finished has already registered
-// itself by the time a caller looks again.
-export interface MutationProjectionWorkPorts {
-  setTimeout(callback: () => void, milliseconds: number): unknown;
-  clearTimeout(timerId: unknown): void;
+// browser or Node global is named here, and the timer handle is a type
+// parameter (`outbox.ts`'s `setInterval`/`clearInterval` pair is the same
+// convention) so a host's own handle type - a `number` on the web, a
+// `NodeJS.Timeout` under Node - flows through with no cast at the binding
+// site. The web binds the yield to a MessageChannel hop, which drains every
+// pending microtask so that work chained onto an operation that just
+// finished has already registered itself by the time a caller looks again.
+export interface MutationProjectionWorkPorts<TimerId = unknown> {
+  setTimeout(callback: () => void, milliseconds: number): TimerId;
+  clearTimeout(timerId: TimerId): void;
   yieldMacrotask(): Promise<void>;
 }
 
@@ -32,12 +30,11 @@ export interface MutationProjectionWorkTracker {
   clear(): void;
 }
 
-// The slowest round measured across the whole web suite (10373 tests) under
-// 32-way CPU contention was 165ms; this is a tripwire for a stall, never
-// pacing.
 const STALL_TRIPWIRE_MS = 4_000;
 
-export function createMutationProjectionWorkTracker(ports: MutationProjectionWorkPorts): MutationProjectionWorkTracker {
+export function createMutationProjectionWorkTracker<TimerId = unknown>(
+  ports: MutationProjectionWorkPorts<TimerId>,
+): MutationProjectionWorkTracker {
   const inFlight = new Set<Promise<unknown>>();
 
   return {
@@ -50,13 +47,23 @@ export function createMutationProjectionWorkTracker(ports: MutationProjectionWor
 
     async settle() {
       const outstanding = [...inFlight];
-      let timer: unknown;
+      // Nothing to race a tripwire against: an empty `allSettled` already
+      // wins in the same microtask, so building the timer at all would only
+      // suggest a stall this call could never observe.
+      if (outstanding.length === 0) {
+        await ports.yieldMacrotask();
+        return 0;
+      }
+      // The executor below runs synchronously, so `timer` is always assigned
+      // before the `finally` reads it - TypeScript cannot see that through a
+      // closure, hence the assertion.
+      let timer!: TimerId;
       const tripwire = new Promise<never>((_resolve, reject) => {
         timer = ports.setTimeout(
           () =>
             reject(
               new Error(
-                `pending-turns projection work stalled: ${outstanding.length} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport this test is holding before flushing`,
+                `projection work stalled: ${outstanding.length} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport is holding this work open`,
               ),
             ),
           STALL_TRIPWIRE_MS,

@@ -74,7 +74,7 @@ const persistencePort: MutationPersistencePort<MutationAttachment> = { read: rea
 // browser's own timers and a MessageChannel hop.
 const projectionWorkTracker = createMutationProjectionWorkTracker({
   setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
-  clearTimeout: (timerId) => clearTimeout(timerId as ReturnType<typeof setTimeout>),
+  clearTimeout: (timerId) => clearTimeout(timerId),
   yieldMacrotask: () =>
     new Promise<void>((resolve) => {
       const hop = new MessageChannel();
