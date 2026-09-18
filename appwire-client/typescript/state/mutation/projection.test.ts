@@ -167,6 +167,27 @@ describe("createMutationProjectionFence", () => {
     expect(result.apply().has("ref-a")).toBe(false);
   });
 
+  test("a commit landing after a failed newer refresh still out-ranks an older in-flight refresh", async () => {
+    const fence = createMutationProjectionFence();
+    let resolveOlder: ((snapshot: MutationPersistenceSnapshot) => void) | undefined;
+    const olderPort: MutationPersistencePort = {
+      read: () =>
+        new Promise((resolve) => {
+          resolveOlder = resolve;
+        }),
+    };
+    const older = fence.refresh(olderPort, "ref-a");
+    expect(await fence.refresh({ read: () => Promise.reject(new Error("storage read failed")) }, "ref-a")).toBe(false);
+    // A commit is a request too, later than the older refresh's own -
+    // exactly what raises the floor regardless of any failed refresh
+    // in between.
+    fence.advance("ref-a");
+    resolveOlder?.({ ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] });
+    const result = await older;
+    if (result === false) throw new Error("expected the older refresh to still resolve with a decision");
+    expect(result.apply().has("ref-a")).toBe(false);
+  });
+
   test("epoch reports the fence's current epoch and moves on reset", () => {
     const fence = createMutationProjectionFence();
     const before = fence.epoch();
