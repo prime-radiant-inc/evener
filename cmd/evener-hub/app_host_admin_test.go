@@ -68,6 +68,32 @@ func (r *recordingBroadcaster) broadcasts() []recordedBroadcast {
 	return out
 }
 
+// assertBroadcastMethods fails t unless b recorded at least one broadcast
+// for each of methods.
+func assertBroadcastMethods(t *testing.T, b *recordingBroadcaster, methods ...string) {
+	t.Helper()
+	got := b.broadcasts()
+	found := make(map[string]bool, len(got))
+	for _, r := range got {
+		found[r.method] = true
+	}
+	for _, method := range methods {
+		if !found[method] {
+			t.Fatalf("broadcasts = %+v, want %v", got, methods)
+		}
+	}
+}
+
+// assertOneBroadcast fails t unless b recorded exactly one broadcast, for
+// method.
+func assertOneBroadcast(t *testing.T, b *recordingBroadcaster, method string) {
+	t.Helper()
+	got := b.broadcasts()
+	if len(got) != 1 || got[0].method != method {
+		t.Fatalf("broadcasts = %+v, want exactly one %s", got, method)
+	}
+}
+
 // newScriptedAdminClient builds an initialized AppWire client backed by an
 // in-memory stream pair whose peer answers canned responses, records every
 // request, and can push notifications on demand. No SSH, no network, no host —

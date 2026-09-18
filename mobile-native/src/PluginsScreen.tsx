@@ -31,6 +31,7 @@ import {
 import {
   createPluginMutationGate,
   PLUGIN_MUTATION_BUSY,
+  runGatedMutation,
   type PluginMutationGate,
 } from "./pluginMutationGate";
 import type { Routes } from "./screens";
@@ -127,17 +128,14 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    try {
-      const ran = await gate.run(action);
-      if (version !== editorVersion.current) return;
-      if (!ran) setActionError(PLUGIN_MUTATION_BUSY);
-      else if (success) setNotice(success);
-    } catch {
-      if (version === editorVersion.current)
-        setActionError(
-          "Could not confirm the change. Check this plugin’s status before trying again.",
-        );
-    }
+    const outcome = await runGatedMutation(gate, action);
+    if (version !== editorVersion.current) return;
+    if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
+    else if (outcome === "failed")
+      setActionError(
+        "Could not confirm the change. Check this plugin’s status before trying again.",
+      );
+    else if (success) setNotice(success);
   }
   function remove() {
     if (!selected || busy) return;

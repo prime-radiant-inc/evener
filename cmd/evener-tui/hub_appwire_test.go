@@ -308,6 +308,24 @@ func TestHubModelAppliesQueueChangedNotification(t *testing.T) {
 		t.Fatalf("sessionQueue after second notification=%v", got.sessionQueue)
 	}
 
+	// A drain's own push names the queue intents it consumed
+	// (ConsumedClientMutationIDs, issue #1704) alongside the remaining Queue
+	// snapshot. The TUI's composer preview is sourced from Queue alone; the
+	// consumed-ids fact is a web-client settlement concern the TUI has no use
+	// for, and its presence must not change what applyQueueState renders.
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			Ref:                       "local:th_1",
+			Queue:                     appwire.QueueState{Depth: 1, Preview: []string{"third queued"}},
+			ConsumedClientMutationIDs: []string{"drained-a", "drained-b"},
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "third queued" {
+		t.Fatalf("sessionQueue after consumed-ids notification=%v", got.sessionQueue)
+	}
+
 	// Drain to depth=0: state must be wiped, not retained.
 	updated, _ = got.Update(hubNotificationMsg{
 		ok: true,

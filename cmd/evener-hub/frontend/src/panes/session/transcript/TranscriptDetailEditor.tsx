@@ -5,6 +5,7 @@ import {
   type HookExitDetail,
   normalizeConfig,
   presetContent,
+  type TranscriptDisplayAdvancedV1,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { useEffect, useId, useRef, useState } from "react";
@@ -101,8 +102,8 @@ export function TranscriptDetailEditor({
     emit({ ...config, content: nextContent });
   }
 
-  function updateAdvanced(field: keyof Omit<TranscriptDisplayConfigV1["advanced"], "hookExits">, checked: boolean) {
-    const nextAdvanced: TranscriptDisplayConfigV1["advanced"] = { ...config.advanced, [field]: checked };
+  function updateAdvanced(field: keyof Omit<TranscriptDisplayAdvancedV1, "hookExits">, checked: boolean) {
+    const nextAdvanced: TranscriptDisplayAdvancedV1 = { ...config.advanced, [field]: checked };
     emit({ ...config, advanced: nextAdvanced });
   }
 

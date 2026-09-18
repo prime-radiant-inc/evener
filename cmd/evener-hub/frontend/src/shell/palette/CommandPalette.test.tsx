@@ -119,7 +119,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -284,7 +284,6 @@ test("the palette scopes catalog commands to active diagnostics without mutating
       { name: "secret", pluginName: "excluded", source: "plugin" },
       { name: "whoami", source: "user" },
     ],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "enabled" }] } });
   render(<CommandPalette />);
@@ -739,7 +738,6 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
@@ -765,7 +763,6 @@ test("Enter on a plugin command with arguments hands off the FULL typed text, ar
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
@@ -785,7 +782,6 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
       { name: "review", pluginName: "p", source: "plugin" },
       { name: "review", pluginName: "q", source: "plugin" },
     ],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);

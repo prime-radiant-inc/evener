@@ -1197,6 +1197,7 @@ export interface MutationReceipt {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+  consumedClientMutationIds?: string[];
 }
 
 export interface NavigationCapability {
@@ -2062,6 +2063,7 @@ export interface ThreadQueueChangedParams {
   threadId: string;
   ref: string;
   queue: QueueState;
+  consumedClientMutationIds?: string[];
 }
 
 export interface ThreadReadParams {

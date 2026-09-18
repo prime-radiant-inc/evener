@@ -6348,7 +6348,7 @@ test("an absent outputImages field keeps the images the other page carries", () 
   expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
 });
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 test("an empty input images list never erases the images an older page carries", () => {
   const thread = testThread({
     turns: [
@@ -6402,11 +6402,9 @@ test("an empty input images list never erases the images an older page carries",
 // #1656: a settle says nothing about images unless it carries them. The wire has
 // no "the input images are gone" signal — an item's images are what the user
 // sent — so the hub keeps whatever list it already had whenever the incoming one
-// is empty (`len(incoming.Images) == 0` → `incoming.Images = existing.Images`,
-// server/appwire_turns.go:884-886, and its twin at
-// internal/apptranscript/logical_turn.go:309), and mergePageItem already reads an
-// empty list the same way (imagesToItemImagesForSession answers undefined for
-// it). item/completed rebuilt the item from its payload and layered only
+// is empty (appwire.MergeInputImages), and mergePageItem already reads an empty
+// list the same way (imagesToItemImagesForSession answers undefined for it).
+// item/completed rebuilt the item from its payload and layered only
 // text/reasoning/arguments/timing off the old one, so a settle that named no
 // images — or an empty list, which reads the same — cleared the attachment row
 // the reader was looking at. mergeItemImages gives the settle the hub's rule.

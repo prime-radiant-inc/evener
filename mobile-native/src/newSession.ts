@@ -4,6 +4,7 @@ import {
   harnessSupportsPluginSelection,
   MAX_ATTACHMENTS,
   markerText,
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   resolveScalars,
   stripMarker,
@@ -344,16 +345,14 @@ export function createNewSessionStore(
       let startDispatched = false;
       creationRequested = false;
       try {
-        if (launchOverrides.enabledPlugins !== undefined) {
+        const pluginSelection = pluginSelectionFromOverrides(launchOverrides);
+        if (pluginSelection.mode === "explicit") {
           const preview = await current.previewPlugins({
             cwd: cwd.trim(),
             launchOverrides,
           });
           if (generation !== connection) return { status: "obsolete" };
-          const issues = pluginSelectionIssues(
-            { mode: "explicit", names: launchOverrides.enabledPlugins },
-            preview,
-          );
+          const issues = pluginSelectionIssues(pluginSelection, preview);
           if (issues.length) {
             set({
               error: issues

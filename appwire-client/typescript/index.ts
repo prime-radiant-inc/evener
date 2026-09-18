@@ -273,7 +273,8 @@ export {
   withGroupHeads,
 } from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
-export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
+export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
+export { isPlainObject } from "./plainObject";
 export { humanizeState } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
@@ -318,6 +319,7 @@ export {
 export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
 export type { PluginSelectionState } from "./spawnPluginSelectionState";
 export {
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   reconcilePluginSelection,
   selectAllPlugins,
@@ -372,7 +374,7 @@ export {
   panelLoadFailure,
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
-export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
+export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,
@@ -386,10 +388,9 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) and
-// TranscriptDisplayAdvanced (the local advanced block, not yet V1-suffixed)
-// are deliberately absent: the root publishes the wire types of those names
-// from types.gen, which they would shadow.
+// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
+// deliberately absent: the root publishes the wire type of that name from
+// types.gen, which it would shadow.
 export type {
   ContentLevel,
   ContentSelection,
@@ -400,6 +401,7 @@ export type {
   LegacyPreferenceKey,
   LegacyPreferenceValues,
   LegacyPreferenceWrites,
+  TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
   TranscriptHookExitDetail,

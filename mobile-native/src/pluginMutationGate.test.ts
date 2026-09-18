@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createPluginMutationGate } from "./pluginMutationGate";
+import { createPluginMutationGate, runGatedMutation } from "./pluginMutationGate";
 
 /** A promise plus the resolver for it, to hold a mutation open. */
 function pending(): { promise: Promise<void>; settle: () => void } {
@@ -79,5 +79,32 @@ describe("one plugin mutation at a time", () => {
     unsubscribe();
     await gate.run(async () => undefined);
     expect(seen).toEqual([true, false]);
+  });
+});
+
+describe("one call reduces a gated mutation to the copy's three outcomes", () => {
+  test("a run resolves to ran", async () => {
+    const gate = createPluginMutationGate();
+    await expect(
+      runGatedMutation(gate, async () => undefined),
+    ).resolves.toBe("ran");
+  });
+
+  test("a refusal resolves to refused, distinct from a failure", async () => {
+    const gate = createPluginMutationGate();
+    const first = pending();
+    void gate.run(() => first.promise);
+
+    await expect(
+      runGatedMutation(gate, async () => undefined),
+    ).resolves.toBe("refused");
+  });
+
+  test("a throw resolves to failed and does not propagate its error", async () => {
+    const gate = createPluginMutationGate();
+    await expect(
+      runGatedMutation(gate, () => Promise.reject(new Error("write failed"))),
+    ).resolves.toBe("failed");
+    expect(gate.isBusy()).toBe(false);
   });
 });

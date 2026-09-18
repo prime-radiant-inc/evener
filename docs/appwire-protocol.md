@@ -1907,6 +1907,7 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `queue` | `appwire.QueueState` |  |  |
+| `consumedClientMutationIds` | `[]string` | yes |  |
 
 
 ### `ThreadReadParams`

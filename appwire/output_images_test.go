@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -48,5 +49,33 @@ func TestCloneOutputImages(t *testing.T) {
 	cloned[0].Name = "other.png"
 	if original[0].Name != "shot.png" {
 		t.Fatal("the clone shares the caller's array")
+	}
+}
+
+// The input-image rule: Images is omitempty and nothing removes input images,
+// so an empty (or absent) incoming list says nothing and the existing list
+// stands; only a non-empty list replaces it.
+func TestMergeInputImages(t *testing.T) {
+	images := []InputItem{{Type: "image", Name: "in.png"}}
+	replacement := []InputItem{{Type: "image", Name: "other.png"}}
+
+	for _, tc := range []struct {
+		name     string
+		existing []InputItem
+		incoming []InputItem
+		want     []InputItem
+	}{
+		{name: "an absent list keeps the existing images", existing: images, incoming: nil, want: images},
+		{name: "an empty list says nothing and keeps them too", existing: images, incoming: []InputItem{}, want: images},
+		{name: "a fresh list replaces them", existing: images, incoming: replacement, want: replacement},
+		{name: "an empty list on an item that had none stays nothing", existing: nil, incoming: []InputItem{}, want: nil},
+		{name: "a fresh list on an item that had none wins", existing: nil, incoming: replacement, want: replacement},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MergeInputImages(tc.existing, tc.incoming)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("merged = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
