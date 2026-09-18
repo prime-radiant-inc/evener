@@ -2,10 +2,11 @@ package hub
 
 // Tests for wirePluginStoreBroadcast (issue #1634's hook): the plugin store's
 // Manager.OnStoreChanged callback, wired here to the existing
-// notifyMarketplaceUpdated/notifyPluginUpdated broadcasts. Driven with a
-// recordingBroadcaster (app_host_admin_test.go) rather than a real connected
-// client, the same seam hostNotificationBroadcaster gives the host-admin
-// fan-out tests.
+// notifyMarketplaceUpdated/notifyPluginUpdated broadcasts. Most of these
+// drive it with a recordingBroadcaster (app_host_admin_test.go) rather than a
+// real connected client, the same seam hostNotificationBroadcaster gives the
+// host-admin fan-out tests; TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer
+// drives the production NewWebServer path end to end instead.
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -205,4 +207,42 @@ func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.
 	}
 
 	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
+}
+
+// TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer proves web.go's
+// production wiring (newWebServer's wirePluginStoreBroadcast call, made after
+// the server exists) actually reaches a connected client. Every other test
+// in this file injects its own Manager or recordingBroadcaster, so none of
+// them would notice if that one line were deleted; this drives the real
+// NewWebServer path — no injected manager, no injected broadcaster — over an
+// actual client connection instead.
+func TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer(t *testing.T) {
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:       hubcore.NewPastIndex(""),
+		PluginRoot: t.TempDir(),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
+	}); err != nil {
+		t.Fatalf("MarketplaceAdd: %v", err)
+	}
+
+	select {
+	case notif := <-client.Notifications():
+		if notif.Method != appwire.NotifyEvenerMarketplaceUpdated {
+			t.Fatalf("notification method = %q, want %q", notif.Method, appwire.NotifyEvenerMarketplaceUpdated)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for evener/marketplace/updated: the store write never reached this client")
+	}
 }
