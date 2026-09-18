@@ -1,11 +1,7 @@
 import type {
   AskQuestionRef,
-  InputItem,
-  ItemFailureSignals,
   ItemImage,
   ItemModel,
-  OutputImage,
-  ThreadItem,
   ThreadModel,
   Turn,
   TurnModel,
@@ -30,7 +26,7 @@ import type {
 
 import {
   hasItemFailure,
-  isActiveItem as isActiveItemInModel,
+  isActiveItem,
   isInProgressStatus,
   joinedReasoningParagraphs,
   joinWarningParts,
@@ -261,81 +257,17 @@ export function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   return undefined;
 }
 
-// --- kept for the store's live path (state/conversation.ts) -----------------
-// The store's live path (item/started, item/completed) still holds a wire
-// ThreadItem and settles a tool item or a sparse running row itself, ahead of
-// this projection catching up on the next publish. These are main's
-// originals, unchanged: the cutover that reads every row from
-// projectConversation deletes the row appliers that call them, and this too.
-
-// A live item can arrive without any status of its own while the turn that
-// contains it is still running — a sparse running tool/reasoning row would
-// otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it. Exported so the
-// store's incremental projection applies the same rule against the turn
-// status it derives from the active turn.
-export function isActiveItem(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): boolean {
-  if (item.status !== undefined) return isInProgressStatus(item.status);
-  return isInProgressStatus(turnStatus);
-}
-
-// Exported so the store's incremental projection settles a tool item exactly
-// as the canonical projector does, instead of keeping a second copy.
-export function activityState(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
+// activityState settles a tool/reasoning row's lifecycle state. Unexported:
+// the store's own live path (item/started, item/completed) that used to need
+// this as a second copy is gone — the D23c-2b cutover reads every row from
+// projectConversation now — so only this file's own projectItem calls it.
+function activityState(
+  item: ItemModel,
+  turn: Pick<TurnModel, "status">,
 ): ActivityState {
   if (hasItemFailure(item)) return "failed";
-  if (isActiveItem(item, turnStatus)) return "running";
+  if (isActiveItem(item, turn.status)) return "running";
   return "completed";
-}
-
-// The store's live path (item/started, item/completed) still holds a wire
-// ThreadItem, so it resolves image sources itself with the reducer's
-// precedence (url, inline bytes, path, name); D23 hands that path to the
-// package reducer and deletes this.
-function inlineImageSrc(img: InputItem): string | undefined {
-  if (
-    img.data === undefined ||
-    img.data === "" ||
-    img.mediaType === undefined ||
-    img.mediaType === ""
-  ) {
-    return undefined;
-  }
-  return `data:${img.mediaType};base64,${img.data}`;
-}
-
-function inputImage(img: InputItem): ItemImage {
-  return {
-    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
-    name: img.name,
-  };
-}
-
-function outputImage(img: OutputImage): ItemImage {
-  return {
-    src: img.url ?? img.path ?? img.name ?? img.source ?? "",
-    name: img.name,
-  };
-}
-
-export function projectItemAttachments(
-  item: ThreadItem,
-): AttachmentRef[] | undefined {
-  if (
-    item.type === "userMessage" ||
-    (item.type === "steering" && item.source === "user")
-  ) {
-    return attachmentRows(item.id, item.images?.map(inputImage));
-  }
-  if (item.type === "commandExecution") {
-    return attachmentRows(item.id, item.outputImages?.map(outputImage), "out:");
-  }
-  return undefined;
 }
 
 // --- pending ask_user questions ---------------------------------------------
@@ -458,7 +390,7 @@ function projectItem(
   // turn that keeps running stops saying "Writing…" at once. An item that
   // carries no status of its own is live exactly while its turn is.
   if (isAgentMessage(item)) {
-    const streaming = isActiveItemInModel(item, turn.status);
+    const streaming = isActiveItem(item, turn.status);
     return {
       kind: "final",
       item: {
@@ -478,7 +410,7 @@ function projectItem(
   // "reasoning" regardless of any label text; a commandExecution whose
   // toolName is "Reasoning" is NOT routed here (it stays family "tool" below).
   if (isReasoning(item)) {
-    const state: ActivityState = isActiveItemInModel(item, turn.status) ? "running" : "completed";
+    const state: ActivityState = isActiveItem(item, turn.status) ? "running" : "completed";
     return {
       kind: "activity",
       pre: {
@@ -523,7 +455,7 @@ function projectItem(
           id: item.id,
           label: toolLabel(item),
           family: "tool",
-          state: activityState(item, turn.status),
+          state: activityState(item, turn),
           detail: activityDetail(item),
         },
       },
@@ -607,7 +539,7 @@ function projectItem(
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
   // "unknown" for any item type the projection does not recognize.
-  const state = activityState(item, turn.status);
+  const state = activityState(item, turn);
   return {
     kind: "activity",
     pre: {
@@ -686,37 +618,6 @@ function clusterActivityRun(
     ...(item.position ? { position: item.position } : {}),
   }));
   return { ...first, state, members };
-}
-
-// Kept for the store's incremental projection (state/conversation.ts), which
-// still groups its own preItems by family: main's original grouping loop,
-// rebuilt on clusterActivityRun so the run math itself has one copy.
-// Exported so the store settles a run of activities exactly as
-// projectTimeline does; the cutover that reads every row from
-// projectConversation deletes this too.
-export function clusterActivities(
-  preItems: PreActivity[],
-): Extract<MobileTimelineItem, { kind: "activity" }>[] {
-  const result: Extract<MobileTimelineItem, { kind: "activity" }>[] = [];
-  let run: PreActivity[] = [];
-
-  const flush = () => {
-    const clustered = clusterActivityRun(run);
-    if (clustered) result.push(clustered);
-    run = [];
-  };
-
-  for (const pre of preItems) {
-    const last = run[run.length - 1];
-    if (last && last.family === pre.family) {
-      run.push(pre);
-    } else {
-      flush();
-      run = [pre];
-    }
-  }
-  flush();
-  return result;
 }
 
 // --- timeline projection -----------------------------------------------------

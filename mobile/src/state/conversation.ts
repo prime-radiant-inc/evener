@@ -424,12 +424,33 @@ function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
 function supersededBy(
   candidate: MobileTimelineItem,
   ownIdentities: ReadonlySet<string>,
-  attachmentSources: ReadonlySet<string>,
+  supersedingSources: ReadonlySet<string>,
 ): boolean {
   if ([...ownTimelineIdentities(candidate)].some((id) => ownIdentities.has(id)))
     return true;
   const sourceId = attachmentSourceIdentity(candidate);
-  return sourceId !== null && attachmentSources.has(sourceId);
+  return sourceId !== null && supersedingSources.has(sourceId);
+}
+
+// A source's identity when its own item explicitly clears its output images
+// (outputImages: [], distinct from omitted/undefined — the wire's only way
+// to say "these are gone", not merely "unchanged since the last frame":
+// appwire's nil/non-nil-empty/non-empty rule, the reducer's own
+// outputImagesToItemImages comment). withPageHistory's own
+// projectedAttachmentSources only names a source with a CURRENT attachment
+// ROW, and an explicit clear projects no row at all (there is nothing left
+// to render) — without this, a page-owned attachment for that source
+// survived the merge untouched after its source explicitly removed it.
+function explicitlyClearedAttachmentSources(model: ThreadModel): Set<string> {
+  const cleared = new Set<string>();
+  for (const turn of model.turns) {
+    for (const item of turn.items) {
+      if (item.outputImages !== undefined && item.outputImages.length === 0) {
+        cleared.add(item.transcriptKey ?? item.id);
+      }
+    }
+  }
+  return cleared;
 }
 
 export function createConversationStore() {
@@ -766,15 +787,18 @@ export function createConversationStore() {
     );
     // Sources the snapshot has its OWN attachment row for — narrower than
     // `identities`, which a source row alone (no attachment yet) also
-    // populates. A page-owned attachment is superseded only once the
-    // snapshot re-emits an attachment for its source, under any wire id (the
-    // hub reissues the source's id while its transcript key stands, so the
-    // new attachment row's own id can differ from the page's).
-    const projectedAttachmentSources = new Set(
-      projected.items
+    // populates. A page-owned attachment is superseded once the snapshot
+    // re-emits an attachment for its source, under any wire id (the hub
+    // reissues the source's id while its transcript key stands, so the new
+    // attachment row's own id can differ from the page's) — OR once its
+    // source explicitly clears its own images, which projects no attachment
+    // row at all (explicitlyClearedAttachmentSources's own comment).
+    const projectedAttachmentSources = new Set([
+      ...projected.items
         .map((row) => attachmentSourceIdentity(row))
         .filter((id): id is string => id !== null),
-    );
+      ...explicitlyClearedAttachmentSources(projected),
+    ]);
     const pageRows: MobileTimelineItem[] = [];
     for (const item of previous.items) {
       if (!pageOwnedIds.has(timelineIdentity(item))) continue;
@@ -800,10 +824,9 @@ export function createConversationStore() {
   // whole row would delete history nobody else has; keeping it whole would show
   // that member twice. So the cluster is rebuilt from the members the projection
   // does not hold, exactly the way the projector builds one (project.ts's
-  // clusterActivityRun, which the kept-for-compat clusterActivities now calls
-  // too: identity, label and detail come from the first member, the state is
-  // running when any member runs, and a single member is a plain activity
-  // row rather than a cluster of one).
+  // clusterActivityRun: identity, label and detail come from the first
+  // member, the state is running when any member runs, and a single member
+  // is a plain activity row rather than a cluster of one).
   //
   // duplicates() asks supersededBy against `identities` (every projected
   // row's own identity) and `projectedAttachmentSources` (narrow: only rows
@@ -848,6 +871,7 @@ export function createConversationStore() {
   // once the cap has trimmed a row, its page entry is stale and a later
   // re-introduction must be judged on its own.
   function pruneEvictedIds(items: MobileTimelineItem[]): void {
+    if (pageOwnedIds.size === 0) return;
     const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);

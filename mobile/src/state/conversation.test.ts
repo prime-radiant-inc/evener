@@ -7263,6 +7263,53 @@ describe("ConversationStore", () => {
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
     });
 
+    // The RoboRev finding this pins: an authoritative outputImages: [] (the
+    // wire's only way to say "these are gone" — appwire's nil/non-nil-empty/
+    // non-empty rule, reducer.ts's outputImagesToItemImages comment) removes
+    // the live attachment row, but the merge above only ever treated a
+    // source as superseded once a REPLACEMENT attachment row existed, so a
+    // page-owned attachment for that source was reattached even after an
+    // explicit clear. Distinct from the "omits it" case above: there, the
+    // snapshot says nothing about the source's images (unchanged); here it
+    // says there are none (removed).
+    it("drops a page-owned attachment once its source explicitly clears its output images", async () => {
+      const { store, service } = await openRunningTurn([]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "wire-Z:attachments",
+            items: [{ id: "att-Z", src: "https://example.com/z.png" }],
+            sourceTranscriptKey: "key-Z",
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "wire-Z-source",
+            transcriptKey: "key-Z",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            outputImages: [],
+          },
+        },
+      } as AnyNotification);
+
+      expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(false);
+    });
+
     it("keeps a retained page-owned attachment beside its source, not wherever it sat in the page", async () => {
       // Case (b), placement: a page [P1, P2, P3, attach(P3), P4, P5]. The
       // snapshot re-emits P3 with no attachment of its own, so P3 itself is
