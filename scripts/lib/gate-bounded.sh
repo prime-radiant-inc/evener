@@ -33,19 +33,19 @@ stop_process_tree() {
 	seen=""
 	grace=$((SECONDS + 5))
 	while [ "$SECONDS" -lt "$grace" ]; do
+		# One scan per pass: every descendant found is recorded AND signalled,
+		# so a child that appears only in this scan cannot be missed by the
+		# record. TERM children before the root so a surviving tree is nudged
+		# from the leaves up, then decide the grace from the root and every pid
+		# ever discovered: if the root exits on TERM, a child that ignored it is
+		# reparented and would otherwise read as "nothing left" on the next scan,
+		# cutting its grace to one pass.
+		alive=0
 		for p in $(process_descendants "$pid"); do
 			seen="$seen $p"
-		done
-		# TERM children before the root so a surviving tree is nudged from the
-		# leaves up, then decide the grace from the root AND every pid ever
-		# discovered: if the root exits on TERM, a child that ignored it is
-		# reparented and would otherwise read as "nothing left" on the next
-		# scan, cutting its grace to one pass.
-		for p in $(process_descendants "$pid"); do
 			kill -TERM "$p" 2>/dev/null || :
 		done
 		kill -TERM "$pid" 2>/dev/null || :
-		alive=0
 		for p in "$pid" $seen; do
 			[ -n "$p" ] || continue
 			kill -0 "$p" 2>/dev/null && alive=1

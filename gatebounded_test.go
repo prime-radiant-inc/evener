@@ -138,7 +138,15 @@ wait
 PARENT
 DIR="$dir" READY="$dir/ready" LATE="$dir/late" bash "$dir/parent.sh" &
 pid=$!
-for _ in $(seq 1 100); do [ -f "$dir/ready" ] && break; sleep 0.05; done
+ready=no
+for _ in $(seq 1 100); do [ -f "$dir/ready" ] && { ready=yes; break; }; sleep 0.05; done
+if [ "$ready" != yes ]; then
+	kill -KILL "$pid" 2>/dev/null || :
+	wait "$pid" 2>/dev/null || :
+	rm -rf "$dir"
+	echo "parent never signalled readiness"
+	exit 1
+fi
 stop_process_tree "$pid"
 for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
 late=$(cat "$dir/late" 2>/dev/null)
@@ -178,7 +186,15 @@ wait
 PARENT
 DIR="$dir" LATE="$dir/late" CHILD_READY="$dir/child-ready" bash "$dir/parent.sh" &
 pid=$!
-for _ in $(seq 1 100); do [ -s "$dir/late" ] && [ -f "$dir/child-ready" ] && break; sleep 0.05; done
+ready=no
+for _ in $(seq 1 100); do [ -s "$dir/late" ] && [ -f "$dir/child-ready" ] && { ready=yes; break; }; sleep 0.05; done
+if [ "$ready" != yes ]; then
+	kill -KILL "$pid" 2>/dev/null || :
+	wait "$pid" 2>/dev/null || :
+	rm -rf "$dir"
+	echo "child never signalled readiness"
+	exit 1
+fi
 late=$(cat "$dir/late" 2>/dev/null)
 stop_process_tree "$pid"
 state=unknown
