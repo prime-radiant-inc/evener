@@ -188,8 +188,8 @@ func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 	if strings.Contains(err.Error(), clonePath) {
 		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
 	}
-	if !strings.Contains(err.Error(), "no longer registered") {
-		t.Fatalf("err = %v, want it to say the marketplace is no longer registered despite the clone litter", err)
+	if !errors.Is(err, ErrMarketplaceUnregisteredCloneRemains) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrMarketplaceUnregisteredCloneRemains): a caller must be able to tell this applied-with-litter outcome from a plain refusal", err)
 	}
 	list, listErr := m.ListMarketplaces(ctx)
 	if listErr != nil {
@@ -197,6 +197,67 @@ func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 	}
 	if _, ok := list["market-a"]; ok {
 		t.Fatalf("marketplace still listed after its save-then-remove: %v", list)
+	}
+}
+
+// A retry after the litter above finds no entry for "market-a" in
+// known_marketplaces.json (the unregister save already landed), so a bare
+// lookup miss would report ErrMarketplaceNotFound - indistinguishable from a
+// name that was never registered at all, and misleading about whether the
+// clone is still sitting on disk. RemoveMarketplace instead notices the
+// leftover clone and retries removing it: while removal keeps failing, the
+// retry reports the same ErrMarketplaceUnregisteredCloneRemains rather than
+// a bare not-found, and once removal succeeds the retry resolves the litter
+// silently.
+func TestRemoveMarketplaceRetryAfterCloneRemovalFailureReportsLitterNotNotFound(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	clonePath := m.marketplaceDir("market-a")
+	failing := true
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(p string) error {
+		if p == clonePath && failing {
+			return &fs.PathError{Op: "remove", Path: clonePath, Err: errors.New("permission denied")}
+		}
+		return origRemove(p)
+	}
+
+	if err := m.RemoveMarketplace(ctx, "market-a"); !errors.Is(err, ErrMarketplaceUnregisteredCloneRemains) {
+		t.Fatalf("first RemoveMarketplace = %v, want ErrMarketplaceUnregisteredCloneRemains", err)
+	}
+
+	// The retry: the entry is already gone from known_marketplaces.json, so
+	// this must not report a bare not-found while the clone is still there.
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if !errors.Is(err, ErrMarketplaceUnregisteredCloneRemains) {
+		t.Fatalf("retry RemoveMarketplace = %v, want ErrMarketplaceUnregisteredCloneRemains, not a bare not-found", err)
+	}
+	if errors.Is(err, ErrMarketplaceNotFound) {
+		t.Fatalf("retry RemoveMarketplace = %v, want it not to also read as ErrMarketplaceNotFound", err)
+	}
+	if strings.Contains(err.Error(), clonePath) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	mustExist(t, clonePath)
+
+	// Once the clone can actually be removed, the retry finishes the litter
+	// cleanup and reports success.
+	failing = false
+	if err := m.RemoveMarketplace(ctx, "market-a"); err != nil {
+		t.Fatalf("final retry RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clonePath); !os.IsNotExist(err) {
+		t.Fatalf("clone still present after the retry succeeded: %v", err)
 	}
 }
 
