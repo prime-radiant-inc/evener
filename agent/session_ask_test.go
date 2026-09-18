@@ -1498,6 +1498,7 @@ func TestAskUser_RestoreResolvesAcrossInterruptOrUserSteering(t *testing.T) {
 				t.Fatalf("NewSession: %v", err)
 			}
 
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
@@ -1552,6 +1553,7 @@ func TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
