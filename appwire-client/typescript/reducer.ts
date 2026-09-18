@@ -1056,7 +1056,7 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
       : value;
   }
   if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
-    return Array.isArray(value) || (typeof value === "object" && value !== null) ? "…" : value;
+    return typeof value === "object" && value !== null ? "…" : value;
   }
   if (Array.isArray(value)) {
     return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
