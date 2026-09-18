@@ -34,6 +34,14 @@ const (
 	// durable step failed; the error's data carries the applied canonical
 	// state. Same rule as ErrorKeybindingsPostRename, for the other store.
 	ErrorTranscriptDisplayPostApply ErrorInfo = "transcriptDisplayPostApply"
+	// ErrorMarketplaceUnregisteredCloneRemains marks a marketplace removal
+	// that APPLIED (the unregister save landed; Applied carries the updated
+	// marketplace list) before its clone's removal from disk failed. A
+	// client should reconcile from Applied instead of treating the removal
+	// as rejected - same rule as ErrorKeybindingsPostRename, for a delete
+	// instead of a patch, and a retry finds ErrMarketplaceNotFound rather
+	// than repeating this error.
+	ErrorMarketplaceUnregisteredCloneRemains ErrorInfo = "marketplaceUnregisteredCloneRemains"
 )
 
 type MutationOutcome string

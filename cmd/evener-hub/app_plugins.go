@@ -263,8 +263,30 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
 // Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
+// A clone-removal failure after the unregister has already landed is not
+// that refusal: the marketplace is already gone, so folding it into the same
+// plain-error path would read as "removal failed" when it applied, and a
+// retry would then land on ErrMarketplaceNotFound instead of ever surfacing
+// the litter. Its own WireError carries the updated list in Data.Applied
+// instead - the shape ErrorKeybindingsPostRename established for an
+// applied-then-a-durable-step-fails outcome - so the caller reconciles from
+// Applied instead of retrying.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
+		if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+			applied, listErr := c.listMarketplaces(ctx)
+			if listErr != nil {
+				return appwire.MarketplaceListResponse{}, listErr
+			}
+			return appwire.MarketplaceListResponse{}, appwire.WireError{
+				Code:    appwire.CodeInternalError,
+				Message: err.Error(),
+				Data: appwire.MarketplaceUnregisteredCloneRemainsData{
+					EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+					Applied:         applied,
+				},
+			}
+		}
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.listMarketplaces(ctx)
