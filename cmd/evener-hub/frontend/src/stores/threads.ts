@@ -938,16 +938,16 @@ function cancelPendingUserIntents(ref: string): void {
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
-// directly. A Stop acknowledged while its reconnect or post-resume hydration is
-// in flight must cancel it: the action passes this fence to the client's
-// beforeRequest hook (so no resume RPC is sent) and to refreshThread's
-// beforePublish hook (so a stale read does not publish over the newer Stop).
+// directly, and a Stop acknowledged while its reconnect or post-resume
+// hydration is in flight must cancel it. Production fences that action through
+// resumeStopBaseline below -- resume can return a NEW identity a per-ref fence
+// captured beforehand cannot name -- so this per-ref form now serves the
+// single-ref checks that remain (the tests pinning refreshThread's
+// beforePublish window among them) and delegates to the baseline's per-ref
+// compare rather than re-implementing it.
 export function resumeStopFence(ref: string): () => void {
-  const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
-  return () => {
-    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
-      throw new Error("Stop canceled this pending action; send again when ready.");
-  };
+  const baseline = resumeStopBaseline();
+  return () => baseline(ref);
 }
 
 // Resume can return a NEW identity, and that identity can be named by a Stop
