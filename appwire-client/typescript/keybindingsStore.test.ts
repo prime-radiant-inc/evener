@@ -6,6 +6,7 @@ import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
@@ -925,6 +926,18 @@ describe("the checkpointed draft editor", () => {
     expect(discardStoredKeybindingDraft(drafts.storage)).toBe("refused");
 
     expect(drafts.stored()).toEqual({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+  });
+
+  test("decodeKeybindingDraftFields decodes a valid checkpoint into the same shape restoreDraft publishes", () => {
+    expect(decodeKeybindingDraftFields({ id: "d1", baseRevision: 3, rules, writeUncertain: true })).toEqual({
+      draft: { version: 1, revision: 3, rules },
+      writeUncertain: true,
+    });
+  });
+
+  test("decodeKeybindingDraftFields reports no draft for a record that does not decode", () => {
+    expect(decodeKeybindingDraftFields("{not json")).toEqual({ draft: null, writeUncertain: false });
+    expect(decodeKeybindingDraftFields(null)).toEqual({ draft: null, writeUncertain: false });
   });
 
   test("an unreadable stored record never locks the section", async () => {

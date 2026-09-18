@@ -412,6 +412,29 @@ export function discardStoredKeybindingDraft(
   return discardStoredDraft(storage, isReadable);
 }
 
+/** Decodes `value` into the same draft/writeUncertain fields restoreDraft
+ * publishes for a loaded checkpoint, or the "nothing here" pair when it does
+ * not decode. The store-free discard path (no live repository, so no
+ * restoreDraft to call) needs this to show a replacement record it just
+ * found the same way a live store would, rather than clear the unreadable
+ * notice and leave a stale `draft` behind. draftConflict is deliberately
+ * absent: it compares against a confirmed hub revision this offline path has
+ * no way to know. */
+export function decodeKeybindingDraftFields(value: unknown): {
+  draft: KeybindingsOverrides | null;
+  writeUncertain: boolean;
+} {
+  try {
+    const checkpoint = draftCheckpoint(value);
+    return {
+      draft: { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules },
+      writeUncertain: checkpoint.writeUncertain,
+    };
+  } catch {
+    return { draft: null, writeUncertain: false };
+  }
+}
+
 /** Extracts a payload the hub attached to a rejection under `key` when the
  * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
  * `current` (the server's state after a lost revision race) and the

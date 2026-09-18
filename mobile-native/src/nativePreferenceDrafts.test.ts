@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
+	clearsErrorAfterOfflineDiscard,
+	draftUnreadableAfterDiscard,
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
 	matchesStoredBytes,
@@ -361,5 +363,41 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+});
+
+describe("draftUnreadableAfterDiscard", () => {
+	it("keeps the notice when the current record is still unreadable, regardless of the discard's own outcome", () => {
+		// A concurrent writer can insert a FRESH unreadable record between
+		// draftCheckpointPort's own re-read (which decided the discard's
+		// outcome) and this caller's follow-up read - "removed"/"absent"
+		// describes the record discardStoredKeybindingDraft acted on, not
+		// what is there NOW, so it must not override a "still unreadable"
+		// follow-up read.
+		expect(draftUnreadableAfterDiscard("unreadable")).toBe(true);
+	});
+
+	it("clears the notice when the current record decodes as valid", () => {
+		expect(draftUnreadableAfterDiscard("readable")).toBe(false);
+	});
+
+	it("clears the notice when nothing is stored", () => {
+		expect(draftUnreadableAfterDiscard("absent")).toBe(false);
+	});
+});
+
+describe("clearsErrorAfterOfflineDiscard", () => {
+	it("clears the error after an attempted discard, including a storage failure", () => {
+		expect(clearsErrorAfterOfflineDiscard("removed")).toBe(true);
+		expect(clearsErrorAfterOfflineDiscard("absent")).toBe(true);
+		expect(clearsErrorAfterOfflineDiscard("refused")).toBe(true);
+		expect(clearsErrorAfterOfflineDiscard("storageUnavailable")).toBe(true);
+	});
+
+	it("does not clear the error when there was no hub to discard for", () => {
+		// A stale error from an earlier failed action must not be hidden by an
+		// action that never ran (no hubId - see
+		// NativePreferencesProvider.discardUnreadableKeybindingsDraft).
+		expect(clearsErrorAfterOfflineDiscard(null)).toBe(false);
 	});
 });

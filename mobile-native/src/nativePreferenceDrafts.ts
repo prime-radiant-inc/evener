@@ -1,5 +1,6 @@
 import { canonicalJson } from "@evener/appwire-client";
 import type {
+	DiscardStoredDraftResult,
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
 } from "@evener/appwire-client";
@@ -160,6 +161,31 @@ export function readDraftOutcome(
 	} catch {
 		return "storageUnavailable";
 	}
+}
+
+/** Whether the store-free discard action should still present the record as
+ * unreadable, given the CURRENT record a follow-up read just found -
+ * `outcome` (discardStoredKeybindingDraft's own result) plays no part: a
+ * "removed" or "absent" outcome does not mean the record is gone NOW, since
+ * a concurrent writer can insert a fresh unreadable record between
+ * draftCheckpointPort's own re-read and this caller's - only the follow-up
+ * read's own classification of what is there right now can say that. The
+ * caller handles `current === "storageUnavailable"` itself, before this is
+ * ever reached (see NativePreferencesProvider's own comment on that
+ * branch), so this only ever sees the narrower DraftReadOutcome. */
+export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean {
+	return current === "unreadable";
+}
+
+/** Whether a stale component-local error should be cleared once
+ * discardUnreadableKeybindingsDraft() returns - only when it actually
+ * attempted a discard. `null` means there was no hub to discard for (see
+ * NativePreferencesProvider); clearing the error then would hide a prior
+ * failure over an action that never ran. A storage failure still counts as
+ * an attempt (the port was reached), so it clears too - the failure itself
+ * is surfaced through offlineStorageUnavailable, a separate signal. */
+export function clearsErrorAfterOfflineDiscard(outcome: DiscardStoredDraftResult | "storageUnavailable" | null): boolean {
+	return outcome !== null;
 }
 
 export function nativeKeybindingDrafts(
