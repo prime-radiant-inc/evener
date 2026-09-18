@@ -488,6 +488,15 @@ export {
   wireToDefaults,
 } from "./transcriptDisplayConfig";
 export type {
+  HubDefaultsByLayout,
+  TranscriptDisplayClient,
+  TranscriptDisplayStore,
+  TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreState,
+  TranscriptDisplaySupport,
+} from "./transcriptDisplayStore";
+export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export type {
   ProjectedAnchor,
   ProjectedEntry,
   ProjectedTurn,
