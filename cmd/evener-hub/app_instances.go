@@ -1262,12 +1262,8 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// nothing changed; a credential that stays deleted is still a change
 		// every other client's status for this name is stale against, and
 		// the hub owes them the broadcast even though the entry itself never
-		// moved.
-		restoreFailed, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
-		if restoreFailed {
-			return writeApplied(restoreErr)
-		}
-		return restoreErr
+		// moved - restoreFailedRemoval wraps its own result in that case.
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
 	}
 
 	delete(l.Providers, name)
@@ -1279,12 +1275,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if err := c.writeLoadable(l); err != nil {
 		// The config write never landed, so a clean restore leaves nothing
 		// changed; a credential that stays deleted is still a change every
-		// other client's status for this name is stale against.
-		restoreFailed, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
-		if restoreFailed {
-			return writeApplied(restoreErr)
-		}
-		return restoreErr
+		// other client's status for this name is stale against -
+		// restoreFailedRemoval wraps its own result in that case.
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
 	}
 	if err := c.reg.Reload(); err != nil {
 		// writeLoadable's dry parse only checks the layer against the registry
@@ -1306,8 +1299,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// however this call ends: the other clients are still listing an
 			// instance that is gone (#1543). Unconditional: unlike the other
 			// call sites, this one applies to the config regardless of
-			// whether the credential restore below also fails.
-			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			// whether the credential restore below also fails, so it wraps
+			// its own result rather than relying on restoreFailedRemoval's.
+			standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config")
 			return writeApplied(standingErr)
@@ -1320,16 +1314,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// stored key beside no active source, and the next launch would be
 		// refused for missing credentials, until some later write happened to
 		// reload again.
-		restoreFailed, restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+		// The config rolled back cleanly, so this would be a plain refusal -
+		// unless the credential restore itself failed, in which case a
+		// stored key or OAuth record stays deleted under an instance that is
+		// back in the config, which every other client's status for it is
+		// stale against; restoreFailedRemoval wraps its own result in that
+		// case.
+		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
-		// The config rolled back cleanly, so restored alone would be a plain
-		// refusal - unless the credential restore itself failed, in which
-		// case a stored key or OAuth record stays deleted under an instance
-		// that is back in the config, which every other client's status for
-		// it is stale against.
-		if restoreFailed {
-			restored = writeApplied(restored)
-		}
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the
@@ -1378,12 +1370,12 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 // only the layers the failure actually deleted, so this never rewrites - and
 // never reports a failure to rewrite - a credential that is still where it was.
 //
-// restoreFailed reports whether a layer that was deleted could not be put
-// back: even when the config write this removal was attempting rolled back
-// cleanly, a credential that stays deleted is a change every other client's
-// credential status for the name is stale against, so a caller whose own
-// write did not apply still owes the broadcast when this is true.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) (restoreFailed bool, err error) {
+// A layer that was deleted and could not be put back is a change every other
+// client's credential status for the name is stale against, even when the
+// config write this removal was attempting rolled back cleanly, so that case
+// answers writeApplied; a clean restore is a plain refusal, so cause comes
+// back unwrapped.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
 	var problems []string
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
@@ -1400,9 +1392,9 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		}
 	}
 	if len(problems) == 0 {
-		return false, cause
+		return cause
 	}
-	return true, fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
+	return writeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and ")))
 }
 
 // removeCredentials deletes the credential layers filed under a name whose
