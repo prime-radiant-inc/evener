@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -31,6 +30,9 @@ func ParseJSON(data []byte, maxBytes int) (any, error) {
 	}
 	if !utf8.Valid(data) {
 		return nil, errors.New("JSON is not UTF-8")
+	}
+	if err := validateStringEscapes(data); err != nil {
+		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -132,7 +134,7 @@ func validateNumbers(value any) error {
 			return errors.New("number is outside finite binary64 domain")
 		}
 		integer, isInteger, safe := exactSafeInteger(string(value))
-		if f == 0 && !(isInteger && safe && integer == 0) {
+		if f == 0 && (!isInteger || !safe || integer != 0) {
 			return errors.New("nonzero number underflows binary64")
 		}
 		if isInteger && !safe {
@@ -175,7 +177,7 @@ func Fingerprint(namespace string, data []byte) (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256(canonical)
-	return fmt.Sprintf("v1:%s", hex.EncodeToString(sum[:])), nil
+	return "v1:" + hex.EncodeToString(sum[:]), nil
 }
 
 // exactSafeInteger checks decimal spelling using work bounded by token length.
@@ -224,4 +226,58 @@ func exactSafeInteger(token string) (value int64, integer, safe bool) {
 		value = -value
 	}
 	return value, true, true
+}
+
+// validateStringEscapes refuses UTF-16 surrogates that cannot become UTF-8.
+// The standard decoder would silently replace these with U+FFFD, losing source,
+// state and key identity. Escaped backslashes never begin Unicode escapes.
+func validateStringEscapes(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		if data[i] == '"' {
+			inString = !inString
+			continue
+		}
+		if !inString || data[i] != '\\' {
+			continue
+		}
+		i++
+		if i >= len(data) {
+			return errors.New("invalid JSON string escape")
+		}
+		if data[i] != 'u' {
+			continue
+		}
+		code, err := unicodeEscape(data, i)
+		if err != nil {
+			return err
+		}
+		i += 4
+		if code >= 0xdc00 && code <= 0xdfff {
+			return errors.New("unpaired JSON Unicode surrogate")
+		}
+		if code < 0xd800 || code > 0xdbff {
+			continue
+		}
+		if i+2 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
+			return errors.New("unpaired JSON Unicode surrogate")
+		}
+		low, err := unicodeEscape(data, i+2)
+		if err != nil || low < 0xdc00 || low > 0xdfff {
+			return errors.New("unpaired JSON Unicode surrogate")
+		}
+		i += 6
+	}
+	return nil
+}
+
+func unicodeEscape(data []byte, index int) (uint64, error) {
+	if index+4 >= len(data) {
+		return 0, errors.New("invalid JSON Unicode escape")
+	}
+	code, err := strconv.ParseUint(string(data[index+1:index+5]), 16, 16)
+	if err != nil {
+		return 0, errors.New("invalid JSON Unicode escape")
+	}
+	return code, nil
 }

@@ -146,3 +146,45 @@ func TestNumericValidationBoundsExponentWork(t *testing.T) {
 		t.Fatalf("zero known version accepted: %v", parsed)
 	}
 }
+
+func TestStrictJSONRejectsUnpairedSurrogates(t *testing.T) {
+	for _, escaped := range []string{`\ud800`, `\ud801`, `\udbff`, `\udc00`, `\udfff`, `\ud800x`, `\ud800\ud800`, `\udc00\ud800`} {
+		for _, raw := range []string{`{"html":"` + escaped + `"}`, `{"state":{"value":"` + escaped + `"}}`, `{"` + escaped + `":1}`} {
+			if _, err := ParseJSON([]byte(raw), MaxRequestBytes); err == nil {
+				t.Errorf("accepted unsupported Unicode in %s", raw)
+			}
+			if _, err := Fingerprint("N", []byte(raw)); err == nil {
+				t.Errorf("fingerprinted unsupported Unicode in %s", raw)
+			}
+		}
+	}
+	for _, tt := range []struct{ raw, decoded string }{
+		{`"\ud83d\ude00"`, "😀"},
+		{`"\uD800\uDC00"`, "𐀀"},
+		{`"\udbff\udfff"`, "\U0010FFFF"},
+		{`"\ufffd"`, "�"},
+		{`"�"`, "�"},
+		{`"\\ud800"`, `\ud800`},
+		{`"\\\"literal"`, `\"literal`},
+	} {
+		for _, raw := range []string{`{"html":` + tt.raw + `}`, `{"state":{"value":` + tt.raw + `}}`, `{` + tt.raw + `:1}`} {
+			value, err := ParseJSON([]byte(raw), MaxRequestBytes)
+			if err != nil {
+				t.Errorf("valid Unicode rejected in %s: %v", raw, err)
+				continue
+			}
+			object := value.(map[string]any)
+			if html, ok := object["html"]; ok {
+				if html != tt.decoded {
+					t.Errorf("source=%q, want %q", html, tt.decoded)
+				}
+			} else if state, ok := object["state"]; ok {
+				if state.(map[string]any)["value"] != tt.decoded {
+					t.Fatal("state string rewritten")
+				}
+			} else if _, ok := object[tt.decoded]; !ok {
+				t.Fatal("decoded key rewritten")
+			}
+		}
+	}
+}
