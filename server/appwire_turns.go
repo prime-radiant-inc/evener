@@ -881,10 +881,9 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.Delta == "" {
 		incoming.Delta = existing.Delta
 	}
-	// Output images: see appwire.MergeOutputImages; input images keep the length rule.
-	if len(incoming.Images) == 0 {
-		incoming.Images = existing.Images
-	}
+	// Output and input images each have one rule: see appwire.MergeOutputImages
+	// and appwire.MergeInputImages.
+	incoming.Images = appwire.MergeInputImages(existing.Images, incoming.Images)
 	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if incoming.ToolName == "" {
 		incoming.ToolName = existing.ToolName

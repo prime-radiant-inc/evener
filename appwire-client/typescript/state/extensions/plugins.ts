@@ -81,19 +81,18 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchPlugins(),
+    revision: listRevision,
     // The revision moves now, not when the refetch lands: a host keying
     // derived data on it wants to know the set changed as soon as the hub
     // says so.
     onNotified: () => store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 })),
-    onFence: (set) => {
-      listRevision.fence();
-      // Nothing is coming to lower it.
-      set({ pluginsLoading: false });
-    },
+    // The lifecycle fences listRevision; nothing is coming to lower the flag a
+    // fenced read raised.
+    onFence: (set) => set({ pluginsLoading: false }),
     // A mutation issued before any fetchPlugins call touches none of these
-    // three fields, so listRevision.hasLive() is what carries its intent - a
-    // write issues the same live revision a read does (see listRevision.ts).
-    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading || listRevision.hasLive(),
+    // three fields; the lifecycle ORs listRevision.hasLive() in for that case
+    // (see storeLifecycle.ts's revision option).
+    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading,
   });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {

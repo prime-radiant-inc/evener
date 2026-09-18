@@ -19,6 +19,11 @@ import (
 // name today: a clone at <marketplaces>/<name> holding a catalog, plugin
 // materialized under cache/<name>/<plugin>/<sha>, and the registry entry
 // <plugin>@<name> pointing at it. It returns that install path.
+//
+// Its own saveMarketplaces/saveRegistry calls run outside any lockStore
+// session, so they mark m.pendingStoreChanged the way a real mutation would;
+// this fixture clears that flag before returning so the caller's own next
+// lockStore session reports only what it itself changed.
 func plantLegacyMarketplace(t *testing.T, m *Manager, name, plugin string) string {
 	t.Helper()
 	mk, err := m.loadMarketplaces()
@@ -49,6 +54,7 @@ func plantLegacyMarketplace(t *testing.T, m *Manager, name, plugin string) strin
 	if err := m.saveRegistry(reg); err != nil {
 		t.Fatal(err)
 	}
+	m.pendingStoreChanged = StoreChanged{}
 	return installPath
 }
 

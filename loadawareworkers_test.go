@@ -254,6 +254,244 @@ func TestLoadAwareCgroupNonRootMountBoundary(t *testing.T) {
 	}
 }
 
+// mountinfoEscaped renders a path the way /proc/self/mountinfo does: a space,
+// tab, newline, or backslash becomes its octal escape, so a path containing any
+// of them arrives in one whitespace-free field.
+func mountinfoEscaped(path string) string {
+	return strings.NewReplacer(
+		`\`, `\134`,
+		" ", `\040`,
+		"\t", `\011`,
+		"\n", `\012`,
+	).Replace(path)
+}
+
+// TestLoadAwareCgroupAbsoluteMembership covers a delegated mount whose
+// membership path is hierarchy-absolute rather than namespace-relative. Without
+// a cgroup namespace the path in /proc/self/cgroup starts at the hierarchy root,
+// but the mount exposes a subtree at its mount point, so joining the whole path
+// against the mount point names a directory that does not exist and the quota
+// walk climbs past the limit. The two readings are indistinguishable from the
+// files alone, so the fix must consider both and keep the most restrictive
+// finite result.
+func TestLoadAwareCgroupAbsoluteMembership(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		root   string
+		member string
+		// files maps a path under the mount ("" is the mount point itself) to
+		// its cpu.max contents.
+		files map[string]string
+		want  string
+	}{
+		{
+			name:   "a finite limit only the absolute reading reaches",
+			root:   "/delegated",
+			member: "/delegated/child",
+			files: map[string]string{
+				"":      "max 100000\n",
+				"child": "100000 100000\n",
+			},
+			want: "1",
+		},
+		{
+			name:   "the most restrictive of both readings wins",
+			root:   "/delegated",
+			member: "/delegated/child",
+			files: map[string]string{
+				"":                "max 100000\n",
+				"child":           "100000 100000\n",
+				"delegated/child": "400000 100000\n",
+			},
+			want: "1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mount := filepath.Join(root, "cgroup")
+			for rel, content := range tc.files {
+				writeFixtureFile(t, filepath.Join(mount, rel, "cpu.max"), content)
+			}
+			membership := filepath.Join(root, "self-cgroup")
+			writeFixtureFile(t, membership, "0::"+tc.member+"\n")
+			mountinfo := filepath.Join(root, "mountinfo")
+			writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 %s %s rw - cgroup2 cgroup2 rw\n", tc.root, mount))
+
+			got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+			if got != tc.want {
+				t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadAwareCgroupEscapedMountPath covers a mount point that mountinfo could
+// not write literally. Field 5 arrives with its spaces, tabs, and backslashes
+// escaped as octal, so the mount point must be decoded before it can name a
+// directory; a fixture that never exercises the escape cannot catch the miss.
+func TestLoadAwareCgroupEscapedMountPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		dir    string
+		root   string
+		member string
+		files  map[string]string
+		want   string
+	}{
+		{
+			name:   "space in the mount point",
+			dir:    "cg space",
+			root:   "/",
+			member: "/slice",
+			files:  map[string]string{"": "200000 100000\n"},
+			want:   "2",
+		},
+		{
+			name:   "backslash in the mount point",
+			dir:    `cg\back`,
+			root:   "/",
+			member: "/slice",
+			files:  map[string]string{"": "200000 100000\n"},
+			want:   "2",
+		},
+		{
+			name:   "tab in the mount point",
+			dir:    "cg\tspace",
+			root:   "/",
+			member: "/slice",
+			files:  map[string]string{"": "200000 100000\n"},
+			want:   "2",
+		},
+		{
+			name:   "escaped mount point with an absolute membership",
+			dir:    "cg space",
+			root:   "/delegated",
+			member: "/delegated/child",
+			files: map[string]string{
+				"":      "max 100000\n",
+				"child": "100000 100000\n",
+			},
+			want: "1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mount := filepath.Join(root, tc.dir)
+			for rel, content := range tc.files {
+				writeFixtureFile(t, filepath.Join(mount, rel, "cpu.max"), content)
+			}
+			membership := filepath.Join(root, "self-cgroup")
+			writeFixtureFile(t, membership, "0::"+tc.member+"\n")
+			mountinfo := filepath.Join(root, "mountinfo")
+			writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 %s %s rw - cgroup2 cgroup2 rw\n",
+				tc.root, mountinfoEscaped(mount)))
+
+			got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+			if got != tc.want {
+				t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadAwareCgroupMountDecodesEscapes pins the mount point itself: an
+// escaped field must come back naming a real directory, not a path that still
+// contains the literal "\040" spelling.
+func TestLoadAwareCgroupMountDecodesEscapes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mount := filepath.Join(root, "cg space")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", mount, err)
+	}
+	mountinfo := filepath.Join(root, "mountinfo")
+	writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 / %s rw - cgroup2 cgroup2 rw\n", mountinfoEscaped(mount)))
+
+	got := runLoadAwareHelper(t, `load_aware_cgroup_mount "$@"`, mountinfo)
+	if got != mount {
+		t.Errorf("load_aware_cgroup_mount = %q, want %q", got, mount)
+	}
+}
+
+// TestLoadAwareCgroupTrailingNewlinePaths covers a mountinfo path that ends in
+// a newline (escaped as \012). Command substitution strips trailing newlines,
+// so a decoded path must be carried with a sentinel through every capture or
+// the newline is dropped, the directory it names cannot be read, and the walk
+// climbs past the quota the mount actually declares.
+//
+// The membership path cannot express a trailing newline the same way: the
+// kernel writes /proc/self/cgroup one path per line, so a newline inside that
+// path is not parseable by any line-oriented reader. The mount point and root
+// are the fields mountinfo escapes for exactly this reason.
+func TestLoadAwareCgroupTrailingNewlinePaths(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		dir    string
+		root   string
+		member string
+		files  map[string]string
+		want   string
+	}{
+		{
+			name:   "newline at the end of the mount point",
+			dir:    "cg\n",
+			root:   "/",
+			member: "/",
+			files:  map[string]string{"": "200000 100000\n"},
+			want:   "2",
+		},
+		{
+			name:   "newline at the end of the mount point with an absolute membership",
+			dir:    "cg\n",
+			root:   "/delegated",
+			member: "/delegated/child",
+			files: map[string]string{
+				"":      "max 100000\n",
+				"child": "100000 100000\n",
+			},
+			want: "1",
+		},
+		{
+			name:   "newline mount point survives the walk up to the mount point",
+			dir:    "cg\n",
+			root:   "/",
+			member: "/leaf",
+			files: map[string]string{
+				"":     "400000 100000\n",
+				"leaf": "100000 100000\n",
+			},
+			want: "1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mount := filepath.Join(root, tc.dir)
+			for rel, content := range tc.files {
+				writeFixtureFile(t, filepath.Join(mount, rel, "cpu.max"), content)
+			}
+			membership := filepath.Join(root, "self-cgroup")
+			writeFixtureFile(t, membership, "0::"+tc.member+"\n")
+			mountinfo := filepath.Join(root, "mountinfo")
+			writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 %s %s rw - cgroup2 cgroup2 rw\n",
+				tc.root, mountinfoEscaped(mount)))
+
+			got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+			if got != tc.want {
+				t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRunModuleTestsUsesLoadAwareBudgets guards the wiring: the Go gate's
 // parallelism budgets must size to spare capacity through this library rather
 // than a fixed number, or the helper is dead code and a fleet of concurrent
