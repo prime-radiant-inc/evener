@@ -540,6 +540,9 @@ func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
 				if !ok || wire.Code != appwire.CodeUnavailable {
 					t.Fatalf("live delegate fork error=%v, want structured unavailable", err)
 				}
+				if isSessionRecoveryAdmissionError(err) {
+					t.Errorf("live delegate fork error=%v is reported as a recovery refusal; an explicit thread/resume cannot clear a live delegate", err)
+				}
 			})
 		}
 	}
@@ -2071,14 +2074,14 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 
 // The fork RPC and the capability projection both fence on the daemon's own
 // reported status, and both now state that over every identity a fork touches.
-// The two identities cannot disagree on this signal: hubForkLiveStatusFenced
-// answers from liveDaemonForThread, which reaches the alias through the
-// workspace-ref scan and the resolved session through Find, and with a daemon
-// live those are one and the same roster entry — the resolved session IS that
-// entry's session id, so the flags it carries are the same flags. This pins
-// that agreement in the shape where the two ids differ, so a future change that
-// lets them diverge fails here rather than becoming another round of the RPC
-// and the projection disagreeing.
+// The two identities cannot disagree on this signal: hubForkIdentityFenced
+// answers from the roster owner liveDaemonForThread resolves, which reaches the
+// alias through the workspace-ref scan and the resolved session through Find,
+// and with a daemon live those are one and the same roster entry — the resolved
+// session IS that entry's session id, so the flags it carries are the same
+// flags. This pins that agreement in the shape where the two ids differ, so a
+// future change that lets them diverge fails here rather than becoming another
+// round of the RPC and the projection disagreeing.
 func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 	for _, flags := range [][]string{nil, {"resumeRequired"}} {
 		name := map[bool]string{false: "daemon reports a recovery flag", true: "daemon reports none"}[flags == nil]
@@ -2105,7 +2108,8 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
 			}
 
-			alias, resolved := hubForkLiveStatusFenced(cfg, aliasID), hubForkLiveStatusFenced(cfg, currentID)
+			alias, resolved := hubForkIdentityFenced(cfg, aliasID, forkThreadOwnerFor(cfg, aliasID)),
+				hubForkIdentityFenced(cfg, currentID, forkThreadOwnerFor(cfg, currentID))
 			if alias != resolved {
 				t.Fatalf("live-status fence disagrees across the identities of one daemon: alias=%v resolved=%v", alias, resolved)
 			}

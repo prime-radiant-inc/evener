@@ -311,7 +311,7 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -362,7 +362,7 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
   return images.map((img) => ({
@@ -470,7 +470,7 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;

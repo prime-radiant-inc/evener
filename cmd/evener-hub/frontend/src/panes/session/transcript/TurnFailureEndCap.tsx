@@ -17,7 +17,7 @@
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
 
 import type { ItemImage, ItemModel, TurnError, TurnModel } from "@evener/appwire-client";
-import { sessionActionError, translateAttachmentMarkers } from "@evener/appwire-client";
+import { markerPattern, markerText, sessionActionError, translateAttachmentMarkers } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
@@ -411,7 +411,7 @@ function planRetryImages(
   occurrences.forEach((occurrence) => {
     usedMarkers.add(occurrence.marker);
   });
-  Array.from(text.matchAll(/\[image (\d+)\]/g)).forEach((match) => {
+  Array.from(text.matchAll(markerPattern())).forEach((match) => {
     usedMarkers.add(Number(match[1]));
   });
   const allocFallbackMarker = (): number => {
@@ -435,7 +435,7 @@ function planRetryImages(
   occurrences.forEach((occurrence, occurrenceIndex) => {
     anchorText += text.slice(cursor, occurrence.start);
     anchorText += rewriteOccurrence[occurrenceIndex]
-      ? `[image ${occurrence.marker}]`
+      ? markerText(occurrence.marker)
       : text.slice(occurrence.start, occurrence.end);
     cursor = occurrence.end;
   });

@@ -380,9 +380,9 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 func TestEditMarketplace_RenameMovesACloneTheEntryDoesNotRecord(t *testing.T) {
 	m := NewManager(t.TempDir())
 	ctx := context.Background()
-	// The shape a failed lazy fetch leaves: a git source recorded without an
-	// install location, and a directory at the canonical path anyway, because
-	// the fetch cleared and refilled it before it failed.
+	// The shape a fetch killed mid-clone leaves: a git source recorded without
+	// an install location, and a directory at the canonical path anyway,
+	// because the fetch cleared and refilled it before it was killed.
 	if err := m.saveMarketplaces(Marketplaces{"acme": {
 		Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
 	}}); err != nil {
@@ -465,6 +465,59 @@ func TestEditMarketplace_RenameUnfetchesAnEntryWhoseCloneIsGone(t *testing.T) {
 	}
 	if want := m.marketplaceDir("acme2"); mk["acme2"].InstallLocation != want {
 		t.Fatalf("InstallLocation after the refresh = %q, want the clone at %q", mk["acme2"].InstallLocation, want)
+	}
+}
+
+// A clone that fails partway leaves whatever it downloaded at the canonical
+// path, because the fetch clears that directory before it starts. Nothing
+// records the directory — the entry comes away unfetched — so the failed fetch
+// has to take it away itself, the same discipline AddMarketplace applies to its
+// staging directory. Both never-fetched fetch paths owe it: Browse's lazy clone
+// and a refresh of a seeded pointer.
+func TestFailedFetch_LeavesNoPartialClone(t *testing.T) {
+	ctx := context.Background()
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+
+	// A clone that fails the way a broken download does: it puts a directory
+	// and a file there, then reports the failure.
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dest, "partial"), []byte("half a clone"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("network down")
+	}
+
+	seeded := Marketplaces{"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}}}
+	tests := []struct {
+		name  string
+		fetch func(m *Manager) error
+	}{
+		{"browse", func(m *Manager) error { _, err := m.Browse(ctx, "acme"); return err }},
+		{"refresh", func(m *Manager) error { return m.RefreshMarketplace(ctx, "acme") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			if err := m.saveMarketplaces(seeded); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := test.fetch(m); err == nil {
+				t.Fatal("a failed clone was reported as success")
+			}
+			mustNotExist(t, m.marketplaceDir("acme"))
+			mk, err := m.loadMarketplaces()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := mk["acme"]; got != seeded["acme"] {
+				t.Fatalf("entry = %+v, want it unchanged at %+v", got, seeded["acme"])
+			}
+		})
 	}
 }
 

@@ -674,7 +674,7 @@ test("goal replacement preserves both recovery rows while a merged source discar
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
   await user.type(textarea(), "hi /re");
@@ -801,7 +801,7 @@ beforeEach(() => {
   // by every OTHER test in this file - only the slash-completion tests
   // below ever populate it - so resetting it here is purely additive
   // isolation, never a behavior change for the rest of the suite.
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
@@ -4120,7 +4120,7 @@ test("clicking the attach button triggers the hidden file input", async () => {
 // remaining way to open the modal palette.
 
 test('"/" at the start of an empty composer types a literal slash and opens the INLINE menu, not the modal palette', async () => {
-  useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }], loaded: true });
+  useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }] });
   const user = userEvent.setup();
   await mountComposer("ref_slash");
 
@@ -4279,7 +4279,7 @@ test("committing a skill during an IME composition leaves the menu open rather t
 });
 
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash3");
 
@@ -4300,7 +4300,7 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
 });
 
 test("typing further narrows the menu live", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash4");
 
@@ -4315,7 +4315,6 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
       { name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" },
       { name: "revoke", description: "revoke access", source: "plugin", pluginName: "excluded" },
     ],
-    loaded: true,
   });
   const user = userEvent.setup();
   await mountComposer("ref_slash_plugins", {
@@ -4336,7 +4335,6 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
       { name: "review", description: "review the diff", source: "plugin", pluginName: "excluded" },
       { name: "release", description: "cut a release", source: "plugin", pluginName: "excluded" },
     ],
-    loaded: true,
   });
   const user = userEvent.setup();
   await mountComposer("ref_slash_empty", {
@@ -4685,7 +4683,7 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
 });
 
 test("a mid-word slash never opens the menu", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash5");
 
@@ -4695,7 +4693,7 @@ test("a mid-word slash never opens the menu", async () => {
 });
 
 test("a token with no catalog match shows no menu", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash6");
 
@@ -4705,7 +4703,7 @@ test("a token with no catalog match shows no menu", async () => {
 });
 
 test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
@@ -4728,7 +4726,7 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash8");
   await user.type(textarea(), "hi /re");
@@ -4753,7 +4751,6 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
   // single-match scenario.
   useCommandCatalog.setState({
     commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
-    loaded: true,
   });
   const user = userEvent.setup();
   await mountComposer("ref_slash_qualified", {
@@ -4771,7 +4768,7 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
 });
 
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   const fake = await mountComposer("ref_slash9", { status: { type: "idle" } });
   fake.on("turn/start", (params) => ({
@@ -4792,7 +4789,7 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
 });
 
 test("Escape closes the menu without clearing the draft, and typing further reopens it", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash10");
   await user.type(textarea(), "hi /re");
@@ -4810,7 +4807,7 @@ test("Escape closes the menu without clearing the draft, and typing further reop
 });
 
 test("blur closes the menu", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash11");
   await user.type(textarea(), "hi /re");
@@ -4822,7 +4819,7 @@ test("blur closes the menu", async () => {
 });
 
 test("clicking an option commits it without ever blurring the textarea", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash12");
   await user.type(textarea(), "hi /re");
@@ -4836,7 +4833,7 @@ test("clicking an option commits it without ever blurring the textarea", async (
 });
 
 test("the open menu wires listbox/option roles and aria-activedescendant on the textarea", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash13");
   await user.type(textarea(), "hi /re");
@@ -4851,7 +4848,7 @@ test("the open menu wires listbox/option roles and aria-activedescendant on the 
 });
 
 test("closing the slash menu removes both of the editor's optional ARIA references", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   const ref = "ref_slash_aria_cleanup";
   await mountComposer(ref, {
@@ -5007,7 +5004,6 @@ test("an unknown /foo sends as a plain message - the escape hatch", async () => 
 test("a plugin catalog command still sends as text - only BUILT-INS are intercepted", async () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", description: "review the diff", source: "plugin" }],
-    loaded: true,
   });
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_plugin", { status: { type: "idle" } });

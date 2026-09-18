@@ -9,7 +9,7 @@ import {
   friendlyErrorMessage,
   type PathPickableRow,
   parentOf,
-  pickableRows,
+  pickablePathRows,
 } from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Chevron } from "../chevron";
@@ -266,7 +266,7 @@ function FileFieldPanel({
     () => buildPathRows({ kind, currentDir, entries: visibleEntries, value, recents, showRecents, listError }),
     [kind, currentDir, visibleEntries, value, recents, showRecents, listError],
   );
-  const picks = useMemo(() => pickableRows(rows), [rows]);
+  const picks = useMemo(() => pickablePathRows(rows), [rows]);
   // A key that no longer names a row (its listing was replaced) highlights
   // nothing, rather than being clamped onto whatever now sits at that position.
   const activeIndex = activeKey === undefined ? -1 : picks.findIndex((row) => row.key === activeKey);

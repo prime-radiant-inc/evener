@@ -278,7 +278,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
@@ -402,7 +402,6 @@ test("an unhydrated focused session keeps every command listed and only Notes un
 test("filterCommands never lists a plugin catalog entry, focused session or not", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
   expect(filterCommands(buildPaletteContext(), "/rev").commands.some((c) => c.id === "review")).toBe(false);
 
@@ -413,7 +412,6 @@ test("filterCommands never lists a plugin catalog entry, focused session or not"
 test("catalog commands are absent from commandsInScope without a focused session", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
 
   expect(commandsInScope(buildPaletteContext()).some((command) => command.id === "review")).toBe(false);
@@ -433,7 +431,6 @@ test("sessionBuiltinCommands is every session-scoped BUILT-IN, unavailableReason
   focusSession("ref_a");
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
   seedModel("ref_a", { capabilities: { ...CAPS, compact: false } });
 

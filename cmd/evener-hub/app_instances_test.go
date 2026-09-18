@@ -605,6 +605,9 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 
 // TestInstances_RemoveRefusesImplicitInstance: an instance that exists from
 // the environment has no entry to delete, so the refusal says what to unset.
+// The name is the caller's to fix and the refusal is the same class as
+// Remove's invalid-name and not-found refusals (#717/#748): InvalidParams,
+// not a generic wire error.
 func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
@@ -613,6 +616,10 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
 		t.Fatalf("the refusal names the variable that creates the instance: %v", err)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
 	}
 }
 

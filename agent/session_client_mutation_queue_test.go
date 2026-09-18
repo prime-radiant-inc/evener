@@ -641,6 +641,95 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 	}
 }
 
+// TestClientMutation_DrainEmitsConsumedClientMutationIDs (issue #1704) verifies
+// the drain's own QueueChanged push names the client mutation ids it consumed,
+// so a client can settle those optimistic records by positive evidence instead
+// of inferring consumption from sequence order.
+func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	wantConsumed := make([]string, len(snapshot.InputQueue))
+	for i, entry := range snapshot.InputQueue {
+		wantConsumed[i] = entry.ClientMutationID
+	}
+
+	evs, stop := captureEvents(sess)
+	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      "drain-consumed",
+		ExpectedQueueRevision: snapshot.QueueRevision,
+	})
+	stop()
+	if err != nil {
+		t.Fatalf("clientMutationDrain: %v", err)
+	}
+
+	var latest *events.QueueChangedData
+	for _, ev := range *evs {
+		if ev.Kind != events.EventQueueChanged {
+			continue
+		}
+		data := ev.Data.(events.QueueChangedData)
+		latest = &data
+	}
+	if latest == nil {
+		t.Fatal("no QueueChanged event observed for the drain")
+	}
+	if !slices.Equal(latest.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("ConsumedClientMutationIDs = %v, want %v", latest.ConsumedClientMutationIDs, wantConsumed)
+	}
+}
+
+// TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs (issue #1704)
+// verifies the consumed ids ride the durable mutation result: a replayed
+// drain (no fresh push, since reflectDurableInputQueue never runs on replay)
+// still reports them, so a client whose first receipt was lost can settle
+// those optimistic records from the retry's own response.
+func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T) {
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	wantConsumed := make([]string, len(snapshot.InputQueue))
+	for i, entry := range snapshot.InputQueue {
+		wantConsumed[i] = entry.ClientMutationID
+	}
+	params := appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      "drain-replay-consumed",
+		ExpectedQueueRevision: snapshot.QueueRevision,
+	}
+
+	first, err := sess.clientMutationDrain(params)
+	if err != nil {
+		t.Fatalf("clientMutationDrain: %v", err)
+	}
+	if !slices.Equal(first.Receipt.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("first receipt ConsumedClientMutationIDs = %v, want %v", first.Receipt.ConsumedClientMutationIDs, wantConsumed)
+	}
+
+	replayed, err := sess.clientMutationDrain(params)
+	if err != nil {
+		t.Fatalf("clientMutationDrain (replay): %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("replay disposition = %q, want replayed", replayed.Receipt.Disposition)
+	}
+	if !slices.Equal(replayed.Receipt.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("replayed receipt ConsumedClientMutationIDs = %v, want %v", replayed.Receipt.ConsumedClientMutationIDs, wantConsumed)
+	}
+}
+
 func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")

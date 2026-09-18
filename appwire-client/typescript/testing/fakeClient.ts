@@ -320,21 +320,27 @@ export function failRequests(fake: FakeClient, method: MethodName, message: stri
   fake.on(method, failing(message) as never);
 }
 
-/** Scripts `method` to hang and hands back one resolver per call, so several
- * requests to it can be in flight and be answered out of order. deferRequest's
- * multi-call half: that one keeps a single resolver, which is only ever the
- * last call's. */
-export function gateRequests(fake: FakeClient, method: MethodName): ((response: unknown) => void)[] {
-  const answers: ((response: unknown) => void)[] = [];
-  fake.on(method, (() => new Promise((resolve) => answers.push(resolve))) as never);
-  return answers;
+/** One in-flight request's settlement, either way: resolve() answers it,
+ * reject() fails it. */
+export interface Settlement {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
 }
 
-/** gateRequests' failing half: one rejecter per call. */
-export function gateFailures(fake: FakeClient, method: MethodName): ((error: Error) => void)[] {
-  const failures: ((error: Error) => void)[] = [];
-  fake.on(method, (() => new Promise((_, reject) => failures.push(reject))) as never);
-  return failures;
+/** Scripts `method` to hang and hands back one settlement per call, so several
+ * requests to it can be in flight and be settled — either way — out of order.
+ * deferRequest's multi-call reverse: that one keeps a single resolver, which is
+ * only ever the last call's, and can only answer. */
+export function gateSettlements(fake: FakeClient, method: MethodName): Settlement[] {
+  const settlements: Settlement[] = [];
+  fake.on(
+    method,
+    () =>
+      new Promise((resolve, reject) => {
+        settlements.push({ resolve, reject });
+      }) as never,
+  );
+  return settlements;
 }
 
 /** How many requests `method` has received. */
