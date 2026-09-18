@@ -11,7 +11,7 @@ import {
   keybindingsSupport,
 } from "./keybindingsStore";
 import { deferred } from "./testing/deferred";
-import { FakeClient } from "./testing/fakeClient";
+import { callsTo, FakeClient, gateSettlements } from "./testing/fakeClient";
 import { memoryKeybindingDraftStorage } from "./testing/keybindingDraftStorage";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
@@ -576,6 +576,75 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       expect(() => store.getState().editDraft([])).not.toThrow();
     },
   );
+});
+
+describe("the two write paths serialize through one queue", () => {
+  const applied = { action: ACTIONS.paletteOpen, chord: "Control+P" };
+  const proposed = [{ action: ACTIONS.paletteOpen, chord: "Control+Shift+P" }];
+
+  test("a direct PATCH in flight is not superseded by a draft save queued behind it", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const patch = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(callsTo(client, patchMethod)).toBe(1));
+
+    // The draft save is composed against revision 3 while the direct write is
+    // still on the wire: it must wait for that write, not claim the write
+    // token out from under it and fence its reply.
+    const save = store.getState().saveDraft(proposed);
+    expect(store.getState().saving).toBe(true);
+    expect(callsTo(client, patchMethod)).toBe(1);
+
+    settlements[0]!.resolve(payload(4, [applied]));
+    await expect(patch).resolves.toMatchObject({ revision: 4 });
+
+    // The queued save revalidates: the confirmed revision moved to 4, so the
+    // revision-3 draft is stale and refuses instead of sending a doomed PATCH
+    // whose reply the direct write's settlement already fenced.
+    await expect(save).rejects.toThrow();
+    expect(callsTo(client, patchMethod)).toBe(1);
+    expect(store.getState()).toMatchObject({
+      revision: 4,
+      rawOverrides: [applied],
+      saving: false,
+      writeUncertain: false,
+      draftConflict: true,
+      draft: { revision: 3, rules: proposed },
+    });
+    expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: proposed, writeUncertain: false });
+  });
+
+  test("a draft save in flight is not superseded by a direct PATCH queued behind it", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const save = store.getState().saveDraft(proposed);
+    await vi.waitFor(() => expect(callsTo(client, patchMethod)).toBe(1));
+
+    // The direct write waits for the save's full settlement; it must not
+    // supersede the checkpointed save's reply.
+    const patch = store.getState().patchOverrides([applied]);
+    expect(callsTo(client, patchMethod)).toBe(1);
+
+    settlements[0]!.resolve(payload(4, proposed));
+    await expect(save).resolves.toMatchObject({ revision: 4 });
+
+    // The direct write then composes against the save's confirmed state.
+    await vi.waitFor(() => expect(callsTo(client, patchMethod)).toBe(2));
+    settlements[1]!.resolve(payload(5, [applied]));
+    await expect(patch).resolves.toMatchObject({ revision: 5 });
+    expect(store.getState()).toMatchObject({ revision: 5, rawOverrides: [applied], saving: false });
+    expect(client.calls.at(-1)).toMatchObject({
+      method: patchMethod,
+      params: { expectedRevision: 4, config: { version: 1, rules: [applied] } },
+    });
+    expect(drafts.stored()).toBeNull();
+  });
 });
 
 describe("payload rules shared by both apps", () => {
