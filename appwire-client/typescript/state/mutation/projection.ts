@@ -132,8 +132,17 @@ export function createMutationProjectionFence<
           // the same target) before handing the caller anything to project.
           apply: () => {
             const accepted = new Set(candidates);
+            // The same predicate refresh() used to accept these candidates
+            // in the first place - re-run at call time instead of trusting
+            // the decision made when the read resolved. A `reset` moves the
+            // epoch even though it reuses generation numbers, and an
+            // all-targets refresh raises its floor the moment it starts,
+            // not when (or whether) its own read ever resolves.
+            if (refreshEpoch !== epoch) return new Set();
             for (const target of accepted) {
-              if (refreshGenerations.get(target) !== generation) accepted.delete(target);
+              if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0)) {
+                accepted.delete(target);
+              }
             }
             return accepted;
           },

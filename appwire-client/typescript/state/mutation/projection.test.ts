@@ -149,6 +149,41 @@ describe("createMutationProjectionFence", () => {
     expect(result.apply().has("ref-a")).toBe(false);
   });
 
+  // apply()'s per-target re-check must use exactly the same floor
+  // refresh()'s own resolution-time decision does: an all-targets refresh
+  // raises `allTargetsRefreshGeneration` the moment it starts, not when (or
+  // whether) its read ever resolves.
+  test("apply() excludes a target once an all-targets refresh starts after this refresh resolved", async () => {
+    const fence = createMutationProjectionFence();
+    const snapshot = { ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] };
+    const result = await fence.refresh(fakePort(snapshot), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    // Starts a newer all-targets refresh but never resolves it - the same
+    // "started, then failed or stayed pending" gap the fence must still
+    // fence against.
+    void fence.refresh({ read: () => new Promise(() => {}) });
+    expect(result.apply().has("ref-a")).toBe(false);
+  });
+
+  // reset() clears and reuses generation numbers; apply()'s per-target
+  // re-check must also honor the epoch this refresh was captured under,
+  // or a pre-reset refresh can pass simply because a post-reset refresh
+  // happens to reuse the same generation number.
+  test("apply() excludes a target once reset() has moved on, even if generation numbers repeat", async () => {
+    const fence = createMutationProjectionFence();
+    const snapshot = { ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] };
+    const result = await fence.refresh(fakePort(snapshot), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    fence.reset();
+    const after = await fence.refresh(
+      fakePort({ ...emptySnapshot(), outbox: [outboxRecord({ targetRef: "ref-a" })] }),
+      "ref-a",
+    );
+    if (after === false) throw new Error("expected the post-reset refresh to be accepted");
+    expect(result.apply().has("ref-a")).toBe(false);
+    expect(after.apply().has("ref-a")).toBe(true);
+  });
+
   test("a newer refresh that fails still raises the generation floor for an older in-flight refresh", async () => {
     const fence = createMutationProjectionFence();
     let resolveOlder: ((snapshot: MutationPersistenceSnapshot) => void) | undefined;
