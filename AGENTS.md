@@ -32,18 +32,26 @@ requests.
 
 ## Frontend gates
 
-Before the gate, run `npx biome check --write` on touched frontend files
-under `src/` and on touched files in the AppWire TypeScript package. Biome's
-enforced scope is those two directories (the gate runs `biome ci src
-../../../appwire-client/typescript`; see cmd/evener-hub/frontend/package.json)
-— files outside them, such as the `scripts/layoutguard` harness HTML,
-deliberately reproduce component markup that trips a11y lint rules, so an
-explicit-path Biome run over them reports violations the gate does not
-enforce. Do not "fix" those to satisfy an
-out-of-scope invocation. Use `make test-web` as the canonical frontend unit,
-typecheck, and Biome gate; on Chrome-capable hosts, also run `make
-test-web-browser` for real geometry and browser guards. CI checks Biome
-formatting. Avoid `noNonNullAssertion` and array-index-key violations.
+Biome's enforced scope is `cmd/evener-hub/frontend/src` and
+`appwire-client/typescript` (the gate runs `biome ci src
+../../../appwire-client/typescript`; see cmd/evener-hub/frontend/package.json).
+Never run `npx biome` from the repository root: the pinned `@biomejs/biome`
+lives in `cmd/evener-hub/frontend/node_modules`, so a root `npx biome` resolves
+an unrelated `biome@0.3.3` package that ignores its arguments and exits 0 — a
+root-scoped invocation checks nothing while reporting success. Use
+`make lint-biome` (part of `make lint`), or run Biome from the frontend
+directory: `cd cmd/evener-hub/frontend && npm run lint` to check or
+`npm run check` to fix. Before the gate, run
+`cd cmd/evener-hub/frontend && npx biome check --write <touched paths>` on
+touched files under `src/` and on touched files in the AppWire TypeScript
+package. Files outside those two directories, such as the `scripts/layoutguard`
+harness HTML, deliberately reproduce component markup that trips a11y lint
+rules, so an explicit-path Biome run over them reports violations the gate does
+not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
+`make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
+Chrome-capable hosts, also run `make test-web-browser` for real geometry and
+browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
+array-index-key violations.
 
 The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental
 false` from `cmd/evener-hub/frontend`), which reads that directory's
