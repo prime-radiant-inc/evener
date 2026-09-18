@@ -106,6 +106,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_FindProbeKeepsLastProject,
 		fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir,
 		fuzzScenarioPastIndex_FindWithMalformedGlob,
+		fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows,
 		fuzzScenarioPastIndex_SearchRepairsStaleFTS,
 		fuzzScenarioPastIndex_Pagination,
 		fuzzScenarioPastIndex_RebuildCapsSkipReport,

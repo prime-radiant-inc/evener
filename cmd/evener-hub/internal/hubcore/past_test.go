@@ -1201,3 +1201,128 @@ func fuzzScenarioPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) 
 		t.Fatalf("RecentModels = %+v, want %+v (blank provider/model entries skipped)", got, want)
 	}
 }
+
+type ftsMirrorRow struct {
+	name string
+	rank int
+}
+
+// ftsMirrorRows reads every row the FTS mirror holds directly from SQLite, so a
+// test can see which rows a publish actually rewrote (by their stored
+// sort_rank) rather than only what Search returns.
+func ftsMirrorRows(t *testing.T, dbPath string) map[string]ftsMirrorRow {
+	t.Helper()
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.Query(`SELECT id, name, sort_rank FROM past_sessions_fts`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]ftsMirrorRow{}
+	for rows.Next() {
+		var id, name string
+		var rank int
+		if err := rows.Scan(&id, &name, &rank); err != nil {
+			t.Fatal(err)
+		}
+		out[id] = ftsMirrorRow{name: name, rank: rank}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// assertRanksUnchanged fails if any row carried over from before to after moved
+// its stored sort_rank. wrote names the ids the operation was allowed to write
+// (their rank may move); every other carried-over row must be untouched. A
+// renumbered row is the observable symptom of a whole-table rewrite, which
+// reassigns sort_rank by position.
+func assertRanksUnchanged(t *testing.T, op string, before, after map[string]ftsMirrorRow, wrote ...string) {
+	t.Helper()
+	rewritten := make(map[string]bool, len(wrote))
+	for _, id := range wrote {
+		rewritten[id] = true
+	}
+	for id, prev := range before {
+		if rewritten[id] {
+			continue
+		}
+		got, ok := after[id]
+		if !ok {
+			t.Fatalf("%s dropped unchanged row %s from the mirror", op, id)
+		}
+		if got.rank != prev.rank {
+			t.Fatalf("%s renumbered unchanged row %s (rank %d -> %d); the whole table was rewritten", op, id, prev.rank, got.rank)
+		}
+	}
+}
+
+// fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows pins the
+// incremental FTS publish: a single-session fold or rename must write only the
+// row it changes, not renumber (and therefore rewrite) every mirrored row. The
+// whole-table DELETE-all + re-INSERT this replaces made every publish O(index)
+// — ~275-437ms at a 13.5k-entry index — for a fold that inserts one session.
+func fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const alpha = "02wMz5Txv1C3Hut0M8GCeB"
+	const bravo = "02wMz5Txv2enqVTitaig6F"
+	const charlie = "02wMz5Txv47YP64RR3B9YJ"
+	meta := func(id, name string, updated time.Time, prompt string) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, Name: name, UpdatedAt: updated, OriginalPrompt: prompt,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	}
+	writeMeta(t, proj, meta(alpha, "alpha", base, "first needle"))
+	writeMeta(t, proj, meta(bravo, "bravo", base.Add(time.Minute), "second needle"))
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	seed := ftsMirrorRows(t, dbPath)
+	if len(seed) != 2 {
+		t.Fatalf("mirror holds %d rows after Rebuild, want 2", len(seed))
+	}
+
+	// A probe fold of a session persisted after the index was built. It sorts to
+	// the front (newest first), the case a tail-renumbering upsert could not
+	// make cheaper; the incremental publish instead leaves the existing rows
+	// exactly as they were.
+	writeMeta(t, proj, meta(charlie, "charlie", base.Add(2*time.Minute), "third needle"))
+	if _, ok := idx.Find(charlie); !ok {
+		t.Fatal("expected Find to fold the newly persisted session")
+	}
+	afterFold := ftsMirrorRows(t, dbPath)
+	assertRanksUnchanged(t, "fold", seed, afterFold, charlie)
+	if got, ok := afterFold[charlie]; !ok || got.name != "charlie" {
+		t.Fatalf("fold did not mirror the new row: %+v (ok=%v)", got, ok)
+	}
+
+	// A rename through UpdateMeta that moves the row to the front: only the
+	// renamed row may be rewritten.
+	idx.UpdateMeta(alpha, meta(alpha, "zulu", base.Add(3*time.Minute), "first needle"))
+	afterRename := ftsMirrorRows(t, dbPath)
+	assertRanksUnchanged(t, "rename", afterFold, afterRename, alpha)
+	if got := afterRename[alpha]; got.name != "zulu" {
+		t.Fatalf("rename did not update the mirrored row: %+v", got)
+	}
+
+	// The mirror still serves both the folded and the renamed session through
+	// the FTS-only path.
+	if got, ok := idx.searchFTS("charlie"); !ok || !slices.ContainsFunc(got, func(e PastEntry) bool { return e.ID == charlie }) {
+		t.Fatalf("searchFTS did not serve the folded session (ok=%v, %d results)", ok, len(got))
+	}
+	if got, ok := idx.searchFTS("zulu"); !ok || !slices.ContainsFunc(got, func(e PastEntry) bool { return e.ID == alpha }) {
+		t.Fatalf("searchFTS did not serve the renamed session (ok=%v, %d results)", ok, len(got))
+	}
+}

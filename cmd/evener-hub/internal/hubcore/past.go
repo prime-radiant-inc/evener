@@ -46,6 +46,19 @@ type PastIndex struct {
 	all  []PastEntry // sorted by the Hub session ordering contract
 	byID map[string]PastEntry
 	fts  bool
+
+	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
+	// publish's delta is applied against exactly the snapshot the previous
+	// publish left (tracked in published). Serializing here preserves the
+	// last-writer-wins snapshot semantics the old whole-table rewrite got from
+	// its transaction-per-publish across the concurrent writers (Rebuild,
+	// UpdateMeta, foldOne, Search's repair).
+	ftsMu sync.Mutex
+	// published is the snapshot the FTS mirror currently reflects, or nil when
+	// the mirror is absent, unknown, or stale. Guarded by ftsMu; only touched
+	// inside publishFTS.
+	published []PastEntry
+
 	// skipped maps every path the last Rebuild refused to index to the reason
 	// it was refused, so the next Rebuild can report only what is newly
 	// unindexable (see reportSkips).
@@ -340,24 +353,12 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // publishAndSignal mirrors a freshly-swapped index snapshot into the FTS
 // index and the content fingerprint, firing onChange when the content
 // actually changed. all must be an immutable snapshot of i.all taken under
-// the lock (rebuildFTS and contentFingerprint run unlocked). The bool is
+// the lock (publishFTS and contentFingerprint run unlocked). The bool is
 // Rebuild/UpdateMeta's contract: whether content changed AND a registered
 // onChange fired for it.
 func (i *PastIndex) publishAndSignal(all []PastEntry) bool {
 	if i.dbPath != "" {
-		// Mark the mirror stale BEFORE attempting the write, so any failed
-		// publish (a fold's or rebuild's rebuildFTS losing its SQLITE_BUSY
-		// race, or the db being briefly unwritable) leaves i.fts false and
-		// Search's staleness gate can repair it. Only a successful write
-		// flips it back true below.
-		i.mu.Lock()
-		i.fts = false
-		i.mu.Unlock()
-		if err := i.rebuildFTS(all); err == nil {
-			i.mu.Lock()
-			i.fts = true
-			i.mu.Unlock()
-		}
+		i.publishFTS(all)
 	}
 	fp := contentFingerprint(all)
 	i.mu.Lock()
@@ -492,7 +493,142 @@ state_dir UNINDEXED,
 sort_rank UNINDEXED
 )`
 
-func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
+const insertPastSessionsFTS = `INSERT INTO past_sessions_fts(id, name, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?, ?)`
+
+// publishFTS mirrors a freshly-swapped snapshot into the SQLite FTS index.
+//
+// It writes only the rows that differ from the last published snapshot (an
+// incremental upsert) instead of rewriting the whole table: a single-session
+// fold or rename touches O(changed) rows rather than O(index), which is what
+// held the per-publish cost at ~275-437ms for a 13.5k-entry index. The delta is
+// applied under ftsMu against the tracked published snapshot, so two concurrent
+// publishers cannot interleave one snapshot's delta onto another's table — the
+// last publish to take the lock still wins, the same last-writer-wins semantics
+// the transaction-per-publish whole-table rewrite provided.
+//
+// The mirror is marked stale (i.fts=false) for the duration of the write, so a
+// failed publish stays visible to Search's staleness gate; only a successful
+// write flips it back true. When no usable prior snapshot exists (the first
+// publish, or a previous failure left the mirror stale) this falls back to a
+// full rebuildFTS.
+func (i *PastIndex) publishFTS(all []PastEntry) {
+	i.ftsMu.Lock()
+	defer i.ftsMu.Unlock()
+
+	i.mu.Lock()
+	healthy := i.fts
+	i.fts = false
+	i.mu.Unlock()
+
+	var err error
+	if healthy && i.published != nil {
+		err = i.rewriteFTSDelta(i.published, all)
+	} else {
+		err = i.rebuildFTS(all)
+	}
+	if err != nil {
+		// The table may now reflect neither snapshot, so drop the baseline and
+		// let the next publish (or Search's repair) do a full rewrite.
+		i.published = nil
+		return
+	}
+	i.published = all
+	i.mu.Lock()
+	i.fts = true
+	i.mu.Unlock()
+}
+
+// ftsRowEqual reports whether two entries write identical content to
+// past_sessions_fts. sort_rank is deliberately not compared: a row whose only
+// change is its sorted position keeps its stored rank. The mirror's internal
+// ORDER BY (searchFTS) is not load-bearing — Search re-sorts the FTS ∪ memory
+// union by the in-memory index (mergeSearchResults) — so leaving a shifted row
+// untouched is what keeps a front insert or a delete from rewriting the tail.
+func ftsRowEqual(a, b PastEntry) bool {
+	return a.ID == b.ID &&
+		a.Meta.Name == b.Meta.Name &&
+		a.Meta.OriginalPrompt == b.Meta.OriginalPrompt &&
+		a.Meta.EnvInfo.WorkingDir == b.Meta.EnvInfo.WorkingDir &&
+		a.StateDir == b.StateDir
+}
+
+// ftsDeleteChunk bounds how many ids a single IN (...) delete names, staying
+// well under SQLite's bound-parameter limit while collapsing many removals into
+// one table scan.
+const ftsDeleteChunk = 500
+
+// rewriteFTSDelta transforms the FTS table from prev to next by touching only
+// the rows that differ: removed ids are deleted, and new or content-changed ids
+// are (re)inserted at their next-snapshot rank. Rows unchanged in both id and
+// mirrored content — including rows that merely shifted rank — are left alone.
+// It assumes the table currently reflects prev, which publishFTS guarantees by
+// serializing on ftsMu.
+func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
+	prevIdx := make(map[string]int, len(prev))
+	for k, e := range prev {
+		prevIdx[e.ID] = k
+	}
+	nextIDs := make(map[string]struct{}, len(next))
+	var removals []string
+	type insert struct {
+		entry PastEntry
+		rank  int
+	}
+	var inserts []insert
+	for rank, e := range next {
+		nextIDs[e.ID] = struct{}{}
+		if k, ok := prevIdx[e.ID]; ok {
+			if ftsRowEqual(prev[k], e) {
+				continue
+			}
+			removals = append(removals, e.ID) // dropped and re-inserted with its new content
+		}
+		inserts = append(inserts, insert{entry: e, rank: rank})
+	}
+	for _, e := range prev {
+		if _, ok := nextIDs[e.ID]; !ok {
+			removals = append(removals, e.ID)
+		}
+	}
+	if len(removals) == 0 && len(inserts) == 0 {
+		return nil
+	}
+	return i.writeFTSTx(func(tx *sql.Tx) error {
+		for start := 0; start < len(removals); start += ftsDeleteChunk {
+			end := min(start+ftsDeleteChunk, len(removals))
+			chunk := removals[start:end]
+			args := make([]any, len(chunk))
+			for k, id := range chunk {
+				args[k] = id
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+			if _, err := tx.Exec(`DELETE FROM past_sessions_fts WHERE id IN (`+placeholders+`)`, args...); err != nil { //nolint:noctx
+				return err
+			}
+		}
+		if len(inserts) == 0 {
+			return nil
+		}
+		stmt, err := tx.Prepare(insertPastSessionsFTS) //nolint:noctx
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stmt.Close() }()
+		for _, in := range inserts {
+			e := in.entry
+			if _, err := stmt.Exec(e.ID, e.Meta.Name, e.Meta.OriginalPrompt, e.Meta.EnvInfo.WorkingDir, e.StateDir, in.rank); err != nil { //nolint:noctx
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// writeFTSTx opens the FTS index, ensures its schema, runs fn inside one
+// transaction, and commits and closes (then chmods the index files) before
+// returning. Both the full rewrite and the incremental delta go through it so
+// they share the open/schema/commit/close/chmod discipline.
+func (i *PastIndex) writeFTSTx(fn func(*sql.Tx) error) error {
 	dbDir := filepath.Dir(i.dbPath)
 	if err := i.fs.MkdirAll(dbDir, 0o700); err != nil {
 		return err
@@ -519,18 +655,8 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	}
 	// best-effort rollback; the Commit/Close path below owns the real error
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil { //nolint:noctx
+	if err := fn(tx); err != nil {
 		return err
-	}
-	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, name, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?, ?)`) //nolint:noctx
-	if err != nil {
-		return err
-	}
-	defer func() { _ = stmt.Close() }()
-	for rank, entry := range entries {
-		if _, err := stmt.Exec(entry.ID, entry.Meta.Name, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil { //nolint:noctx
-			return err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -540,6 +666,25 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	}
 	closed = true
 	return chmodSQLiteIndexFilesFS(i.fs, i.dbPath)
+}
+
+func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
+	return i.writeFTSTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil { //nolint:noctx
+			return err
+		}
+		stmt, err := tx.Prepare(insertPastSessionsFTS) //nolint:noctx
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stmt.Close() }()
+		for rank, entry := range entries {
+			if _, err := stmt.Exec(entry.ID, entry.Meta.Name, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil { //nolint:noctx
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // chmodSQLiteIndexFiles chmods the SQLite index file and its sidecars on the OS
