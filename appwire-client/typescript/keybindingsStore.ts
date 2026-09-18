@@ -598,20 +598,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * rest of the wiring state so a never-resolving write cannot leak into the
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
-  /** The direct write's own claim on the shared write token, from the
-   * moment it is taken until this write's own settlement clears it. Both
-   * write paths share one write token (fence.claimWrite): a checkpointed
-   * save starting here would claim a NEWER one, fencing the direct write's
-   * own reply out as superseded even though the hub may have already
-   * applied it. saveDraft refuses while the fence still counts this claim
-   * as live - the same posture patchOverrides takes on `saving`. Recording
-   * the generation and token (rather than a bare boolean) means the claim
-   * stops blocking saveDraft the moment the fence retires it (a generation
-   * end, a support flap, a later write's supersede), even if the original
-   * request's own await never settles; and `finally` below only clears an
-   * owner that still matches, so a stale request's cleanup can never clear
-   * a newer direct write's claim. */
-  let directWrite: { generation: number; token: number } | null = null;
+  /** The direct write's own claim, RESERVED the moment patchOverrides() is
+   * called (not once its queued turn starts running) until this write's own
+   * settlement clears it. A patchOverrides() call only queues behind
+   * writeQueue - its `run` may not execute for a microtask or more - and a
+   * same-turn saveDraft() call reads this field before that queued turn has
+   * a chance to claim the shared write token, so the reservation itself has
+   * to be synchronous. `token` stays null until the queued turn actually
+   * claims one; a null token still blocks saveDraft (below) as long as its
+   * generation is live, the same posture a claimed token takes via
+   * fence.writeStillMine. Both write paths share one write token
+   * (fence.claimWrite): a checkpointed save starting here would claim a
+   * NEWER one, fencing the direct write's own reply out as superseded even
+   * though the hub may have already applied it. Comparing by OBJECT
+   * IDENTITY (not a token value) in `run`'s finally means a stale call's
+   * cleanup can never clear a newer call's still-pending reservation. */
+  let directWrite: { generation: number; token: number | null } | null = null;
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
@@ -1059,63 +1061,68 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // rejects with the same unavailable-class error instead, before any
     // wire request.
     const callGeneration = fence.generation;
+    // Reserved HERE, synchronously - see the field's own comment for why a
+    // same-turn saveDraft() needs this to be visible before `run` executes.
+    const reservation: { generation: number; token: number | null } = {
+      generation: callGeneration,
+      token: null,
+    };
+    directWrite = reservation;
     const run = async (): Promise<KeybindingsOverrides> => {
-      // Compose at EXECUTION time: a thunk reads the raw set as the
-      // previous write left it, folding its confirmed payload into this
-      // write's rules instead of racing it.
-      const rules = typeof rulesOrCompose === "function" ? rulesOrCompose() : rulesOrCompose;
-      const state = getState();
-      const generation = fence.generation;
-      // The call-time fence is checked SEPARATELY from the current-state
-      // guard below (finding 22): this write was created under a ready
-      // generation that has since ended, so the rejection belongs to a DEAD
-      // generation. Setting hubError here would land on the LIVING hub's
-      // freshly-loaded clean state - "Hub keybindings settings are
-      // unavailable" plus the round-3 editing gate would read the new hub
-      // read-only until something cleared it. Throw only.
-      if (!fence.liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
-      // Support resolved to UNSUPPORTED is the same hygiene class as the
-      // fence (finding 26): the unsupported state is deliberately clean -
-      // the section says the built-in defaults are in effect - and the
-      // write no longer owns it. A plain unsupported transition does not
-      // bump the generation (finding 24: isSupported() gates the window),
-      // so a write QUEUED while supported can reach this point, as can one
-      // composed while unsupported. Both throw without hubError.
-      if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
-      if (
-        state.hubSupport !== "supported" ||
-        state.loaded !== true ||
-        state.hubLoading ||
-        state.saving ||
-        state.writeUncertain
-      ) {
-        // `loaded` is the defense-in-depth half of the editor's gate: the UI
-        // is not the store's contract, and a patch composed from a STALE
-        // generation's raw set (client replaced, refresh not yet landed) would
-        // send the old hub's expectedRevision and rules to the new hub.
-        // `hubLoading` is the same race WITHIN one generation: an in-flight
-        // refresh is about to land a payload whose revision may differ from
-        // the one a concurrent PATCH would send as expectedRevision.
-        // `saving`/`writeUncertain` are the checkpointed editor's sibling
-        // gate: both paths take the same write token, so starting here would
-        // fence the checkpointed write's own reply out and strand it saving.
-        setState({ hubError: UNAVAILABLE_MESSAGE });
-        throw new Error(UNAVAILABLE_MESSAGE);
-      }
-      // Reject with the validation layer's own message and leave
-      // hubError/conflict untouched: nothing hub-sourced happened.
-      const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
-      if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
-      const token = fence.claimWrite();
-      // A response landing after support loss must not re-apply - the
-      // unsupported branch already un-applied and retired the hub state.
-      const stillMine = () => fence.writeStillMine(generation, token);
-      // Marks this write as the shared token's current owner from the
-      // moment it is claimed until this call's own settlement - every exit
-      // path clears it, so saveDraft's sibling gate never stays refused
-      // over a write that has already landed or failed.
-      directWrite = { generation, token };
       try {
+        // Compose at EXECUTION time: a thunk reads the raw set as the
+        // previous write left it, folding its confirmed payload into this
+        // write's rules instead of racing it.
+        const rules = typeof rulesOrCompose === "function" ? rulesOrCompose() : rulesOrCompose;
+        const state = getState();
+        // The call-time fence is checked SEPARATELY from the current-state
+        // guard below (finding 22): this write was created under a ready
+        // generation that has since ended, so the rejection belongs to a DEAD
+        // generation. Setting hubError here would land on the LIVING hub's
+        // freshly-loaded clean state - "Hub keybindings settings are
+        // unavailable" plus the round-3 editing gate would read the new hub
+        // read-only until something cleared it. Throw only.
+        if (!fence.liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
+        // Support resolved to UNSUPPORTED is the same hygiene class as the
+        // fence (finding 26): the unsupported state is deliberately clean -
+        // the section says the built-in defaults are in effect - and the
+        // write no longer owns it. A plain unsupported transition does not
+        // bump the generation (finding 24: isSupported() gates the window),
+        // so a write QUEUED while supported can reach this point, as can one
+        // composed while unsupported. Both throw without hubError.
+        if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
+        if (
+          state.hubSupport !== "supported" ||
+          state.loaded !== true ||
+          state.hubLoading ||
+          state.saving ||
+          state.writeUncertain
+        ) {
+          // `loaded` is the defense-in-depth half of the editor's gate: the UI
+          // is not the store's contract, and a patch composed from a STALE
+          // generation's raw set (client replaced, refresh not yet landed) would
+          // send the old hub's expectedRevision and rules to the new hub.
+          // `hubLoading` is the same race WITHIN one generation: an in-flight
+          // refresh is about to land a payload whose revision may differ from
+          // the one a concurrent PATCH would send as expectedRevision.
+          // `saving`/`writeUncertain` are the checkpointed editor's sibling
+          // gate: both paths take the same write token, so starting here would
+          // fence the checkpointed write's own reply out and strand it saving.
+          setState({ hubError: UNAVAILABLE_MESSAGE });
+          throw new Error(UNAVAILABLE_MESSAGE);
+        }
+        // Reject with the validation layer's own message and leave
+        // hubError/conflict untouched: nothing hub-sourced happened.
+        const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
+        if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
+        const token = fence.claimWrite();
+        // A response landing after support loss must not re-apply - the
+        // unsupported branch already un-applied and retired the hub state.
+        const stillMine = () => fence.writeStillMine(callGeneration, token);
+        // Promotes the reservation from pending to claimed: saveDraft's gate
+        // switches from the generation-liveness check to the precise
+        // fence.writeStillMine check the moment this happens.
+        reservation.token = token;
         try {
           const result = await client.request("evener/settings/keybindings/patch", {
             expectedRevision: state.revision,
@@ -1151,9 +1158,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           throw error;
         }
       } finally {
-        // Only this write's own claim: a stale write's finally must not
-        // clear a newer direct write's claim (see the field's own comment).
-        if (directWrite?.token === token) directWrite = null;
+        // Only this call's own reservation: a stale call's finally must not
+        // clear a NEWER call's still-pending reservation (see the field's
+        // own comment) - compared by object identity, since a queued call's
+        // reservation has no token yet to compare by value.
+        if (directWrite === reservation) directWrite = null;
       }
     };
     // Chain behind the previous write's SETTLEMENT: a failed write must not
@@ -1257,15 +1266,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const current = assertEditable();
     // Both write paths share one write token (patchOverrides' sibling gate
     // on saving/writeUncertain is the reverse of this): claiming a NEWER
-    // token here while a direct write is in flight would fence that write's
-    // own reply out as superseded, racing or conflicting with whichever
-    // PATCH the hub actually processes first.
-    // A direct write's claim stops blocking here the moment the fence would
-    // no longer count its reply as its own to land (see the field's own
-    // comment) - a generation end, a support flap or a later write's
-    // supersede all retire it without waiting for the original request's
-    // own await to settle.
-    if (directWrite !== null && fence.writeStillMine(directWrite.generation, directWrite.token))
+    // token here while a direct write is in flight (or merely QUEUED - see
+    // the field's own comment) would fence that write's own reply out as
+    // superseded, racing or conflicting with whichever PATCH the hub
+    // actually processes first.
+    // A direct write's reservation stops blocking here the moment the fence
+    // would no longer count it as live - a generation end, a support flap or
+    // a later write's supersede all retire it without waiting for the
+    // original request's own await to settle. A still-queued reservation
+    // (no token claimed yet) has nothing to supersede it with, so liveness
+    // alone decides; a claimed one defers to the precise per-token check.
+    if (
+      directWrite !== null &&
+      (directWrite.token === null
+        ? fence.liveHub(directWrite.generation)
+        : fence.writeStillMine(directWrite.generation, directWrite.token))
+    )
       throw new Error(UNAVAILABLE_MESSAGE);
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");

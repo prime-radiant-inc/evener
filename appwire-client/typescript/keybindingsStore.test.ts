@@ -805,6 +805,27 @@ describe("the checkpointed draft editor", () => {
     await expect(store.getState().saveDraft(rules)).resolves.toBeDefined();
   });
 
+  test("a same-turn saveDraft is refused behind a just-issued direct write", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const replies = gateSettlements(client, patchMethod);
+
+    // Both calls issued in the SAME turn, with no await between them: the
+    // direct write is only QUEUED (its own PATCH has not fired yet) when
+    // saveDraft's gate runs, synchronously, right after.
+    const direct = store.getState().patchOverrides(rules);
+    const save = store.getState().saveDraft(rules);
+
+    await expect(save).rejects.toThrow("unavailable");
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    // Refusing saveDraft must never have let it send its own PATCH.
+    expect(replies).toHaveLength(1);
+
+    replyAt(replies, 0).resolve(payload(4, rules));
+    await expect(direct).resolves.toBeDefined();
+  });
+
   test("a direct write retired by a generation reset no longer blocks saveDraft", async () => {
     const client = clientServing(3);
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
