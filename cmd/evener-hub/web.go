@@ -143,7 +143,8 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, wiredCfg := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	web.cfg = wiredCfg
 	web.appRPC = server
 	web.hostAdmin = hostAdmin
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })

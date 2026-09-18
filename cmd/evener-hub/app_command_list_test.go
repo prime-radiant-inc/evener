@@ -6,8 +6,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 
@@ -39,7 +41,7 @@ func TestHubCommandList_ReturnsLoadedPluginCommands(t *testing.T) {
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir}})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir}}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	// ~/.config/evener/plugins.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(commandsDir, "standup.md"), []byte("standup body"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir()})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir()}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 	}
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir(), PluginDirs: []string{pluginDir}})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir(), PluginDirs: []string{pluginDir}}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -166,12 +168,44 @@ func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
 	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
 		t.Fatalf("Commands = %+v, want the registry-installed plugin's %q command", resp.Commands, "greet")
+	}
+}
+
+// TestHubCommandList_MigratesALegacyNameAndBroadcasts is issue #1734's own
+// case, folded into this PR: hubCommandList's Manager is unwired no longer.
+// ResolveForLaunch -> resolveForLaunch -> List takes the store lock to renamed
+// a marketplace recorded under a name evener refuses today, which writes both
+// store files (saveRename) — a write a command-list request can trigger with
+// no mutation RPC involved at all, and one that broadcast nothing before this
+// fix.
+func TestHubCommandList_MigratesALegacyNameAndBroadcasts(t *testing.T) {
+	pluginRoot := t.TempDir()
+	mgr := plugins.NewManager(pluginRoot)
+	plantRefusedMarketplace(t, mgr, "foo@bar")
+
+	broadcaster := newRecordingBroadcaster()
+	if _, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot}, broadcaster); err != nil {
+		t.Fatalf("hubCommandList: %v", err)
+	}
+	got := broadcaster.broadcasts()
+	foundMarketplace, foundPlugin := false, false
+	for _, b := range got {
+		switch b.method {
+		case appwire.NotifyEvenerMarketplaceUpdated:
+			foundMarketplace = true
+		case appwire.NotifyEvenerPluginUpdated:
+			foundPlugin = true
+		}
+	}
+	if !foundMarketplace || !foundPlugin {
+		t.Fatalf("broadcasts = %+v, want both %s and %s (the migration's saveRename writes both files)",
+			got, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 	}
 }
 
@@ -197,7 +231,7 @@ func TestHubCommandList_MultiplePluginsSortedByName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{dirA, dirB}})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{dirA, dirB}}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -220,7 +254,7 @@ func TestHubCommandList_BrokenPluginDirDoesNotBrickCatalog(t *testing.T) {
 	healthyDir := t.TempDir()
 	writeCommandListTestPlugin(t, healthyDir, "greeter")
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{brokenDir, healthyDir}})
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{brokenDir, healthyDir}}, newRecordingBroadcaster())
 	if err != nil {
 		t.Fatalf("hubCommandList: %v, want the broken dir skipped rather than aborting the whole catalog", err)
 	}
@@ -250,5 +284,43 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	}
 	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
 		t.Fatalf("Commands = %+v, want a single %q entry", resp.Commands, "greet")
+	}
+}
+
+// TestSortCommandDescriptors_StableForEqualKeys pins the (Name, PluginName,
+// Source) ordering to a stable sort. These three fields are the whole sort key,
+// so rows that agree on all three are only distinguished by their original
+// discovery order; an unstable sort is free to shuffle them, making the
+// advertised catalog flakier than the input. The rows are interleaved before
+// sorting so an unstable pdqsort actually has to move equal-key elements.
+func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo"}
+	const perName = 4
+	var commands []appwire.CommandDescriptor
+	for round := range perName {
+		for _, name := range names {
+			commands = append(commands, appwire.CommandDescriptor{
+				Name:        name,
+				PluginName:  "greeter",
+				Source:      "plugin",
+				Description: fmt.Sprintf("%s-%02d", name, round),
+			})
+		}
+	}
+	sortCommandDescriptors(commands)
+	// Names sort ascending, and a stable sort keeps each name's rows in the
+	// round order they were discovered in, so the whole result is determined.
+	var want []string
+	for _, name := range names {
+		for round := range perName {
+			want = append(want, fmt.Sprintf("%s-%02d", name, round))
+		}
+	}
+	got := make([]string, len(commands))
+	for i, c := range commands {
+		got[i] = c.Description
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v (equal-key rows must keep discovery order)", got, want)
 	}
 }

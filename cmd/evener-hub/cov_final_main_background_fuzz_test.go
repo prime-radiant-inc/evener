@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func FuzzFinalMainBackground(f *testing.F) {
@@ -44,10 +45,10 @@ func FuzzFinalMainBackground(f *testing.F) {
 			hubRosterWatch = func(context.Context, *hubcore.Roster) error { return errors.New("watch") }
 			watchHubRoster(context.Background(), roster)
 		case 2:
-			hubSeedDefaults = func(context.Context) error { return errors.New("seed") }
-			seedHubMarketplaces(context.Background())
+			hubSeedDefaults = func(context.Context, *plugins.Manager) error { return errors.New("seed") }
+			seedHubMarketplaces(context.Background(), NewWebServer(hubcore.WebConfig{}))
 		case 3, 4:
-			hubPluginGC = func(context.Context) ([]string, error) {
+			hubPluginGC = func(context.Context, *plugins.Manager) ([]string, error) {
 				if mode == 3 {
 					return nil, errors.New("gc")
 				}
