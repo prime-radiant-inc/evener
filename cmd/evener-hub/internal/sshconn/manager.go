@@ -463,6 +463,14 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		lock.Unlock()
 		return nil, err
 	}
+	// The entry can have been deregistered between the lookup above and this
+	// gate: RemoveHost drops the registry entry while holding this same lock,
+	// so rechecking under the gate is what keeps this attach from dialing —
+	// and later publishing a channel for — a host that is already gone.
+	if _, ok := m.reg.Get(name); !ok {
+		lock.Unlock()
+		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
 
 	if ch := m.liveChannel(name); ch != nil {
 		err := m.channelUsable(name, ch)
@@ -573,6 +581,17 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		lock.Unlock()
 		_ = ch.Close()
 		return nil, errChannelDropped(name)
+	}
+	// Recheck the registry under the lock before publishing: a deregistration
+	// that does not pass through this gate (a caller dropping the registry
+	// entry directly, as the hub's host manager does when no sshconn manager
+	// is wired) must not gain a fresh channel for a host that is gone. The
+	// replacement is reaped and the dropped predecessor keeps ownership, exactly
+	// as a replacement that died in its handshake does.
+	if _, ok := m.reg.Get(name); !ok {
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	if !m.publishChannel(name, ch) {
 		// Close landed while this attach was in flight. Handing back a channel
@@ -939,6 +958,10 @@ func (m *Manager) DetachHost(name string) error {
 	ch := m.chans[name]
 	delete(m.chans, name)
 	m.mu.Unlock()
+	// A detached host's per-host caches do not survive the detach: a re-add
+	// starts clean rather than inheriting this identity's deploy marker,
+	// resolved executable, or pending restart.
+	m.clearHostCaches(name)
 	// Pair the Attached a consumer saw with a Detached, under the same lock
 	// that ordered them. claimAnnounced makes this a no-op for a channel whose
 	// Detached was already emitted, so a Close racing this call cannot pair it
@@ -954,6 +977,77 @@ func (m *Manager) DetachHost(name string) error {
 		_ = ch.Close()
 	}
 	return nil
+}
+
+// RemoveHost deregisters name and tears down its channel as one atomic step:
+// under the host lock it drops the registry entry, stops the supervisor, and
+// clears the mapped channel together with the per-host caches, so a concurrent
+// Ensure cannot publish a fresh channel for a host that is deregistered — its
+// registry recheck under the same lock sees the entry gone and refuses.
+//
+// DetachHost alone cannot give the caller that guarantee: it drops the channel
+// under the lock but leaves the registry entry to the caller, and the gap
+// between the two is exactly where a racing Ensure dials and publishes for a
+// host the caller is about to remove. The registry is the manager's own
+// (New takes it), so this method owns the whole lifecycle the hub's host
+// manager drives: persist first at the caller, then RemoveHost once, and
+// nothing is resurrected.
+//
+// Like DetachHost this never dials, an unknown name (or a nil registry) is a
+// no-op returning nil, and a second call for the same name is a no-op. The
+// Detached pairing and the post-lock reap mirror DetachHost exactly.
+func (m *Manager) RemoveHost(name string) error {
+	if m.reg == nil {
+		return nil
+	}
+	host, ok := m.reg.Get(name)
+	if ok {
+		// The registry is the authority on the name's spelling, and every map
+		// below is keyed off host.Name, exactly as Ensure and DetachHost do.
+		name = host.Name
+	}
+	lock := m.hostLock(name)
+	lock.Lock()
+	// Registry entry first, under the same lock the rechecks in Ensure and
+	// reconnectOnce consult: once it is gone no attach path can publish. An
+	// unknown name is the no-op the doc promises — the entry is already gone,
+	// but a channel an older attach published for it still comes down.
+	if err := m.reg.Remove(name); err != nil && !errors.Is(err, hostreg.ErrUnknownHost) {
+		lock.Unlock()
+		return err
+	}
+	m.stopSupervisor(name)
+	m.mu.Lock()
+	ch := m.chans[name]
+	delete(m.chans, name)
+	m.mu.Unlock()
+	m.clearHostCaches(name)
+	// Pair the Attached a consumer saw with a Detached, under the same lock
+	// that ordered them; claimAnnounced makes this a no-op for a channel whose
+	// Detached was already emitted.
+	if ch != nil && m.claimAnnounced(name, ch) {
+		m.detachEvent(name, StateDisconnected)
+	}
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's does:
+	// Channel.Close blocks on the ssh child's exit, and nothing references the
+	// channel once the map entry is gone.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
+// clearHostCaches drops every per-host record that must not survive a detach or
+// removal: the at-most-once dev-deploy marker, the resolved executable path,
+// and any pending restart. A re-added host starts clean instead of inheriting
+// the previous identity's dial and deploy decisions.
+func (m *Manager) clearHostCaches(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.devDeployed, name)
+	delete(m.resolvedTargets, name)
+	delete(m.pendingRestarts, name)
 }
 
 // ensureOnce runs one full preflight-then-decide-then-attach sequence with the
@@ -1640,6 +1734,16 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 			_ = nch.Close()
 			m.stateEvent(host.Name, StateReconnecting)
 			return true
+		}
+		// Recheck the registry before publishing, as Ensure does: a host
+		// deregistered while this loop was reconnecting it (RemoveHost stops
+		// parked loops, but this attempt was already in flight) must not gain a
+		// fresh channel. Reap the replacement, report the host honestly
+		// disconnected, and stand down.
+		if _, ok := m.reg.Get(host.Name); !ok {
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateDisconnected)
+			return false
 		}
 		if !m.publishChannel(host.Name, nch) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.

@@ -33,15 +33,18 @@ const (
 const hostSidecarFileName = "hub.hosts.json"
 
 // hostManagerConfig carries what the host-management handlers need. The
-// registries are live: the hub owns them, mutations swap entries under mu,
-// and reads never dial.
+// registry is the controller's live one in production — the same
+// *hostreg.Registry the SSH manager dials through and the attach handler
+// validates against — so a host added at runtime is attachable without a
+// restart. The stores are live: the hub owns them, mutations swap entries
+// under mu, and reads never dial.
 type hostManagerConfig struct {
-	// hosts is the live host registry: hub.toml entries at boot plus
-	// sidecar entries as they are added. Mutations hold mu.
+	// hosts is the live host registry: hub.toml entries at boot plus sidecar
+	// entries as they are added. Mutations hold mu; the SSH manager and the
+	// attach handler consult the same instance in production.
 	hosts *hostreg.Registry
-	// sidecar holds the UI-added entries in add order with their key paths.
-	// It is the durable side of hosts for sidecar names; hub.toml names are
-	// never recorded here.
+	// sidecar holds the UI-added entries in add order. It is the durable side
+	// of hosts for sidecar names; hub.toml names are never recorded here.
 	sidecar *hostSidecarStore
 	// sidecarPath is the sidecar file beside the selected hub.toml. Empty
 	// (tests, embedders without a file) disables persistence: the store stays
@@ -50,9 +53,14 @@ type hostManagerConfig struct {
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
-	// manager owns every live SSH channel; add wires nothing live, remove
-	// detaches through it. Nil in tests that only exercise validation.
+	// manager owns every live SSH channel; removal goes through its atomic
+	// RemoveHost so a concurrent attach cannot publish past deregistration.
+	// Nil in tests that only exercise validation.
 	manager *sshconn.Manager
+	// client is the Ensure-backed dialing seam a new source's client func
+	// uses (cfg.RemoteHostClient). Nil (tests, embedders) leaves the source
+	// on the detached refusal remoteClientFor serves.
+	client func(ctx context.Context, host string) (*appwire.Client, error)
 	// online reports whether the controller's channel to host is currently
 	// attached. Nil leaves every remote host to the source registry's own
 	// Online (tests).
@@ -67,27 +75,50 @@ type hostManagerConfig struct {
 	// facts returns the preflight facts for the connection behind client.
 	// Nil leaves rows without preflight facts.
 	facts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
-	// mu serializes sidecar read-modify-write cycles so concurrent add/remove
-	// calls cannot lose updates.
+	// state retains per-host attach state from the manager's lifecycle
+	// events plus the last-known facts of the last attached render, so
+	// offline and in-progress rows keep the metadata the wire contract
+	// promises.
+	state *hostAttachState
+	// logf is the hub's logging path for sidecar load problems; nil drops
+	// the lines (tests that never load a broken file).
+	logf func(format string, args ...any)
+	// mu serializes add/remove read-modify-write cycles so concurrent calls
+	// cannot lose updates or interleave a save with a registry mutation.
 	mu sync.Mutex
-}
-
-// hostSidecarEntry is one UI-added host: the registry entry plus the SSH key
-// path the dial uses. KeyPath lives here — not in hostreg — because the
-// registry mirrors hub.toml's [[hosts]] schema, which has no key field: key
-// material is controller-local dial configuration.
-type hostSidecarEntry struct {
-	Host    hostreg.Host
-	KeyPath string
 }
 
 // hostSidecarStore is the durable sidecar: UI-added entries in add order.
 // The zero value is usable; all methods are safe for concurrent use. Callers
-// that also mutate the registry hold hostManagerConfig.mu across both, so
-// the two cannot drift apart under concurrency.
+// that also mutate the registry hold hostManagerConfig.mu across both, so the
+// two cannot drift apart under concurrency.
 type hostSidecarStore struct {
 	mu      sync.Mutex
-	entries []hostSidecarEntry
+	entries []hostreg.Host
+	// loadErr records why the on-disk sidecar cannot be treated as fully
+	// loaded: the file failed to parse, or an entry failed validation. While
+	// it is set the in-memory snapshot is known incomplete, so saves refuse —
+	// rewriting the file would clobber the entries that never made it into
+	// memory — and add/remove fail loudly instead of silently losing them.
+	loadErr error
+}
+
+// poison records err as the reason the on-disk sidecar is not fully loaded.
+// The first reason wins; later ones only add log lines at the call site.
+func (s *hostSidecarStore) poison(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr == nil {
+		s.loadErr = err
+	}
+}
+
+// poisoned reports why the sidecar's on-disk entries cannot be trusted as
+// fully loaded, or nil when every entry is loaded (or there is no file).
+func (s *hostSidecarStore) poisoned() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErr
 }
 
 // hostSidecarFile is the on-disk shape of the sidecar: entries in add order.
@@ -123,7 +154,7 @@ func sidecarPathFor(configPath string) string {
 
 // loadHostSidecar reads path into entries in file order. A missing file is an
 // empty sidecar, not an error: a hub that never added a host has no file.
-func loadHostSidecar(path string) ([]hostSidecarEntry, error) {
+func loadHostSidecar(path string) ([]hostreg.Host, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -138,19 +169,17 @@ func loadHostSidecar(path string) ([]hostSidecarEntry, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parse host sidecar: %w", err)
 	}
-	entries := make([]hostSidecarEntry, 0, len(file.Hosts))
+	entries := make([]hostreg.Host, 0, len(file.Hosts))
 	for _, h := range file.Hosts {
-		entries = append(entries, hostSidecarEntry{
-			Host: hostreg.Host{
-				Name:       h.Name,
-				SSH:        h.SSH,
-				User:       h.User,
-				EvenerPath: h.EvenerPath,
-				ConfigPath: h.ConfigPath,
-				Addr:       h.Addr,
-				Roots:      h.Roots,
-			},
-			KeyPath: h.KeyPath,
+		entries = append(entries, hostreg.Host{
+			Name:       h.Name,
+			SSH:        h.SSH,
+			User:       h.User,
+			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
+			Roots:      h.Roots,
+			KeyPath:    h.KeyPath,
 		})
 	}
 	return entries, nil
@@ -161,20 +190,20 @@ func loadHostSidecar(path string) ([]hostSidecarEntry, error) {
 // or the new one, never a half-write. 0600 keeps key paths from ever landing
 // world-readable. An empty path (no config file) skips the write; the
 // in-memory store stays authoritative for the process lifetime.
-func saveHostSidecar(path string, entries []hostSidecarEntry) error {
+func saveHostSidecar(path string, entries []hostreg.Host) error {
 	if path == "" {
 		return nil
 	}
 	file := hostSidecarFile{Hosts: make([]hostSidecarFileEntry, 0, len(entries))}
 	for _, e := range entries {
 		file.Hosts = append(file.Hosts, hostSidecarFileEntry{
-			Name:       e.Host.Name,
-			SSH:        e.Host.SSH,
-			User:       e.Host.User,
-			EvenerPath: e.Host.EvenerPath,
-			ConfigPath: e.Host.ConfigPath,
-			Addr:       e.Host.Addr,
-			Roots:      e.Host.Roots,
+			Name:       e.Name,
+			SSH:        e.SSH,
+			User:       e.User,
+			EvenerPath: e.EvenerPath,
+			ConfigPath: e.ConfigPath,
+			Addr:       e.Addr,
+			Roots:      e.Roots,
 			KeyPath:    e.KeyPath,
 		})
 	}
@@ -214,7 +243,7 @@ func saveHostSidecar(path string, entries []hostSidecarEntry) error {
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.
-func (s *hostSidecarStore) add(entry hostSidecarEntry) {
+func (s *hostSidecarStore) add(entry hostreg.Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
@@ -227,7 +256,7 @@ func (s *hostSidecarStore) remove(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, e := range s.entries {
-		if e.Host.Name == name {
+		if e.Name == name {
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
 			return true
 		}
@@ -237,23 +266,25 @@ func (s *hostSidecarStore) remove(name string) bool {
 
 // snapshot returns entries in add order; the slice is a copy. Callers hold
 // hostManagerConfig.mu.
-func (s *hostSidecarStore) snapshot() []hostSidecarEntry {
+func (s *hostSidecarStore) snapshot() []hostreg.Host {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]hostSidecarEntry(nil), s.entries...)
+	return append([]hostreg.Host(nil), s.entries...)
 }
 
-// keyPathFor returns name's sidecar key path, or "" for hub.toml names (which
-// carry no key configuration) and unknown names.
-func (s *hostSidecarStore) keyPathFor(name string) string {
+// without returns a copy of the entries minus name, in add order — the
+// snapshot a removal persists before it mutates anything. Callers hold
+// hostManagerConfig.mu.
+func (s *hostSidecarStore) without(name string) []hostreg.Host {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	out := make([]hostreg.Host, 0, len(s.entries))
 	for _, e := range s.entries {
-		if e.Host.Name == name {
-			return e.KeyPath
+		if e.Name != name {
+			out = append(out, e)
 		}
 	}
-	return ""
+	return out
 }
 
 // isSidecar reports whether name is a live sidecar entry.
@@ -261,79 +292,225 @@ func (s *hostSidecarStore) isSidecar(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.entries {
-		if e.Host.Name == name {
+		if e.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
+// hostAttachRecord is one host's retained attach state: what the lifecycle
+// events say about an in-progress or failed attach, plus the last-known facts
+// of the last row that rendered attached.
+type hostAttachRecord struct {
+	midAttach bool
+	lastErr   string
+	known     appwire.HostRow // only the fact fields are read back
+}
+
+// hostAttachState retains per-host attach records from the SSH manager's
+// lifecycle events and from attached rows this surface renders, so offline
+// and in-progress rows keep the metadata the wire contract promises (a host
+// mid-attach renders midAttach; a host that failed renders lastAttachError;
+// an offline row keeps its last-known facts). Records for removed hosts are
+// dropped, so a re-add starts clean.
+type hostAttachState struct {
+	mu      sync.Mutex
+	records map[string]*hostAttachRecord
+}
+
+func newHostAttachState() *hostAttachState {
+	return &hostAttachState{records: map[string]*hostAttachRecord{}}
+}
+
+// observe records one SSH lifecycle event. It only writes the map: it runs
+// from sshconn's OnEvent with the per-host lock held, so it must never call
+// back into the manager.
+func (s *hostAttachState) observe(ev sshconn.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.records[ev.Host]
+	if rec == nil {
+		rec = &hostAttachRecord{}
+		s.records[ev.Host] = rec
+	}
+	switch ev.Kind {
+	case sshconn.EventAttached:
+		// A fresh attach supersedes the previous attempt's error and ends
+		// the in-progress state.
+		rec.midAttach = false
+		rec.lastErr = ""
+	case sshconn.EventFailed:
+		rec.midAttach = false
+		if ev.Err != nil {
+			rec.lastErr = ev.Err.Error()
+		}
+	case sshconn.EventDetached:
+		rec.midAttach = false
+	case sshconn.EventState:
+		switch ev.State {
+		case sshconn.StatePreflighting, sshconn.StateDeploying, sshconn.StateRestarting,
+			sshconn.StateAttaching, sshconn.StateReconnecting:
+			rec.midAttach = true
+		default:
+			rec.midAttach = false
+		}
+	}
+}
+
+// recordKnown keeps the facts of the last row that rendered attached, so the
+// host's later offline rows still render them.
+func (s *hostAttachState) recordKnown(row appwire.HostRow) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.records[row.Name]
+	if rec == nil {
+		rec = &hostAttachRecord{}
+		s.records[row.Name] = rec
+	}
+	rec.known = appwire.HostRow{
+		ServerName:    row.ServerName,
+		ServerVersion: row.ServerVersion,
+		HubVersion:    row.HubVersion,
+		OS:            row.OS,
+		Arch:          row.Arch,
+	}
+}
+
+// apply folds the retained record into row: the attach state always, the
+// last-known facts only when the row is not attached (an attached row's facts
+// come from the live channel).
+func (s *hostAttachState) apply(row *appwire.HostRow) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.records[row.Name]
+	if rec == nil {
+		return
+	}
+	row.MidAttach = rec.midAttach
+	row.LastAttachErr = rec.lastErr
+	if !row.Attached {
+		row.ServerName = rec.known.ServerName
+		row.ServerVersion = rec.known.ServerVersion
+		row.HubVersion = rec.known.HubVersion
+		row.OS = rec.known.OS
+		row.Arch = rec.known.Arch
+	}
+}
+
+// remove drops name's record; a removed or re-added host starts clean.
+func (s *hostAttachState) remove(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.records, name)
+}
+
 // hubHostManager serves evener/host/add, evener/host/list,
 // evener/host/status, and evener/host/remove: the slice-1 host registry
 // surface. It owns no connections: list and status resolve through the
-// attached-only seams, add validates hub.toml-authoritatively, and remove
-// detaches through the manager. It never dials.
+// attached-only seams, add validates hub.toml-authoritatively and wires the
+// new host's source with the same seams startup uses, and remove tears the
+// host down through the manager's atomic RemoveHost. It never dials.
 //
-// Like the host-admin controller, it is controller-LOCAL: these methods act
-// on the controller's own config and channels, so they MUST NOT be added to
-// remoteHostAdminMethods (pinned by TestHostManageNotForwarded).
+// It is controller-LOCAL: these methods act on the controller's own config and
+// channels, so they MUST NOT be added to remoteHostAdminMethods (pinned by
+// TestHostManageNotForwarded), and every handler refuses a request whose
+// routing origin is non-empty (a peer hub calling over its attach bridge) —
+// pinned by TestHostManageRefusesRemoteOrigin.
 type hubHostManager struct {
 	cfg *hostManagerConfig
 }
 
-// newHubHostManager builds the manager over the live registries. configPath
-// is the selected hub.toml path ("" disables sidecar persistence); hubHosts
-// are the validated hub.toml entries the file declared.
+// newHubHostManager builds the manager over the live registries. hosts is the
+// controller's live registry — in production the one *hostreg.Registry the
+// SSH manager dials through and the attach handler validates against, so
+// sidecar entries loaded here and hosts added at runtime are attachable
+// without a restart; a nil hosts falls back to an empty registry rather than
+// a panic. configPath is the selected hub.toml path ("" disables sidecar
+// persistence); logf is the hub's logging path for sidecar load problems.
 //
 // The sidecar loads after the hub.toml registry builds, so sidecar entries
 // join the live set before the first list serves. A sidecar name colliding
 // with a live hub.toml entry is dropped — hub.toml is authoritative for its
-// own names. An invalid sidecar entry is dropped the same way: a corrupt or
-// stale file stays loud in the logs path (LoadConfig refuses bad hub.toml at
-// startup) without taking the whole host surface down.
-func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hubHosts []hostreg.Host) *hubHostManager {
-	store := &hostSidecarStore{}
-	hosts, err := hostreg.New(hubHosts)
-	if err != nil {
-		// Config loading already validated every entry, so this cannot fail
-		// in production. Fall back to an empty registry rather than a nil
-		// one, so a hypothetical duplicate refuses every host instead of
-		// panicking.
+// own names. A sidecar that fails to load, or an entry that fails validation,
+// is logged here and poisons saves: the file keeps every entry it had until
+// an operator fixes it, instead of the next save rewriting it without the
+// entries that never loaded.
+func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hosts *hostreg.Registry, logf func(format string, args ...any)) *hubHostManager {
+	if hosts == nil {
 		hosts, _ = hostreg.New(nil)
 	}
 	m := &hubHostManager{cfg: &hostManagerConfig{
 		hosts:            hosts,
-		sidecar:          store,
+		sidecar:          &hostSidecarStore{},
 		sidecarPath:      sidecarPathFor(configPath),
 		sources:          sources,
 		manager:          manager,
+		client:           cfg.RemoteHostClient,
 		online:           cfg.RemoteHostOnline,
 		clientIfAttached: cfg.RemoteHostClientIfAttached,
 		handshake:        cfg.RemoteHostHandshake,
 		facts:            cfg.RemoteHostFacts,
+		state:            newHostAttachState(),
+		logf:             logf,
 	}}
-	if entries, err := loadHostSidecar(m.cfg.sidecarPath); err == nil {
-		for _, e := range entries {
-			if _, ok := hosts.Get(e.Host.Name); ok {
-				continue
-			}
-			if err := hosts.Add(e.Host); err != nil {
-				continue
-			}
-			store.add(e)
+	entries, err := loadHostSidecar(m.cfg.sidecarPath)
+	if err != nil {
+		// Loud, not fatal: the hub.toml hosts still serve. The store stays
+		// poisoned so no later save can clobber the file's unloaded entries.
+		m.logf("host sidecar %s not loaded: %v", m.cfg.sidecarPath, err)
+		m.cfg.sidecar.poison(err)
+		return m
+	}
+	for _, e := range entries {
+		if _, ok := hosts.Get(e.Name); ok {
+			// hub.toml is authoritative for its own names: a colliding sidecar
+			// entry is a policy drop, not a load failure.
+			continue
 		}
+		if err := hosts.Add(e); err != nil {
+			m.logf("host sidecar entry %q not loaded: %v", e.Name, err)
+			m.cfg.sidecar.poison(fmt.Errorf("entry %q: %w", e.Name, err))
+			continue
+		}
+		m.cfg.sidecar.add(e)
+		m.registerSource(e)
 	}
 	return m
 }
 
+// logf emits through the hub logging path when one is wired (tests may pass
+// nil).
+func (m *hubHostManager) logf(format string, args ...any) {
+	if m.cfg.logf != nil {
+		m.cfg.logf(format, args...)
+	}
+}
+
+// observeEvent records one SSH lifecycle event into the host rows' retained
+// attach state (main.go binds it to the sshconn manager's OnEvent). It only
+// records: the event arrives with the per-host lock held, so it must never
+// call back into the manager.
+func (m *hubHostManager) observeEvent(ev sshconn.Event) {
+	m.cfg.state.observe(ev)
+}
+
 // registerHostManageHandlers installs the four slice-1 host-management
-// handlers. configPath is the selected hub.toml path for sidecar
-// persistence; hubHosts are the validated hub.toml entries. navigation, when
-// non-nil, is invalidated after add/remove commits so the manifest's sources
-// converge without waiting for the next refresh tick. It returns the manager
-// so tests can drive it directly.
-func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, manager *sshconn.Manager, cfg hubcore.WebConfig, configPath string, hubHosts []hostreg.Host, navigation *NavigationService) *hubHostManager {
-	m := newHubHostManager(sources, manager, cfg, configPath, hubHosts)
+// handlers. The manager, registry, and hub.toml path come from cfg: main.go
+// threads the live sshconn.Manager, the live host registry it shares with the
+// attach handler, and the selected config path through WebConfig, so the
+// surface is wired in production (a nil there — tests, embedders — leaves
+// the fallbacks: a fresh registry from RemoteHosts, no channel teardown, no
+// sidecar persistence). navigation, when non-nil, is invalidated after
+// add/remove commits so the manifest's sources converge without waiting for
+// the next refresh tick. It returns the manager so tests can drive it
+// directly.
+func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
+	hosts := cfg.RemoteHostRegistry
+	if hosts == nil {
+		hosts = hostRegistryFromConfig(cfg)
+	}
+	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, logf)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, func(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
 		row, err := m.Add(ctx, params)
 		if err == nil && navigation != nil {
@@ -382,105 +559,169 @@ func (m *hubHostManager) hostOnline(host string) bool {
 
 // hostRow renders one host's list row: the effective entry fields plus live
 // state. Attached rows read the live channel's handshake and preflight facts
-// through the attached-only lookups; offline rows carry no facts (slice 1
-// keeps no last-known store — the row renders the entry as offline). It never
-// dials: every seam here is attached-only.
+// through the attached-only lookups and record them as last-known; offline
+// and in-progress rows render the retained attach state (midAttach,
+// lastAttachError) and last-known facts from the record. It never dials:
+// every seam here is attached-only.
 func (m *hubHostManager) hostRow(host hostreg.Host, origin string) appwire.HostRow {
 	row := appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,
-		KeyPath: m.cfg.sidecar.keyPathFor(host.Name),
+		KeyPath: host.KeyPath,
 		Origin:  origin,
 	}
-	if !m.hostOnline(host.Name) {
-		return row
-	}
-	row.Attached = true
-	if m.cfg.clientIfAttached == nil {
-		return row
-	}
-	client, ok := m.cfg.clientIfAttached(host.Name)
-	if !ok || client == nil {
-		// The online signal fired but the channel is already gone: render
-		// offline rather than an online row with no facts behind it.
-		row.Attached = false
-		return row
-	}
-	if m.cfg.handshake != nil {
-		if hs, ok := m.cfg.handshake(host.Name, client); ok {
-			row.ServerName = hs.ServerInfo.Name
-			row.ServerVersion = hs.ServerInfo.Version
+	if m.hostOnline(host.Name) {
+		row.Attached = true
+		if m.cfg.clientIfAttached != nil {
+			client, ok := m.cfg.clientIfAttached(host.Name)
+			if !ok || client == nil {
+				// The online signal fired but the channel is already gone:
+				// render offline rather than an online row with no facts
+				// behind it.
+				row.Attached = false
+			} else {
+				if m.cfg.handshake != nil {
+					if hs, ok := m.cfg.handshake(host.Name, client); ok {
+						row.ServerName = hs.ServerInfo.Name
+						row.ServerVersion = hs.ServerInfo.Version
+					}
+				}
+				if m.cfg.facts != nil {
+					if facts, err := m.cfg.facts(context.Background(), host.Name, client); err == nil {
+						row.HubVersion = facts.HubVersion
+						row.OS = facts.OS
+						row.Arch = facts.Arch
+					}
+					// A facts-read failure keeps the row attached: the dial
+					// the attach already completed is authoritative
+					// (app_host_attach.go's dial-authoritative rule), and a
+					// failed facts read is not a detach.
+				}
+			}
 		}
 	}
-	if m.cfg.facts != nil {
-		if facts, err := m.cfg.facts(context.Background(), host.Name, client); err == nil {
-			row.HubVersion = facts.HubVersion
-			row.OS = facts.OS
-			row.Arch = facts.Arch
-		}
-		// A facts-read failure keeps the row attached: the dial the attach
-		// already completed is authoritative (app_host_attach.go's
-		// dial-authoritative rule), and a failed facts read is not a detach.
+	m.cfg.state.apply(&row)
+	if row.Attached {
+		m.cfg.state.recordKnown(row)
 	}
 	return row
+}
+
+// registerSource wires entry's appsource source exactly the way startup does
+// (newHubSourceRegistry): the Ensure-backed dialing client when one is
+// wired, the attached-only client/handshake/facts lookups, and a live online
+// signal from the manager — so a host added at runtime is Connect-able and
+// serves attached-only reads without a restart. With no dialing seam (tests,
+// embedders) the client func refuses SessionUnavailable while detached, the
+// pre-attach contract a hub.toml host already follows. A source that already
+// exists is left alone.
+func (m *hubHostManager) registerSource(entry hostreg.Host) {
+	if m.cfg.sources == nil {
+		return
+	}
+	if _, ok := m.cfg.sources.Source(entry.Name); ok {
+		return
+	}
+	client := m.cfg.client
+	if client == nil {
+		client = remoteClientFor(entry.Name)
+	}
+	source := appsource.NewRemoteHubSource(entry.Name, entry.Roots, client)
+	source.SetHostClientIfAttached(m.cfg.clientIfAttached)
+	source.SetHostFacts(m.cfg.facts)
+	source.SetHostHandshake(m.cfg.handshake)
+	// The signal answers from the manager's own attached state, never from
+	// this manager's hostOnline (that reads the source and would recurse);
+	// with no signal wired, a host nothing can attach renders offline.
+	source.SetHostOnline(func() bool {
+		if m.cfg.online != nil {
+			return m.cfg.online(entry.Name)
+		}
+		return false
+	})
+	m.cfg.sources.Add(source)
 }
 
 // Add registers one sidecar host entry: name + SSH address + key path. It
 // validates exactly like hub.toml loading (component-03 rules) and refuses a
 // name hub.toml or the live set already holds — the duplicate refusal applies
-// to live entries only: a removed name is gone, so re-add works. It wires no
-// live channel: the host attaches on the first explicit Connect.
-func (m *hubHostManager) Add(_ context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
+// to live entries only: a removed name is gone, so re-add works.
+//
+// The commit is durable-first: the sidecar file is written before anything is
+// exposed, so a save failure commits nothing (no registry entry, no sidecar
+// row, no source) and the caller can retry. Only after the save lands does
+// the live set gain the entry — registry, sidecar row, and a fully wired
+// source — at which point the host is attachable without a restart.
+func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostRow{}, err
+	}
 	name := strings.TrimSpace(params.Name)
 	address := strings.TrimSpace(params.Address)
 	keyPath := strings.TrimSpace(params.KeyPath)
-	entry := hostreg.Normalize(hostreg.Host{Name: name, SSH: address})
-	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
-	if err := m.cfg.hosts.Add(entry); err != nil {
+	entry := hostreg.Normalize(hostreg.Host{Name: name, SSH: address, KeyPath: keyPath})
+	// Validate without inserting: a scratch registry runs the exact add-time
+	// checks (name grammar, reserved name, ssh destination) over this one
+	// entry without touching live state, so nothing is exposed before the
+	// durable save below.
+	if _, err := hostreg.New([]hostreg.Host{entry}); err != nil {
 		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, err))
 	}
-	m.cfg.sidecar.add(hostSidecarEntry{Host: entry, KeyPath: keyPath})
-	if err := saveHostSidecar(m.cfg.sidecarPath, m.cfg.sidecar.snapshot()); err != nil {
-		_ = m.cfg.hosts.Remove(entry.Name)
-		m.cfg.sidecar.remove(entry.Name)
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
+	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
+		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, hostreg.ErrDuplicateHost))
+	}
+	// Durable commit first: the sidecar file is the record of truth for
+	// sidecar names, so the entry is exposed only after the save landed.
+	next := append(m.cfg.sidecar.snapshot(), entry)
+	if err := m.saveSidecar(next); err != nil {
 		return appwire.HostRow{}, err
 	}
-	if m.cfg.sources != nil {
-		if _, ok := m.cfg.sources.Source(entry.Name); !ok {
-			// The fresh source reports offline until the first Connect
-			// attaches it: with no signal a source defaults online, which
-			// would render a never-attached host as attached. (Production
-			// startup rewires every source's signal from the manager; a host
-			// added at runtime carries this refusal until then. The func
-			// answers a constant — never m.hostOnline — so hostRow cannot
-			// recurse through it.)
-			source := appsource.NewRemoteHubSource(entry.Name, entry.Roots, remoteClientFor(entry.Name))
-			source.SetHostOnline(func() bool { return false })
-			m.cfg.sources.Add(source)
-		}
+	if err := m.cfg.hosts.Add(entry); err != nil {
+		// Cannot happen — the entry was validated and duplicate-checked
+		// under mu — but should it ever, the file's copy reloads on the next
+		// start, so the add completes rather than being lost.
+		return appwire.HostRow{}, err
 	}
+	m.cfg.sidecar.add(entry)
+	m.cfg.state.remove(entry.Name) // a re-added name starts with no stale record
+	m.registerSource(entry)
 	return m.hostRow(entry, hostOriginSidecar), nil
 }
 
-// remoteClientFor returns the dialing client func for a newly added host's
-// source. The source serves attached-only reads until the first explicit
-// Connect: with no lookup installed it falls back to this func, which refuses
-// SessionUnavailable while detached — exactly like a hub.toml host before its
-// first attach. (Production rewires the source's lookup at startup; a host
-// added at runtime carries this refusal until the hub restarts and registers
-// it with the full seams.)
+// remoteClientFor returns the refusing client func for a host whose source
+// has no dialing seam (an embedder or a test built without
+// cfg.RemoteHostClient): the source serves attached-only reads until the
+// first explicit Connect, exactly like a hub.toml host before its first
+// attach.
 func remoteClientFor(host string) func(ctx context.Context, _ string) (*appwire.Client, error) {
 	return func(_ context.Context, _ string) (*appwire.Client, error) {
 		return nil, appwire.SessionUnavailable(fmt.Sprintf("host %q is not attached", host))
 	}
 }
 
-// List returns every known host with truthful online state: hub.toml entries
-// first in registry (name-sorted) order with their origin, then the same
-// rows for sidecar entries. Attached rows report live channel facts; rows
-// without a live channel render as offline. It never dials.
-func (m *hubHostManager) List(_ context.Context, _ appwire.EmptyParams) (appwire.HostListResponse, error) {
+// saveSidecar persists entries durably, refusing while the on-disk sidecar is
+// known unread or partially loaded: rewriting the file then would clobber the
+// entries that never made it into memory. Callers treat the refusal as fatal
+// (add/remove report it; the entry stays un-exposed or the host stays
+// intact), so the operator hears about the broken file instead of losing it.
+func (m *hubHostManager) saveSidecar(entries []hostreg.Host) error {
+	if err := m.cfg.sidecar.poisoned(); err != nil {
+		return fmt.Errorf("host sidecar %s not rewritten: %w (fix or remove the unloaded entries in the file first)", m.cfg.sidecarPath, err)
+	}
+	return saveHostSidecar(m.cfg.sidecarPath, entries)
+}
+
+// List returns every known host with truthful online state in name-sorted
+// order (the registry's own; the origin field distinguishes hub.toml entries
+// from sidecar ones). Attached rows report live channel facts and retain them
+// as last-known; rows without a live channel render as offline with the
+// retained attach state and last-known facts. It never dials.
+func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwire.HostListResponse, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostListResponse{}, err
+	}
 	rows := make([]appwire.HostRow, 0, len(m.cfg.hosts.All()))
 	for _, host := range m.cfg.hosts.All() {
 		origin := hostOriginHubTOML
@@ -497,7 +738,10 @@ func (m *hubHostManager) List(_ context.Context, _ appwire.EmptyParams) (appwire
 
 // Status returns one host's row: the same HostRow evener/host/list serves.
 // Unknown names are InvalidParams. Never dials.
-func (m *hubHostManager) Status(_ context.Context, params appwire.HostStatusParams) (appwire.HostStatusResponse, error) {
+func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusParams) (appwire.HostStatusResponse, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostStatusResponse{}, err
+	}
 	name := strings.TrimSpace(params.Name)
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {
@@ -510,12 +754,23 @@ func (m *hubHostManager) Status(_ context.Context, params appwire.HostStatusPara
 	return appwire.HostStatusResponse{Host: m.hostRow(host, origin)}, nil
 }
 
-// Remove deregisters one sidecar host entry: its supervisor stops, its
-// channel drops, and the name is gone until re-added. hub.toml-declared names
-// are refused (edit the file); unknown names are InvalidParams. Removed stays
-// removed, re-add works, and nothing is resurrected: the entry, its source,
-// and its channel are all dropped by the time Remove returns.
-func (m *hubHostManager) Remove(_ context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
+// Remove deregisters one sidecar host entry: its sidecar row, its source, its
+// registry entry, and its channel all go, and the name is gone until
+// re-added. hub.toml-declared names are refused (edit the file); unknown names
+// are InvalidParams.
+//
+// The commit is durable-first — the sidecar file loses the entry before any
+// live state changes, so a save failure leaves the host fully intact and the
+// caller can retry — and the teardown is manager-owned: with a manager wired,
+// RemoveHost drops the registry entry, stops the supervisor, and clears the
+// channel under the host lock in one step, so a concurrent Ensure cannot
+// publish a fresh channel after deregistration. Nothing is resurrected: the
+// entry, its source, its channel, and its retained attach state are all gone
+// by the time Remove returns.
+func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostRemoveResponse{}, err
+	}
 	name := strings.TrimSpace(params.Name)
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
@@ -526,24 +781,27 @@ func (m *hubHostManager) Remove(_ context.Context, params appwire.HostRemovePara
 	if !m.cfg.sidecar.isSidecar(host.Name) {
 		return appwire.HostRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("host %q is declared in hub.toml; remove it by editing the file", host.Name))
 	}
+	// Persist first: the durable sidecar loses the entry before any live
+	// state changes, so a save failure resurrects nothing — the host stays
+	// fully intact and the caller can retry.
+	next := m.cfg.sidecar.without(host.Name)
+	if err := m.saveSidecar(next); err != nil {
+		return appwire.HostRemoveResponse{}, err
+	}
 	if m.cfg.manager != nil {
-		// A detach failure refuses the removal before anything is dropped:
-		// the entry, source, and sidecar row all stay in place, so the caller
-		// can retry rather than inherit a half-removed host.
-		if err := m.cfg.manager.DetachHost(host.Name); err != nil {
-			return appwire.HostRemoveResponse{}, fmt.Errorf("detach host %q: %w", host.Name, err)
+		// Manager-owned teardown: registry entry, supervisor, channel, and
+		// per-host caches drop together under the host lock.
+		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
+			return appwire.HostRemoveResponse{}, fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
+	} else if err := m.cfg.hosts.Remove(host.Name); err != nil {
+		return appwire.HostRemoveResponse{}, err
 	}
 	if m.cfg.sources != nil {
 		m.cfg.sources.Remove(host.Name)
 	}
-	if err := m.cfg.hosts.Remove(host.Name); err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
 	m.cfg.sidecar.remove(host.Name)
-	if err := saveHostSidecar(m.cfg.sidecarPath, m.cfg.sidecar.snapshot()); err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
+	m.cfg.state.remove(host.Name)
 	return appwire.HostRemoveResponse{Host: appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,

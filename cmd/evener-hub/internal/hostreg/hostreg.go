@@ -58,6 +58,12 @@ type Host struct {
 	ConfigPath string
 	Addr       string
 	Roots      []string
+	// KeyPath is the SSH private-key file the controller dials with. A
+	// [[hosts]] entry never sets it (hub.toml's schema has no key field, so a
+	// file-declared host resolves its identity the way the operator's ssh_config
+	// does); a UI-added sidecar host carries its key here so the one live dial
+	// path — the registry entry this package stores — sees it.
+	KeyPath string
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
@@ -104,6 +110,7 @@ func Normalize(entry Host) Host {
 	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
 	entry.ConfigPath = strings.TrimSpace(entry.ConfigPath)
 	entry.Addr = strings.TrimSpace(entry.Addr)
+	entry.KeyPath = strings.TrimSpace(entry.KeyPath)
 	entry.Roots = slices.Clone(entry.Roots)
 	for i, root := range entry.Roots {
 		entry.Roots[i] = strings.TrimSpace(root)

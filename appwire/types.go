@@ -3905,9 +3905,9 @@ type HostRow struct {
 }
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
-// known host, hub.toml entries first in config order, then sidecar entries in
-// add order. It never dials: attached rows read the live channel, offline rows
-// render last-known state.
+// known host in name-sorted order — the registry's own order; the origin field
+// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// rows read the live channel, offline rows render last-known state.
 type HostListResponse struct {
 	Hosts []HostRow `json:"hosts"`
 }

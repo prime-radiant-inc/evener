@@ -57,10 +57,7 @@ test("add dialog submits name, address, and key", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [] }));
-  fake.on("evener/host/add", (params) => {
-    expect(params).toMatchObject({ name: "gamma", address: "g.example", keyPath: "/keys/g" });
-    return row({ name: "gamma", address: "g.example", keyPath: "/keys/g" });
-  });
+  fake.on("evener/host/add", () => row({ name: "gamma", address: "g.example", keyPath: "/keys/g" }));
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
@@ -69,8 +66,12 @@ test("add dialog submits name, address, and key", async () => {
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "Add host" }));
   await waitFor(() => {
-    const calls = fake.calls.filter((c) => c.method === "evener/host/add");
-    expect(calls).toHaveLength(1);
+    expect(fake.calls.filter((c) => c.method === "evener/host/add")).toHaveLength(1);
+  });
+  expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
+    name: "gamma",
+    address: "g.example",
+    keyPath: "/keys/g",
   });
 });
 
@@ -111,19 +112,16 @@ test("remove confirms then calls evener/host/remove", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
-  fake.on("evener/host/remove", (params) => {
-    expect(params).toMatchObject({ name: "beta" });
-    return { host: row({ name: "beta", removed: true }) };
-  });
+  fake.on("evener/host/remove", () => ({ host: row({ name: "beta", removed: true }) }));
   render(<HostsSection sectionId="hosts" />);
   const betaRow = (await screen.findByText("beta")).closest("li")!;
   await user.click(within(betaRow).getByRole("button", { name: "Remove" }));
   const dialog = await screen.findByRole("dialog", { name: /Remove beta/ });
   await user.click(within(dialog).getByRole("button", { name: "Remove" }));
   await waitFor(() => {
-    const calls = fake.calls.filter((c) => c.method === "evener/host/remove");
-    expect(calls).toHaveLength(1);
+    expect(fake.calls.filter((c) => c.method === "evener/host/remove")).toHaveLength(1);
   });
+  expect(fake.calls.find((c) => c.method === "evener/host/remove")?.params).toMatchObject({ name: "beta" });
 });
 
 test("load failure shows retry", async () => {

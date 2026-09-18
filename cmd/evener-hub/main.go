@@ -420,38 +420,52 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// the WebServer below, after the SSH manager, and it is only ever invoked
 	// once the background loops start attaching hosts.
 	var hostAttachedWakeup func(host string)
+	// hostManageEvents is late-bound the same way: the host-management
+	// controller is constructed with the WebServer below, after the SSH
+	// manager, and its event recorder is only ever invoked once the
+	// background loops start attaching hosts.
+	var hostManageEvents func(sshconn.Event)
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		OnEvent: hubSSHStateInvalidation(
-			func() {
-				if sshStateInvalidatedNavigation != nil {
-					sshStateInvalidatedNavigation()
-				}
-			},
-			// An attach is not only a liveness change: a host that was dormant
-			// contributes no fresh rows to the snapshot walk (it is skipped
-			// attached-only), so its threads stay absent from the navigation tree
-			// until the next ~30s tick. Poke the remote-thread refresher on the
-			// same transition so an explicit evener/host/attach populates the tree
-			// immediately. remotePoke is buffered 1 and this send is non-blocking,
-			// so the sshconn event loop never blocks on a refresh already pending.
-			func(host string) {
-				select {
-				case remotePoke <- struct{}{}:
-				default:
-				}
-				// The same transition wakes the host-notification fan-out: a
-				// fan-out sleeping in backoff would otherwise wait up to 30s
-				// before subscribing while the new client's notification buffer
-				// fills undrained. The wakeup carries no client — the fan-out
-				// still resolves the fresh client through ClientIfAttached —
-				// and the send below is non-blocking for the same reason the
-				// poke above is: the sshconn event loop must never block.
-				if hostAttachedWakeup != nil {
-					hostAttachedWakeup(host)
-				}
-			},
-		),
+		OnEvent: func(ev sshconn.Event) {
+			hubSSHStateInvalidation(
+				func() {
+					if sshStateInvalidatedNavigation != nil {
+						sshStateInvalidatedNavigation()
+					}
+				},
+				// An attach is not only a liveness change: a host that was dormant
+				// contributes no fresh rows to the snapshot walk (it is skipped
+				// attached-only), so its threads stay absent from the navigation tree
+				// until the next ~30s tick. Poke the remote-thread refresher on the
+				// same transition so an explicit evener/host/attach populates the tree
+				// immediately. remotePoke is buffered 1 and this send is non-blocking,
+				// so the sshconn event loop never blocks on a refresh already pending.
+				func(host string) {
+					select {
+					case remotePoke <- struct{}{}:
+					default:
+					}
+					// The same transition wakes the host-notification fan-out: a
+					// fan-out sleeping in backoff would otherwise wait up to 30s
+					// before subscribing while the new client's notification buffer
+					// fills undrained. The wakeup carries no client — the fan-out
+					// still resolves the fresh client through ClientIfAttached —
+					// and the send below is non-blocking for the same reason the
+					// poke above is: the sshconn event loop must never block.
+					if hostAttachedWakeup != nil {
+						hostAttachedWakeup(host)
+					}
+				},
+			)(ev)
+			// The host-management surface records per-host attach state from
+			// the same lifecycle events (midAttach, lastAttachError). The
+			// recorder only writes its own map: OnEvent runs with the
+			// per-host lock held, so it must never call back into the manager.
+			if hostManageEvents != nil {
+				hostManageEvents(ev)
+			}
+		},
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -491,6 +505,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
 		RemoteHosts:               hostEntries,
+		// The one live registry the SSH manager dials through, shared with the
+		// attach handler and the host-management surface, and the selected
+		// hub.toml path the UI's host sidecar persists beside.
+		RemoteHostRegistry:   hostRegistry,
+		RemoteHostSSHManager: sshManager,
+		RemoteHostConfigPath: opts.configPath,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -531,6 +551,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// hosts) leaves the slot nil, which the callback already tolerates.
 	if web.hostAdmin != nil {
 		hostAttachedWakeup = web.hostAdmin.hostAttached
+	}
+	// Bind the host-management event recorder the same way: the sshconn
+	// manager fires lifecycle events, and the host rows retain attach state
+	// from them.
+	if web.hostManage != nil {
+		hostManageEvents = web.hostManage.observeEvent
 	}
 	// Drain the AppWire RPC server on every exit path, tracing or not (round
 	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),

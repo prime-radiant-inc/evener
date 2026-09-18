@@ -29,17 +29,33 @@ import (
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from remoteHostAdminMethods (see app_host_admin.go).
 func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	hosts, err := hostreg.New(cfg.RemoteHosts)
-	if err != nil {
-		// Config loading already validated every entry (main.go builds the same
-		// registry from the same entries), so this cannot fail in production.
-		// Fall back to an empty registry rather than a nil one, so a
-		// hypothetical duplicate refuses every host instead of panicking.
-		hosts, _ = hostreg.New(nil)
+	// Production threads the controller's one live registry through WebConfig
+	// — the same *hostreg.Registry the SSH manager dials through and the
+	// host-management surface mutates — so a host added at runtime validates
+	// here without a restart. A cfg without one (tests, embedders) builds its
+	// own from the configured entries, exactly as before.
+	hosts := cfg.RemoteHostRegistry
+	if hosts == nil {
+		hosts = hostRegistryFromConfig(cfg)
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 		return hubHostAttach(ctx, cfg, sources, hosts, params)
 	})
+}
+
+// hostRegistryFromConfig returns the cfg's live host registry when one was
+// threaded through WebConfig, else a fresh one built from the validated
+// entries — the shape every test and embedder that configures RemoteHosts
+// without a shared registry gets. Config loading already validated the
+// entries (main.go builds the same registry from the same entries), so the
+// error path is the impossible-duplicate fallback; an empty registry keeps the
+// surface serving refusals instead of panicking.
+func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
+	hosts, err := hostreg.New(cfg.RemoteHosts)
+	if err != nil {
+		hosts, _ = hostreg.New(nil)
+	}
+	return hosts
 }
 
 // hubHostAttach attaches one configured remote host and reports its post-attach

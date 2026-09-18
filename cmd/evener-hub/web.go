@@ -33,6 +33,10 @@ type WebServer struct {
 	// the sshconn attach-event path so an EventAttached rebinds a
 	// backoff-sleeping fan-out immediately.
 	hostAdmin *hubHostAdminController
+	// hostManage is the slice-1 host-management controller (add/list/status/
+	// remove). main.go binds its event recorder to the same sshconn lifecycle
+	// path, so host rows retain attach state from the manager's events.
+	hostManage *hubHostManager
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -152,9 +156,10 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, hostManage := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.hostAdmin = hostAdmin
+	web.hostManage = hostManage
 	// Wired here, after the server exists, rather than inside the
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.

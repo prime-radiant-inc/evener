@@ -69,6 +69,21 @@ func guardRemoteHostDial(ctx context.Context) error {
 	return appwire.InvalidParams(fmt.Sprintf("remote-originated request (origin %q) may not attach a remote host", origin))
 }
 
+// guardControllerLocalHosts refuses a remote-originated host-management
+// request (evener/host/add|list|status|remove). Those methods act on the
+// controller's own config and channels — a peer hub reached over its attach
+// bridge must not enumerate or mutate this hub's host registry — the same
+// controller-local rule that keeps them off the remote forward allow-list
+// (TestHostManageNotForwarded). It reads the same origin accessor the dial
+// guard above does (component 07, §"Host-routing origin guard").
+func guardControllerLocalHosts(ctx context.Context) error {
+	origin := hostRoutingOrigin(ctx)
+	if origin == "" {
+		return nil
+	}
+	return appwire.InvalidParams(fmt.Sprintf("remote-originated request (origin %q) may not manage this hub's hosts", origin))
+}
+
 // dialRemoteHost is the single Ensure-backed dialing seam for the hub's attach
 // triggers. Every caller that may dial a remote host goes through it, so the
 // host-routing origin guard cannot be omitted by a new remote attach path
