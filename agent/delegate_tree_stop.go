@@ -708,6 +708,17 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
+	return c.drainStopAbandonable(ctx, stop, root, nil)
+}
+
+// drainStopAbandonable is drainStop plus an optional abandon signal. The stop
+// driver passes its own cancellable context's Done channel, so a close join
+// timeout -- which cancels that context -- can break the drain out of a busy
+// branch that never waits on the context. The close's own drains pass nil: they
+// keep reconciling even after their budget is cancelled, which the stop's final
+// reconciliation relies on, and only the wait at the loop's foot observes their
+// context.
+func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}) error {
 	if stop == nil {
 		return nil
 	}
@@ -727,8 +738,16 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			return nil
 		default:
 		}
+		// The drain's busy branches below (stale requirements, reconcile-busy,
+		// and repair/attention plans) re-enter the loop without waiting on the
+		// context. An abandoned driver would otherwise spin forever, so check
+		// the abandon signal at each such boundary; the wait at the loop's foot
+		// still prefers exact progress over cancellation.
 		requirements, current := c.stopReconcileRequirements(stop)
 		if !current {
+			if drainAbandoned(abandon) {
+				return ctx.Err()
+			}
 			continue
 		}
 		evidence, err := collectDelegateReconcileEvidence(c.stateDir, requirements)
@@ -741,6 +760,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
+				if drainAbandoned(abandon) {
+					return ctx.Err()
+				}
 				continue
 			}
 			return err
@@ -766,6 +788,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			}
 		}
 		if len(plans.attention) != 0 || len(plans.shellRepairs) != 0 {
+			if drainAbandoned(abandon) {
+				return ctx.Err()
+			}
 			continue
 		}
 		if !delegateStopDone(stop) {
@@ -776,8 +801,22 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 	}
 }
 
+// drainAbandoned reports whether an abandon signal has fired. A nil signal
+// never reports abandoned.
+func drainAbandoned(abandon <-chan struct{}) bool {
+	if abandon == nil {
+		return false
+	}
+	select {
+	case <-abandon:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
-	err := c.drainStop(driver.ctx, stop, root)
+	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done())
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)

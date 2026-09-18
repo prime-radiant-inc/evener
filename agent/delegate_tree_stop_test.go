@@ -954,6 +954,68 @@ func TestDelegateControllerCloseWakesParkedStopReconcileDriver(t *testing.T) {
 	}
 }
 
+// TestDelegateStopDrainObservesCancellationAtBusyBoundaries pins the abandon
+// coverage of the driver drain's non-waiting branches: when a stop can never
+// reconcile -- the requirements have gone stale, or Reconcile rejects the
+// evidence as busy every pass -- an abandoned driver (driver.ctx cancelled by a
+// close join timeout) must still exit rather than spin forever.
+func TestDelegateStopDrainObservesCancellationAtBusyBoundaries(t *testing.T) {
+	t.Run("reconcile-busy", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		stop := &delegateStopState{
+			requestSeq: 42,
+			targetID:   "dlg_target",
+			// An empty member the durable state cannot cover makes
+			// delegateStopReconcileEvidenceMatchesState reject every pass as
+			// busy, so the loop can only leave by observing cancellation.
+			members:  map[string]struct{}{"dlg_target": {}, "dlg_ghost": {}},
+			done:     make(chan struct{}),
+			progress: make(chan struct{}, 1),
+		}
+		c.mu.Lock()
+		c.stop = stop
+		c.mu.Unlock()
+		t.Cleanup(func() {
+			c.mu.Lock()
+			if c.stop == stop {
+				c.stop = nil
+			}
+			c.mu.Unlock()
+		})
+		requireDrainStopsUnderCancellation(t, c, stop)
+	})
+
+	t.Run("stale-requirements", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		// c.stop is nil, so this stop is never the current one and every pass
+		// takes the stale-requirements branch.
+		foreign := &delegateStopState{done: make(chan struct{}), progress: make(chan struct{}, 1)}
+		requireDrainStopsUnderCancellation(t, c, foreign)
+	})
+}
+
+// requireDrainStopsUnderCancellation runs the driver's drain on an
+// already-cancelled context and fails unless it returns the cancellation error
+// instead of spinning on a busy branch. The driver's drain passes its own
+// context's Done channel as the abandon signal, exactly as runStopReconcileDriver
+// does.
+func requireDrainStopsUnderCancellation(t *testing.T, c *delegateTreeController, stop *delegateStopState) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.drainStopAbandonable(ctx, stop, nil, ctx.Done()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("drainStop error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second): // TRIPWIRE: the drain is in-process and immediate; only a spin reaches this
+		t.Fatal("drainStop spun on a busy boundary after its context was cancelled")
+	}
+}
+
 func TestDelegateControllerRootCloseFencesAdmissionWhileReceiptDrains(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
