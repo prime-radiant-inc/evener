@@ -1013,6 +1013,27 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
   });
 
+  test("a discard refuses and reclassifies to absent when the classified record has been deleted entirely", async () => {
+    // A store-FREE discard (no live store of its own to publish through, so
+    // it removes the record straight from storage - see
+    // discardStoredKeybindingDraft) can remove the SAME record this store
+    // classified before this store's own discardDraft() ever runs. Its CAS
+    // must refuse (nothing is left to match) and reclassify to absent,
+    // rather than leave the classification it made before the external
+    // removal - the same posture the "replaced" cases above take, but for
+    // "gone" instead of "replaced by something else".
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+
+    expect(drafts.storage.removeIf(drafts.stored())).toBe(true);
+    expect(drafts.stored()).toBeNull();
+
+    store.getState().discardDraft();
+    expect(store.getState()).toMatchObject({ draft: null, storageUnavailable: false, draftUnreadable: false });
+  });
+
   test("a genuine storage-read failure never erases an earlier unreadable-record recovery", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();

@@ -9,7 +9,6 @@ import {
 	useState,
 } from "react";
 import {
-	decodeKeybindingDraftFields,
 	discardStoredKeybindingDraft,
 	isReadableKeybindingDraft,
 } from "@evener/appwire-client";
@@ -26,7 +25,6 @@ import {
 	nativeTranscriptDrafts,
 	rawStringDraftBackend,
 	readDraftOutcome,
-	readDraftOutcomeWithValue,
 } from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
@@ -141,10 +139,8 @@ export function NativePreferencesProvider({
 		}
 		// A second, independent re-read (see draftUnreadableAfterDiscard): the
 		// CURRENT record, not the one discardStoredDraft last saw, is what
-		// decides whether the notice still belongs up. Read once - the decode
-		// below reuses `loaded` rather than calling storage.load() again
-		// outside this same guard.
-		const { outcome: current, value: loaded } = readDraftOutcomeWithValue(storage, isReadableKeybindingDraft);
+		// decides whether the notice still belongs up.
+		const current = readDraftOutcome(storage, isReadableKeybindingDraft);
 		if (current === "storageUnavailable") {
 			setOfflineStorageUnavailable(true);
 			// The follow-up read cannot say what is there now - preserve the
@@ -156,39 +152,29 @@ export function NativePreferencesProvider({
 			return outcome;
 		}
 		setOfflineStorageUnavailable(false);
-		const draftUnreadable = draftUnreadableAfterDiscard(current);
 		// Kept in sync regardless of whether `bound` exists: the cold-offline
 		// signal below (offlineDraftUnreadable) is what the screen falls back
 		// to before any model has published a snapshot, and a discard can
 		// happen in exactly that state.
-		setOfflineDraftUnreadable(draftUnreadable);
-		// The follow-up read already has whatever record is there now - a
-		// "refused" outcome whose replacement decodes as valid (current is
-		// "readable") is a NEW draft the store-free path just discovered, and
-		// restoreDraft would publish its draft/writeUncertain fields on a live
-		// store; decodeKeybindingDraftFields does the same decode here so this
-		// path is not left at stale nulls until a reconnect. Decodes `loaded`,
-		// never a fresh storage.load() - see readDraftOutcomeWithValue.
-		const { draft, writeUncertain } =
-			current === "readable" ? decodeKeybindingDraftFields(loaded) : { draft: null, writeUncertain: false };
-		setBound((previous) =>
-			previous?.hubId === hubId
-				? {
-						...previous,
-						snapshot: {
-							...previous.snapshot,
-							keybindings: {
-								...previous.snapshot.keybindings,
-								draftUnreadable,
-								storageUnavailable: false,
-								error: null,
-								draft,
-								writeUncertain,
-							},
-						},
-					}
-				: previous,
-		);
+		setOfflineDraftUnreadable(draftUnreadableAfterDiscard(current));
+		if (bound?.hubId === hubId && bound.client === client) {
+			// A live model exists for this hub, and its OWN keybindings store
+			// classifies this same record independently, from the same storage
+			// this store-free path just changed - patching a COPY of its
+			// snapshot here would only be overwritten the next time that store
+			// publishes (bindNativePreferences' subscribe below always replaces
+			// `bound.snapshot` outright with model.getSnapshot()), since the
+			// live store never heard about the change. Nudging its own discard
+			// keeps ITS state honest instead: the record it classified is now
+			// gone (or replaced), so its CAS refuses and it re-reads storage
+			// itself (see keybindingsStore.ts's discardDraft "refused, so
+			// reclassify" branch) - the exact outcome this call needs, reached
+			// through the store's own recovery path rather than a duplicate of
+			// it. Fire-and-forget: discardKeybindingsDraft is synchronous work
+			// wrapped in a promise, and this path's own return value already
+			// reflects what discardStoredKeybindingDraft found.
+			bound.model.discardKeybindingsDraft().catch(() => {});
+		}
 		return outcome;
 	};
 	useEffect(() => {
