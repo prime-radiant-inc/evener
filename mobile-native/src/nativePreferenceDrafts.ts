@@ -15,7 +15,7 @@ export interface NativePreferenceDraftBackend {
 	deleteIf(
 		key: string,
 		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
-	): void;
+	): boolean;
 }
 
 export function nativeKeybindingDrafts(
