@@ -122,6 +122,40 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 	): boolean;
 }
 
+/** What a draft read named, once decoded: no record, a record this build can
+ * read, or a record present but unreadable. Absent and unreadable used to be
+ * told apart by a single boolean (readable or not), which cannot distinguish
+ * "nothing is there" from "something unreadable replaced it" - the store-free
+ * discard action needs that distinction (see draftUnreadableAfterDiscard). */
+export type DraftReadOutcome = "absent" | "readable" | "unreadable";
+
+export function classifyDraftRead(
+	loaded: unknown,
+	isReadable: (value: unknown) => boolean,
+): DraftReadOutcome {
+	if (loaded === null || loaded === undefined) return "absent";
+	return isReadable(loaded) ? "readable" : "unreadable";
+}
+
+/** Reads a draft port and classifies the outcome the way a cold-offline probe
+ * or a store-free discard's re-read must: every DraftPort method may throw (a
+ * genuine storage failure, not a record this build cannot decode - see
+ * UnreadableDraftError for the live-store equivalent), and a throw here says
+ * nothing about what is actually stored. Coming back as its own outcome,
+ * rather than escaping the caller's effect or event handler uncaught, is what
+ * lets the caller degrade to a storage-unavailable state instead of
+ * crashing. */
+export function readDraftOutcome(
+	storage: Pick<KeybindingDraftStorage, "load">,
+	isReadable: (value: unknown) => boolean,
+): DraftReadOutcome | "storageUnavailable" {
+	try {
+		return classifyDraftRead(storage.load(), isReadable);
+	} catch {
+		return "storageUnavailable";
+	}
+}
+
 /** Whether the store-free discard action should still present the record as
  * unreadable once discardStoredKeybindingDraft's outcome is known.
  * "refused" carries two different situations behind one outcome: the record
@@ -129,25 +163,25 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
  * DiscardStoredDraftResult), or a concurrent writer replaced the unreadable
  * record with a DIFFERENT one that is still unreadable (draftCheckpointPort's
  * own re-read after a failed removeIf). Only the second keeps the recovery
- * notice up; the first, like "removed" and "absent", clears it. */
+ * notice up; "readable" (like "absent") clears it - a record that is now
+ * ABSENT (a third writer removed it entirely between the port's own re-read
+ * and this one) must never be misread as "still unreadable" the way a bare
+ * boolean would (isReadable(null) is false, indistinguishable from an
+ * actually-unreadable replacement). */
 export function draftUnreadableAfterDiscard(
 	outcome: DiscardStoredDraftResult,
-	currentIsReadable: boolean,
+	current: DraftReadOutcome,
 ): boolean {
-	return outcome === "refused" && !currentIsReadable;
+	return outcome === "refused" && current === "unreadable";
 }
 
-/** Whether a locally stored draft record is present but unreadable - what
- * the store-free discard action needs to know about BEFORE any live model
- * has connected. A cold offline start never reaches bindNativePreferences'
- * `ready` callback (no connection, so no model), so the live domain's own
- * draftUnreadable is never computed and the "Discard unreadable draft"
- * action would otherwise be unreachable until the hub answers. */
-export function localDraftIsUnreadable(
-	loaded: unknown,
-	isReadable: (value: unknown) => boolean,
-): boolean {
-	return loaded !== null && loaded !== undefined && !isReadable(loaded);
+/** Whether a stale component-local error should be cleared once
+ * discardUnreadableKeybindingsDraft() returns - only when it actually
+ * attempted a discard. `null` means there was no hub to discard for (see
+ * NativePreferencesProvider); clearing the error then would hide a prior
+ * failure over an action that never ran. */
+export function clearsErrorAfterOfflineDiscard(outcome: DiscardStoredDraftResult | null): boolean {
+	return outcome !== null;
 }
 
 export function nativeKeybindingDrafts(

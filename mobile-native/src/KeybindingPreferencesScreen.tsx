@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
+import { clearsErrorAfterOfflineDiscard } from "./nativePreferenceDrafts";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -207,11 +208,14 @@ export function KeybindingPreferencesScreen({
 									// store-free path discardStoredKeybindingDraft documents,
 									// instead of a dead button.
 									try {
-										preferences.discardUnreadableKeybindingsDraft();
+										const outcome = preferences.discardUnreadableKeybindingsDraft();
 										// A stale error from an earlier failed action must not
 										// outlive a successful discard: ErrorMessage prioritizes
-										// this component-local error over domain?.error.
-										setError(null);
+										// this component-local error over domain?.error. But a
+										// null outcome means there was no hub to discard for (no
+										// action ran) - clearing the error then would hide that
+										// prior failure instead of reporting the one it describes.
+										if (clearsErrorAfterOfflineDiscard(outcome)) setError(null);
 									} catch {
 										setError(
 											"The change could not be completed. Check current shortcuts and review your changes.",

@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
+	classifyDraftRead,
+	clearsErrorAfterOfflineDiscard,
 	draftUnreadableAfterDiscard,
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
-	localDraftIsUnreadable,
 	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
+	readDraftOutcome,
 } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
@@ -189,37 +191,83 @@ describe("nativeTranscriptDrafts", () => {
 
 describe("draftUnreadableAfterDiscard", () => {
 	it("clears the notice on a plain removal", () => {
-		expect(draftUnreadableAfterDiscard("removed", false)).toBe(false);
+		expect(draftUnreadableAfterDiscard("removed", "absent")).toBe(false);
 	});
 
 	it("clears the notice when nothing was stored", () => {
-		expect(draftUnreadableAfterDiscard("absent", false)).toBe(false);
+		expect(draftUnreadableAfterDiscard("absent", "absent")).toBe(false);
 	});
 
 	it("clears the notice when a refusal's replacement now decodes as valid", () => {
-		expect(draftUnreadableAfterDiscard("refused", true)).toBe(false);
+		expect(draftUnreadableAfterDiscard("refused", "readable")).toBe(false);
 	});
 
 	it("keeps the notice when a refusal's replacement is still unreadable", () => {
-		expect(draftUnreadableAfterDiscard("refused", false)).toBe(true);
+		expect(draftUnreadableAfterDiscard("refused", "unreadable")).toBe(true);
+	});
+
+	it("clears the notice when a refusal's replacement is gone entirely by the time of the re-read", () => {
+		// A third writer removed the record between draftCheckpointPort's own
+		// re-read (which is why the outcome came back "refused" at all) and
+		// this caller's own re-read. A bare boolean readability check cannot
+		// tell this apart from "still unreadable" (isReadable(null) is false
+		// either way) and would wrongly keep the notice up over a record that
+		// is no longer there.
+		expect(draftUnreadableAfterDiscard("refused", "absent")).toBe(false);
 	});
 });
 
-describe("localDraftIsUnreadable", () => {
+describe("clearsErrorAfterOfflineDiscard", () => {
+	it("clears the error after an attempted discard", () => {
+		expect(clearsErrorAfterOfflineDiscard("removed")).toBe(true);
+		expect(clearsErrorAfterOfflineDiscard("absent")).toBe(true);
+		expect(clearsErrorAfterOfflineDiscard("refused")).toBe(true);
+	});
+
+	it("does not clear the error when there was no hub to discard for", () => {
+		// A stale error from an earlier failed action must not be hidden by an
+		// action that never ran (no hubId - see
+		// NativePreferencesProvider.discardUnreadableKeybindingsDraft).
+		expect(clearsErrorAfterOfflineDiscard(null)).toBe(false);
+	});
+});
+
+describe("classifyDraftRead", () => {
 	const isReadable = (value: unknown) =>
 		typeof value === "object" && value !== null && "id" in value;
 
-	it("is false when nothing is stored", () => {
-		expect(localDraftIsUnreadable(null, isReadable)).toBe(false);
-		expect(localDraftIsUnreadable(undefined, isReadable)).toBe(false);
+	it("is absent when nothing is stored", () => {
+		expect(classifyDraftRead(null, isReadable)).toBe("absent");
+		expect(classifyDraftRead(undefined, isReadable)).toBe("absent");
 	});
 
-	it("is false when the stored record decodes as valid", () => {
-		expect(localDraftIsUnreadable({ id: "d1" }, isReadable)).toBe(false);
+	it("is readable when the stored record decodes as valid", () => {
+		expect(classifyDraftRead({ id: "d1" }, isReadable)).toBe("readable");
 	});
 
-	it("is true when a record is present but does not decode", () => {
-		expect(localDraftIsUnreadable("{not json", isReadable)).toBe(true);
+	it("is unreadable when a record is present but does not decode", () => {
+		expect(classifyDraftRead("{not json", isReadable)).toBe("unreadable");
+	});
+});
+
+describe("readDraftOutcome", () => {
+	const isReadable = (value: unknown) =>
+		typeof value === "object" && value !== null && "id" in value;
+
+	it("classifies a normal read the same as classifyDraftRead", () => {
+		expect(readDraftOutcome({ load: () => null }, isReadable)).toBe("absent");
+		expect(readDraftOutcome({ load: () => ({ id: "d1" }) }, isReadable)).toBe("readable");
+		expect(readDraftOutcome({ load: () => "{not json" }, isReadable)).toBe("unreadable");
+	});
+
+	it("degrades a throwing port to storageUnavailable, never an uncaught exception", () => {
+		const storage = {
+			load: () => {
+				throw new Error("disk unavailable");
+			},
+		};
+
+		expect(readDraftOutcome(storage, isReadable)).toBe("storageUnavailable");
 	});
 });
 
