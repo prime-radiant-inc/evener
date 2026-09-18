@@ -7,14 +7,24 @@ import type {
 	MobileConversation,
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
-import { projectNativeTranscript } from "./transcriptPresentation";
+import type { TurnModel } from "@evener/appwire-client";
+import { projectNativeTranscript, tokenUnitLabel } from "./transcriptPresentation";
 
-function conversation(items: MobileTimelineItem[]): MobileConversation {
+function conversation(
+	items: MobileTimelineItem[],
+	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost">> = {},
+): MobileConversation {
 	return {
 		items,
 		usage: { inputTokens: 10, outputTokens: 20 },
+		turns: [],
 		cost: "$1",
+		...overrides,
 	} as MobileConversation;
+}
+
+function usageTurn(id: string, inputTokens: number, outputTokens: number): TurnModel {
+	return { id, status: "completed", items: [], usage: { inputTokens, outputTokens } };
 }
 
 const member = (
@@ -240,8 +250,8 @@ it("applies typed system-event flags and masks usage fields independently", () =
 // tokenCounts gates the token aggregate and estimatedCost gates the cost, each
 // on its own: a crossed gate or an always-null branch fails one of these rows.
 it.each([
-	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20 }, cost: "$1" },
-	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20 }, cost: null },
+	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: "$1" },
+	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: null },
 	{ tokenCounts: false, estimatedCost: true, usage: null, cost: "$1" },
 	{ tokenCounts: false, estimatedCost: false, usage: null, cost: null },
 ])(
@@ -267,7 +277,36 @@ it("reads an unknown cost as null even when estimatedCost is on", () => {
 		),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 10, outputTokens: 20 },
+		usage: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cost: null,
+	});
+});
+
+// A fork child's persisted meta carries no CumulativeUsage (agent/fork.go's
+// writeForkChild never stamps one) even though every loaded turn has real
+// usage, which is why the transcript's per-turn stamps rendered right beside
+// a footer that showed nothing.
+it("falls back to summing the loaded turns when the thread has no cumulative total", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, turns: [usageTurn("t1", 6961, 73), usageTurn("t2", 1276, 47)] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		cost: null,
+	});
+});
+
+// thread/read windows items via itemLimit and reports the truncation through
+// olderCursor. A sum over that window is not the session total, so the scope
+// says exactly what it counts instead of overstating it.
+it("labels a derived total over a truncated turn window as covering only the loaded turns", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
 		cost: null,
 	});
 });
@@ -585,3 +624,21 @@ it.each([null, undefined])(
 		]);
 	},
 );
+
+// --- token unit label ---------------------------------------------------
+
+// tokenUnitLabel names what a session's token figure counts, the same
+// wording the web details panel uses for the same scope (detailsAccounting's
+// tokensLabel): the daemon's own whole-session total reads plainly, and a sum
+// scoped to only the turns still loaded says so.
+it("labels a whole-session total plainly", () => {
+	expect(tokenUnitLabel("session")).toBe("tokens");
+});
+
+it("labels a sum truncated to the loaded turns as covering only the loaded turns", () => {
+	expect(tokenUnitLabel("loaded")).toBe("tokens (loaded turns)");
+});
+
+it("labels the absence of any token figure plainly", () => {
+	expect(tokenUnitLabel(undefined)).toBe("tokens");
+});

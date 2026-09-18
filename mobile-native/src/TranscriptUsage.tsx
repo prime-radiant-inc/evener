@@ -1,8 +1,9 @@
 import { View } from "react-native";
-import type { SessionAccounting } from "./transcriptPresentation";
+import { tokenUnitLabel, type SessionAccounting } from "./transcriptPresentation";
 import { Copy } from "./ui";
 
 export function TranscriptUsage({ usage, cost }: SessionAccounting) {
+	const unit = tokenUnitLabel(usage?.scope);
 	const tokens = [
 		["Input", usage?.inputTokens],
 		["Output", usage?.outputTokens],
@@ -17,7 +18,7 @@ export function TranscriptUsage({ usage, cost }: SessionAccounting) {
 				.filter(([, value]) => value !== undefined)
 				.map(([label, value]) => (
 					<Copy key={label} muted>
-						{label}: {value?.toLocaleString()} tokens
+						{label}: {value?.toLocaleString()} {unit}
 					</Copy>
 				))}
 			{cost !== null ? <Copy muted>Estimated cost: {cost}</Copy> : null}

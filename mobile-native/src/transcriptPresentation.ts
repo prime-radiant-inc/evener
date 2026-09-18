@@ -1,5 +1,8 @@
 import {
 	presetContent,
+	sessionTokens,
+	type EvenerUsage,
+	type SessionTokens,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type {
@@ -14,11 +17,23 @@ export type ActivityPresentation = {
 };
 
 // The session accounting the transcript footer shows: the conversation's
-// token aggregate and cost (the package ThreadModel's usage/cost fields), each
-// null when the display config hides it or the daemon reported none.
+// token total (the package's turn-summed sessionTokens derivation, shared
+// with the web details panel) plus cache/total breakdown and cost, each null
+// when the display config hides it or the daemon reported none. The
+// cache/total breakdown only ever comes from the thread's own cumulative
+// usage (EvenerUsage has no per-turn equivalent), so it is absent whenever
+// sessionTokens fell back to summing turns.
 export interface SessionAccounting {
-	usage: MobileConversation["usage"];
+	usage: (SessionTokens & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">) | null;
 	cost: string | null;
+}
+
+// tokenUnitLabel names what a session's token figure counts, the same
+// wording the web details panel uses for the same scope
+// (detailsAccounting.ts's tokensLabel): the daemon's own whole-session total
+// reads plainly, and a sum scoped to only the turns still loaded says so.
+export function tokenUnitLabel(scope: SessionTokens["scope"] | undefined): string {
+	return scope === "loaded" ? "tokens (loaded turns)" : "tokens";
 }
 
 export interface NativeTranscriptPresentation {
@@ -172,8 +187,15 @@ function accountingFor(
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
+	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
 	return {
-		usage: config.advanced.tokenCounts ? conversation.usage : null,
+		usage: tokens
+			? {
+					...tokens,
+					cacheReadTokens: conversation.usage?.cacheReadTokens,
+					totalTokens: conversation.usage?.totalTokens,
+				}
+			: null,
 		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};
 }
