@@ -226,6 +226,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		HasStoredOAuth:      status.HasStoredOAuth,
 		EnvVar:              status.EnvVar,
 		ShadowedEnvVar:      status.ShadowedEnvVar,
+		RenameLeavesRow:     c.renameLeavesRow(r, inst),
 		StoredEmail:         status.StoredEmail,
 		CredentialRequired:  !keylessScheme(inst.Auth),
 		Warnings:            inst.Warnings,
@@ -1086,6 +1087,15 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+		// A rename whose reload failed and whose rollback write also failed
+		// comes back as a write-applied error: providers.toml carries the new
+		// name, so the rename is as persisted as one that ended cleanly and
+		// gets the same discriminator (instanceRenameError) the handler maps
+		// to ErrorInstanceRenamePersisted. A non-rename edit has no rename to
+		// report, so it keeps the error as it came.
+		if renaming && writeDidApply(err) {
+			return writeApplied(renamePersistedError{err})
+		}
 		return err
 	}
 	if renaming {
@@ -1233,6 +1243,25 @@ func environmentBacked(inst registry.Instance) bool {
 	return strings.HasPrefix(inst.CredentialSource, "env:") || inst.CredentialSource == "adc"
 }
 
+// renameLeavesRow reports whether renaming inst leaves an instance resolving
+// under its old name, because the environment re-supplies what the rename
+// moves. Two things can hold the old name up: the instance is already
+// environment-backed (environmentBacked - the environment is what supplies it
+// now, so moving the user's layers changes nothing), or the old name is a
+// curated provider id that re-derives an instance from the layers a rename
+// cannot move (registry.ProviderRenameLeavesInstance). The rename note reads
+// the wire bit this computes; a client cannot answer it because it cannot see
+// ADC availability or the curated set.
+func (c *hubInstancesController) renameLeavesRow(r *registry.Registry, inst registry.Instance) bool {
+	if environmentBacked(inst) {
+		return true
+	}
+	if r == nil {
+		return false
+	}
+	return r.ProviderRenameLeavesInstance(inst.Name)
+}
+
 // Remove deletes an instance, its stored key and its OAuth record. An instance
 // that exists from the environment has no entry to delete and would come
 // straight back, so it is refused with a message saying what to unset instead
@@ -1319,7 +1348,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(locked) {
-		return fmt.Errorf("%s exists from the environment (%s); %s", name, describeImplicit(locked), removalRemedy(locked))
+		// The same caller-fixable condition the pre-lock check classified as
+		// InvalidParams, so the locked re-check answers the same way rather than
+		// letting a concurrent credential clear change the wire class of one
+		// refusal (see Remove's doc comment).
+		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); %s", name, describeImplicit(locked), removalRemedy(locked)))
 	}
 
 	// The confirmation this removal carries names the row the client listed, so

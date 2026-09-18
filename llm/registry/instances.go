@@ -82,6 +82,54 @@ func adcAvailable(env func(string) (string, bool)) bool {
 	return fileExists(filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"))
 }
 
+// ProviderRenameLeavesInstance reports whether a rename that frees the curated
+// provider id would leave an instance resolving under that id. A rename moves
+// the user's own layers - the authored providers.toml entry, the stored
+// credential and the OAuth record - away from the old name; what it cannot
+// move is the curated definition and the host environment. So the id re-derives
+// an instance exactly when the curated provider needs no credential at all
+// (auth none or optional-bearer), reads a set environment variable, expands
+// its own credential expression without a missing reference, or finds the ADC
+// file under gcp-adc. A hidden curated provider (no resolvable base URL)
+// resolves no instance, and the OAuth scheme's only credential is the record
+// the rename moves, so both answer false. False for an id that is not curated.
+//
+// This is the rule the hub's instance listing computes once (renameLeavesRow)
+// so the rename note does not have to infer it from InstanceEntry, which
+// cannot see ADC availability or the curated set.
+func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
+	rec, ok := r.curated[id]
+	if !ok || rec.head.Hidden {
+		return false
+	}
+	switch rec.head.Transport.Auth {
+	case AuthNone, AuthOptionalBearer:
+		return true
+	case AuthOAuthOpenAICodex:
+		// The record is the only credential this scheme reads, and the rename
+		// moves it.
+		return false
+	case AuthGCPADC:
+		return adcAvailable(r.env)
+	}
+	if rec.head.APIKey != "" {
+		if _, missing := expandEnv(rec.head.APIKey, r.env); len(missing) == 0 {
+			return true
+		}
+	}
+	if auth := rec.head.CredentialHeaders["Authorization"]; auth != "" {
+		if _, missing := expandEnv(auth, r.env); len(missing) == 0 {
+			return true
+		}
+	}
+	for _, name := range r.effectiveAPIKeyEnv(rec) {
+		if v, ok := r.env(name); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // effectiveAPIKeyEnv applies the endpoint stop (spec §10): an explicit
 // instance whose literal base_url names a different endpoint from its base
 // does not inherit the base's api_key_env; its own api_key_env always

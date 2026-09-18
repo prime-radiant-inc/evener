@@ -819,21 +819,28 @@ describe("the form", () => {
   });
 
   // The Name field is editable on every instance. A rename always authors an
-  // entry under the new name; on an environment-backed instance the old row
-  // stays too, because the variable or record that makes it exist is not part
-  // of the rename, so the note under the field says that instead of promising
-  // a rename that cannot happen.
-  test("an environment-backed instance's Name is editable, and the note says the old row stays", async () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
+  // entry under the new name; when the hub marks the row as one the environment
+  // re-supplies (renameLeavesRow), the old row stays too, so the note under the
+  // field says that instead of promising a rename that cannot happen.
+  test("a row the hub marks as left behind shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "env:GROQ_API_KEY",
+        renameLeavesRow: true,
+      }),
+    );
     expect(field("Name").disabled).toBe(false);
     const user = userEvent.setup();
     await user.type(field("Name"), "-2");
     expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
   });
 
-  // The same note for a row that only looks like the user's: a stored key
-  // outranks a set variable, but the rename moves the key and the variable it
-  // shadowed supplies the old name again, so the row stays too.
+  // The same note for a row that only looks like the user's - a stored key
+  // outranking a set variable, with the hub's bit saying the variable supplies
+  // the old name once the key moves.
   test("a stored key shadowing a set variable shows the old-row-stays note", async () => {
     renderSheet(
       instance({
@@ -843,6 +850,7 @@ describe("the form", () => {
         activeSource: "store",
         hasStoredFile: true,
         shadowedEnvVar: "GROQ_API_KEY",
+        renameLeavesRow: true,
       }),
     );
     const user = userEvent.setup();

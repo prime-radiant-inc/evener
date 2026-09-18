@@ -3123,7 +3123,16 @@ type InstanceEntry struct {
 	// store, spec §10); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
-	StoredEmail    string `json:"storedEmail,omitempty"`
+	// RenameLeavesRow is true when renaming this instance leaves an instance
+	// resolving under its old name, because the environment re-supplies what
+	// the rename moves: the row is environment-backed as the removal refusal
+	// computes it, or the old name is a curated provider id that re-derives
+	// without the user's moved credential (a set variable, the ADC file, or a
+	// keyless scheme). The hub computes it (renameLeavesRow) because a client
+	// cannot see ADC availability or the curated set; the rename note keys on
+	// it.
+	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
+	StoredEmail     string `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the

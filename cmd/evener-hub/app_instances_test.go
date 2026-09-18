@@ -1940,6 +1940,15 @@ func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) 
 		if err == nil || !strings.Contains(err.Error(), "exists from the environment") {
 			t.Fatalf("Remove = %v, want the refusal for the instance the environment supplies once its stored key was cleared", err)
 		}
+		// The locked re-check answers with the same wire class the pre-lock
+		// classification uses: a caller-fixable condition is InvalidParams
+		// whichever race loses, not an internal fault when a concurrent clear
+		// makes the environment supply the row (mirrors
+		// TestInstances_RemoveRefusesImplicitInstance).
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Remove never finished after the credential clear completed")
 	}
@@ -4688,5 +4697,84 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 				t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, tt.refuses)
 			}
 		})
+	}
+}
+
+// TestInstances_ListExposesRenameLeavesRow pins the wire bit the rename note
+// reads. The hub decides whether freeing an instance's name re-supplies a row,
+// because a client cannot: it cannot see ADC availability, and the curated set
+// is the hub's. The cases are the ones the old client-side inference got wrong.
+func TestInstances_ListExposesRenameLeavesRow(t *testing.T) {
+	home := t.TempDir() // no ADC file yet
+	env := map[string]string{
+		"HOME":                   home,
+		"GROQ_API_KEY":           "gk",
+		"OLLAMA_HOST":            "localhost",
+		"GOOGLE_VERTEX_PROJECT":  "p",
+		"GOOGLE_VERTEX_LOCATION": "global",
+	}
+	f := newInstancesFixture(t, env)
+	raw := `[providers.groq]
+api_key = "sk-authored"
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434/v1"
+
+[providers.work]
+base = "anthropic"
+api_key = "sk-inline"
+`
+	if err := os.WriteFile(f.tomlPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+
+	// The authored groq shadows the curated env-backed provider; freeing the
+	// id re-derives it from GROQ_API_KEY, which the shadowed entry hid.
+	if got := entry(t, f.ctl.List(), "groq"); !got.RenameLeavesRow {
+		t.Fatalf("groq = %+v, want renameLeavesRow true (curated groq re-derives from GROQ_API_KEY)", got)
+	}
+	// The authored keyless curated ollama re-derives with no credential.
+	if got := entry(t, f.ctl.List(), "ollama"); !got.RenameLeavesRow {
+		t.Fatalf("ollama = %+v, want renameLeavesRow true (keyless curated provider)", got)
+	}
+	// A name nothing curates leaves nothing behind.
+	if got := entry(t, f.ctl.List(), "work"); got.RenameLeavesRow {
+		t.Fatalf("work = %+v, want renameLeavesRow false (no curated provider behind the name)", got)
+	}
+
+	// A stored gcp-adc credential is the user's. Without an ADC file the
+	// rename moves the only credential, so freeing the id recreates nothing -
+	// the old inference's false positive.
+	if err := f.store.Set("google-vertex", `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	noADC := entry(t, f.ctl.List(), "google-vertex")
+	if !noADC.Implicit || noADC.ActiveSource != "store" {
+		t.Fatalf("fixture: google-vertex = %+v, want the stored JSON to resolve", noADC)
+	}
+	if noADC.RenameLeavesRow {
+		t.Fatalf("google-vertex = %+v, want renameLeavesRow false without ADC", noADC)
+	}
+
+	// With the ADC file present the curated row re-derives once the stored
+	// JSON moves away.
+	adc := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	if err := os.MkdirAll(filepath.Dir(adc), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(adc, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "google-vertex"); !got.RenameLeavesRow {
+		t.Fatalf("google-vertex = %+v, want renameLeavesRow true once ADC exists", got)
 	}
 }

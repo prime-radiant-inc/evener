@@ -863,6 +863,7 @@ _(no fields)_
 | `hasStoredOAuth` | `bool` |  |  |
 | `envVar` | `string` | yes |  |
 | `shadowedEnvVar` | `string` | yes |  |
+| `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |

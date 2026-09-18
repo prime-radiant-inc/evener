@@ -561,3 +561,72 @@ func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
 		t.Fatalf("a store entry did not make google-vertex exist: %v", instanceNames(with))
 	}
 }
+
+// TestProviderRenameLeavesInstance pins the rule the hub's rename note reads:
+// after a rename moves the user's authored entry, stored credential and OAuth
+// record away, old curated id still resolves an instance only when the curated
+// provider itself re-derives from what the rename cannot move.
+func TestProviderRenameLeavesInstance(t *testing.T) {
+	// baseEnv keeps the curated providers addressable (so none of these cases
+	// is refused as hidden) while ADC stays absent.
+	baseEnv := func(t *testing.T) map[string]string {
+		t.Helper()
+		env := noADCEnv(t)
+		env["GOOGLE_VERTEX_PROJECT"] = "p"
+		env["GOOGLE_VERTEX_LOCATION"] = "global"
+		env["OLLAMA_HOST"] = "localhost"
+		return env
+	}
+	t.Run("set environment variable re-derives", func(t *testing.T) {
+		env := baseEnv(t)
+		env["GOOGLE_VERTEX_API_KEY"] = "gk"
+		r := fixtureLoad(t, env, "")
+		if !r.ProviderRenameLeavesInstance("google-vertex-express") {
+			t.Fatal("google-vertex-express: want true, the curated provider reads GOOGLE_VERTEX_API_KEY which is set")
+		}
+	})
+	t.Run("unset environment variable leaves nothing", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if r.ProviderRenameLeavesInstance("google-vertex-express") {
+			t.Fatal("google-vertex-express: want false, the curated provider holds no other credential")
+		}
+	})
+	t.Run("keyless curated provider re-derives", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if !r.ProviderRenameLeavesInstance("ollama") {
+			t.Fatal("ollama: want true, the optional-bearer scheme needs no credential")
+		}
+	})
+	t.Run("oauth record is the credential the rename moves", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if r.ProviderRenameLeavesInstance("openai-codex") {
+			t.Fatal("openai-codex: want false, the only credential is the record the rename moves")
+		}
+	})
+	t.Run("gcp-adc with the ADC file re-derives", func(t *testing.T) {
+		env := baseEnv(t)
+		writeFakeADCFile(t, env)
+		r := fixtureLoad(t, env, "")
+		if !r.ProviderRenameLeavesInstance("google-vertex") {
+			t.Fatal("google-vertex: want true with ADC present")
+		}
+	})
+	t.Run("gcp-adc without the ADC file leaves nothing", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if r.ProviderRenameLeavesInstance("google-vertex") {
+			t.Fatal("google-vertex: want false with no ADC, so the stored-JSON false positive is gone")
+		}
+	})
+	t.Run("hidden curated provider resolves no instance", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if r.ProviderRenameLeavesInstance("openai-compatible") {
+			t.Fatal("openai-compatible: want false, its base URL variable is unset so it is hidden")
+		}
+	})
+	t.Run("non-curated id leaves nothing", func(t *testing.T) {
+		r := fixtureLoad(t, baseEnv(t), "")
+		if r.ProviderRenameLeavesInstance("work") {
+			t.Fatal("work: want false, freeing a non-curated name recreates nothing")
+		}
+	})
+}

@@ -134,42 +134,17 @@ export function fromEnvironment(instance: InstanceEntry): boolean {
 
 // renameLeavesEnvironmentRow answers whether a rename of this instance leaves
 // a row behind under the old name, because the environment - not the user's
-// credential layers the rename moves - is what supplies it. fromEnvironment
-// answers it for the row as it resolves now. The other visible case is a
-// stored key that outranks a set variable (spec §10: api_key >
-// credential_headers > store > env): the key moves with the rename, and the
-// variable the key was shadowing supplies the old name again - shadowedEnvVar
-// names exactly that losing variable (credentialLayers, issue #712).
-//
-// Two more cases are not visible through fromEnvironment on the resolved row,
-// because the row is (or was) the user's own:
-//
-//   - The instance holds the curated provider's own id (providerId === name).
-//     Renaming frees that id, so the curated provider re-derives there from
-//     whatever the rename cannot move: a set variable (env:<VAR>), the host's
-//     ADC file, or a variable the moved store was shadowing. The old
-//     "an authored instance's old name is freed with no curated provider
-//     behind it" invariant only holds when name is NOT a curated id, i.e.
-//     providerId !== name.
-//   - A gcp-adc row whose stored credential JSON (source store) outranks the
-//     host's ADC file. shadowedEnvVar is deliberately empty for gcp-adc (the
-//     scheme consults no variable), so this shadow relation is invisible on
-//     the wire except through the source: the JSON moves with the rename and
-//     the ADC file re-derives the curated row under the old name.
-//
-// Both extra cases stay keyed on the environment actually supplying the old
-// name; a stored key the rename moves away from nothing still leaves no row
-// behind. Mirrors the hub's own split between a row the user owns and one the
-// environment re-creates (environmentBacked, cmd/evener-hub/app_instances.go).
+// credential layers the rename moves - re-supplies it. The hub computes the
+// answer (renameLeavesRow, cmd/evener-hub/app_instances.go) and sends it as
+// InstanceEntry.renameLeavesRow: it is true when the row is environment-backed
+// as the removal refusal computes it, or the old name is a curated provider id
+// that re-derives without the user's moved credential (a set variable, the
+// host's ADC file, or a keyless scheme). A client cannot derive it from the
+// other fields - a stored gcp-adc credential looks identical whether or not ADC
+// exists, and the curated set is the hub's - so it reads the bit rather than
+// inferring, and a hub too old to send it reads as false.
 export function renameLeavesEnvironmentRow(instance: InstanceEntry): boolean {
-  if (fromEnvironment(instance)) return true;
-  if (instance.implicit && instance.shadowedEnvVar !== undefined) return true;
-  if (instance.providerId === instance.name) {
-    if (instance.activeSource.startsWith("env:") || instance.activeSource === "adc") return true;
-    if (instance.shadowedEnvVar !== undefined) return true;
-    if (instance.auth === "gcp-adc" && instance.activeSource === "store") return true;
-  }
-  return false;
+  return instance.renameLeavesRow === true;
 }
 
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
