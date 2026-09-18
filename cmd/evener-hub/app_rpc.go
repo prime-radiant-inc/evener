@@ -1199,6 +1199,42 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 }
 
+// instanceRemoveError is what the Remove handler returns to the client. A
+// removal that stood but could not delete the copy it set the OAuth record
+// aside as carries ErrorInstanceRemovePersisted, so the client reports the
+// standing removal - the instance is gone and a retry can only fail on a
+// missing instance - instead of a failed one. Every other failure is returned
+// unchanged. The bool says whether the removal stood, which is also what the
+// handler broadcasts on.
+func instanceRemoveError(err error) (bool, error) {
+	return instanceMutationError[removePersistedError](err, appwire.InstanceRemovePersisted)
+}
+
+// instanceMutationError is the one body both handlers share: a mutation that
+// stood in providers.toml carries the persisted-error marker its controller
+// wrapped (removePersistedError or renamePersistedError), and is returned to the
+// client under the wire constructor for that outcome so it reads as a standing
+// mutation rather than a failure. Every other error is returned unchanged. The
+// bool says whether the mutation stood, which is also what the handler
+// broadcasts on.
+func instanceMutationError[E error](err error, persisted func(string) appwire.WireError) (bool, error) {
+	if _, ok := errors.AsType[E](err); ok {
+		return true, persisted(err.Error())
+	}
+	return false, err
+}
+
+// instanceRenameError is what the Edit handler returns to the client. A rename
+// that stood but could not carry the instance's credentials carries
+// ErrorInstanceRenamePersisted, so the client reports the standing rename and
+// steers to the new name - the old name is gone and re-issuing the rename can
+// only fail on a missing instance - instead of a failed save. Every other
+// failure is returned unchanged. The bool says whether the rename stood, which
+// is also what the handler broadcasts on.
+func instanceRenameError(err error) (bool, error) {
+	return instanceMutationError[renamePersistedError](err, appwire.InstanceRenamePersisted)
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1220,21 +1256,33 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Edit(params); err != nil {
+			persisted, wireErr := instanceRenameError(err)
 			// A rename that persisted before it failed leaves every other
 			// client's list as stale as a clean one does, so it is announced
-			// too; the error still goes back to the client that asked, which
-			// is the only one that can act on the leftover credential.
-			if _, persisted := errors.AsType[renamePersistedError](err); persisted {
+			// too; the error still goes back to the client that asked, carrying
+			// ErrorInstanceRenamePersisted so that client reports the standing
+			// rename rather than a failed save.
+			if persisted {
 				notifyInstanceUpdated(server)
 			}
-			return appwire.InstanceListResponse{}, err
+			return appwire.InstanceListResponse{}, wireErr
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
-			return appwire.InstanceListResponse{}, err
+			persisted, wireErr := instanceRemoveError(err)
+			// A removal that stood leaves every other client's list as stale as a
+			// clean removal does, so it is announced too; the error still goes back
+			// to the client that asked, which is the only one that can act on what
+			// the removal left unfinished, carrying
+			// ErrorInstanceRemovePersisted so that client reports the standing
+			// removal instead of a failed one.
+			if persisted {
+				notifyInstanceUpdated(server)
+			}
+			return appwire.InstanceListResponse{}, wireErr
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil

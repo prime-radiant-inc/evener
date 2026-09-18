@@ -44,7 +44,7 @@ const catalogue = [
   provider("openai", "OpenAI"),
   provider("google", "Gemini"),
   provider("openrouter", "OpenRouter"),
-  provider("openai-codex", "ChatGPT / Codex", ["oauth"]),
+  provider("openai-codex", "OpenAI Codex", ["oauth"]),
   provider("ollama", "Local endpoint", ["apiKey"], { credentialRequired: false, baseUrl: "http://localhost:8080/v1" }),
   provider("google-vertex", "Google Vertex", ["credentialJson"]),
   {
@@ -88,6 +88,29 @@ test("popular Gemini uses the real google identity, independently of provider na
   expect(await screen.findByRole("button", { name: "Gemini" })).toBeTruthy();
 });
 
+// The front page is where a new account gets added, and Codex is what people
+// arrive with: it has to be offered without first switching to the full
+// catalogue. Its connection is the OAuth flow - the provider reads no API key
+// - so selecting the popular card must reach the Codex sign-in rather than a
+// key field.
+test("popular grid offers OpenAI Codex and starts its sign-in", async () => {
+  const { user, client } = setup();
+  await user.click(await screen.findByRole("button", { name: "OpenAI Codex" }));
+  expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  client.on("evener/auth/device/start", () => ({
+    provider: "openai-codex",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://auth.example",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const starts = client.calls.filter((call) => call.method === "evener/auth/device/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]!.params).toMatchObject({ provider: "openai-codex" });
+});
+
 test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
   const custom = provider("constructor", "Custom endpoint");
   const { user } = setup({ instances: [], availableProviders: [custom] });
@@ -108,7 +131,7 @@ test("a provider named like an Object.prototype member is not popular and gets n
 
 test("device authorization survives its own delayed listing refresh and proceeds to a real check", async () => {
   const { user, client, connected } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   client.on("evener/auth/device/start", () => ({
     provider: "openai-codex",
     flowId: "device",
@@ -241,7 +264,7 @@ test("a retry with the client gone reports no unhandled rejection", async () => 
 
 test("configuration refresh invalidates a pending OAuth start before it opens a browser", async () => {
   const { user, client } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   const pending = deferred<{
     provider: string;
     flowId: string;
@@ -389,7 +412,7 @@ test("a sign-in refused because the held listing belongs to a replaced connectio
     fallback: false,
   }));
   client.on("evener/auth/login/start", () => ({ provider: "openai-codex", flowId: "flow", url: "https://auth" }));
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
 
   // The connection is replaced and its own listing has not been applied.
   act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
@@ -547,7 +570,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
 });
 test.each([false, true])("Codex preserves the existing OAuth route (redirect=%s)", async (fallback) => {
   const { user, client } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   expect(screen.queryByLabelText("API key")).toBeNull();
   client.on("evener/auth/device/start", () => ({
     provider: "openai-codex",

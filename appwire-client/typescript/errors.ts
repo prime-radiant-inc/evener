@@ -44,6 +44,40 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+// ErrorInstanceRemovePersisted is the hub's discriminator for a provider-instance
+// removal that APPLIED - the authored entry left providers.toml - before it could
+// not finish; the error's message names what was left behind
+// (appwire.ErrorInstanceRemovePersisted, appwire/errors.go). Every client that
+// reports a standing removal recognizes it through this one value, and the
+// binding test (errors.test.ts) reads the Go constant, so a hub-side rename
+// breaks there instead of silently leaving the removal read as a plain failure.
+export const ErrorInstanceRemovePersisted = "instanceRemovePersisted";
+
+// ErrorInstanceRenamePersisted is the matching discriminator for a rename that
+// APPLIED before its credential move or reload failed (appwire.
+// ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message names the
+// credential left behind, and clients steer to the new name rather than report a
+// failed save.
+export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
+
+// isInstanceRemovePersisted reports whether a rejection is the hub's
+// discriminator for a provider-instance removal that stood in providers.toml
+// before it could not finish (appwire.ErrorInstanceRemovePersisted). A refusal
+// or any other failure carries no such info, so it stays a plain failure and is
+// never reported as a removal.
+export function isInstanceRemovePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
+}
+
+// isInstanceRenamePersisted reports whether a rejection is the hub's
+// discriminator for a provider-instance rename that stood before its credential
+// move or reload failed (appwire.ErrorInstanceRenamePersisted); the hub's message
+// names the credential left behind, so the client steers to the new name rather
+// than reporting a failed save.
+export function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

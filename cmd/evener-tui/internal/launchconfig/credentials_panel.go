@@ -266,7 +266,9 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return p, nil
 			}
 			name := cur.Name
-			return p, func() tea.Msg { return InstanceRemoveMsg{Name: name} }
+			return p, func() tea.Msg {
+				return InstanceRemoveMsg{Name: name, EndpointFingerprint: cur.EndpointFingerprint}
+			}
 		case "n":
 			p.formOpen = true
 			p.formEditing = false

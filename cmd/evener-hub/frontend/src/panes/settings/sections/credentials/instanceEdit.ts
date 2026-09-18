@@ -89,6 +89,30 @@ export function byCodePoint(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** The clearable entry fields and the wire `clear*` flag each goes out under
+ * when a draft empties it. The flag and the field are different names
+ * (`clearApiKeyEnv` clears `apiKeyEnv`), and the rename-identity comparison in
+ * InstanceSheet has to see a clear as the field it changed, so this one table is
+ * the pairing both sides read: instanceEditParams authors each flag forward, and
+ * clearedField reverse-maps a flag back to its field. Adding a clearable field
+ * here covers both. `trim` says whether the form compares the field's trimmed
+ * value - the URLs and free-text fields do, the protocol/surface selects do not. */
+export const CLEARABLE_FIELDS = [
+  { field: "baseUrl", clearFlag: "clearBaseUrl", trim: true },
+  { field: "protocol", clearFlag: "clearProtocol", trim: false },
+  { field: "surface", clearFlag: "clearSurface", trim: false },
+  { field: "apiKeyEnv", clearFlag: "clearApiKeyEnv", trim: true },
+  { field: "credentialHeader", clearFlag: "clearCredentialHeader", trim: true },
+] as const;
+
+/** The entry field a wire `clear*` flag stands for, or the key itself when it
+ * names no clear flag: the reverse of CLEARABLE_FIELDS, so a rename's identity
+ * comparison sees a clear as the field it changed. */
+export function clearedField(paramKey: string): string {
+  const pair = CLEARABLE_FIELDS.find((entry) => entry.clearFlag === paramKey);
+  return pair ? pair.field : paramKey;
+}
+
 /** The request that carries exactly the fields whose trimmed value differs
  * from `initial`'s trimmed value, or null when none does. Both sides are
  * trimmed so the diff holds for any draft, not only one `draftFor` built. */
@@ -104,20 +128,12 @@ export function instanceEditParams(initial: InstanceDraft, draft: InstanceDraft)
     params.newName = name;
     changed = true;
   }
-  const baseUrl = draft.baseUrl.trim();
-  if (baseUrl !== initial.baseUrl.trim()) {
-    if (baseUrl === "") params.clearBaseUrl = true;
-    else params.baseUrl = baseUrl;
-    changed = true;
-  }
-  if (draft.protocol !== initial.protocol) {
-    if (draft.protocol === "") params.clearProtocol = true;
-    else params.protocol = draft.protocol;
-    changed = true;
-  }
-  if (draft.surface !== initial.surface) {
-    if (draft.surface === "") params.clearSurface = true;
-    else params.surface = draft.surface;
+  for (const { field, clearFlag, trim } of CLEARABLE_FIELDS) {
+    const draftValue = trim ? draft[field].trim() : draft[field];
+    const initialValue = trim ? initial[field].trim() : initial[field];
+    if (draftValue === initialValue) continue;
+    if (draftValue === "") params[clearFlag] = true;
+    else params[field] = draftValue;
     changed = true;
   }
   const vars: Record<string, string> = {};
@@ -127,18 +143,6 @@ export function instanceEditParams(initial: InstanceDraft, draft: InstanceDraft)
   }
   if (Object.keys(vars).length > 0) {
     params.vars = vars;
-    changed = true;
-  }
-  const apiKeyEnv = draft.apiKeyEnv.trim();
-  if (apiKeyEnv !== initial.apiKeyEnv.trim()) {
-    if (apiKeyEnv === "") params.clearApiKeyEnv = true;
-    else params.apiKeyEnv = apiKeyEnv;
-    changed = true;
-  }
-  const credentialHeader = draft.credentialHeader.trim();
-  if (credentialHeader !== initial.credentialHeader.trim()) {
-    if (credentialHeader === "") params.clearCredentialHeader = true;
-    else params.credentialHeader = credentialHeader;
     changed = true;
   }
   return changed ? params : null;

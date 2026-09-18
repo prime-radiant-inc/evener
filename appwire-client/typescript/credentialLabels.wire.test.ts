@@ -8,8 +8,14 @@
 // TestAuthWireFixturesMatchTheHubHandler), so an activeSource the registry
 // starts sending that these labels have no words for fails here.
 import { describe, expect, test } from "vitest";
-import { activeSourceLabel, credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
-import { hubInstanceEntries } from "./testing/hubWireFixtures";
+import {
+  activeSourceLabel,
+  credentialLayers,
+  fromEnvironment,
+  keylessByDesign,
+  unconfiguredLabel,
+} from "./credentialLabels";
+import { hubInstance, hubInstanceEntries } from "./testing/hubWireFixtures";
 
 function hubInstances() {
   return hubInstanceEntries();
@@ -65,5 +71,59 @@ describe("activeSourceLabel against the hub's own instance list", () => {
     if (!unkeyed) throw new Error("the corpus no longer carries an instance with no credential");
     expect(credentialLayers(unkeyed)).toEqual([]);
     expect(unconfiguredLabel(unkeyed)).toBe("Not configured");
+  });
+});
+
+describe("fromEnvironment against the hub's own instance list", () => {
+  // The predicate reads activeSource, so the same recorded listing pins it. A
+  // signed-in Codex account and a stored key are credentials the user added
+  // through the UI, and the instance carrying them is theirs; an API-key
+  // variable and a keyless local endpoint belong to the host and come back
+  // with it however the row is edited.
+  test("the rows a UI credential created belong to the user", () => {
+    expect(fromEnvironment(hubInstance("openai-codex"))).toBe(false);
+    expect(fromEnvironment(hubInstance("anthropic"))).toBe(false);
+  });
+
+  test("the rows the host supplies are the environment's", () => {
+    expect(fromEnvironment(hubInstance("openai"))).toBe(true);
+    expect(fromEnvironment(hubInstance("ollama"))).toBe(true);
+  });
+
+  test("an authored instance is never marked, whatever credential it holds", () => {
+    for (const instance of hubInstances()) {
+      if (instance.implicit) continue;
+      expect(fromEnvironment(instance), `${instance.name} is an authored instance`).toBe(false);
+    }
+    expect(fromEnvironment(hubInstance("authored"))).toBe(false);
+  });
+
+  // The exemption is keyed on the hub's transport string, never on the resolved
+  // source: the registry derives a Codex instance from its OAuth record file and
+  // still permits the removal when the record cannot be read (cmd/evener-hub's
+  // environmentBacked), so the same recorded row can resolve with any source -
+  // "oauth" for a readable record, "none" (or an empty source) for one the hub
+  // cannot use. The recorded row supplies the hub's own `auth`; the corpus
+  // supplies the sources the hub actually sends; "" stands for a source the
+  // registry could not resolve at all. A hub-side rename of the scheme or a
+  // client-side removal of the exemption fails here rather than offering Remove
+  // for a row one side refuses.
+  test("the recorded Codex row is the user's own at every source the hub sends", () => {
+    const codex = hubInstance("openai-codex");
+    expect(codex.auth).toBe("oauth-openai-codex");
+    expect(codex.implicit).toBe(true);
+
+    const sentSources = new Set(hubInstances().map((instance) => instance.activeSource));
+    // The vocabulary the corpus actually carries, so this never invents a source
+    // no hub row resolves. "none" is the unreadable-record state.
+    expect(sentSources.has("none")).toBe(true);
+    expect(sentSources.has("oauth")).toBe(true);
+
+    for (const activeSource of [...sentSources, ""]) {
+      expect(
+        fromEnvironment({ ...codex, activeSource }),
+        `openai-codex (auth ${codex.auth}) with activeSource ${JSON.stringify(activeSource)}`,
+      ).toBe(false);
+    }
   });
 });

@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   activeSourceLabel,
   credentialLayers,
+  fromEnvironment,
   groupByProvider,
   keylessByDesign,
   styleInfoText,
@@ -293,6 +294,110 @@ describe("keylessByDesign", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+// fromEnvironment is the badge/affordance predicate: an instance exists from
+// the environment rather than from a credential the user filed through the
+// UI. `implicit` alone does not say that - a curated provider is implicit
+// whenever no providers.toml entry shadows it, which includes the Codex
+// account a user signs in to and a key they store for a curated provider.
+describe("fromEnvironment", () => {
+  test("false for a non-implicit instance, whatever is active", () => {
+    expect(fromEnvironment(instance({ name: "work", providerId: "groq", implicit: false }))).toBe(false);
+    expect(
+      fromEnvironment(
+        instance({ name: "work", providerId: "groq", implicit: false, activeSource: "env:GROQ_API_KEY" }),
+      ),
+    ).toBe(false);
+  });
+
+  test("true for an implicit instance an environment variable supplies", () => {
+    expect(
+      fromEnvironment(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" })),
+    ).toBe(true);
+  });
+
+  test("true for an implicit instance the ADC file supplies", () => {
+    expect(
+      fromEnvironment(instance({ name: "vertex", providerId: "google-vertex", implicit: true, activeSource: "adc" })),
+    ).toBe(true);
+  });
+
+  test("true for a keyless implicit instance - a local default is not the user's own credential", () => {
+    expect(
+      fromEnvironment(
+        instance({
+          name: "ollama",
+          providerId: "ollama",
+          implicit: true,
+          activeSource: "none",
+          credentialRequired: false,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("false for an implicit instance whose credential the user stored through the UI", () => {
+    expect(
+      fromEnvironment(
+        instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+      ),
+    ).toBe(false);
+  });
+
+  test("false for a signed-in Codex instance - the OAuth record is the account the user added", () => {
+    expect(
+      fromEnvironment(
+        instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          implicit: true,
+          activeSource: "oauth",
+          hasStoredOAuth: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("false for a Codex instance whose record the hub cannot read", () => {
+    // The registry derives the instance from the record file's existence and
+    // reports the oauth source for it either way, while the hub's own status
+    // reports no usable source for an unreadable one. The scheme, not the
+    // active source, is what says whose the instance is - and removing it is
+    // how a broken sign-in goes away.
+    expect(
+      fromEnvironment(
+        instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          implicit: true,
+          activeSource: "none",
+          credentialRequired: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("true for a keyless-capable instance a stored key cannot keep alive", () => {
+    // The row is the curated provider's own: the registry re-derives it with or
+    // without a credential, so removing it could not take the instance away -
+    // the key is what Clear is for.
+    expect(
+      fromEnvironment(
+        instance({
+          name: "ollama",
+          providerId: "ollama",
+          auth: "optional-bearer",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+          credentialRequired: false,
+        }),
+      ),
+    ).toBe(true);
   });
 });
 

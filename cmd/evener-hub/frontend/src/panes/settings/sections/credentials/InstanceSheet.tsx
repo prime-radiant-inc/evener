@@ -33,6 +33,9 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  friendlyErrorMessage,
+  fromEnvironment,
+  isInstanceRenamePersisted,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -45,6 +48,7 @@ import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToas
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceSheet.module.css";
 import {
+  clearedField,
   draftFor,
   type InstanceDraft,
   instanceEditParams,
@@ -52,6 +56,7 @@ import {
   SURFACE_OPTIONS,
   varRows,
 } from "./instanceEdit";
+import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
@@ -113,12 +118,14 @@ const RENAME_IDENTITY_FIELDS = [
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
 /** The entry fields this save's params changed, whether a field carries a value
- * or a `clear` flag: those are the fields a rename may legitimately differ in. */
+ * or a `clear` flag: those are the fields a rename may legitimately differ in.
+ * clearedField (instanceEdit.ts) reverse-maps a clear flag to the field it
+ * changed, from the same table that authors the flags forward. */
 function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+    changed.add(clearedField(key));
   }
   return changed;
 }
@@ -190,7 +197,22 @@ function renamedInstanceLanded(
   const newName = params.newName;
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
-  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
+  if (listed === undefined) return undefined;
+  // Renaming an instance that had no authored entry authors one under the new
+  // name (hubInstancesController.Edit), so implicit becoming authored is that
+  // rename's own outcome rather than evidence of a later tenant of the freed
+  // name. The other direction - an authored instance the listing now shows as
+  // implicit - is the one flag change a rename cannot explain, so it alone
+  // rejects the row; the flags agree on every other pair.
+  //
+  // What separates this save's row from a look-alike is then the identity
+  // fields compared below, not the flag: a concurrent client that authored an
+  // instance under the new name with the same provider, endpoint and auth
+  // between the write and this read would pass. That was already true of an
+  // authored rename before this relaxation, and the listing carries no
+  // per-mutation identifier to close it with - an incarnation or generation
+  // number on the wire is what that would take.
+  if (!before.implicit && listed.implicit) return undefined;
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(
@@ -446,6 +468,22 @@ export function InstanceSheet({
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         return;
       }
+      // A rename that stood but could not carry the instance's OAuth record
+      // comes back carrying the hub's own discriminator for it
+      // (isInstanceRenamePersisted). providers.toml already names the new
+      // instance, so the save is not a failure: reconcile the listing and follow
+      // the instance to its new name, surfacing the hub's message - it names the
+      // credential left behind - as a warning rather than a plain failure.
+      if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
+        const landed = await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          if (landed) onRenamed(params.newName);
+          else setFormError(friendlyErrorMessage(err));
+        }
+        toast.push("warning", friendlyErrorMessage(err));
+        return;
+      }
       const message = errorText(err);
       // The toast is owed wherever the user has gone - they asked for a write
       // that did not happen. The form's error line is not: it belongs to the
@@ -478,7 +516,7 @@ export function InstanceSheet({
   // The danger zone is Clear + Clear stored key + Remove under a divider; an
   // implicit instance with nothing stored offers none of them, and a divider
   // over nothing reads as a rendering bug.
-  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
+  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !fromEnvironment(instance));
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   // The sheet's per-model toggles read the registry's own inventory. The
@@ -496,6 +534,16 @@ export function InstanceSheet({
   // on what counts as a rename, and an emptied Name is not one.
   const renaming =
     initial !== null && draft !== null && draft.name.trim() !== "" && draft.name.trim() !== initial.name.trim();
+  // The note under Name. A rename always leaves the old name behind in launch
+  // config and past sessions; on an environment-backed instance it also leaves
+  // the instance itself, because the variable that makes it exist is not the
+  // row's to move, so the rename authors a second instance beside it.
+  const nameHelp =
+    instance !== undefined && renaming
+      ? fromEnvironment(instance)
+        ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. Launch config and past sessions that reference "${instance.name}" keep the old name.`
+        : `Launch config and past sessions that reference "${instance.name}" keep the old name.`
+      : undefined;
 
   return (
     <Sheet
@@ -517,7 +565,7 @@ export function InstanceSheet({
           <div className={CLASS.headingRow}>
             <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             {instance.isDefault && <Chip>★ default</Chip>}
-            {instance.implicit && <Chip>from environment</Chip>}
+            {fromEnvironment(instance) && <Chip>from environment</Chip>}
           </div>
           {draft !== null && (
             <form
@@ -528,22 +576,12 @@ export function InstanceSheet({
                 void handleSave();
               }}
             >
-              <FormRow
-                label="Name"
-                htmlFor={`${ids}-name`}
-                help={
-                  instance.implicit
-                    ? "This instance comes from the environment and cannot be renamed."
-                    : renaming
-                      ? `Launch config and past sessions that reference "${instance.name}" keep the old name.`
-                      : undefined
-                }
-              >
+              <FormRow label="Name" htmlFor={`${ids}-name`} help={nameHelp}>
                 <Input
                   id={`${ids}-name`}
                   value={draft.name}
                   onChange={(event) => update({ name: event.target.value })}
-                  disabled={busy || instance.implicit}
+                  disabled={busy}
                 />
               </FormRow>
               <div className={CLASS.metaRow}>
@@ -727,7 +765,7 @@ export function InstanceSheet({
                     </Button>
                   </div>
                 )}
-                {!instance.implicit && (
+                {!fromEnvironment(instance) && (
                   <div className={CLASS.fullRow}>
                     <Button variant="danger" onClick={onRemove} disabled={busy || writesRefused}>
                       Remove
