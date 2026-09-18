@@ -355,11 +355,15 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // first time — live children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2).
-func (s *Session) recomputeRestoredState() {
+// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
+// its one caller (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at this
+// point: a forked child's inherited prefix must not be decided by this
+// session's own journal (steeringOriginBoundary).
+func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history)
+	target := deriveRestoredState(s.history, divergenceTurn, s.clientMutations.steeringOrigins())
 	s.mu.Unlock()
 	if !idle || target != SessionAwaiting {
 		return

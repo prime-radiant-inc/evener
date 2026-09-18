@@ -145,6 +145,29 @@ func steeringSourceAnswersAsk(source, kind string) bool {
 	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
 }
 
+// steeringOriginBoundary clamps divergenceTurn (expressed exactly as
+// escapeHistoryWithSessionProvenance defines it, session_init.go) to a valid
+// inherited-turn count for a history of historyLen turns: turns before the
+// bound came from a parent session whose journal this session does not
+// hold, and a child mutation may reuse a parent's client mutation id, so
+// provenance lookups for them must use nil origins; turns from the bound
+// onward are this session's own and may consult its journal. Shared by
+// escapeHistoryWithSessionProvenance and turnResolvesAskBoundary's callers
+// (deriveRestoredState/deriveRestoredAskPending) so a second copy of the
+// clamp can't drift from it (RoboRev #1806 round-5 Medium: the ask-boundary
+// scan used to apply the whole journal to the whole history, letting a
+// reused id misclassify an inherited turn).
+func steeringOriginBoundary(divergenceTurn, historyLen int) int {
+	inherited := divergenceTurn - 1
+	if inherited <= 0 {
+		return 0
+	}
+	if inherited >= historyLen {
+		return historyLen
+	}
+	return inherited
+}
+
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.
 func minimalExampleQuestionsArray() string {
 	ex := map[string]any{
@@ -311,6 +334,99 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 	})
 }
 
+// turnResolvesAskBoundary reports whether turn is one of the three shapes
+// that end a pending-ask round the same way a plain reply does (spec §6).
+// deriveRestoredState and deriveRestoredAskPending both walk backward over
+// the SAME history and must agree on exactly this boundary — factored here
+// once so the two can never independently narrow it and drift apart.
+//
+// origins is the client-mutation journal's steering provenance by mutation
+// id (clientMutationStore.steeringOrigins(), nil when there is nothing to
+// look up): a steering turn persisted before SteeringKind was stamped keeps
+// none of its own, and only the record of the mutation that wrote it can
+// still say whether it was a notes update or an ordinary steer
+// (steeringOriginForTurn). Without this, a kindless legacy human-note turn
+// reads as an ordinary answering steer and wrongly resolves the boundary.
+//
+//   - TurnUserInput: the user spoke — resolves.
+//   - TurnSteering carrying SteeringKindInterrupted, or a steer whose
+//     provenance (steeringOriginForTurn(turn, origins)) steeringSourceAnswersAsk
+//     reports as answering the user: the runtime already cleared askPending
+//     on this turn's behalf before it ever ran (session_lifecycle.go: the
+//     interrupt branch calls clearAskPending directly; a resolving user
+//     steer clears askPending via clearAskPendingForResolvingSteer) —
+//     resolves. A human-note update (events.SteeringKindHumanNote, by its
+//     own kind or by its journal record's provenance) is user-sourced but
+//     does not answer the question, so steeringSourceAnswersAsk excludes it:
+//     does not resolve. Any other TurnSteering (a daemon-authored nudge, a
+//     reminder) carries neither marker: does not resolve, the scan continues
+//     past it — a trailing steering turn must not resolve a pending ask by
+//     looking like the user moved last (spec §6).
+//   - TurnFailure tagged SteeringCarrier (schema.TurnFailureInfo.
+//     SteeringCarrier's own doc comment): the turn's mere acceptance cleared
+//     askPending before it recorded nothing else — either its steer failed
+//     to append, or a carrier-claim's own steer failed its selection prepare
+//     — resolves. Every OTHER TurnFailure (a retry-budget exhaustion, a
+//     non-carrier (inline) failed steering-selection prepare, a provider
+//     error) does not resolve: the round it happened to may have posted real
+//     content — an ask_user call among it — before failing, and that
+//     content's own turn is still ahead in the scan to decide the outcome.
+//
+// Every other turn kind does not resolve here either; the caller's own
+// switch handles TurnAssistant/TurnToolResults, where the two functions
+// genuinely differ on what a resolved boundary settles TO (SessionAwaiting
+// vs a typed ask_user pending set) — that part is not shared.
+func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin) bool {
+	switch turn.Kind {
+	case schema.TurnUserInput:
+		return true
+	case schema.TurnSteering:
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			return true
+		}
+		origin := steeringOriginForTurn(turn, origins)
+		return steeringSourceAnswersAsk(turn.SteeringSource, origin.steeringKind())
+	case schema.TurnFailure:
+		return turn.Error != nil && turn.Error.SteeringCarrier
+	default:
+		return false
+	}
+}
+
+// roundEntryResolvesAskBoundary reports whether the turn that OPENED the
+// round containing history[idx] itself resolves the ask boundary
+// (turnResolvesAskBoundary). A round is exactly one entry turn — TurnUserInput,
+// or a drained TurnSteering (session_tool_round.go) — followed by a chain of
+// TurnAssistant/TurnToolResults pairs; this walks backward from idx past that
+// chain to find it. deriveRestoredAskPending's own "generic completion is
+// decisive" branches (a TurnAssistant final with no tool calls, or a
+// TurnToolResults with no ask_user result) assume the round's entry already
+// cleared askPending live — true for a genuine user reply, but NOT for a
+// non-resolving carrier (a human-note update): its entry clear is skipped
+// (steeringCarrierClaimAnswersAsk, session_lifecycle.go), so a generic
+// completion inside that round must not resolve the boundary either, or
+// restore would lose an ask the live session never resolved (RoboRev #1806's
+// round-6 Medium). boundaryStart/origins are deriveRestoredAskPending's own
+// steeringOriginBoundary scoping, applied identically here so the entry
+// turn's provenance lookup can't diverge from the rest of the scan. Finding
+// no entry turn (history begins mid-round, e.g. a compaction boundary) keeps
+// the previous behavior: decisive.
+func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int, origins map[string]steeringOrigin) bool {
+	for j := idx - 1; j >= 0; j-- {
+		switch history[j].Kind {
+		case schema.TurnAssistant, schema.TurnToolResults:
+			continue
+		default:
+			turnOrigins := origins
+			if j < boundaryStart {
+				turnOrigins = nil
+			}
+			return turnResolvesAskBoundary(history[j], turnOrigins)
+		}
+	}
+	return true
+}
+
 // deriveRestoredState re-derives a restored session's at-rest state from its
 // history tail. It is the single resume-derivation function, unifying two
 // rules that were designed independently and must both hold everywhere:
@@ -322,8 +438,9 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 //
 // Walking backward from the most recent turn, the first decisive turn wins:
 //
-//   - TurnUserInput: a reply already resolved whatever was pending, or
-//     nothing ever was — idle.
+//   - turnResolvesAskBoundary's decisive turns (TurnUserInput, a resolving
+//     TurnSteering, a steering-carrier TurnFailure) resolve to idle — a
+//     reply already resolved whatever was pending, or nothing ever was.
 //   - TurnAssistant with no tool calls: a plain final response with nothing
 //     else after it — the agent moved last — awaiting.
 //   - TurnAssistant WITH tool calls: not decisive, the scan continues past
@@ -347,22 +464,33 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 //     last" (spec §6: "an interrupted ack-less ask is never pending"). A
 //     denied or invalid ask_user call is IsError for the same reason and is
 //     excluded the same way.
-//   - TurnSteering, TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment,
-//     and the deprecated TurnTool: bookkeeping, not decisive — the scan
-//     continues past them. A trailing steering turn (e.g. a task-nudge reminder
-//     injected before the round-boundary check runs) must not resolve a
-//     pending ask by looking like the user moved last (spec §6); a trailing
-//     checkpoint/summary is the resume anchor ResumeHistory already
-//     truncated to, not a new decisive event.
+//   - Every other kind not covered above (a non-decisive TurnSteering,
+//     TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment, a non-carrier
+//     TurnFailure, and the deprecated TurnTool): bookkeeping, not decisive —
+//     the scan continues past it. A trailing checkpoint/summary is the
+//     resume anchor ResumeHistory already truncated to, not a new decisive
+//     event.
 //
 // No decisive turn anywhere in the (possibly compacted) history defaults to
-// idle, matching a fresh session.
-func deriveRestoredState(history []schema.Turn) SessionState {
-	for _, v := range slices.Backward(history) {
-		turn := v
-		switch turn.Kind {
-		case schema.TurnUserInput:
+// idle, matching a fresh session. origins is turnResolvesAskBoundary's same
+// steering-provenance lookup (nil when there is nothing to look up).
+// divergenceTurn scopes it exactly as escapeHistoryWithSessionProvenance
+// does (steeringOriginBoundary): a forked child's inherited prefix is
+// decided with nil origins regardless of what origins carries, since a
+// reused client mutation id in the child's OWN journal must never reclassify
+// a turn the parent wrote.
+func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) SessionState {
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
+	for i := range slices.Backward(history) {
+		turn := history[i]
+		turnOrigins := origins
+		if i < inherited {
+			turnOrigins = nil
+		}
+		if turnResolvesAskBoundary(turn, turnOrigins) {
 			return SessionIdle
+		}
+		switch turn.Kind {
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
 				return SessionAwaiting
@@ -392,20 +520,28 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 // guard (session_compaction.go:30) — reads len(s.askPending), which stays
 // empty unless this also runs.
 //
-// This performs the IDENTICAL backward walk deriveRestoredState uses (same
-// turn-kind cases, same "not decisive, keep scanning" fallthroughs — see
-// that function's doc comment for the full rationale) so the two can never
-// disagree about which turn is decisive; it just does more once it reaches
-// one:
+// This shares turnResolvesAskBoundary's decisive boundary with
+// deriveRestoredState above — the two functions cannot disagree about which
+// turn is decisive because they call the same code to decide it — and does
+// more once it reaches one:
 //
-//   - TurnUserInput, or a TurnAssistant final with no tool calls: idle or a
-//     GENERIC awaiting rest, not an ask round — returns (nil, false); the
-//     pending set must stay empty (spec §2's first edge case).
+//   - A resolving boundary (turnResolvesAskBoundary's TurnUserInput/
+//     TurnSteering/TurnFailure cases): idle, not an ask round — returns
+//     (nil, false); the pending set must stay empty (spec §2's first edge
+//     case).
+//   - A TurnAssistant final with no tool calls, or a TurnToolResults
+//     carrying a completed (non-error) result but none of them named
+//     "ask_user" (e.g. a communicate ack): a GENERIC completion. Decisive —
+//     returns (nil, false) — ONLY when the round it ends was itself opened by
+//     a turn that resolves the boundary (roundEntryResolvesAskBoundary): a
+//     genuine user reply always clears askPending on entry, so anything the
+//     round then completes with is safe to treat as the end of the story.
+//     A round opened by a non-resolving carrier (a human-note update) never
+//     cleared askPending on entry, so its own generic completion must not
+//     either — not decisive, keep scanning past it for the real boundary
+//     further back (RoboRev #1806's round-6 Medium).
 //   - TurnToolResults carrying only error-placeholder results: not decisive,
 //     keep scanning (matches deriveRestoredState's orphan-repair carve-out).
-//   - TurnToolResults carrying a completed (non-error) result, but none of
-//     them named "ask_user" (e.g. a communicate ack): decisive, but still a
-//     GENERIC awaiting rest — returns (nil, false).
 //   - TurnToolResults carrying at least one completed, non-error "ask_user"
 //     result: an ask round. Delegates to questionsFromAskCalls for exactly
 //     those calls, in call order (spec §2's "multiple ask_user calls in the
@@ -415,15 +551,26 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 // was pending" (false) or "an ask round was found but none of its calls'
 // arguments parsed" (true) — spec §2's unparseable-arguments edge case: the
 // caller logs a warning only for the latter, and the restore must never fail
-// over either.
-func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isAskRound bool) {
+// over either. origins is turnResolvesAskBoundary's same steering-provenance
+// lookup (nil when there is nothing to look up). divergenceTurn scopes it
+// exactly as deriveRestoredState does above (steeringOriginBoundary).
+func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	for i := range slices.Backward(history) {
 		turn := history[i]
-		switch turn.Kind {
-		case schema.TurnUserInput:
+		turnOrigins := origins
+		if i < inherited {
+			turnOrigins = nil
+		}
+		if turnResolvesAskBoundary(turn, turnOrigins) {
 			return nil, false
+		}
+		switch turn.Kind {
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
+				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
+					continue // this round's entry never cleared askPending live either; not decisive
+				}
 				return nil, false
 			}
 			// Not decisive; matches deriveRestoredState's scan past an
@@ -444,6 +591,9 @@ func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isA
 				continue // error-only placeholder; not decisive, matches deriveRestoredState
 			}
 			if len(askCallIDs) == 0 {
+				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
+					continue // this round's entry never cleared askPending live either; not decisive
+				}
 				return nil, false // decisive, but a generic completion (e.g. a communicate ack)
 			}
 			return questionsFromAskCalls(history, i, askCallIDs), true
