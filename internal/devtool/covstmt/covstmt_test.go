@@ -247,7 +247,7 @@ func TestBlocksOrderIsTotalOverColumns(t *testing.T) {
 	const profile = "mode: set\n" +
 		"pkg/f.go:10.1,20.2 1 0\n" +
 		"pkg/f.go:10.5,20.9 1 1\n"
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		blocks, err := BlocksReader(strings.NewReader(profile))
 		if err != nil {
 			t.Fatalf("BlocksReader: %v", err)
