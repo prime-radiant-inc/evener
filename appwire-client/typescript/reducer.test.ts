@@ -4860,6 +4860,46 @@ test("an oversized warning frame's fallback text stays bounded", () => {
   expect(item.text.length).toBeGreaterThan(0);
 });
 
+// rawWarningFrame's bound must truncate by code point, not by UTF-16 unit: a
+// plain String#slice can cut a surrogate pair (an emoji, a codepoint outside
+// the BMP - two UTF-16 units) exactly in half, leaving a lone, unpaired
+// surrogate at the tail. warning: 42 keeps warningMessage from short-
+// circuiting on a usable message, so text falls all the way to
+// rawWarningFrame(params) - the JSON.stringify of the whole frame, `extra`
+// included.
+test("an oversized warning frame's fallback text never splits a surrogate pair at the truncation boundary", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  const EMOJI = "😀"; // U+1F600: one surrogate pair, two UTF-16 code units.
+  const marker = '"extra":"';
+  const withoutContent = JSON.stringify({ threadId: "thr_t", ref: "ref_t", warning: 42, extra: "" });
+  const contentStart = withoutContent.indexOf(marker) + marker.length;
+  // Pad so the emoji's high surrogate lands exactly at index 2000 (0-indexed
+  // 1999) of the stringified frame - the byte a naive slice(0, 2000) keeps,
+  // cutting the low surrogate that follows.
+  const padLen = MAX_CHARS - 1 - contentStart;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "a".repeat(padLen) + EMOJI };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // Bounded by CODE POINTS, not UTF-16 units: keeping the boundary emoji
+  // whole can run one code point's worth of extra UTF-16 units past
+  // MAX_CHARS, which is exactly what must happen instead of splitting it.
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  const lastUnit = item.text.charCodeAt(item.text.length - 1);
+  expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
+});
+
 // Settled tool calls keep their arguments: the live projector's
 // EventToolCallEnd (internal/appprojector/appwire_projection.go:414-442)
 // resolves argsJSON at :424-427 but uses it only to derive Description —

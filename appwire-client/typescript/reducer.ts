@@ -1200,7 +1200,12 @@ function warningMessage(params: WarningParams): string {
 const RAW_WARNING_FRAME_MAX_CHARS = 2000;
 
 function rawWarningFrame(params: WarningParams): string {
-  return JSON.stringify(params).slice(0, RAW_WARNING_FRAME_MAX_CHARS);
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  const codePoints = Array.from(JSON.stringify(params));
+  return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
 }
 
 // Folds one live wire notification into model. Most notifications carry

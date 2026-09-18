@@ -20,9 +20,12 @@ function askItem(id: string, callId: string, questions: Array<Record<string, unk
   };
 }
 
-// liveAskQuestions reads only the turns; the rest of ThreadModel is noise here.
+// liveAskQuestions reads the wire's askPending plus the turns; the rest of
+// ThreadModel is noise here. askPending: true matches every fixture below
+// actually carrying an unanswered ask_user item - the wire gate itself has
+// its own coverage in deriveAskQuestions.test.ts.
 function threadModel(items: ItemModel[]): ThreadModel {
-  return { turns: [{ id: "turn_1", status: "completed", items }] } as unknown as ThreadModel;
+  return { askPending: true, turns: [{ id: "turn_1", status: "completed", items }] } as unknown as ThreadModel;
 }
 
 const DEPLOY = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];

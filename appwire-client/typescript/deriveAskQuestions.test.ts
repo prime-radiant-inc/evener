@@ -47,7 +47,12 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   rename: false,
 };
 
-function model(turns: TurnModel[]): ThreadModel {
+// askPending defaults to true: this file's tests exercise the item-scan
+// half of liveAskQuestions ("which questions"), not the wire gate itself
+// ("is anything pending") - that gate has its own tests below, and its own
+// coverage from the thread snapshot in reducer.test.ts ("askPending is
+// wire-authoritative from the thread snapshot").
+function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -56,7 +61,7 @@ function model(turns: TurnModel[]): ThreadModel {
     modelProvider: "anthropic/claude",
     model: "anthropic/claude",
     visionModel: "",
-    askPending: false,
+    askPending: true,
     turns,
     queue: null,
     tasks: null,
@@ -77,6 +82,7 @@ function model(turns: TurnModel[]): ThreadModel {
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
+    ...overrides,
   };
 }
 
@@ -180,23 +186,35 @@ test("a daemon steering item with neither steeringKind interrupted nor source us
   expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
 });
 
-// A user steer reaches processOneInput as EntryUserInput, which clears
-// askPending unconditionally on entry (session_lifecycle.go's "Pending asks
-// resolve with this accepted turn" comment, before the turn's own model call
-// ever runs) - so even a steer whose turn then fails outright already
-// resolved the ask server-side. The steering carrier "carries no content of
-// its own" (session_lifecycle.go), so a carrier that fails before posting
-// anything leaves no item at all to mark the boundary with - only the empty
-// turn's own error.
-test("a turn with no items and an error AFTER an ask_user ack resolves it", () => {
+// A turn with no items of its own contributes nothing to the item scan
+// either way, whether or not it also carries an error: it is not a question
+// to show, and (since the turn/deriveAskQuestions round of this file) it is
+// no longer a boundary this function looks for. Whether that failure
+// resolved anything is the server's call, already folded into
+// ThreadModel.askPending - the wire-gate tests below cover that half.
+test("a turn with no items and an error is not a boundary — the earlier ask_user ack stays live", () => {
   const m = model([turn("t1", [askItem("i1", "t1", "call_1")]), turn("t2", [], { error: { message: "failed" } })]);
-  expect(liveAskQuestions(m)).toEqual([]);
+  const result = liveAskQuestions(m);
+  expect(result.map((q) => q.key)).toEqual(["call_1:0"]);
 });
 
 test("a turn with items stays live by its items, even if the turn also errors", () => {
   const m = model([turn("t1", [askItem("i1", "t1", "call_1")], { error: { message: "failed" } })]);
   const result = liveAskQuestions(m);
   expect(result.map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+// --- the wire gate: "is anything pending" is ThreadModel.askPending's call,
+// not this scan's -------------------------------------------------------
+
+test("askPending false returns nothing, even with an unanswered ask_user item in the transcript", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")])], { askPending: false });
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+test("askPending true with no ask_user items at all still returns nothing (there is nothing to scan)", () => {
+  const m = model([turn("t1", [item("i1", "t1", { type: "userMessage", text: "hi" })])], { askPending: true });
+  expect(liveAskQuestions(m)).toEqual([]);
 });
 
 test("an ask_user call acked AFTER the last userMessage stays live", () => {

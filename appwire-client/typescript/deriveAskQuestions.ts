@@ -1,14 +1,25 @@
-// liveAskQuestions is the pure, position-based half of the dock's pending-
-// question bookkeeping: a snapshot of "which ask_user questions are
-// currently unanswered", derived fresh from the ThreadModel on every call -
-// no memory of its own. It mirrors legacy's cold-attach reconstruction rule
-// (parity-m5-composer.md §C: "a completed-but-unanswered ask gets both
+// liveAskQuestions answers two different questions, and gets each from a
+// different place. "Is anything pending right now" is the server's own
+// fact, not the client's to re-derive: ThreadModel.askPending rides the wire
+// on hydrate (appwire.EvenerThread.AskPending) and on every thread/status/
+// changed notification that can have moved it (appwire.ThreadStatusChanged.
+// AskPending), so the client reads it, it does not reconstruct it from
+// transcript shape. Earlier rounds of this file tried to re-derive that
+// boolean from turn/item markers (an item-less errored turn, in particular)
+// and kept disagreeing with the server that already knows the answer - the
+// class of bug this comment exists to close out.
+//
+// "Which questions" has no such shortcut: the wire's askPending is a bool,
+// not a list, so finding the actual open ask_user call(s) still means
+// scanning the transcript. It mirrors legacy's cold-attach reconstruction
+// rule (parity-m5-composer.md §C: "a completed-but-unanswered ask gets both
 // anchor and dock; an ask followed by a reply gets only the settled line"):
 // scan every item in transcript order, and anything asked-and-acked AFTER
 // the most recent resolution item (a plain user message, an interrupt, or a
 // user steer - isResolutionItem below) is still live; anything before it
 // was already answered (a resolution item settles the WHOLE pending set at
-// once, spec §6.1).
+// once, spec §6.1). Once askPending is false there is nothing to scan for -
+// the function returns before ever looking at an item.
 //
 // This alone is not sufficient for the live, in-flight-submission case -
 // see appwire-client/typescript/reconcileBatches.ts's own comment for why a purely
@@ -21,7 +32,7 @@
 
 import type { AskUserOption } from "./askShared";
 import { parseAskUserQuestions } from "./askShared";
-import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import type { ItemModel, ThreadModel } from "./model";
 
 // AskQuestionRef is one flattened, individually-addressable question -
 // mirrors legacy's pendingAsk item shape (renderer.js:5832-5844). `key` is
@@ -75,41 +86,26 @@ function isResolutionItem(item: ItemModel): boolean {
   return item.type === "steering" && (item.steeringKind === "interrupted" || item.source === "user");
 }
 
-// A turn with no items at all, but an error, is the SAME accepted-turn clear
-// with nothing else to mark it: processOneInput clears askPending
-// unconditionally on entry (session_lifecycle.go's "Pending asks resolve with
-// this accepted turn" comment), before the turn's own model call ever runs -
-// so a steering carrier that fails outright before posting anything (it
-// "carries no content of its own", session_lifecycle.go) has already resolved
-// the ask server-side even though it left no userMessage/steering item behind.
-// A turn that DID post items resolves (or not) by those items instead, same
-// as always - this only covers the item-less case.
-function isResolutionTurn(turn: TurnModel): boolean {
-  return turn.items.length === 0 && turn.error !== undefined;
-}
-
 // lastResolutionIndex finds the position of the most recent resolution
-// boundary in transcript order, over the model's turns rather than a
-// pre-flattened item list: an item-less resolution turn (isResolutionTurn)
-// contributes no item of its own, so it can only be found by walking turns.
-// -1 when no boundary exists yet (a fresh thread, or one that has never had a
-// user turn).
-function lastResolutionIndex(turns: readonly TurnModel[]): number {
+// boundary in transcript order, over the flattened item list. -1 when no
+// boundary exists yet (a fresh thread, or one that has never had a user
+// turn). A turn with no items of its own (e.g. a failed turn, rendered only
+// as a systemMessage by the server's projection, never as a live ItemModel
+// here) contributes nothing to this scan either way - it is neither a
+// question to show nor a boundary to stop at; whether it resolved anything
+// is the server's call, already folded into ThreadModel.askPending.
+function lastResolutionIndex(items: readonly ItemModel[]): number {
   let last = -1;
-  let index = 0;
-  for (const turn of turns) {
-    if (isResolutionTurn(turn)) last = index - 1;
-    for (const item of turn.items) {
-      if (isResolutionItem(item)) last = index;
-      index++;
-    }
-  }
+  items.forEach((item, index) => {
+    if (isResolutionItem(item)) last = index;
+  });
   return last;
 }
 
 export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
+  if (!model.askPending) return [];
   const items = model.turns.flatMap((turn) => turn.items);
-  const boundary = lastResolutionIndex(model.turns);
+  const boundary = lastResolutionIndex(items);
   const refs: AskQuestionRef[] = [];
   items.slice(boundary + 1).forEach((item) => {
     if (!isAckedAskUserItem(item)) return;

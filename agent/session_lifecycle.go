@@ -2222,6 +2222,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.Persistence = time.Since(tPhaseStart)
 
+		// Captured right after this round's own tool results land, before
+		// injectPostToolSteering's drain runs: a mid-flight accepted user steer
+		// drained there clears askPending for the resolving-steer's own reason
+		// (clearAskPendingForResolvingSteer), and that clear must not erase
+		// THIS round's "did it just post a question" signal — a steer landing
+		// in the same round's drain window is real (#1731 round 4), not just a
+		// test timing artifact, so the delta has to be read before the drain
+		// can touch the count it is a delta of.
+		askedThisRound := s.askPendingCount() > askBefore
+
 		// --- Phase: AfterAction ---
 		tPhaseStart = s.sclock().Now()
 
@@ -2251,7 +2261,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// communicate sets the flag, or this round posted question(s) (spec
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
-		askedThisRound := s.askPendingCount() > askBefore
 		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
 		if deliverErr != nil {
 			return "", progressed, deliverErr
@@ -2736,7 +2745,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was
