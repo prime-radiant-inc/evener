@@ -37,7 +37,13 @@ import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
-import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
+import {
+  contentGrewBelowViewport,
+  isAtBottom,
+  isNearTop,
+  readScrollMetrics,
+  type ScrollMetrics,
+} from "./scrollMetrics";
 import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
 
 export interface UseTranscriptScrollOptions {
@@ -1413,14 +1419,7 @@ export function useTranscriptScroll({
       // assignment genuinely moves scrollTop and the browser dispatches for it.
       const previous = lastScrollGeometryRef.current;
       lastScrollGeometryRef.current = m;
-      if (
-        !gestured &&
-        wasAtBottomRef.current &&
-        !isAtBottom(m) &&
-        m.clientHeight === previous.clientHeight &&
-        m.scrollHeight > previous.scrollHeight &&
-        m.scrollTop >= previous.scrollTop
-      ) {
+      if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
       }
@@ -1471,25 +1470,23 @@ export function useTranscriptScroll({
     // after the mount's landing (scrollHeight grows while the offset stays
     // pinned - measured 11466 -> 11487 at document.fonts.ready), or the
     // virtualizer adopts newly-measured row heights without moving scrollTop.
-    // The scroll listener's own correction above is the same premise and the
-    // same remedy, but it only runs on a scroll event - neither of these fires
-    // one, so without this the reader is left a few pixels short of the true
-    // bottom with wasAtBottomRef still true: no pill, nothing to click. Re-pin
-    // to the new true bottom from live geometry, guarded by the same "more
-    // content in the same box, offset not moved backwards" test the listener
-    // uses so a prepend or a scroll-away is never yanked.
+    // The scroll listener's own correction above shares the same geometry
+    // predicate (contentGrewBelowViewport) and the same remedy, but it only
+    // runs on a scroll event - neither of these fires one, so without this the
+    // reader is left a few pixels short of the true bottom with wasAtBottomRef
+    // still true: no pill, nothing to click. Re-pin to the new true bottom
+    // from live geometry, so a prepend or a scroll-away is never yanked.
     function reanchorIfContentGrew() {
       if (!el) return;
       const previous = lastScrollGeometryRef.current;
       const m = measure(el);
       lastScrollGeometryRef.current = m;
-      if (
-        wasAtBottomRef.current &&
-        !isAtBottom(m) &&
-        m.clientHeight === previous.clientHeight &&
-        m.scrollHeight > previous.scrollHeight &&
-        m.scrollTop >= previous.scrollTop
-      ) {
+      // The same gesture veto the scroll listener applies, but READ rather than
+      // consumed: this is not the event a pending gesture caused (content
+      // growth fires none), so the marker must survive for the scroll event
+      // that the gesture's own movement still delivers.
+      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
+      if (wasAtBottomRef.current && !gestured && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }

@@ -1832,6 +1832,66 @@ describe("late content growth with no scroll event", () => {
       resizeObserver.restore();
     }
   });
+
+  // The no-scroll-event paths carry the same gesture veto as the scroll
+  // listener: a reader mid-gesture whose content grows must not be yanked to
+  // the bottom. The marker is read, not consumed, in the re-anchor (a growth
+  // fires no scroll event), so it must survive for the gesture's own scroll
+  // event - these stub rAF to keep the one-frame marker pending for the test.
+  const GESTURES: Array<[string, (el: HTMLElement) => void]> = [
+    ["wheel", (el) => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))],
+    [
+      "touch",
+      (el) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
+    ["middle-button autoscroll", (el) => el.dispatchEvent(pointerEvent("pointerdown", MIDDLE_DOWN))],
+  ];
+
+  test.each(GESTURES)(
+    "a %s gesture vetoes the fonts re-anchor so the reader is not yanked",
+    async (_label, gesture) => {
+      const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+      const fonts = installFonts();
+      try {
+        const { el, set } = mountWithContent();
+        act(() => gesture(el));
+
+        definePort(el, GREW_AT_BOTTOM);
+        set(GREW_AT_BOTTOM);
+
+        await act(async () => {
+          fonts.resolve();
+          await Promise.resolve();
+        });
+
+        expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+      } finally {
+        fonts.restore();
+        raf.mockRestore();
+      }
+    },
+  );
+
+  test("a wheel gesture vetoes the ResizeObserver re-anchor too", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+    } finally {
+      resizeObserver.restore();
+      raf.mockRestore();
+    }
+  });
 });
 
 // The error anchor (contracts-transcript-scroll-liveness.md §5, lines
