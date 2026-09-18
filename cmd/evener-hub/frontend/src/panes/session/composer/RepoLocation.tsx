@@ -20,7 +20,7 @@
 // the same unbroken text it always did.
 //
 // Facts come from the hub's evener/git/head method keyed on the session's cwd,
-// resolved once per cwd and cached by state, failing soft to "no branch shown"
+// resolved per cwd and cached by state, failing soft to "no branch shown"
 // (see shell/gitLocation.ts). A soft failure is retried when the connection
 // recovers, since a dropped hub leaves the line bare for as long as the pane
 // lives otherwise (issue #1355). This is display metadata only: nothing here is
@@ -149,7 +149,7 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocat
     resolve();
     // A lookup that failed while the hub was down fails soft to "no branch",
     // and neither `client` nor `cwd` changes when the SAME client reconnects -
-    // so the effect above would never re-run and the line would stay bare for
+    // so this effect would never re-run and the line would stay bare for
     // the life of the pane (issue #1355). Retry on each transition of this
     // client into "ready". The client is the connection the lookup actually
     // uses, so its recovery is observed exactly when a retry can succeed.
