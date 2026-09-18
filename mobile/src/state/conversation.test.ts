@@ -999,6 +999,86 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.status.type).toBe("idle");
     });
 
+    // A failure that leaves a message queued is not a rest: the daemon resumes
+    // the queued message and its turn_failed input-end emission reports the
+    // session active (WireState reads active while pendingQueueDepth > 0), not
+    // the idle a settled turn would reach. The client must hold the session
+    // active at the failed frame and at the authoritative thread/status/changed
+    // frame behind it -- so Send stays closed and the queued entry is still
+    // there to run -- and follow the hand-off as the queued message becomes the
+    // next turn and leaves the queue.
+    it("keeps active through a failed turn that resumes a queued message", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        status: { type: "active" },
+        activeTurnId: "t1",
+        queue: {
+          revision: 1,
+          depth: 1,
+          preview: ["queued"],
+          ids: ["q1"],
+          texts: ["queued"],
+        },
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+
+      // t1 fails; its queued message has not started yet.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
+        },
+      } as AnyNotification);
+      const failed = store.getState().conversation;
+      if (failed === null) throw new Error("conversation gone");
+      expect(failed.status.type).toBe("active");
+      const controls = sessionControls(failed.status.type, failed.capabilities, failed.queue?.depth ?? 0);
+      expect({ send: controls.send, queue: controls.queue }).toEqual({ send: false, queue: true });
+      expect(failed.queue?.depth).toBe(1);
+      expect(failed.queue?.texts).toEqual(["queued"]);
+
+      // The failure exit's own status frame is the authority. With work still
+      // queued it announces active, so the session stays active and Send stays
+      // closed with the entry still waiting to run.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+      } as AnyNotification);
+      const announced = store.getState().conversation;
+      if (announced === null) throw new Error("conversation gone");
+      expect(announced.status.type).toBe("active");
+      expect(announced.queue?.depth).toBe(1);
+      expect(announced.queue?.texts).toEqual(["queued"]);
+      const afterStatus = sessionControls(announced.status.type, announced.capabilities, announced.queue?.depth ?? 0);
+      expect(afterStatus.send).toBe(false);
+
+      // The queue drains before the queued turn opens: the drain claims the
+      // entry and emits thread/queueChanged (agent/session_queue.go
+      // popQueueHead -> reflectDurableInputQueue), and the next iteration's
+      // EventUserInput opens the turn. Assert each boundary rather than only
+      // the final state, so an ordering regression is caught.
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thread-1", ref: "ref-1", queue: { revision: 2, depth: 0 } },
+      } as AnyNotification);
+      const drained = store.getState().conversation;
+      expect(drained?.status.type).toBe("active");
+      expect(drained?.queue?.depth).toBe(0);
+      expect(drained?.activeTurnId).toBeUndefined();
+
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "running" } },
+      } as AnyNotification);
+      const resumed = store.getState().conversation;
+      expect(resumed?.status.type).toBe("active");
+      expect(resumed?.activeTurnId).toBe("t2");
+      expect(resumed?.queue?.depth).toBe(0);
+    });
+
     // The status is authoritative and the turn id can be absent while the
     // session is active (a read cut between turns); the failed completion's
     // own status frame settles idle, while one for a superseded turn is left
