@@ -731,9 +731,18 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// subscriber's projection: broadcast a resync naming the target
 				// first, and the subscriber re-reads instead of missing an
 				// acknowledged notification.
-				guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
-				release, lockErr := lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
-				cancelGuard()
+				// Fast path: an immediately free alias needs no guard context or
+				// timer. A contended or unresolved target falls through to the
+				// bounded wait unchanged.
+				var release func()
+				var lockErr error
+				if fastRelease, ok := tryLockDeletionTarget(cfg, target.ref, target.threadID); ok {
+					release = fastRelease
+				} else {
+					guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
+					release, lockErr = lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
+					cancelGuard()
+				}
 				if lockErr == nil {
 					if deletionFenceError(cfg, target.ref, target.threadID, "") == nil {
 						server.Broadcast(target.relayKey, notification.Method, notification.Params)

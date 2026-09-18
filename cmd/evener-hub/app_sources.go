@@ -130,6 +130,28 @@ func lockDeletionTarget(ctx context.Context, cfg hubcore.WebConfig, ref, threadI
 	return lock.Unlock, nil
 }
 
+// tryLockDeletionTarget takes the deletion target's alias without blocking
+// when it is immediately free, letting the relay's per-frame guard skip the
+// bounded wait's context and timer allocation. It reports false whenever
+// lockDeletionTarget must run instead — nil locks, an unresolvable target, or
+// a held alias — so acquisition semantics are unchanged: the alias is a single
+// token channel with no waiter queue, and the fast take is the acquisition the
+// bounded wait would have made immediately.
+func tryLockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) (func(), bool) {
+	if cfg.ResumeLocks == nil {
+		return nil, false
+	}
+	threadID = deletionThreadID(ref, threadID)
+	if threadID == "" {
+		return nil, false
+	}
+	lock := cfg.ResumeLocks.For(threadID)
+	if !lock.TryLock() {
+		return nil, false
+	}
+	return lock.Unlock, true
+}
+
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
 	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
 }
