@@ -63,6 +63,25 @@ func TestListBuildFlagsIsARegisteredSubcommand(t *testing.T) {
 	}
 }
 
+// TestPackageSelectionFlagsAreInTheSharedBuildTables pins the selection set as
+// a subset of shardplan.go's build tables. They are separate on purpose -- the
+// shard runner's parser is exhaustive and this one is a permissive filter -- but
+// a flag renamed or dropped on one side must not leave the other naming a flag
+// that no longer exists, which would silently stop the gate from seeing packages
+// the test build selects.
+func TestPackageSelectionFlagsAreInTheSharedBuildTables(t *testing.T) {
+	for name := range packageSelectionValueFlags {
+		if !buildValueFlags[name] {
+			t.Errorf("package-selection flag %s is not a value-taking build flag in shardplan.go; the two tables have drifted", name)
+		}
+	}
+	for name := range packageSelectionBareFlags {
+		if !buildBareFlags[name] {
+			t.Errorf("package-selection flag %s is not a bare build flag in shardplan.go; the two tables have drifted", name)
+		}
+	}
+}
+
 func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

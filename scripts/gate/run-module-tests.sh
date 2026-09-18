@@ -219,19 +219,33 @@ process_descendants() {
 	done
 }
 
+# stop_process_tree <pid> — stop a command and everything it forked. TERM first
+# for a clean exit, then KILL whatever ignored it after a short grace. Bounded:
+# nothing here waits on a process past the grace, so a TERM-ignoring or
+# uninterruptible descendant cannot hold the gate open, and a survivor is left
+# to init rather than waited on.
 stop_process_tree() {
-	local pid="$1" descendant
-	local -a descendants=()
+	local pid="$1" descendant alive grace
+	local -a targets=()
 	for descendant in $(process_descendants "$pid"); do
-		descendants+=("$descendant")
+		targets+=("$descendant")
 	done
-	if [ "${#descendants[@]}" -gt 0 ]; then
-		for descendant in "${descendants[@]}"; do
-			[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
+	targets+=("$pid")
+	for descendant in "${targets[@]}"; do
+		kill -TERM "$descendant" 2>/dev/null || :
+	done
+	grace=$((SECONDS + 5))
+	while [ "$SECONDS" -lt "$grace" ]; do
+		alive=0
+		for descendant in "${targets[@]}"; do
+			kill -0 "$descendant" 2>/dev/null && alive=1
 		done
-	fi
-	kill -TERM "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
+		[ "$alive" -eq 0 ] && break
+		sleep 0.1
+	done
+	for descendant in "${targets[@]}"; do
+		kill -KILL "$descendant" 2>/dev/null || :
+	done
 }
 
 stop_children() {
@@ -319,24 +333,36 @@ package_list_timeout_diagnostic() {
 run_bounded() {
 	local bound="$1" what="$2" module="$3" log_file="$4"; shift 4
 	local pid started_at status
-	"$@" >"$log_file" 2>"${log_file}.stderr" &
+	rm -f "${log_file}.status"
+	# The child writes its exit status to a file only after the command
+	# finishes, so that file, not kill -0, is what says "done": kill -0 alone
+	# can still see a process that exited just as the bound was reached (until
+	# bash reaps it) and would report a successful command as a timeout.
+	( "$@" >"$log_file" 2>"${log_file}.stderr"; printf '%s\n' "$?" >"${log_file}.status" ) &
 	pid="$!"
 	started_at=$SECONDS
-	while kill -0 "$pid" 2>/dev/null; do
+	while [ ! -f "${log_file}.status" ]; do
 		if [ $((SECONDS - started_at)) -ge "$bound" ]; then
 			stop_process_tree "$pid"
+			# A status file that landed while the tree was being stopped means
+			# the command had already completed; trust it over the clock.
+			[ -f "${log_file}.status" ] && break
+			wait "$pid" 2>/dev/null || :
 			package_list_timeout_diagnostic "$what" "$bound" "$module" "${log_file}.stderr"
 			return 1
 		fi
 		sleep 0.1
 	done
-	if wait "$pid"; then
+	wait "$pid" 2>/dev/null || :
+	status="$(cat "${log_file}.status" 2>/dev/null || printf '1')"
+	case "$status" in
+	''|*[!0-9]*) status=1 ;;
+	esac
+	if [ "$status" -eq 0 ]; then
 		return 0
-	else
-		status=$?
-		cat "${log_file}.stderr" >&2
-		return "$status"
 	fi
+	cat "${log_file}.stderr" >&2
+	return "$status"
 }
 
 # run_list_build_flags runs the helper from the repository root, where the
