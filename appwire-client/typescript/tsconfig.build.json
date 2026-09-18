@@ -28,6 +28,7 @@
     "attachmentLimits.ts",
     "attachmentMarkers.ts",
     "textareaMarkers.ts",
+    "threadUsage.ts",
     "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",
