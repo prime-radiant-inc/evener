@@ -42,13 +42,13 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
       if (saveFails) throw new Error("disk unavailable");
       stored = structuredClone(checkpoint);
     },
-    removeIf: (checkpoint: Checkpoint) => {
-      lastRemoveIf = structuredClone(checkpoint);
-      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return false;
+    removeIf: (identity: unknown) => {
+      lastRemoveIf = structuredClone(identity);
+      if (JSON.stringify(identity) !== JSON.stringify(stored)) return false;
       stored = null;
       return true;
     },
-    replaceIf: (expected: Checkpoint, next: Checkpoint) => {
+    replaceIf: (expected: unknown, next: Checkpoint) => {
       if (replaceFails) throw new Error("disk unavailable");
       if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
       stored = structuredClone(next);
