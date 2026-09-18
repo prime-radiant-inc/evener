@@ -193,14 +193,13 @@ export function fromWireChange(value: unknown): TranscriptDisplayChange | undefi
   return config === undefined ? undefined : { layout: value.layout, revision: value.revision, config };
 }
 
-/** The PATCH response shape: exactly {layout, revision, config} for the
- * layout written, or undefined. Semantic checks against the request belong to
- * the caller. */
+/** The PATCH response shape: {layout, revision, config} for the layout
+ * written, or undefined. Extra fields a future hub adds are tolerated, not
+ * rejected - the same forward-compatible posture fromWireChange and
+ * fromWireDefaults already take. Semantic checks against the request belong
+ * to the caller. */
 function fromWirePatchResponse(value: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value)) return undefined;
-  const keys = Object.keys(value);
-  if (keys.length !== 3 || !("layout" in value) || !("revision" in value) || !("config" in value)) return undefined;
-  if (value.layout !== layout || !isRevision(value.revision)) return undefined;
+  if (!isRecord(value) || value.layout !== layout || !isRevision(value.revision)) return undefined;
   const config = fromWireConfig(value.config);
   return config === undefined ? undefined : { revision: value.revision, config };
 }
@@ -487,8 +486,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const canonical = conflictCurrent(error, layout);
       if (canonical !== undefined) applyHubDefault(layout, canonical);
       const message = errorText(error);
+      // A malformed reply is exactly as unknown an outcome as a transport
+      // failure (the request may or may not have applied on the hub): the
+      // optimistic preview clears the same way either way. clearPreview is
+      // idempotent, so this is safe even for the one InvalidPatchResponseError
+      // (the revision-regression check above) that already cleared it.
       setState({
-        ...(error instanceof InvalidPatchResponseError ? {} : clearPreview(layout)),
+        ...clearPreview(layout),
         hubError: message,
         ...layoutError(layout, message),
       });
