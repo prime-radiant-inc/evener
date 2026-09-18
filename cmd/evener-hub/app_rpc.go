@@ -371,11 +371,13 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 }
 
 // newHubAppServerWithNavigationAndTrace builds the RPC server and registers
-// every handler. It wires no plugin Manager of its own: cfg.PluginManager,
-// when set, is the one every plugin handler here uses (newWebServer
-// constructs and wires it, after this function returns, to the very server
-// it built); nil falls back to a fresh, unwired plugins.NewManager(cfg.PluginRoot)
-// for callers that never build a server (most tests).
+// every handler. cfg.PluginManager, when set, is the one every plugin
+// handler here uses (newWebServer constructs it and wires it, after this
+// function returns, to the very server it built, so it wires nothing here);
+// nil falls back to a fresh plugins.NewManager(cfg.PluginRoot), wired to this
+// server directly, for a caller that never builds through newWebServer
+// (most tests, and any embedder calling this constructor's exported
+// wrappers directly).
 func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
@@ -508,12 +510,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// one Manager every plugin surface below shares: this controller,
 	// registerPluginAutoUpgradeHandlers, and — via cfg, which
 	// registerThreadHandlers below captures by value — hubThreadStart and
-	// hubSpawnSlashCatalog's ResolveForLaunch. A caller that never builds a
-	// server (most tests) leaves it nil and gets a fresh, unwired Manager
-	// here instead.
+	// hubSpawnSlashCatalog's ResolveForLaunch. A caller that never builds
+	// through newWebServer (most tests, and any embedder calling
+	// newHubAppServer/newHubAppServerWithNavigation directly) leaves it nil:
+	// this constructs one and wires it to this server itself, the same way
+	// newWebServer wires cfg.PluginManager, so plugin/marketplace mutations
+	// and checkNow on this server still broadcast rather than going silent.
 	mgr := cfg.PluginManager
 	if mgr == nil {
 		mgr = plugins.NewManager(cfg.PluginRoot)
+		wirePluginStoreBroadcast(mgr, server)
 	}
 	cfg.PluginManager = mgr
 	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
