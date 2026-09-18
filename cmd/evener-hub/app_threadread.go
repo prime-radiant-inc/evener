@@ -759,7 +759,14 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		CWD:           cwd,
 		Source:        "local",
 		Evener: appwire.EvenerThread{
-			Ref:          ref,
+			Ref: ref,
+			// A past session has no live daemon, so it has no instance id of its
+			// own; fall back to the thread id, the same rule the daemon-backed read
+			// uses (firstLocalNonEmpty(entry.InstanceID, threadID)). Frontends key
+			// their fork/queue affordances on instanceId, and the hub advertises
+			// forkFromTurn on these sessions, so the wire must carry one. AskPending
+			// stays false: a past session has no live ask to be pending.
+			InstanceID:   entry.Meta.ID,
 			ParentRef:    parentRef,
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,

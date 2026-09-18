@@ -566,6 +566,31 @@ func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.P
 	return thread
 }
 
+// TestPastEntryThreadStampsInstanceID pins the past-session read's
+// EvenerThread.InstanceID. A session with no live daemon has no instance of its
+// own, so the read must fall back to the thread id exactly as the daemon-backed
+// read does (firstLocalNonEmpty(entry.InstanceID, threadID)). Both frontends key
+// fork and queue affordances on instanceId, and the hub advertises forkFromTurn
+// on these sessions, so the forkable past session a client trusts on the wire
+// must carry one rather than read as undefined.
+func TestPastEntryThreadStampsInstanceID(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
+	if err != nil {
+		t.Fatalf("pastEntryThread: %v", err)
+	}
+	if thread.Evener.InstanceID != sessionID {
+		t.Fatalf("instanceId = %q, want the thread id fallback %q", thread.Evener.InstanceID, sessionID)
+	}
+	if thread.Evener.AskPending {
+		t.Fatalf("askPending = true for a past session with no live ask")
+	}
+}
+
 func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusCompleted}
