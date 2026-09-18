@@ -426,14 +426,19 @@ async function clickPillAndSettle(): Promise<
 }
 
 // #917: content growing AFTER the transcript has settled at the bottom, with
-// no item append (so the virtualizer's follow-on-append never runs) and no
-// scrollTop assignment (so no native scroll event) - the late-webfont-swap
-// shape, where the offset stays pinned while scrollHeight grows and the reader
-// is left a few pixels short with wasAtBottomRef still true. Growing every
-// rendered row's content through a stylesheet reproduces that geometry change
-// in a real browser; the guard requires the transcript to re-anchor to the
-// TRUE bottom (bottomGap within 1px) and stay there, with no pill.
-const GROWTH_PADDING_PX = 200;
+// no item append and no scrollTop assignment (so no native scroll event) - the
+// late-webfont-swap shape, where the offset stays pinned while scrollHeight
+// grows and the reader is left a few pixels short with wasAtBottomRef still
+// true. Growing the scroll content's own box (not a row) keeps the growth out
+// of the virtualizer's follow-on-append AND its row re-measure machinery, so
+// nothing but useTranscriptScroll's own re-anchor can reach the new bottom -
+// the exact #917 geometry. The guard requires the transcript to re-anchor to
+// the TRUE bottom (bottomGap within 1px) and stay there, with no pill.
+//
+// min-height (rather than height) because React owns the sizer's inline
+// height: a re-render writes the virtualizer's totalSize back, and min-height
+// still wins over a smaller height, so the growth holds for the whole settle.
+const GROWTH_PX = 240;
 const GROWTH_SETTLE_FRAMES = 30;
 const GROWTH_TRIPWIRE_MS = 8_000;
 async function growContentAndSettle(): Promise<
@@ -446,8 +451,12 @@ async function growContentAndSettle(): Promise<
 > {
   const el = scrollElement();
   const before = geometryOf(el);
+  const sizer = el.firstElementChild;
+  if (!(sizer instanceof HTMLElement)) throw new Error("transcript harness: the scroll content is not mounted");
+  const grown = sizer.offsetHeight + GROWTH_PX;
+  sizer.setAttribute("data-growth-probe", "sizer");
   const style = document.createElement("style");
-  style.textContent = `[data-testid="transcript-row"] { padding-bottom: ${GROWTH_PADDING_PX}px; }`;
+  style.textContent = `[data-growth-probe="sizer"] { min-height: ${grown}px !important; }`;
   document.head.appendChild(style);
 
   const deadline = performance.now() + GROWTH_TRIPWIRE_MS;
