@@ -68,21 +68,18 @@ against a stale install and can report real-looking errors (missing types,
 unresolved modules) that are an artifact of the stale install, not of the
 code. `make test-web` avoids that specific case — a real, non-symlinked
 `node_modules` left behind by a `package-lock.json` change — because its
-preflight repairs the install first; the symlinked-install case has its own
-caveat below. Prefer `make test-web` to reproduce the gate by hand rather
-than running `npm ci` yourself: an agent worktree's `node_modules` is often
-a symlink to a shared install other worktrees use, and `npm ci` deletes the
-existing `node_modules` before installing — through a symlink that deletes
-the shared install out from under everyone else. `web-preflight.sh` only
-guards this conditionally: it checks `node_modules -nt package-lock.json`
-first, and reaches the `-L node_modules` branch — which compares the symlink
-target's own `package-lock.json` before allowing anything through — only
-when that first check is false. When a shared install happens to be newer
-than this worktree's lockfile, the `-nt` check short-circuits the symlink
-branch entirely: the script no-ops and proceeds without ever comparing
-lockfiles, so it is not a guarantee that a stale or mismatched shared
-install gets caught. If you do run `npm ci` by hand, check `[ -L node_modules ]`
-yourself first; don't rely on the script to catch it for you. The same
+preflight repairs the install first. Prefer `make test-web` to reproduce the
+gate by hand rather than running `npm ci` yourself: an agent worktree's
+`node_modules` is often a symlink to a shared install other worktrees use, and
+`npm ci` deletes the existing `node_modules` before installing — through a
+symlink that deletes the shared install out from under everyone else.
+`web-preflight.sh` validates that case first: when `node_modules` is a symlink
+it compares the symlink target's own `package-lock.json` with this worktree's
+and refuses if they differ, before applying the `-nt` freshness shortcut (it
+follows symlinks, so a shared install newer than this worktree's lockfile would
+otherwise skip the comparison entirely). If you do run `npm ci` by hand, still
+check `[ -L node_modules ]` yourself first; don't rely on the script to catch
+it for you. The same
 symlink risk applies to `appwire-client/typescript` (no preflight script owns its
 install; `make test-api-package` runs `npm run qualification` directly) and
 to `mobile-native` (`native-preflight.sh` checks the install's freshness and
