@@ -1148,16 +1148,12 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
-		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
-		}
+		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
-		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
-		}
+		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
@@ -1168,9 +1164,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	// them owes evener/auth/updated when its write applied.
 	authStatusWrite := func(originClientID string, call func() (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
 		resp, err := call()
-		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, originClientID)
-		}
+		notifyAuthWrite(server, err, resp, originClientID)
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
@@ -1189,8 +1183,8 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		resp, err := authDevicePoll(authController, ctx, params)
 		// A pending poll wrote nothing, which the state says; an authorized one
 		// wrote the record, whether or not the status read after it failed.
-		if writeDidApply(err) && resp.State == "authorized" {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
+		if resp.State == "authorized" {
+			notifyAuthWrite(server, err, *resp.Status, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -1503,6 +1497,24 @@ func notifyAuthUpdated(server *appserver.Server, provider, activeSource, originC
 		payload["originClientId"] = originClientId
 	}
 	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, payload)
+}
+
+// notifyAuthWrite broadcasts what a credential or OAuth write actually
+// knows. A clean read (err == nil) has the real provider and active source,
+// so it broadcasts those. A write that applied but whose status read failed
+// (writeApplied's shape) has neither: status is the read's own zero-value
+// fallback (AuthStatusResponse{Provider: name}, ActiveSource == ""), and
+// broadcasting that would announce "nothing active" as fact when the truth
+// was never read. That case broadcasts the no-data form notifyInstanceUpdated
+// uses instead, so clients refetch rather than adopt a fabricated
+// activeSource. A write that never applied broadcasts nothing.
+func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthStatusResponse, originClientID string) {
+	switch {
+	case err == nil:
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
+	case writeDidApply(err):
+		notifyInstanceUpdated(server)
+	}
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all
