@@ -1061,14 +1061,21 @@ const RAW_WARNING_FRAME_MAX_NODES = 500;
 // boundary, never mid-pair. A fast path for the common (short) case:
 // UTF-16 length is always >= code-point count, so no huge value means no
 // work.
-function boundedPrefix(s: string, maxCodePoints: number): string {
-  if (s.length <= maxCodePoints) return s;
-  // Bound the allocation before expanding to code points: a UTF-16 prefix
+// `start` lets a caller bound a WINDOW rather than always the leading
+// prefix: the string from `start` onward is what's kept, sliced in one
+// already-bounded copy (at most maxCodePoints * 2 UTF-16 units), never the
+// whole `start`-to-end remainder — boundedContent below relies on this to
+// stay bounded even when `start` is itself deep into a multi-megabyte
+// string.
+function boundedPrefix(s: string, maxCodePoints: number, start = 0): string {
+  const remaining = s.length - start;
+  if (remaining <= maxCodePoints) return start === 0 ? s : s.slice(start);
+  // Bound the allocation before expanding to code points: a UTF-16 window
   // twice the code-point limit always contains at least that many code
   // points (every code point is at most two UTF-16 units), so slicing the
   // string first — a cheap view, no per-character array — never drops real
   // content.
-  let bounded = s.slice(0, maxCodePoints * 2);
+  let bounded = s.slice(start, start + maxCodePoints * 2);
   // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
   // as the last unit of `bounded`. Array.from would treat that lone unit as
   // its own broken "character" rather than dropping it; strip it before
@@ -1139,6 +1146,20 @@ function boundedCodePoints(s: string): string {
   return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS);
 }
 
+// hasWarningText finds non-blank content anywhere in a string, but
+// boundedCodePoints alone always keeps the LEADING RAW_WARNING_FRAME_MAX_CHARS
+// code points — a message, title, hint, or source with more than that many
+// leading blank code points followed by real content would pass
+// hasWarningText yet be stored as nothing but the blank prefix, rendering
+// as nothing to every consumer. /\S/.exec finds the first non-whitespace
+// index without copying anything; boundedPrefix then takes its own single,
+// already-bounded slice starting there, so the window kept always contains
+// the actual content instead of the padding in front of it.
+function boundedContent(s: string): string {
+  const start = /\S/.exec(s)?.index ?? 0;
+  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS, start);
+}
+
 function rawWarningFrame(params: WarningParams): string {
   const json = JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES }));
   // prunedForStringify above already keeps `json` itself small; this bound
@@ -1166,17 +1187,21 @@ export function foldWarningParams(params: WarningParams): WarningFold {
   return {
     // Bounded even though rawWarningFrame's own branch already is: a huge
     // message (warningMessage's own return) is a separate, previously
-    // unbounded path into the model — one call here covers both.
-    text: boundedCodePoints(text),
+    // unbounded path into the model — one call here covers both. Stored
+    // warning strings are the bounded prefix of the CONTENT, never of the
+    // padding in front of it — boundedContent, not boundedCodePoints, keeps
+    // that true when a value has more leading blank code points than the
+    // bound itself.
+    text: boundedContent(text),
     // Blank is absent too, not just "not a string" — hasWarningText's own
     // reading, which every consumer must apply anyway. Normalizing it here
     // means a future reader is never one missed hasWarningText call away
     // from rendering blank content. Bounded for the same reason as text:
     // an oversized title/hint/source reaching ItemModel.warning verbatim is
     // the same class of vector rawWarningFrame closes for the fallback.
-    title: hasWarningText(params.title) ? boundedCodePoints(params.title) : undefined,
-    hint: hasWarningText(params.hint) ? boundedCodePoints(params.hint) : undefined,
-    source: hasWarningText(params.source) ? boundedCodePoints(params.source) : undefined,
+    title: hasWarningText(params.title) ? boundedContent(params.title) : undefined,
+    hint: hasWarningText(params.hint) ? boundedContent(params.hint) : undefined,
+    source: hasWarningText(params.source) ? boundedContent(params.source) : undefined,
   };
 }
 

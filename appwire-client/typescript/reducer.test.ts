@@ -5030,15 +5030,11 @@ test("a huge warning message is never trimmed at full size before it's bounded",
 // hasWarningText bounded its candidate to RAW_WARNING_FRAME_MAX_CHARS code
 // points BEFORE checking for non-blank content, so real text starting past
 // that bound was invisible to the check - a message with more than 2000
-// leading blank code points then real text was misclassified as blank.
-// boundedCodePoints ALSO bounds the stored text to 2000 code points (a
-// separate step, applied regardless of classification), so the real text
-// itself never survives into item.text either way here - what the
-// misclassification actually changes is whether item.text falls back to
-// the raw-frame JSON dump (misclassified: warningMessage sees no message,
-// no title, no hint, so it's a message-less frame) or stores the message's
-// own bounded, blank-looking prefix (correctly classified: warningMessage
-// returns the message, so foldWarningParams never reaches the fallback).
+// leading blank code points then real text was misclassified as blank
+// (falling back to the raw-frame JSON dump instead of storing the message).
+// boundedContent then keeps the window starting at the message's own first
+// non-whitespace code point, not the leading padding, so the real text is
+// what item.text ends up holding.
 test("a warning message with more than 2000 leading blank code points is not misclassified as blank", () => {
   let model = testHydrate();
   model = applyNotification(
@@ -5054,10 +5050,32 @@ test("a warning message with more than 2000 leading blank code points is not mis
   model = applyNotification(model, { method: "warning", params }, 1002);
 
   const item = itemAt(turnAt(model, 0), 0);
-  // The raw-frame fallback JSON-stringifies params, so it always contains
-  // this field's own name; the message's bounded prefix (all spaces) never
-  // does.
-  expect(item.text).not.toContain("threadId");
+  expect(item.text).toBe("real content");
+});
+
+// hasWarningText detects a title's content anywhere in the string, but the
+// stored title used to be bounded from index 0 regardless - a title with
+// more than 2000 leading blank code points then real text passed
+// hasWarningText yet was stored as nothing but the blank prefix, so
+// WarningItem.tsx (which renders item.warning.title verbatim) had nothing
+// visible to show. Invariant: stored warning strings are the bounded
+// prefix of the CONTENT, never of the padding in front of it.
+test("a warning title with more than 2000 leading blank code points renders its real text, not the padding", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", title: `${" ".repeat(3000)}URGENT` };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.warning?.title).toBe("URGENT");
 });
 
 // A message-less frame that DOES carry a title or hint is something to show:
