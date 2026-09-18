@@ -15,7 +15,7 @@ Every later section uses these terms with exactly these meanings.
 - **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 - **OperationId (client operation ID).** The client-supplied operation ID on `deploy`/`restart`: opaque, non-empty, at most 128 bytes, no required structure. `deploy`/`restart` responses carry `id` (the controller-assigned record id) and `clientOperationId` (echoing the caller's value).
 - **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every generation the name ever carried. A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
-- **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
+- **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 - **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 - **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 - **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
@@ -169,9 +169,12 @@ records exist for the same (host, kind) returns the newest retained superseded r
 when the request names no newer intended pair, and refuses `stale-entry` (pruned-generation
 value) when the request's intended pair is older than the registry's current pair —
 a lost-response retry after an intervening update never silently opens a fresh operation.
-A fresh operation on a superseded pair opens only when the request carries the intended
-(generation, incarnation id) pair explicitly selecting it (the `operations` filter pair
-in §10 names that selection contract). Re-add starts its
+No fresh operation ever opens on a superseded pair: a request naming a superseded
+(generation, incarnation id) pair replays the retained record when one matches,
+or refuses `stale-entry` when none does — never a fresh run against a stale
+configuration. The (generation, incarnation id) filter pair in §10 is query-only:
+it selects which retained record the `operations` read returns, never which pair
+a fresh operation runs under. Re-add starts its
 new generation with a clean dedup slate. A `host-removed` record never matches a dedup
 lookup. History stays readable either way.
 
@@ -181,25 +184,38 @@ directory fsynced after it, matching the sidecar protocol in the registry spec �
 Token consumption and record creation are one such write (§6 step 4). The store file and
 its temp files carry mode `0600`. Replacements preserve the mode. Startup refuses to
 load a store readable beyond its owner. A corrupt or schema-invalid store file at boot
-quarantines: renamed aside with the boot timestamp, never deleted. Before the
-replacement store serves, boot snapshots the safety-critical fences the
-quarantined file can no longer prove — per-host fencing quarantines, open
-`orphan-unverified` records with their persisted boundaries, and per-name
-ownership (generation high-water marks plus incarnation ids) — into a
+quarantines in custody-first order: boot first persists the quarantine-intent plus
 quarantine-custody file beside the store (same atomic temp-file-fsync plus rename
-plus parent-directory-fsync
-write, mode `0600`, never inside the replaceable store file). The custody file
+plus parent-directory-fsync write, mode `0600`, never inside the replaceable
+store file), and only then renames the corrupt file aside with the boot
+timestamp, never deleting it. The intent names the corrupt file plus the custody
+file plus the boot timestamp before either rename lands, so a crash between the
+custody write and the rename, or between the rename and the replacement-store
+open, still boots covered: an intent with no matching aside file re-runs the
+rename; an aside file with no complete custody fails startup, never serves. Before the
+replacement store serves, that custody file snapshots the safety-critical fences the
+quarantined file can no longer prove — per-host fencing quarantines, open
+`orphan-unverified` records with their persisted boundaries, per-record ids plus
+the allocator high-water mark, and per-name
+ownership (generation high-water marks plus incarnation ids). The custody file
 schema is `{quarantineEpoch: number, quarantinedFile: string,
-custodiedAt: string (RFC3339), fences: {host: string, quarantine: bool,
+custodiedAt: string (RFC3339), recordIds: {recordId: string, host: string}[],
+allocatorHighWaterMark: number,
+fences: {host: string, quarantine: bool,
 boundary: BoundaryEntry[]}[], ownership: {host: string, highWaterMark: number,
-incarnationId: string}[]}` — one fence entry per fenced host carrying the
+incarnationId: string}[]}` — `recordIds` carries every imported record's original
+controller-assigned id verbatim so the replacement store imports by id, and
+`allocatorHighWaterMark` carries the pre-quarantine maximum so the replacement
+allocator starts above it; one fence entry per fenced host carrying the
 quarantined record's persisted boundary verbatim (element type in the
 crash-fencing spec §9), one ownership entry per name the corrupt file
 yielded. Every custody entry is resolvable: boot imports each fence entry as
-an `orphan-unverified` record carrying the custodial boundary, and each
-ownership-only entry as an `orphan-unverified` record carrying an empty
-boundary (no boundary survived the corruption to verify, so the operator
-confirms the name idle out-of-band before resolving), in the replacement
+an `orphan-unverified` record carrying the custodial boundary under its original
+record id, and each
+ownership-only entry as an `orphan-unverified` record carrying the single
+`boundary-unavailable` entry (boundary lost to the corruption, never verified
+empty — the operator attests the name idle out-of-band before resolving, per the
+crash-fencing spec §5 attestation rule), in the replacement
 store under the same id scope as §4 records — so `orphan-resolve`
 (crash-fencing spec §§4–5) and the `operations` detail filter address every
 closed name by record id like any other unverified record, and no name stays
@@ -207,9 +223,8 @@ permanently blocked for want of an id. When the corrupt file cannot
 yield a complete custody snapshot — unparseable fences, a boundary that fails
 schema validation, or ownership missing for a fenced name — boot fails startup
 rather than serving hosts past an unprovable fence. The replacement
-store opens at epoch + 1 with its row-ID allocator starting above the maximum
-imported custody record id (the pre-quarantine high-water mark is preserved
-across the import, so no fresh operation reuses an imported record's id) and
+store opens at epoch + 1 with its row-ID allocator starting above the custodial
+`allocatorHighWaterMark` (so no fresh operation reuses an imported record's id) and
 `compactSeq` from zero, and
 every name the custody file names stays closed — no new lifecycle or mutation
 call past admission — until the operator resolves its quarantined state
@@ -671,7 +686,9 @@ entry. A first page whose
 boundary map would exceed the 8 KiB encoded cap refuses with typed `cursor-too-large`
 (data carries `{capBytes: 8192}`), never a truncated cursor. No cursor was minted, so
 there is no `compactSeq` and no stored `bounds` entry to name. The 63-host cap bounds the map, so
-the cap is reachable only with adversarial incarnation-id lengths, never in normal use.
+the cap is reachable only above the 128-byte incarnation-id bound, never in normal use:
+the generator pins 36-byte output (§1), so a first page stays far below the cap
+unless a caller hand-mints over-long ids up to the bound.
 `limit` defaults to 50 and caps at 200. Responses never exceed the cap. `limit` with no
 `cursor` starts the pinned first page. An unfiltered call pages instead of returning
 the whole store.
@@ -688,12 +705,20 @@ converge sidecar and store without a cross-file atomic write.
 to delete or invalidate plus the sidecar generation the intent belongs to). The store
 write applies it. A follow-up sidecar atomic write clears the intent. Token deletion
 lands only after the sidecar commit's swap succeeds: the store purge runs as the
-post-swap step, never before it. A failure before the purge leaves both files in the
-old state with nothing to compensate. A post-swap failure after the purge (still before
+post-swap step, never before it. A failure before the purge with the swap already
+landed leaves the sidecar new and the store old: boot re-applies the intent's
+purge, then clears the intent in its follow-up sidecar write — the §9 boot
+reconciliation below owns this ordering, never a no-op. A failure before the swap
+leaves both files old with nothing to compensate. A post-swap failure after the purge (still before
 the commit point) compensates the store purge alongside the sidecar restore: the purged
 rows are re-inserted alongside the stash restore, so compensation resurrects exactly
 the tokens its own sidecar restore revalidates, and the compensated mutation leaves old
-sidecar bytes beside old store rows.
+sidecar bytes beside old store rows. Boot and live recovery cover every ordering
+of the four steps (swap, purge, intent-clear, compensation): swap-landed/purge-missing
+re-applies the purge; purge-landed/intent-present converges to the committed
+sidecar's view and clears; compensation open follows the `pendingCompensation`
+phase arms; converged (rows gone, intent cleared) clears the stale intent with no
+further write.
 
 `pendingCompensation`: the committer first persists a record holding the rows about to
 be purged (plus the stash reference and the sidecar generation the purge belongs to, in
@@ -799,8 +824,12 @@ element type.
   runningHealthy: bool, runningProcessStartTime?: string (RFC3339)}` —
   `runningProcessStartTime` present exactly when the probe carried it. `plan`/`token`
   are absent — never null — on the no-token response.
-- `evener/host/running` (controller-side method — catalog entry plus TypeScript client
-  with the handler): params `{}`; response `{buildRevision: string, healthy: bool,
+- `evener/host/running` (controller-side mutation — catalog entry plus TypeScript client
+  with the handler): params `{fencingEpoch: {bootId: string, opSeq:
+  number}}` (required on the wire; the `plan`/`deploy` probe path always
+  presents the caller's fencing epoch — the persisted epoch the calling worker
+  minted before launch — and the generated client carries the field, so no
+  well-formed client call omits it); response `{buildRevision: string, healthy: bool,
   processStartTime?: string (RFC3339)}` — `processStartTime` present exactly when the
   serving hub knows its own process start time. An unverifiable revision (`"dev"` or a
   dirty `"<sha>-dirty"`) never proves currency by revision equality. Served locally by
@@ -817,24 +846,27 @@ element type.
   owner-set minimum-free-space knob (default ships in the implementing PR); only above
   that threshold does it run the state-root write probe — a real atomic temp-plus-rename
   probe inside the state dir with a uniquely named temp per probe, rename to a distinct
-  probe target in the same dir, fsync the dir, then remove — which `plan`/`deploy`
-  execute under the host's fencing epoch and gate (the write probe is a classified
-  mutating step, never a gateless bypass: the probe wire call carries the caller's
-  fencing epoch in its params, the serving hub validates the presented epoch against
-  the host's current fencing epoch and refuses stale epochs without probing, and the
-  calling side issues the probe only while holding the host gate through the
-  gate-aware probe primitive in §6 — the probe never runs gateless and its epoch
-  never defaults). Params are therefore `{fencingEpoch: {bootId: string, opSeq:
-  number}}` on the `plan`/`deploy` probe path; the serving hub validates the presented
-  epoch before the write half runs. A direct empty-params call is refused with typed
-  `probe-failed` (no epoch presented), never served as an unauthenticated write; a
+  probe target in the same dir, fsync the dir, then remove. The probe is a fully
+  fenced mutating step, never a read and never a gateless bypass: the calling
+  side issues it only while holding the host gate through the gate-aware probe
+  primitive in §6 (which inherits the already-held gate instead of re-acquiring
+  it), presenting the worker's persisted fencing epoch; the serving hub persists
+  the presented epoch per calling host before the write half runs, validates it
+  against the host's current fencing epoch, and refuses stale epochs without
+  probing. It never runs gateless and its epoch never defaults. A call with the
+  epoch absent is refused with typed `probe-failed` (no epoch presented), never
+  served as an unfenced write; a
   probe temp orphaned by a crash carries the probe-name prefix and
   boot prunes prefix-matching strays before serving. No probe temp survives the probe
-  window past its remove except a crash orphan the boot prune owns. Anything else — session counts,
+  window past its remove except a crash orphan the boot prune owns. The orphan
+  fence gates it like every other mutating call: it never bypasses an open
+  `orphan-unverified` record or quarantine — only the read-only calls
+  (`list`, `status`, `operations`) plus the `orphan-resolve` way out bypass the
+  fence (crash-fencing spec §8). Anything else — session counts,
   load, peer reachability, external dependency status — never feeds `healthy`.
   `healthy: false` is data, never a probe failure: each forced-false case returns
   `healthy: false` while the probe itself still succeeds. Admitted only over an
-  attached session peered by the #1603 handshake (read classification; never forwarded
+  attached session peered by the #1603 handshake (mutation classification; never forwarded
   onward to a third hub; browser-origin and forwarded requests refused exactly like
   every other `evener/host/*` request). The `plan` probe calls it through
   `sshManager.ChannelIfAttached(name)`; its response fields are what `plan` records as
@@ -980,7 +1012,8 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   Ensure-triggered deploy, which holds its own record. A plan-held gate returns the
   transient form with no operation reference. The UI shows retry, not open/wait.
 - Protocol shapes: catalog entries and the regenerated client match §10
-  field-for-field — including `incarnationId` on `OperationRecord` and the
+  field-for-field — including the `running` mutation's required
+  `{fencingEpoch: {bootId, opSeq}}` params, `incarnationId` on `OperationRecord` and the
   `operations` request/response/cursor, `compacted: true` exactly on tombstone
   replays, every `stale-entry` data value against its emitting path, the
   `cursor-invalidated` plus `cursor-too-large` catalog entries with their data
@@ -999,9 +1032,14 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   page one. An over-cap first page refuses the distinct `cursor-too-large`
   discriminator with `{capBytes: 8192}`. Both shapes pinned.
 - The running probe (`evener/host/running` handler): local revision plus health plus
-  optional `processStartTime`; attached-session admission only; unauthenticated probe
+  optional `processStartTime`; mutation classification with the required
+  `{fencingEpoch: {bootId, opSeq}}` params (the generated client carries the
+  field — an epoch-absent call refuses `probe-failed`, never served); attached-session admission only; unauthenticated probe
   refusal; browser and forwarded requests refused; never forwarded onward (no A→B→A
-  chain); the gated `plan` probe call with its explicit deadline (timeout yields
+  chain); orphan-fenced like every other mutating call (no read bypass — an open
+  `orphan-unverified` record or quarantine refuses it past admission); the serving
+  hub persists the presented epoch before the write half and refuses stale epochs
+  without probing; the gated `plan` probe call with its explicit deadline (timeout yields
   the no-token `probe-failed` refusal with nothing left held past the probe window); `HostPlan`
   `runningVersion` / `runningHealthy` placement; `handler-absent` named for
   pre-handler remotes with the one-time manual-upgrade migration path; the no-token
@@ -1047,8 +1085,13 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   and its live mark still never-matches at boot).
 - The corrupt operation-store boot quarantine (store quarantined aside; boot serves
   empty with zero outstanding tokens plus the operator-visible health signal;
-  custody-file schema pinned field-for-field; every custody fence imported as an
-  `orphan-unverified` record resolvable through `orphan-resolve`; truncated and
+  custody-intent persisted before the rename plus the custody-file schema pinned
+  field-for-field (original record ids, allocator high-water mark, fences,
+  ownership); every custody fence imported as an
+  `orphan-unverified` record under its original id resolvable through `orphan-resolve`;
+  ownership-only entries imported with the `boundary-unavailable` entry and
+  attested resolve only; a crash between custody write and rename, or an aside
+  file with incomplete custody, fails closed; truncated and
   corrupt stores covered end-to-end — including the fail-startup posture when
   custody is incomplete).
 - The cross-file intent (a crash between the sidecar commit and the store sync

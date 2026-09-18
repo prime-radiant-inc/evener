@@ -50,7 +50,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every generation the name ever carried. A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 
-**Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
+**Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in the deploy-pipeline spec §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 
 **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 
@@ -584,20 +584,20 @@ time, so a commit-then-replay names the generation the commit actually landed
 and hits instead of missing as superseded — plus the incarnation id minted
 beside that generation in the same atomic sidecar write), mirroring the
 operation store's (host, kind, client operation ID, generation) scope plus the
-same incarnation id. Including the post-commit generation plus incarnation id
-keeps re-adds sharing a generation across incarnations from colliding or
-authorizing work against the live entry. A replay matches only a retained
+same incarnation id. Generations are strictly monotonic per the §1 glossary —
+no live re-add path reuses a generation — so the incarnation id always pairs
+with a generation no other incarnation carries. A replay matches only a retained
 receipt of the same name, kind, and mutationId. One rule, three arms: the
 first arm is the direct hit — same name, kind, mutationId, current generation,
 AND current incarnation id — returning the recorded receipt; the second arm is
 the superseded hit — the same key pinned to a superseded generation or a
-different incarnation sharing the generation — returning the recorded outcome
+different incarnation — returning the recorded outcome
 for recovery only, never authorizing work (a lost-response `remove` retried
 after a re-add recovers its outcome rather than tearing down the new
-incarnation, including the shared-generation case: a same-key receipt pinned
-to the open remnant's incarnation returns its outcome against a live entry
-sharing the generation but carrying a different incarnation id, never a hit
-authorizing work against the live entry); the third arm is the pruned refusal
+incarnation; the different-incarnation case covers only a crash-torn write —
+a receipt whose pinned pair survived on disk while the live registry already
+moved on — and returns its outcome against the live entry for recovery only,
+never a hit authorizing work against the live entry); the third arm is the pruned refusal
 — the same key whose receipt is gone with the count/TTL prune or dropped with
 the tombstone purge (the purge persists a marker for the dropped same-key
 receipts — §6) — refusing as `stale-entry`, never fresh-applying. A
@@ -814,14 +814,17 @@ registry to execute. The commit, the `teardown-retry` clearance, and the
 re-add purge are all single atomic writes with the same hard-startup-error
 posture on corrupt or schema-invalid content.
 
-Retry cleared-remnant records carry their own bounded retention independent of
-tombstones (owner-set cleared-marker TTL — a live host's repaired failures
-create no tombstone, so without this the records accumulate forever): every
-boot and every sidecar mutation compacts retry records past the TTL in the
-same atomic write, and lost-response retries past the TTL read as
+Cleared-remnant records carry their own bounded retention independent of
+tombstones (owner-set cleared-marker TTL plus an at-most-64-newest-per-name
+count bound in the same owner-knob family — a live host's repaired failures
+create no tombstone, so without both bounds repeated recovered-update failures
+grow the sidecar without limit): every
+boot and every sidecar mutation compacts retry records past either bound in the
+same atomic write, and lost-response retries past the bounds read as
 `teardown-unknown-key` not-found instead of `already-cleared`. Recovery
-(`recover`-kind) records are exempt from this TTL and compact only on the
-name's re-add or the retention-expiry purge.
+(`recover`-kind) records compact under the same dual bound — their TTL and
+count knobs ship in the same family with their own defaults — and compact only
+otherwise on the name's re-add or the retention-expiry purge.
 
 Retention: receipts and remnants are per-host and per-generation — re-add
 purges that name's superseded-generation receipts — except that name's newest
@@ -1132,8 +1135,10 @@ last plan-time refusal (the inputs behind `status`'s `restartFollows` and
 `planRefusal` — without these a no-dial `status` read cannot produce those
 fields), keyed by the host's registry (generation, incarnation id) pair and
 updated on every successful preflight and every attach outcome. Pair-keying
-keeps removed-incarnation facts from surfacing under a re-added entry that
-reuses the generation. Every `plan` call publishes into it under the gate
+keeps a crash-torn snapshot from surfacing under the live entry: generations
+are strictly monotonic (§1), so no live re-add reuses a generation, and the
+pair key additionally fences a stale write that survived on disk past the
+registry's advance. Every `plan` call publishes into it under the gate
 before returning — except the pre-mint no-token refusals
 (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
 `handler-absent`): `unattached`, `refresh-failed`, and `remnant-open` occur
@@ -1393,11 +1398,16 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   as the retry's cleared-remnant record)
   in the same atomic sidecar write that clears the remnant, so a retry naming
   an already-recovered ID replays `{outcome: "recovered-cleared", remnantId,
-  clearedName, clearedAt}` from the record — never a second clearance, never
-  not-found. Recovery markers are exempt from the generic cleared-marker TTL
-  in §6: a `recovered-cleared` replay stays replayable until the name's re-add
-  or the retention-expiry purge, so recovery retries never decay into
-  `teardown-unknown-key` while the generic TTL compacts retry markers. The attestation is validated before admission completes and the
+  clearedName, clearedAt, hostKind}` from the record — `hostKind` required on
+  the initial response and on every replay, pinned field-for-field by the
+  protocol-shape test — never a second clearance, never
+  not-found. Recovery markers compact under their own bounded retention — at most
+64 newest recovery records per name plus a recovery-marker TTL in the same
+owner-knob family as the cleared-marker TTL (every sidecar mutation and every
+boot compacts markers past either bound in the same atomic write; defaults ship
+in the implementing PR) — so a live host's recovered clearances stay bounded
+exactly like its retry markers. A `recovered-cleared` replay past the bound
+reads as `teardown-unknown-key`, never a second clearance. The attestation is validated before admission completes and the
   safety checks in §6 run before the clearing write; any failure refuses
   without clearing, naming the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
@@ -1598,8 +1608,9 @@ effective `HostConfig` — all seven fields `HostRow` requires, so `list` can
 render the removed row without a live entry — last-known-good rows, removal
 timestamp, the removed incarnation's id persisted alongside the generation
 high-water mark — boot reconciles on the exact persisted (generation,
-incarnation id) pair, so a live incarnation sharing the generation but
-carrying a different incarnation id never matches) — with a hard bound: at
+incarnation id) pair (generations are strictly monotonic per §1, so the pair
+check is defense-in-depth against a crash-torn tombstone, never a live
+re-add reusing a generation) — with a hard bound: at
 most 500 retained rows per tombstone and at most 1 MiB of serialized row bytes
 per tombstone (owner-adjustable knobs in the same family as the cleared-marker
 TTL; the defaults ship in the implementing PR) — plus a GLOBAL cap across all
@@ -1816,16 +1827,15 @@ set and fan-outs — a deleted declared host reads as not-found on all
 `evener/host/*` methods until re-declared, and its name-keyed caches clear —
 then bump affected generations and clear or rebind every name-keyed cache
 above — and the adopt-then-bump-then-clear sequence coordinates with in-flight
-operations exactly like `update`/`remove`: before adopting a changed entry,
-dropping a declared host, or clearing its manager bindings the reconcile
-try-acquires that host's per-host gate; a held gate defers the
-adopt/drop-and-clear for that host until the in-flight operation reaches
-terminal state — the admitted call proceeds on the pre-reconcile snapshot for
-that host meanwhile — while purely added entries and uncontended transitions
-(gate free at try-acquire) apply immediately under the mutation lock; a
-deferred transition re-runs the same generation bump and cache clear when the
-gate releases, so no external edit survives past the in-flight operation's
-completion — a changed entry never rebinds the registry entry, generation,
+operations exactly like `update`/`remove` under the same gate-first order
+(deploy-pipeline spec §5): before taking the mutation lock the reconcile
+try-acquires every affected host's per-host gate; a held gate defers the
+whole reconcile — the admitted call proceeds on the pre-reconcile snapshot
+meanwhile — while a free gate set lets the reconcile take the mutation lock
+holding those reservations and apply immediately; a deferred reconcile
+re-runs the same generation bump and cache clear when the gates release, so
+no external edit survives past the in-flight operations' completion — a
+changed entry never rebinds the registry entry, generation,
 channel, or supervisor under an in-flight deploy/restart still operating on
 the pinned old configuration), so no external edit — including a
 declared-host removal — survives past the next mutation/`plan`/`deploy`
@@ -1970,9 +1980,10 @@ Registry tests (all bullets in this section ship with the registry PR):
   `remnant-open` until the retry completes; the persisted receipt carries
   exactly `{outcome, row, generation, incarnationId, committedAt,
   droppedEntry?, winningFingerprint?, remnantId?, remnantResolvedAt?,
-  bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point
-  test pins the full five-part scoped key, so a shared-generation boot-merge
-  looks the receipt up under the right incarnation; `remnantId` while the
+  recoveryAttestation?, bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point
+  test pins the full five-part scoped key, so a crash-torn boot-merge
+  looks the receipt up under the right incarnation (strict monotonicity per
+  §1 means no live path produces a shared generation); `remnantId` while the
   remnant is open, `remnantResolvedAt` after resolution, `recoveryAttestation`
   exactly on `teardown-recover`-resolved receipts, `bootRecovered`
   exactly on boot-recovered receipts) and the cleared marker is the typed
@@ -2024,10 +2035,15 @@ lost). Remnant-gate tests:
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
   attach all refuse with `remnant-open` naming the blocking `remnantId` — the
   fence is host-wide, never mutation-only. Status-after-refusal tests: `status`
-  renders the pair-scoped refusal after each pre-mint refusal
-  reason (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
-  `handler-absent`) — one case per reason, never stale data from a
-  superseded pair. Config-path tests: a `--config`
+  renders the pair-scoped refusal after each of the nine no-token refusal
+  reasons (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
+  `handler-absent`, plus the four terminal validation refusals
+  `controller-dirty`, `target-unwritable`, `target-missing-prereq`,
+  `target-unit-findings`) — one case per reason, each asserting pair-scoped
+  publication, `terminal: true` on the four terminal arms and `terminal: false`
+  on the five retry arms, `status` rendering of the refusal (never stale data
+  from a superseded pair), and clearing of the refusal by a later success.
+  Config-path tests: a `--config`
   startup carries the canonical path into the web config and the sidecar +
   fingerprint derive from it. Collision tests: a tombstone/live collision
   restores the live generation strictly above the high-water mark with
