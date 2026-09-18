@@ -96,9 +96,11 @@ const (
 
 // truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
 // truncates so a reader can tell a capped value from a genuinely short one.
-// Rune-safe: never splits a multi-byte character. maxRunes must be positive;
-// every caller passes a package constant.
+// Rune-safe: never splits a multi-byte character.
 func truncateActivityText(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
 	// Runes never outnumber bytes, so a string this short cannot need cutting
 	// and does not have to be converted to check.
 	if len(s) <= maxRunes {

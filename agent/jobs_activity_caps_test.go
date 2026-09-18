@@ -233,6 +233,69 @@ func TestProjectActivitySession_BoundsTheCollapsedOffenderIdentifier(t *testing.
 	}
 }
 
+// TestProjectBoundedActivityTree_BoundsPacketPayloadsOnContinuationAncestors
+// pins the ancestor-chain half of the payload caps. A continuation page carries
+// its ancestor chain's delegates as fixed parts it cannot trim, so a page whose
+// every ancestor bears an oversized terminal packet must still fit once those
+// payloads are bounded.
+func TestProjectBoundedActivityTree_BoundsPacketPayloadsOnContinuationAncestors(t *testing.T) {
+	t.Parallel()
+	const depth = 4
+	oversized := activityMaxDelegatePayloadBytes * 4
+	leaf := &activitySessionSnapshot{SessionID: "s3", Ref: "local:s3"}
+	node := leaf
+	for i := depth - 1; i >= 0; i-- {
+		ownerID := fmt.Sprintf("s%d", i)
+		childID := node.SessionID
+		row := stableActivitySnapshot(fmt.Sprintf("dlg_%d", i), ownerID, childID, "brief")
+		row.latestPacket = &delegatestore.TerminalPacket{
+			Message:                json.RawMessage(`"` + strings.Repeat("m", oversized) + `"`),
+			StructuredResult:       json.RawMessage(`"` + strings.Repeat("s", oversized) + `"`),
+			StructuredResultReason: strings.Repeat("r", activityMaxDelegateProseRunes*4),
+			Warnings:               []string{strings.Repeat("w", activityMaxDelegateWarningRunes*4)},
+		}
+		node = &activitySessionSnapshot{
+			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
+			StableDelegates: map[string]delegateSnapshot{row.id: row},
+			Children:        map[string]*activitySessionSnapshot{childID: node},
+		}
+	}
+
+	// startDepth = -depth is exactly how a continuation to the leaf is loaded:
+	// every session above it is an ancestor the page cannot drop.
+	got, err := projectBoundedActivityTree(*node, "root", -depth, 0, 0, time.Unix(10, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("page = %d bytes, over the %d-byte limit", len(raw), activityMaxEncodedBytes)
+	}
+	session := &got.Root
+	for i := range depth {
+		if len(session.Entries) != 1 || session.Entries[0].Delegate == nil {
+			t.Fatalf("ancestor %d has entries %+v, want one delegate", i, session.Entries)
+		}
+		delegate := session.Entries[0].Delegate
+		if delegate.Message != nil || delegate.StructuredResult != nil {
+			t.Fatalf("ancestor %d kept an oversized payload: message=%d result=%d", i, len(delegate.Message), len(delegate.StructuredResult))
+		}
+		if n := len([]rune(delegate.StructuredReason)); n > activityMaxDelegateProseRunes {
+			t.Fatalf("ancestor %d StructuredReason = %d runes, want at most %d", i, n, activityMaxDelegateProseRunes)
+		}
+		if n := len(delegate.Warnings); n > activityMaxDelegateWarnings+1 {
+			t.Fatalf("ancestor %d warnings = %d, want at most %d plus the note", i, n, activityMaxDelegateWarnings)
+		}
+		if delegate.Child == nil {
+			t.Fatalf("ancestor %d has no child to descend into", i)
+		}
+		session = delegate.Child
+	}
+}
+
 // TestProjectActivitySession_SingleUnsupportedTypeKeepsOriginalWording pins
 // that the common one-offender case reads exactly as it always did rather
 // than being reworded into the counted form.
