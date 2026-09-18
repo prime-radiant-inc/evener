@@ -176,6 +176,10 @@ type InstanceSetDefaultMsg struct {
 
 type InstanceRemoveMsg struct {
 	Name string
+	// EndpointFingerprint is the endpoint the removal was confirmed against,
+	// taken from the InstanceEntry the panel showed. CmdInstanceRemove sends it
+	// so the hub can refuse a name another client has re-pointed since.
+	EndpointFingerprint string
 }
 
 type InstanceMutateResultMsg struct {
@@ -213,12 +217,12 @@ func CmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) 
 	}
 }
 
-func CmdInstanceRemove(client *appwire.Client, name string) tea.Cmd {
+func CmdInstanceRemove(client *appwire.Client, name, endpointFingerprint string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name, ExpectedEndpointFingerprint: endpointFingerprint}, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }

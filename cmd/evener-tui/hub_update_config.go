@@ -124,7 +124,7 @@ func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMs
 
 func (m hubModel) handleInstanceRemove(msg launchconfig.InstanceRemoveMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name)
+		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name, msg.EndpointFingerprint)
 	}
 	return m, nil
 }

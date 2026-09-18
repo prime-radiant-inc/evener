@@ -292,6 +292,90 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 	}
 }
 
+// An implicit instance carried by its Codex OAuth record can carry a stray
+// stored key beside it. The removal's reload fails, and only the stray key
+// cannot be put back while the record - the layer the instance actually
+// resolves from - is restored. The instance is configured again, so the
+// caller must hear a rollback, not "the removal stands", and the row must be
+// republished by the recovery reload.
+func TestInstances_RemoveRollsBackWhenTheCarryingRecordIsRestored(t *testing.T) {
+	// Load 1 is the fixture's own, load 2 this test's priming reload, load 3
+	// the removal's, and load 4 the rollback's recovery reload.
+	f := newFlakyReloadFixture(t, "openai-codex", func(load int) bool { return load == 3 })
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("openai-codex = %+v ok=%v, want an OAuth-backed instance", inst, ok)
+	}
+	// The stray stored key cannot be restored; the carrying record can.
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed reload reported")
+	}
+	if strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want a rollback: the carrying record is back", err)
+	}
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the rollback reported", err)
+	}
+	if writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want a plain rollback: the instance still resolves", err, err)
+	}
+	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", statErr)
+	}
+	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("after rollback openai-codex = %+v ok=%v, want it resolving again", inst, ok)
+	}
+}
+
+// The inverse of the case above: the OAuth record is the layer that carries
+// the instance and it cannot be restored (only the stray key can). The
+// instance no longer resolves, so the removal stands and the caller is told
+// the write applied.
+func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.T) {
+	f := newFlakyReloadFixture(t, "openai-codex", func(load int) bool { return load == 3 })
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		removed, err := originalDelete(dir, name)
+		if err == nil && removed {
+			// Occupy the record's path so the atomic restore cannot land: the
+			// stray key restores fine, the carrying record does not.
+			if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil {
+				t.Errorf("Mkdir(%s): %v", authPath, mkErr)
+			}
+		}
+		return removed, err
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed restore reported")
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the removal to stand: the carrying record is gone", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the carrying record stayed deleted", err, err)
+	}
+	if info, statErr := os.Stat(authPath); statErr != nil || !info.IsDir() {
+		t.Fatalf("auth path = %v (err %v), want the record still not restored", info, statErr)
+	}
+}
+
 // SetLayer persists the layer and then resolves the effective view. The file is
 // written before the resolution runs, so a resolution that fails leaves every
 // other client's launch config stale — the save applied.

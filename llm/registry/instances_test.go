@@ -597,6 +597,38 @@ func TestProviderRenameLeavesInstance(t *testing.T) {
 			t.Fatal("ollama: want true, the optional-bearer scheme needs no credential")
 		}
 	})
+	t.Run("non-implicit curated provider leaves nothing", func(t *testing.T) {
+		// azure-cognitive-services is curated but not implicit: with its
+		// resource name and key variable both set it is addressable and its
+		// api_key_env is satisfied, yet computeInstances derives no row for it,
+		// so a rename leaves nothing behind.
+		env := baseEnv(t)
+		env["AZURE_COGNITIVE_SERVICES_RESOURCE_NAME"] = "r"
+		env["AZURE_COGNITIVE_SERVICES_API_KEY"] = "k"
+		r := fixtureLoad(t, env, "")
+		if r.ProviderRenameLeavesInstance("azure-cognitive-services") {
+			t.Fatal("azure-cognitive-services: want false, the curated provider is not implicit so no row re-derives")
+		}
+	})
+	t.Run("implicit provider with a terminal inline expression leaves nothing", func(t *testing.T) {
+		// The inline api_key is present, so credential() stops there even
+		// though RENAME_INLINE_KEY is unset; the set RENAME_INLINE_ENV must not
+		// be reached, and a row that resolves nothing leaves nothing behind.
+		env := baseEnv(t)
+		env["RENAME_INLINE_ENV"] = "k"
+		r := fixtureLoad(t, env, "", WithOverlay(overlayWith(`
+[providers."rename-inline"]
+implicit = true
+protocol = "openai-chat"
+auth = "bearer"
+api_key = "$RENAME_INLINE_KEY"
+api_key_env = ["RENAME_INLINE_ENV"]
+base_url = "https://rename-inline.example.test/v1"
+`)))
+		if r.ProviderRenameLeavesInstance("rename-inline") {
+			t.Fatal("rename-inline: want false, the present api_key is terminal and its variable is unset, so the row resolves nothing")
+		}
+	})
 	t.Run("oauth record is the credential the rename moves", func(t *testing.T) {
 		r := fixtureLoad(t, baseEnv(t), "")
 		if r.ProviderRenameLeavesInstance("openai-codex") {

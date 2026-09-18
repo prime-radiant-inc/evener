@@ -1388,7 +1388,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// every other client's status for this name is stale against, and the
 		// hub owes them the broadcast even though the entry itself never
 		// moved - restoreFailedRemoval wraps its own result in that case.
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured", supplyAny)
 		return restoreErr
 	}
 
@@ -1414,7 +1414,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// change every other client's status for this name is stale
 			// against - restoreFailedRemoval wraps its own result in that
 			// case.
-			_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+			_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured", supplyAny)
 			return restoreErr
 		}
 	}
@@ -1423,22 +1423,33 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// Nothing was written, so there is no file to put back: restoring
 			// the credentials this call deleted is the whole rollback, and a
 			// write here would create the providers.toml the guard above
-			// exists to avoid. Only a restore that actually landed is a
-			// rollback, though: if a credential cannot be put back the removal
-			// stands, and reporting it as rolled back - and reloading, which
-			// would publish a listing without the row - would tell the caller
-			// an instance is still configured when it no longer is. The reload
-			// is retried only once the credentials are back: the failure above
-			// parked the registry on the implicit-only view a failed load
-			// leaves (writes refused, this row missing), and the state the file
-			// describes is unchanged, so a second attempt is the recovery
-			// rather than a repetition.
+			// exists to avoid. The question is what actually carries this
+			// instance - it is implicit (nothing was authored), so that is the
+			// layer it resolved from, not "every file this call deleted came
+			// back" (supplyOf). When that layer is back the instance is
+			// configured again and the removal was rolled back, even if a stray
+			// other credential could not be restored; only when the carrying
+			// layer itself could not be put back does the removal stand, and
+			// reporting a rolled-back removal as a standing one - and skipping
+			// the reload that would republish the row - would tell the caller
+			// the opposite of the truth. The reload is retried only once the
+			// credentials are back: the failure above parked the registry on
+			// the implicit-only view a failed load leaves (writes refused, this
+			// row missing), and the state the file describes is unchanged, so a
+			// second attempt is the recovery rather than a repetition.
+			cause := fmt.Errorf("removing %q failed: %w", name, err)
 			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-				fmt.Errorf("removing %q failed: %w", name, err), "the removal stands")
+				cause, "the removal stands", supplyOf(locked))
 			if !restored {
 				return restoreErr
 			}
 			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
+			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+				// The carrying layer is back but a stray credential stayed
+				// deleted: a plain rollback, so the caller learns what is
+				// missing without the writeApplied mark.
+				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
+			}
 			if reloadErr := c.reg.Reload(); reloadErr != nil {
 				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", rolledBack, reloadErr)
 			}
@@ -1467,7 +1478,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// rather than relying on restoreFailedRemoval's.
 			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
-				"the entry is gone from the config")
+				"the entry is gone from the config", supplyAny)
 			return writeApplied(standingErr)
 		}
 		// The credentials go back before the reload below, because a load
@@ -1484,7 +1495,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// the config, which every other client's status for it is stale
 		// against; restoreFailedRemoval wraps its own result in that case.
 		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured", supplyAny)
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the
@@ -1524,45 +1535,106 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
+// removalSupply names the layer an instance resolves from, so a failed
+// removal's rollback can decide from what actually carries the instance rather
+// than from every deleted file coming back. supplyAny is the older, stricter
+// question the config-backed call sites ask - did every layer this call deleted
+// come back? - because there the authored config entry, not a credential file,
+// is what the instance resolves from.
+type removalSupply uint8
+
+const (
+	supplyAny removalSupply = iota
+	// supplyConfig: the authored entry or the provider itself carries it.
+	supplyConfig
+	supplyStoredKey
+	supplyOAuth
+)
+
+// supplyOf reports which removed credential layer carries inst: the OAuth
+// record for the Codex scheme, the stored key for the "store" source, and
+// neither when the authored entry or the provider itself is what holds the
+// instance up. It mirrors credential()'s precedence - the source it reports is
+// the one that actually won.
+func supplyOf(inst registry.Instance) removalSupply {
+	switch inst.CredentialSource {
+	case "oauth":
+		return supplyOAuth
+	case "store":
+		return supplyStoredKey
+	}
+	return supplyConfig
+}
+
 // restoreFailedRemoval puts back what the cleanup deleted after a failed
-// removal, and reports whether every deleted layer was restored: ok is true
-// on a complete restore, false when at least one layer could not be put back.
-// cause is the failure that triggered the rollback and is returned unchanged
-// when ok is true, so the caller keeps its own framing of it. On a failed
-// restore the returned error folds cause, frame, and the layers that could not
-// be put back, so a caller told only that the removal failed still knows what
-// state the name is in and what is missing from it. frame names that state -
-// whether the entry is still authored or the removal stood - so the message
-// reads as correct English for the failure that produced it. Its callers pass
-// only the layers the failure actually deleted, so this never rewrites - and
-// never reports a failure to rewrite - a credential that is still where it was.
+// removal, and reports whether the layer that carries the instance is back:
+// supplies names that layer, so a restore that leaves the instance configured
+// answers ok even when a stray other layer could not be put back (a stored key
+// left over beside a Codex OAuth record, or the reverse). supplyAny keeps the
+// stricter rule and answers ok only on a complete restore.
 //
-// A layer that was deleted and could not be put back is a change every other
-// client's credential status for the name is stale against, even when the
-// config write this removal was attempting rolled back cleanly, so that case
-// answers writeApplied; a clean restore is a plain refusal, so cause comes
-// back unwrapped.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) (bool, error) {
+// cause is the failure that triggered the rollback. On a restore that carries
+// the instance (ok true) it comes back unchanged, unless a stray layer could
+// not be put back - then the returned error names only those leftover layers,
+// a plain (not applied) rollback the caller folds into its own report. On a
+// restore that does not carry the instance, the returned error folds cause,
+// frame, and the layers that could not be put back, and answers writeApplied:
+// the layer the instance resolved from stays deleted, a change every other
+// client's credential status for the name is stale against. frame names that
+// state - whether the entry is still authored or the removal stood - so the
+// message reads as correct English for the failure that produced it. Its
+// callers pass only the layers the failure actually deleted, so this never
+// rewrites - and never reports a failure to rewrite - a credential that is
+// still where it was.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
+	storedKeyRestored := true
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
+			storedKeyRestored = false
 			problems = append(problems, fmt.Sprintf("its stored key could not be restored (%v)", err))
 		}
 	}
+	oauthRestored := true
 	if hasOAuth {
 		// Through the writer the auth store uses, so the record this puts back
 		// is replaced atomically: an in-place rewrite of a credential is a
 		// file a reader can catch half written, and a crash inside it leaves
 		// truncated state where this call exists to restore the whole thing.
 		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+			oauthRestored = false
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
 		}
 	}
-	if len(problems) == 0 {
-		return true, cause
+	var carried bool
+	switch supplies {
+	case supplyStoredKey:
+		carried = storedKeyRestored
+	case supplyOAuth:
+		carried = oauthRestored
+	default:
+		carried = len(problems) == 0
 	}
-	return false, writeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and ")))
+	if !carried {
+		return false, writeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and ")))
+	}
+	if len(problems) > 0 {
+		// The instance is carried again, but a stray layer stayed deleted: a
+		// plain rollback, so the caller learns what is missing without the
+		// writeApplied mark a real applied deletion carries.
+		return true, removalLeftoversError{strings.Join(problems, " and ")}
+	}
+	return true, cause
 }
+
+// removalLeftoversError is the error restoreFailedRemoval returns when the
+// layer that carries the instance is back but a stray other layer could not be
+// put back. It is a plain (not applied) rollback note the caller folds into its
+// own report, distinct from the writeApplied error a non-carried restore
+// returns.
+type removalLeftoversError struct{ problems string }
+
+func (e removalLeftoversError) Error() string { return e.problems }
 
 // removeCredentials deletes the credential layers filed under a name whose
 // instance is being removed: the stored key and the OAuth record. Both go
