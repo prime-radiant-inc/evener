@@ -105,8 +105,8 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			_ = web.workspaceData("remote:thread")
 			source.readErr = errors.New("read")
 			_ = web.workspaceData("remote:thread")
-			_, _ = web.liveWorkspaceSnapshot("remote:thread", hubapi.SessionCapabilities{Resume: true})
-			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Resume: true})
+			_, _ = web.liveWorkspaceSnapshot("remote:thread", hubapi.SessionCapabilities{Send: true})
+			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Send: true})
 		case 4:
 			data := WorkspaceData{}
 			web.fillForkLineage(&data, schema.SessionMeta{})

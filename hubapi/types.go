@@ -55,8 +55,6 @@ type SessionCapabilities struct {
 	Interrupt   bool `json:"interrupt"`
 	Compact     bool `json:"compact"`
 	Clear       bool `json:"clear"`
-	Fork        bool `json:"fork"`
-	Resume      bool `json:"resume"`
 	Shutdown    bool `json:"shutdown"`
 	ChangeModel bool `json:"change_model"`
 	// Queue mirrors appwire.ThreadCapabilities.Queue (kata 111a). True when
