@@ -1018,12 +1018,12 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 	}
 	// Over the same targets as the two passes above, and for the same reason:
-	// the capability projection fences both identities with this one predicate
-	// (hubForkRecoveryFencedNow for the alias, hubForkResolvedSessionFenced for
-	// the session it resolves to), so the RPC states the rule the same way
-	// rather than a second time in a second shape. Both identities land on one
-	// roster entry whenever a daemon is live, so this costs a Find for the
-	// resolved id and changes no answer.
+	// the capability projection fences both identities on the recovery signals
+	// with this one predicate (hubForkRecoveryFencedNow for the alias,
+	// hubForkResolvedSessionFenced for the session it resolves to), so the RPC
+	// states the rule the same way rather than a second time in a second shape.
+	// Both identities land on one roster entry whenever a daemon is live, so
+	// this costs a Find for the resolved id and changes no answer.
 	for _, id := range targets {
 		if hubForkIdentityFenced(cfg, id, forkThreadOwnerFor(cfg, id)) {
 			return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
@@ -1035,6 +1035,14 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if !ok {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
+	}
+	// Both identities are fenced: the transcript about to be branched, and the
+	// one the capability projection answered for, so the RPC stays at least as
+	// strict as the action it advertised. A live delegate is not a recovery
+	// fence — an explicit resume cannot clear it — so it keeps its own refusal
+	// rather than the shared recovery predicate's.
+	if hubForkLiveDelegateFenced(cfg, ref.ThreadID) || hubForkLiveDelegateFenced(cfg, sessionID) {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("a delegate running inside a live daemon cannot be forked")
 	}
 	if params.Aside {
 		stateDir := entry.StateDir
@@ -1112,27 +1120,6 @@ func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
 		return 0, appwire.InvalidParams("editedInput is required")
 	}
 	return turn, nil
-}
-
-// hubForkLiveStatusFenced reports whether the daemon behind this thread is
-// announcing a recovery fence in the status it reports. It is the roster-status
-// conjunct of the per-identity fork fence: a caller that has already resolved
-// the roster answer composes the same signal through hubForkIdentityFenced, and
-// this asks the roster itself for a caller that has not.
-//
-// It reads the roster and never probes a daemon itself, so what it answers is
-// as fresh as the last scan. Admission refreshes immediately before calling it,
-// so there it is current; the projection reads whatever scan last landed, and
-// its staleness is bounded by the roster's own change notification — a daemon
-// that raises or drops a status flag moves the fingerprint (rosterFingerprint)
-// even when nothing else about it changed, so navigation re-projects rather
-// than holding the old answer indefinitely.
-//
-// Its restart-required conjunct overlaps refreshDaemonRestartRequiredError,
-// which in admission runs first and refuses with its own error whenever it can
-// resolve the same daemon as this thread's owner.
-func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
-	return forkThreadOwnerFor(cfg, threadID).statusFenced()
 }
 
 // forkThreadOwner is the roster's answer about one thread. liveDaemonForThread

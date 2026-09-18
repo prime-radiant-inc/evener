@@ -490,11 +490,13 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 	return hubForkIdentityFenced(cfg, ref.ThreadID, owner)
 }
 
-// hubForkIdentityFenced reports whether one identity a fork touches is fenced,
-// on every signal the hub reads directly for that identity: a live delegate, a
-// daemon announcing recovery in the roster, and the hub's own recovery locks.
-// The capability projection and the fork RPC both decide these per identity, so
-// one predicate keeps them from describing the same identity differently.
+// hubForkIdentityFenced reports whether one identity a fork touches is fenced
+// by the recovery signals the hub reads directly for it: a daemon announcing
+// recovery in the roster, and the hub's own recovery locks. The capability
+// projection and the fork RPC both decide these per identity, so one predicate
+// keeps them from describing the same identity differently. The live-delegate
+// signal stays its own shared predicate, hubForkLiveDelegateFenced, because an
+// explicit thread/resume cannot clear it and so it carries its own refusal.
 //
 // A daemon's recovery flags reach the hub only through the roster: the local
 // source builds its listed threads from roster entries that carry no status
@@ -504,7 +506,7 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 // resolved by the caller so a pass that needs it more than once asks the roster
 // once; the predicate itself never probes a daemon.
 func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) bool {
-	if hubForkLiveDelegateFenced(cfg, threadID) || owner.statusFenced() {
+	if owner.statusFenced() {
 		return true
 	}
 	if cfg.ResumeLocks == nil {
@@ -620,6 +622,9 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 func hubForkResolvedSessionFenced(cfg hubcore.WebConfig, threadID, sessionID string) bool {
 	if sessionID == "" || sessionID == threadID {
 		return false
+	}
+	if hubForkLiveDelegateFenced(cfg, sessionID) {
+		return true
 	}
 	return hubForkIdentityFenced(cfg, sessionID, forkThreadOwnerFor(cfg, sessionID))
 }
