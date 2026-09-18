@@ -1480,7 +1480,15 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig, server hostNotif
 			Source:       cmd.Source,
 		})
 	}
-	sort.Slice(commands, func(i, j int) bool {
+	sortCommandDescriptors(commands)
+	return appwire.CommandListResponse{Commands: commands}, nil
+}
+
+// sortCommandDescriptors orders command rows by (Name, PluginName, Source).
+// It is stable so rows with equal keys keep their discovery order instead of
+// shuffling nondeterministically under sort.Slice's unstable pdqsort.
+func sortCommandDescriptors(commands []appwire.CommandDescriptor) {
+	sort.SliceStable(commands, func(i, j int) bool {
 		if commands[i].Name != commands[j].Name {
 			return commands[i].Name < commands[j].Name
 		}
@@ -1489,7 +1497,6 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig, server hostNotif
 		}
 		return commands[i].Source < commands[j].Source
 	})
-	return appwire.CommandListResponse{Commands: commands}, nil
 }
 
 // notifyAuthUpdated broadcasts a evener/auth/updated notification to all connected clients.
