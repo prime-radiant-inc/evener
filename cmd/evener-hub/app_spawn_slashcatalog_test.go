@@ -237,7 +237,7 @@ func TestHubSpawnSlashCatalog_NonfatalResolverErrorKeepsEffectivePluginDirs(t *t
 	// dirs on Resolved, so the catalog keeps those same dirs and shows what
 	// the resulting session loads.
 	origResolve := hubResolvePlugins
-	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string, resolveManager func(string) *plugins.Manager) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{}, errors.New("registry unreachable")
 	}
 	t.Cleanup(func() { hubResolvePlugins = origResolve })
@@ -401,5 +401,51 @@ func TestHubSpawnSlashCatalog_MissingCWDDoesNotLeakAncestorLocalConfig(t *testin
 	slashCatalogCommandByName(t, resp, "deploy")
 	if _, ok := slashCatalogSkillNames(resp)["leaked"]; ok {
 		t.Errorf("ancestor launch.local.toml skill %q leaked into missing-cwd catalog", "leaked")
+	}
+}
+
+// TestHubSpawnSlashCatalog_MigratesALegacyNameAndBroadcasts is issue #1734's
+// remaining case (folded into this PR): hubResolvePlugins resolves through
+// cfg.PluginResolveManager, the hub's own already-wired Manager, when its
+// caller's pluginRoot matches — so ResolveForLaunch -> List's migration of a
+// marketplace recorded under a name evener refuses today still broadcasts,
+// exactly as a direct evener/command/list request now does
+// (TestHubCommandList_MigratesALegacyNameAndBroadcasts).
+func TestHubSpawnSlashCatalog_MigratesALegacyNameAndBroadcasts(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	pluginRoot := t.TempDir()
+	mgr := plugins.NewManager(pluginRoot)
+	plantRefusedMarketplace(t, mgr, "foo@bar")
+
+	broadcaster := newRecordingBroadcaster()
+	wirePluginStoreBroadcast(mgr, broadcaster)
+
+	cfg := hubcore.WebConfig{
+		PluginRoot:       pluginRoot,
+		LaunchConfigRoot: xdg,
+		PluginResolveManager: func(root string) *plugins.Manager {
+			if root == pluginRoot {
+				return mgr
+			}
+			return nil
+		},
+	}
+	if _, err := hubSpawnSlashCatalog(context.Background(), cfg, appwire.SpawnSlashCatalogParams{}); err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v", err)
+	}
+	got := broadcaster.broadcasts()
+	foundMarketplace, foundPlugin := false, false
+	for _, b := range got {
+		switch b.method {
+		case appwire.NotifyEvenerMarketplaceUpdated:
+			foundMarketplace = true
+		case appwire.NotifyEvenerPluginUpdated:
+			foundPlugin = true
+		}
+	}
+	if !foundMarketplace || !foundPlugin {
+		t.Fatalf("broadcasts = %+v, want both %s and %s (the migration's saveRename writes both files)",
+			got, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 	}
 }
