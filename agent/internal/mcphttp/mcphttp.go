@@ -25,6 +25,15 @@ func (h *HeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return h.Base.RoundTrip(clone)
 }
 
+// CloseIdleConnections delegates to Base when it supports idle-connection
+// cleanup, so http.Client.CloseIdleConnections keeps working through the
+// wrapper instead of becoming a no-op.
+func (h *HeaderRoundTripper) CloseIdleConnections() {
+	if c, ok := h.Base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // ClientWithHeaders returns a copy of base (a fresh client when base is nil)
 // whose transport injects headers into every request. base is left untouched;
 // when base's transport is nil the wrapper falls back to http.DefaultTransport.

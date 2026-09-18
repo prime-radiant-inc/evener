@@ -110,3 +110,25 @@ func TestHeaderRoundTripper_DoesNotMutateRequest(t *testing.T) {
 		t.Errorf("base transport request header = %q, want %q", got, "yes")
 	}
 }
+
+// closeTrackingRoundTripper records whether CloseIdleConnections reached it.
+type closeTrackingRoundTripper struct {
+	recordingRoundTripper
+	closed bool
+}
+
+func (c *closeTrackingRoundTripper) CloseIdleConnections() { c.closed = true }
+
+// CloseIdleConnections on the returned client must reach a wrapped transport
+// that supports it, and must be a harmless no-op when it does not.
+func TestClientWithHeaders_ForwardsCloseIdleConnections(t *testing.T) {
+	rec := &closeTrackingRoundTripper{}
+	client := mcphttp.ClientWithHeaders(&http.Client{Transport: rec}, map[string]string{"X": "y"})
+	client.CloseIdleConnections()
+	if !rec.closed {
+		t.Error("CloseIdleConnections did not reach the wrapped transport")
+	}
+
+	plain := mcphttp.ClientWithHeaders(&http.Client{Transport: &recordingRoundTripper{}}, map[string]string{"X": "y"})
+	plain.CloseIdleConnections() // must not panic when the base lacks the method
+}
