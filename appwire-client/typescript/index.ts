@@ -375,8 +375,8 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
-export type { SessionTokens, TokenPair } from "./threadUsage";
-export { sessionTokens, turnUsageTokens } from "./threadUsage";
+export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
