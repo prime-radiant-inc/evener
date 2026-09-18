@@ -68,7 +68,8 @@ function publishedSpecifiers(packageDir) {
     const types = typeof entry === "string" ? entry : entry?.types;
     if (typeof types !== "string") continue;
     const moduleID = types.replace(/^\.\/dist\//, "").replace(/\.d\.ts$/, "");
-    byModule.set(moduleID, `${PACKAGE_NAME}${subpath.slice(1)}`);
+    const specifier = subpath === "." ? PACKAGE_NAME : `${PACKAGE_NAME}${subpath.slice(1)}`;
+    byModule.set(moduleID, specifier);
   }
   return byModule;
 }
