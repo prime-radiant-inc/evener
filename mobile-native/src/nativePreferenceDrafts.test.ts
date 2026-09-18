@@ -235,3 +235,35 @@ describe("parseDraftBytes", () => {
 		expect(parseDraftBytes("null")).toBe("null");
 	});
 });
+
+describe("fakeDraftBackend", () => {
+	it("get() returns a clone, not the live stored reference", () => {
+		// The real backend re-parses stringified bytes on every get() (a fresh
+		// value each time); a fake that hands back the live object lets a
+		// caller mutating what it read corrupt the store without ever going
+		// through set/replaceIf, masking mutation or compare-and-swap bugs.
+		const b = fakeDraftBackend();
+		b.store.set("k", { id: "draft-1", nested: { value: 1 } });
+
+		const loaded = b.get("k") as { nested: { value: number } };
+		loaded.nested.value = 999;
+
+		expect(b.store.get("k")).toEqual({ id: "draft-1", nested: { value: 1 } });
+	});
+
+	it("deleteIf(key, undefined) reports false when nothing is stored, never a false match", () => {
+		// A missing Map key and an `undefined` identity both stringify to
+		// `undefined` itself (not a string) - a bare JSON.stringify compare
+		// would see them as equal and report a match that never happened.
+		const b = fakeDraftBackend();
+
+		expect(b.deleteIf("k", undefined)).toBe(false);
+	});
+
+	it("replaceIf(key, undefined, ...) reports false when nothing is stored, never a false match", () => {
+		const b = fakeDraftBackend();
+
+		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
+		expect(b.store.has("k")).toBe(false);
+	});
+});

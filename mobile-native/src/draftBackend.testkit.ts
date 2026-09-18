@@ -18,7 +18,10 @@ export function fakeDraftBackend(): FakeDraftBackend {
 	return {
 		store,
 		createId: () => `draft-${++id}`,
-		get: (key) => store.get(key) ?? null,
+		get: (key) => {
+			const value = store.get(key);
+			return value === undefined ? null : structuredClone(value);
+		},
 		set: (key, value) => {
 			store.set(key, structuredClone(value));
 		},
@@ -26,12 +29,15 @@ export function fakeDraftBackend(): FakeDraftBackend {
 			store.delete(key);
 		},
 		deleteIf: (key, value) => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(value)) return false;
+			// A missing key is never a match, whatever identity is named -
+			// JSON.stringify(undefined) would otherwise collide with an
+			// `undefined` identity's own stringify.
+			if (!store.has(key) || JSON.stringify(store.get(key)) !== JSON.stringify(value)) return false;
 			store.delete(key);
 			return true;
 		},
 		replaceIf: (key, expected, next) => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(expected)) return false;
+			if (!store.has(key) || JSON.stringify(store.get(key)) !== JSON.stringify(expected)) return false;
 			store.set(key, structuredClone(next));
 			return true;
 		},
