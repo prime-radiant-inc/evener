@@ -322,42 +322,47 @@ function invalidUserRules(): never {
 
 /** The strict rule check the draft editor runs on user input and on a
  * restored checkpoint: an action id and a chord must be non-empty strings
- * (or a null chord for an unbind). Throws via `onInvalid`, which the decode
- * path (an unreadable stored record) and the user-input path (a plain
- * validation error) each pass their own error type through. */
-function keybindingRules(value: unknown, onInvalid: () => never = invalidDraft): KeybindingsRule[] {
-  if (!Array.isArray(value)) onInvalid();
+ * (or a null chord for an unbind). Always throws the plain validation
+ * error - draftCheckpoint's own try/catch is what turns a decode failure
+ * into UnreadableDraftError, so this never has to tell the two callers
+ * apart itself. */
+function keybindingRules(value: unknown): KeybindingsRule[] {
+  if (!Array.isArray(value)) invalidUserRules();
   return value.map((item): KeybindingsRule => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) onInvalid();
+    if (item === null || typeof item !== "object" || Array.isArray(item)) invalidUserRules();
     const rule = item as Record<string, unknown>;
     if (
       typeof rule.action !== "string" ||
       blank(rule.action) ||
       (rule.chord !== null && (typeof rule.chord !== "string" || blank(rule.chord)))
     )
-      onInvalid();
+      invalidUserRules();
     return { action: rule.action, chord: rule.chord };
   });
 }
 
 function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) invalidDraft();
-  const item = value as Record<string, unknown>;
-  if (
-    typeof item.id !== "string" ||
-    !item.id.length ||
-    typeof item.baseRevision !== "number" ||
-    !Number.isSafeInteger(item.baseRevision) ||
-    item.baseRevision < 0 ||
-    typeof item.writeUncertain !== "boolean"
-  )
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
+    const item = value as Record<string, unknown>;
+    if (
+      typeof item.id !== "string" ||
+      !item.id.length ||
+      typeof item.baseRevision !== "number" ||
+      !Number.isSafeInteger(item.baseRevision) ||
+      item.baseRevision < 0 ||
+      typeof item.writeUncertain !== "boolean"
+    )
+      throw new Error("invalid");
+    return {
+      id: item.id,
+      baseRevision: item.baseRevision,
+      rules: keybindingRules(item.rules),
+      writeUncertain: item.writeUncertain,
+    };
+  } catch {
     invalidDraft();
-  return {
-    id: item.id,
-    baseRevision: item.baseRevision,
-    rules: keybindingRules(item.rules),
-    writeUncertain: item.writeUncertain,
-  };
+  }
 }
 
 /** Extracts a payload the hub attached to a rejection under `key` when the
@@ -1184,7 +1189,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function editDraft(rules: readonly KeybindingsRule[]): void {
     const current = assertEditable();
-    const checked = keybindingRules(rules, invalidUserRules);
+    const checked = keybindingRules(rules);
     const revision = getState().draft?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
     const draft = { version: 1, revision, rules: checked };
@@ -1249,7 +1254,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (directWriteInFlight) throw new Error(UNAVAILABLE_MESSAGE);
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
-    const checked = keybindingRules(rules ?? existing?.rules ?? current.rules, invalidUserRules);
+    const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
