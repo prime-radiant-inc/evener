@@ -450,6 +450,14 @@ type QueueChangedData struct {
 	// editing or returning a queued entry can restore its chips — a queued
 	// {type:"skill"} item is otherwise unrecoverable by any path.
 	SkillNames [][]string `json:"skill_names,omitempty"`
+	// ConsumedClientMutationIDs names the queued entries THIS push's
+	// transition just consumed (currently: a drain folding the queue into
+	// steering) so a client can settle those optimistic records by positive
+	// evidence instead of inferring consumption from sequence order (issue
+	// #1704). It is a one-shot transition fact about this push, never a
+	// property of the durable queue itself — unset on every push that is not
+	// the consuming transition.
+	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
 }
 
 // TaskSummaryData is the current task summary carried by a TaskUpdatedData

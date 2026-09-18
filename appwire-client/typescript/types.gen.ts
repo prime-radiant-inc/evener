@@ -2020,6 +2020,7 @@ export interface ThreadQueueChangedParams {
   threadId: string;
   ref: string;
   queue: QueueState;
+  consumedClientMutationIds?: string[];
 }
 
 export interface ThreadReadParams {

@@ -844,12 +844,19 @@ type QueueState struct {
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
-// (kata r80p). It mirrors the queue field on EvenerThread so consumers can
-// store it verbatim on the cached thread state.
+// (kata r80p). Queue mirrors the queue field on EvenerThread so consumers can
+// store it verbatim on the cached thread state. ConsumedClientMutationIDs
+// does NOT belong on Queue: it is a one-shot fact about THIS push's own
+// transition (currently: a drain folding the queue into steering), never a
+// property of the durable queue a client caches — a client settles those
+// optimistic records by positive evidence instead of inferring consumption
+// from sequence order (issue #1704). Absent on old daemons and on every push
+// that is not the consuming transition.
 type ThreadQueueChangedParams struct {
-	ThreadID string     `json:"threadId"`
-	Ref      string     `json:"ref"`
-	Queue    QueueState `json:"queue"`
+	ThreadID                  string     `json:"threadId"`
+	Ref                       string     `json:"ref"`
+	Queue                     QueueState `json:"queue"`
+	ConsumedClientMutationIDs []string   `json:"consumedClientMutationIds,omitempty"`
 }
 
 // TaskUpdatedParams is the params shape for evener/task/updated: the session's
