@@ -124,9 +124,12 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
     expect(advanced).toEqual({ agent: "evener", noProjectPrompts: true });
   });
 
-  test("drops an unsafe integer magnitude on both paths (Go wire type is *int)", () => {
+  test("drops an unsafe or rounding integer magnitude on both paths (Go wire type is *int)", () => {
     const options = [option({ wireField: "maxRounds", kind: "integer" })];
     const unsafe = collectAdvancedOverrides(options, { maxRounds: { value: "1e21" } });
+    // Number() alone would round this to 1 and pass a safe-integer check; the
+    // exact-decimal rule drops it in both callers.
+    const rounded = collectAdvancedOverrides(options, { maxRounds: { value: "1.0000000000000000001" } });
     const boundary = collectAdvancedOverrides(options, { maxRounds: { value: "9007199254740991" } });
     const state: LaunchFormState = {
       scalars: { maxRounds: "1e21" },
@@ -136,8 +139,11 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
       explicitEmpty: {},
     };
     expect(unsafe).toEqual({});
+    expect(rounded).toEqual({});
     expect(boundary).toEqual({ maxRounds: 9007199254740991 });
     expect(unsafe).toEqual(collectConfig(options, state));
+    state.scalars.maxRounds = "1.0000000000000000001";
+    expect(collectConfig(options, state)).toEqual({});
     state.scalars.maxRounds = "9007199254740991";
     expect(collectConfig(options, state)).toEqual({ maxRounds: 9007199254740991 });
   });
