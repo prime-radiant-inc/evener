@@ -9476,7 +9476,7 @@ test("releasing a ref retains its Stop generation across release and re-ensure",
 test("the global resume Stop baseline fires on any ref's Stop and on nothing else", async () => {
   setMutationStorageForTests(new MutationOutboxIndexedDB());
   const fake = connectFakeClient("connecting");
-  fake.on("thread/read", (params) => readResponse(params.ref, { status: { type: "idle" } }));
+  fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { status: { type: "idle" } }));
   fake.on("thread/shutdown", () => ({}));
   fake.emitReady();
   await threadsStore.getState().ensureThread("ref_a");
