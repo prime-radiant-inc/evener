@@ -217,6 +217,48 @@ func (m *ResumeMutex) LockContext(ctx context.Context) error {
 	}
 }
 
+// UnlockAliases releases aliases in reverse acquisition order. It is the
+// shared release path behind LockAliases and TryLockAliases.
+func (r *ResumeLocks) UnlockAliases(aliases []string) {
+	for _, alias := range slices.Backward(aliases) {
+		r.For(alias).Unlock()
+	}
+}
+
+// LockAliases acquires every alias in order through ctx and returns the
+// group's release function. If a later alias blocks past cancellation it
+// releases the prefix already held instead of hanging and retaining the
+// earlier aliases.
+func (r *ResumeLocks) LockAliases(ctx context.Context, aliases []string) (release func(), err error) {
+	acquired := 0
+	defer func() {
+		if err != nil {
+			r.UnlockAliases(aliases[:acquired])
+		}
+	}()
+	for _, alias := range aliases {
+		if err = r.For(alias).LockContext(ctx); err != nil {
+			return nil, err
+		}
+		acquired++
+	}
+	return func() { r.UnlockAliases(aliases) }, nil
+}
+
+// TryLockAliases takes every alias without blocking. It reports true only when
+// all of them are held; on any failure it releases the prefix it took.
+func (r *ResumeLocks) TryLockAliases(aliases []string) (release func(), ok bool) {
+	acquired := 0
+	for _, alias := range aliases {
+		if !r.For(alias).TryLock() {
+			r.UnlockAliases(aliases[:acquired])
+			return nil, false
+		}
+		acquired++
+	}
+	return func() { r.UnlockAliases(aliases) }, true
+}
+
 var ErrResumeInvalidated = errors.New("session recovery changed before resume ownership was acquired")
 
 // ActiveResume is only the lifetime of an in-flight hub Resume. It has no
@@ -387,18 +429,11 @@ func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases
 	// path keeps the aliases reserved until it decides, so registering without
 	// the tokens lets a new explicit Resume land inside that window, wait on the
 	// held alias lock, and launch after shutdown already reported success.
-	acquired := 0
-	defer func() {
-		for _, alias := range slices.Backward(aliases[:acquired]) {
-			r.For(alias).Unlock()
-		}
-	}()
-	for _, alias := range aliases {
-		if err := r.For(alias).LockContext(ctx); err != nil {
-			return nil, err
-		}
-		acquired++
+	release, err := r.LockAliases(ctx, aliases)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
