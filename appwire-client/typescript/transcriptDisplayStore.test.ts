@@ -818,6 +818,39 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
+  // RoboRev round 24 Medium 2: restoreDraft's UnreadableDraftError catch set
+  // the port-failure flags but left draft/writeUncertain/draftConflict
+  // exactly as they were, so a record that becomes unreadable WHILE a write
+  // is still uncertain left writeUncertain stuck true - and assertDiscardable
+  // refuses on writeUncertain unconditionally, blocking the one recovery
+  // (discard) an unreadable record is supposed to allow.
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+
   // RoboRev round 21 Medium 1: settling an uncertain checkpoint used an
   // unconditional save, so a concurrent writer's newer draft (landed while
   // this write's outcome was unknown) would be silently overwritten by the
@@ -927,6 +960,29 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().hub.mobile).toEqual(hubDefault(5, desktopConfig));
     expect(store.getState().draft?.config).toEqual(proposed);
     expect(drafts.stored()?.writeUncertain).toBe(false);
+  });
+
+  // RoboRev round 24 Medium 1: the no-port fallback storage's replaceIf
+  // always returned false, so a settle path composing against it read
+  // "false" as "a concurrent writer replaced the record" and adopted
+  // restoreDraft (which reads null from the same fallback), silently
+  // dropping the in-memory draft even though there is no real backing store
+  // - and so no concurrent writer - to have raced against.
+  test("without a draft port, a revision conflict's settle does not misread the ephemeral fallback as a concurrent replacement", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client); // no drafts port: the ephemeral fallback
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(5, desktopConfig)),
+      });
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
+    // The draft must still be here for review, not silently wiped to null.
+    expect(store.getState().draft).not.toBeNull();
+    expect(store.getState().draft?.config).toEqual(proposed);
   });
 
   test("a newer external revision keeps the proposal for review instead of reporting it applied", async () => {
@@ -1045,6 +1101,38 @@ describe("the checkpointed draft editor", () => {
 
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
     expect(store.getState().draftConflict).toBe(true);
+  });
+
+  // RoboRev round 24 Medium 3: a relay landing before any ready generation
+  // ever began (fence.generation === -1, the host seeding this store from
+  // its own cache before it connects) stamped the draft generation: -1 -
+  // itself non-null, so never restamped - and the first REAL generation's
+  // own read at the identical revision then read as a mismatch: a spurious
+  // conflict for a draft that was never actually stale. The stamp must
+  // guard on a live generation, not merely "not yet stamped".
+  test("a relay before any generation began does not stamp a spurious -1, so the first real generation's read at the same revision is not flagged stale", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+
+    // A relay lands before the store has ever had a ready generation.
+    store.getState().applyHubChange({ layout: "mobile", revision: 2, config: mobileConfig });
+
+    // The first REAL generation begins and its own read confirms the SAME
+    // revision this draft was already composed against.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().draftConflict).toBe(false);
   });
 
   test("the draft editor stays open while a read is in flight; the older reply is discarded", async () => {

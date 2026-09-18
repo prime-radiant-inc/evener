@@ -76,9 +76,17 @@ export interface KeybindingDraftStorage {
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. */
+ * store's state only and does not survive the instance. There is no real
+ * backing store here - only this one repository instance ever touches it -
+ * so there is no concurrent writer a compare-and-swap could actually lose to;
+ * removeIf/replaceIf report success unconditionally rather than the refusal
+ * a byte-aware port reports when a record it named is gone (round 24 Medium
+ * 1): reporting false there reads as "someone else replaced it" and adopts a
+ * restoreDraft that reads null right back from this same fallback, silently
+ * dropping the in-memory draft over a race that cannot happen without real
+ * storage behind it. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false, replaceIf: () => false };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true, replaceIf: () => true };
 }
 
 /** The offline editor's proposal: the rules and the confirmed revision they
@@ -654,10 +662,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision, fence.generation),
       };
     } catch (error) {
+      // An UnreadableDraftError names the RECORD as the problem, not the
+      // port: whatever draft/writeUncertain/draftConflict described before
+      // this call described a record that no longer exists to describe -
+      // round 24 Medium 2 (leaving them intact left a write left uncertain
+      // by an earlier attempt stuck that way forever, and
+      // assertDiscardable's unconditional writeUncertain check then refused
+      // the one recovery - discard - an unreadable record is supposed to
+      // allow). A genuine port failure (the read itself failed, not what it
+      // read) says nothing about whether the in-memory state is still
+      // accurate, so it is left alone.
+      const unreadable = error instanceof UnreadableDraftError;
       return {
         storageUnavailable: true,
-        draftUnreadable: error instanceof UnreadableDraftError,
+        draftUnreadable: unreadable,
         draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+        ...(unreadable ? { draft: null, writeUncertain: false, draftConflict: false } : {}),
       };
     }
   }
@@ -762,9 +782,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // valid for a real generation, so the stamp happens HERE, before
     // staleness is judged for this same payload, and folds into this same
     // publish. A draft already stamped (an edit, or an earlier authoritative
-    // payload) is left alone.
+    // payload) is left alone. Guarded on a LIVE generation (round 24
+    // Medium 3, this store's twin of transcriptDisplayStore's own fix): no
+    // call site reaches here before beginReadyGeneration wires the
+    // notification listener and every write/read is fence-gated, but the
+    // guard keeps the same shape as the store that does have a pre-ready
+    // entry point (a relayed change), rather than relying on that being true
+    // forever.
     const draft =
-      state.draft !== null && state.draft.generation === null
+      state.draft !== null && state.draft.generation === null && fence.generation >= 0
         ? { ...state.draft, generation: fence.generation }
         : state.draft;
     setState({
