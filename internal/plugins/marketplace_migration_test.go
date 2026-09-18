@@ -308,6 +308,55 @@ func TestListMarketplaces_MigratesARefusedName(t *testing.T) {
 	}
 }
 
+// A marker on disk names a rename or merge a run left in flight, and finishing
+// it is what the lock's recovery does. A refused name is only one way a store
+// comes with one: a rename's marketplaces write is its last step, so a run that
+// stopped between that write and the marker's removal leaves every recorded
+// name one the store accepts and the marker still there. The listing reads the
+// file without the lock, so the marker alone has to send it through — a store
+// holding one is not the store a lock holder would see, and the read drops the
+// marker the recovery finishes. The store then holds nothing to migrate and the
+// listing is lock-free again.
+func TestListMarketplaces_RecoversAPendingMarkerOnAValidStore(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "foo@bar", "widget")
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	// Where the interrupted run stopped: the rename recorded under foo-bar in
+	// both files, only the marker naming foo@bar left behind.
+	mustBeTheMigratedStore(t, m)
+	plantRenameMarker(t, m, "foo@bar", "foo-bar")
+
+	locks := 0
+	orig := marketplaceAcquireLock
+	marketplaceAcquireLock = func(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
+		locks++
+		return orig(ctx, lockPath, timeout)
+	}
+	t.Cleanup(func() { marketplaceAcquireLock = orig })
+
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	if _, ok := mk["foo-bar"]; !ok || len(mk) != 1 {
+		t.Fatalf("ListMarketplaces = %v, want foo-bar alone", mk)
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	if locks != 1 {
+		t.Fatalf("the listing took the store lock %d times, want 1 for the marker it had to recover", locks)
+	}
+
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatalf("second ListMarketplaces: %v", err)
+	}
+	if locks != 1 {
+		t.Fatalf("a listing over the recovered store took the store lock again; locks = %d, want 1 from the recovery alone", locks)
+	}
+}
+
 // The migrating branch waits on the store lock, and the hub reaches it inline
 // on the connection's serial worker, so it waits on the caller's context: a
 // disconnected client's listing gives up instead of spinning out the full
