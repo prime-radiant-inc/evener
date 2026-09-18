@@ -28,7 +28,9 @@ export interface HostsSectionProps {
 
 function stateChip(row: HostRow, connecting: boolean) {
   if (row.removed) return <Chip tone="neutral">removed</Chip>;
-  if (connecting) return <Chip tone="attention">connecting</Chip>;
+  // A server-reported in-progress attach (midAttach) renders like the local
+  // connecting state: the row is mid-attach, not offline.
+  if (connecting || row.midAttach) return <Chip tone="attention">connecting</Chip>;
   if (row.attached) return <Chip tone="alive">online</Chip>;
   return <Chip tone="neutral">offline</Chip>;
 }
@@ -156,7 +158,11 @@ export function HostsSection(_props: HostsSectionProps) {
       ) : (
         <ul className={CLASS.list}>
           {load.hosts.map((row) => {
-            const isConnecting = connecting.has(row.name);
+            // The server-reported midAttach rides the local connecting state:
+            // an attach already in progress renders the same chip and keeps
+            // Connect disabled until it settles, instead of showing an enabled
+            // Connect button on a row the server says is mid-attach.
+            const isConnecting = connecting.has(row.name) || row.midAttach;
             const detail = rowDetail(row);
             return (
               <li key={row.name} className={CLASS.row}>

@@ -108,6 +108,23 @@ test("Connect drives evener/host/attach and fails with retry intact", async () =
   await waitFor(() => expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy());
 });
 
+test("a server-reported midAttach row renders connecting and disables Connect", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", address: "b.example", midAttach: true })],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  expect(await screen.findByText("beta")).toBeTruthy();
+  // The chip reports the server's in-progress attach, not offline.
+  expect(screen.getByText("connecting")).toBeTruthy();
+  expect(screen.queryByText("offline")).toBeNull();
+  // Connect is disabled while the server-side attach is in flight — the same
+  // disabled action the local connecting state gets.
+  const betaRow = screen.getByText("beta").closest("li")!;
+  const connect = within(betaRow).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
+  expect(connect.disabled).toBe(true);
+});
+
 test("remove confirms then calls evener/host/remove", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
