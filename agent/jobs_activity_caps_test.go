@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,142 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
+
+// TestTruncateActivityText_DoesNotMaterializeTheInput pins that capping the
+// output also bounds the work. Truncating must not allocate proportional to the
+// input: the earlier []rune(s) implementation turned a 4 MiB label into a
+// ~16 MiB slice to keep 200 runes, defeating the memory bound the cap exists
+// for.
+func TestTruncateActivityText_DoesNotMaterializeTheInput(t *testing.T) {
+	// Not parallel: it measures process-wide allocation.
+	input := strings.Repeat("a", activityMaxEncodedBytes) // 4 MiB
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got := truncateActivityText(input, activityMaxLabelRunes)
+	runtime.ReadMemStats(&after)
+	if n := len([]rune(got)); n != activityMaxLabelRunes {
+		t.Fatalf("label = %d runes, want %d", n, activityMaxLabelRunes)
+	}
+	// 64 KiB is far below the input and far above the few hundred bytes the
+	// result costs, so it separates "walked the prefix" from "copied it all".
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<10 {
+		t.Fatalf("allocated %d bytes to cap a %d-byte string at %d runes: truncation materialized the input", allocated, len(input), activityMaxLabelRunes)
+	}
+}
+
+// TestProjectBoundedActivityTree_CapsOutcomeReasonAndOriginIDs pins that the
+// externally sourced delegate fields — an outcome's Reason, a provider's
+// OriginToolCallID/OriginItemID — are capped too. An oversized reason is a
+// fixed part of any page carrying the delegate, so without a cap the size trim
+// discards the renderable child underneath it.
+func TestProjectBoundedActivityTree_CapsOutcomeReasonAndOriginIDs(t *testing.T) {
+	t.Parallel()
+	huge := strings.Repeat("\x01", 1<<20)
+	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child"}
+	child.Jobs = []*jobstore.JobRecord{{
+		JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusRunning,
+	}}
+	row := stableActivitySnapshot("dlg_0", "root", "child", "brief")
+	row.descriptor.OriginToolCallID = strings.Repeat("t", 4096)
+	row.descriptor.OriginItemID = strings.Repeat("i", 4096)
+	row.lastOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: huge}
+	root := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		StableDelegates: map[string]delegateSnapshot{"dlg_0": row},
+		Children:        map[string]*activitySessionSnapshot{"child": child},
+	}
+
+	got, err := projectBoundedActivityTree(root, "root", 0, 0, 0, time.Unix(10, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("page = %d bytes, over the %d-byte limit", len(raw), activityMaxEncodedBytes)
+	}
+	if len(got.Root.Entries) != 1 || got.Root.Entries[0].Delegate == nil {
+		t.Fatalf("entries = %+v, want the delegate retained", got.Root.Entries)
+	}
+	delegate := got.Root.Entries[0].Delegate
+	if delegate.Child == nil || len(delegate.Child.Entries) != 1 {
+		t.Fatalf("delegate child = %+v, want the renderable child retained under an oversized reason", delegate.Child)
+	}
+	if !strings.HasSuffix(delegate.Reason, "…") {
+		t.Fatalf("Reason (%d bytes) was not capped", len(delegate.Reason))
+	}
+	if !strings.HasSuffix(delegate.OriginToolCallID, "…") || !strings.HasSuffix(delegate.OriginItemID, "…") {
+		t.Fatalf("origin IDs not capped: toolCall=%d item=%d", len(delegate.OriginToolCallID), len(delegate.OriginItemID))
+	}
+}
+
+// TestProjectBoundedActivityTree_BoundsMaxDepthAncestorChain pins the depth
+// awareness of the caps. A continuation page's fixed parts are its whole
+// ancestor chain (up to activityMaxContinuationPathLength sessions), and
+// per-field rune caps do not bound their sum — the more so because JSON encodes
+// a control rune as six bytes. A deepest-possible chain of control-character
+// prose must still fit, with no entry to drop.
+func TestProjectBoundedActivityTree_BoundsMaxDepthAncestorChain(t *testing.T) {
+	t.Parallel()
+	const levels = activityMaxContinuationPathLength
+	prose := strings.Repeat("\x01", activityMaxDelegateProseRunes)
+	warnings := make([]string, activityMaxDelegateWarnings)
+	for i := range warnings {
+		warnings[i] = strings.Repeat("\x01", activityMaxDelegateWarningRunes)
+	}
+	leaf := &activitySessionSnapshot{SessionID: fmt.Sprintf("s%d", levels), Ref: fmt.Sprintf("local:s%d", levels)}
+	node := leaf
+	for i := levels - 1; i >= 0; i-- {
+		ownerID := fmt.Sprintf("s%d", i)
+		childID := node.SessionID
+		row := stableActivitySnapshot(fmt.Sprintf("dlg_%d", i), ownerID, childID, prose)
+		row.descriptor.Description = prose
+		row.notResumableReason = prose
+		row.lastOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: prose}
+		row.latestPacket = &delegatestore.TerminalPacket{
+			Message:                json.RawMessage(`"` + strings.Repeat("m", activityMaxDelegatePayloadBytes) + `"`),
+			StructuredResult:       json.RawMessage(`"` + strings.Repeat("s", activityMaxDelegatePayloadBytes) + `"`),
+			StructuredResultReason: prose,
+			Warnings:               warnings,
+		}
+		node = &activitySessionSnapshot{
+			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
+			StableDelegates: map[string]delegateSnapshot{row.id: row},
+			Children:        map[string]*activitySessionSnapshot{childID: node},
+		}
+	}
+
+	got, err := projectBoundedActivityTree(*node, "root", -levels, 0, 0, time.Unix(10, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("page = %d bytes, over the %d-byte limit", len(raw), activityMaxEncodedBytes)
+	}
+	if got.Root.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none: the ancestor chain was shrunk to fit", got.Root.Branch.Error)
+	}
+	// Every ancestor must still be present: bounding the fixed content is only
+	// worth doing if it keeps the page from sacrificing the chain (and with it
+	// the path to the target) to make room.
+	session := &got.Root
+	for level := range levels {
+		if session.Branch.Truncated {
+			t.Fatalf("level %d was trimmed; the ancestor content should have been shrunk first", level)
+		}
+		if len(session.Entries) != 1 || session.Entries[0].Delegate == nil || session.Entries[0].Delegate.Child == nil {
+			t.Fatalf("level %d lost its delegate: entries = %+v", level, session.Entries)
+		}
+		session = session.Entries[0].Delegate.Child
+	}
+}
 
 // TestProjectBoundedActivityTree_CapsTheSessionLabel pins the fix for an
 // envelope whose own label alone exceeds the limit. A session with no

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -92,28 +93,46 @@ const (
 	activityMaxDelegatePayloadBytes = 16 << 10
 	activityMaxDelegateWarnings     = 8
 	activityMaxDelegateWarningRunes = 512
+	// activityAncestorTextFloorRunes is the smallest cap
+	// shrinkActivityAncestors will apply to an ancestor's prose before it stops
+	// cutting. Below this a field carries no useful text, so a page that still
+	// will not fit is genuinely over the limit rather than merely wordy.
+	activityAncestorTextFloorRunes = 64
 )
 
 // truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
 // truncates so a reader can tell a capped value from a genuinely short one.
 // Rune-safe: never splits a multi-byte character.
+//
+// It walks runes only as far as the cap. Converting the whole string to a
+// []rune first — as an earlier version did — allocates proportional to the
+// INPUT (a 4 MiB label becoming a ~16 MiB slice) for a result that keeps at
+// most maxRunes runes, which defeats the memory bound the cap exists to
+// enforce.
 func truncateActivityText(s string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""
 	}
 	// Runes never outnumber bytes, so a string this short cannot need cutting
-	// and does not have to be converted to check.
+	// and does not have to be decoded.
 	if len(s) <= maxRunes {
 		return s
 	}
-	runes := []rune(s)
-	// The byte length can exceed maxRunes while the rune count does not (one
-	// multi-byte rune is several bytes), so the byte fast path above is not
-	// enough: without this, runes[:maxRunes-1] would slice past len(runes).
-	if len(runes) <= maxRunes {
-		return s
+	runeIndex := 0
+	cutAt := -1
+	for byteIndex := range s {
+		if runeIndex == maxRunes-1 {
+			cutAt = byteIndex
+		}
+		if runeIndex == maxRunes {
+			// s[:cutAt] is the whole string short of maxRunes-1 runes.
+			return s[:cutAt] + "…"
+		}
+		runeIndex++
 	}
-	return string(runes[:maxRunes-1]) + "…"
+	// Multi-byte runes made the byte fast path conservative: the whole string
+	// fits after all.
+	return s
 }
 
 // boundActivityDelegatePayload clones a terminal-packet payload, or drops it
@@ -1170,6 +1189,9 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivityDelegate {
 	descriptor := row.descriptor
 	status := projectStableDelegateStatus(budget.now, row)
+	// Mandate and Task carry the same text; truncate it once rather than
+	// repeating the work for each copy.
+	task := truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes)
 	delegate := appwire.JobActivityDelegate{
 		DelegateID:          row.id,
 		OwnerSessionID:      descriptor.OwnerSessionID,
@@ -1184,8 +1206,8 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
 		NotResumableReason:  truncateActivityText(row.notResumableReason, activityMaxDelegateProseRunes),
-		Mandate:             truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
-		Task:                truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
+		Mandate:             task,
+		Task:                task,
 		Description:         truncateActivityText(descriptor.Description, activityMaxDelegateProseRunes),
 		AgentType:           descriptor.AgentType,
 		RequestedModel:      descriptor.RequestedModel,
@@ -1193,9 +1215,9 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		ResolvedModel:       descriptor.ResolvedModel,
 		Model:               descriptor.ResolvedModel,
 		ReasoningEffort:     descriptor.Config.ReasoningEffort,
-		OriginTurnID:        descriptor.OriginTurnID,
-		OriginToolCallID:    descriptor.OriginToolCallID,
-		OriginItemID:        descriptor.OriginItemID,
+		OriginTurnID:        truncateActivityText(descriptor.OriginTurnID, activityMaxLabelRunes),
+		OriginToolCallID:    truncateActivityText(descriptor.OriginToolCallID, activityMaxLabelRunes),
+		OriginItemID:        truncateActivityText(descriptor.OriginItemID, activityMaxLabelRunes),
 		RunStartedAt:        status.RunStartedAt,
 		LatestActivityAt:    status.LatestActivityAt,
 		RunningForMS:        cloneInt64(status.RunningForMS),
@@ -1207,7 +1229,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
-		delegate.Reason = row.lastOutcome.Reason
+		delegate.Reason = truncateActivityText(row.lastOutcome.Reason, activityMaxDelegateProseRunes)
 		delegate.Terminal = !row.currentRunOpen
 		if !row.lastOutcome.EndedAt.IsZero() {
 			delegate.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
@@ -1595,6 +1617,66 @@ func (r activityTrimResume) offsetAt(path []string) int {
 	return r.index
 }
 
+// shrinkActivityAncestors halves the fixed prose an ancestor chain carries,
+// dropping its packet payloads and trimming its warnings, until nothing more
+// can be cut or the page fits. It reports whether it changed anything, so a
+// caller can tell a page that fit after shrinking from one that genuinely
+// cannot fit.
+//
+// A continuation page's ancestor delegates are fixed parts: the size trim can
+// drop entries but never an ancestor, so per-field caps alone do not bound the
+// page — the SUM across up to activityMaxContinuationPathLength ancestors is
+// what must fit. This measures the actual marshaled page (so control-rune JSON
+// expansion counts) and shrinks only the ancestors, never an entry the reader
+// could otherwise have. ancestors is how many sessions from the tree's root are
+// fixed parts; the page's own target is not one of them (activityTrimResume).
+func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bool {
+	if root == nil || ancestors <= 0 {
+		return false
+	}
+	changed := false
+	shrinkText := func(s string) string {
+		if n := utf8.RuneCountInString(s); n > activityAncestorTextFloorRunes {
+			changed = true
+			return truncateActivityText(s, max(activityAncestorTextFloorRunes, n/2))
+		}
+		return s
+	}
+	session := root
+	for level := 0; level < ancestors && session != nil; level++ {
+		var delegate *appwire.JobActivityDelegate
+		for _, entry := range slices.Backward(session.Entries) {
+			if entry.Delegate != nil {
+				delegate = entry.Delegate
+				break
+			}
+		}
+		if delegate == nil {
+			return changed
+		}
+		delegate.Mandate = shrinkText(delegate.Mandate)
+		delegate.Task = shrinkText(delegate.Task)
+		delegate.Description = shrinkText(delegate.Description)
+		delegate.Reason = shrinkText(delegate.Reason)
+		delegate.NotResumableReason = shrinkText(delegate.NotResumableReason)
+		delegate.StructuredReason = shrinkText(delegate.StructuredReason)
+		if delegate.Message != nil {
+			delegate.Message = nil
+			changed = true
+		}
+		if delegate.StructuredResult != nil {
+			delegate.StructuredResult = nil
+			changed = true
+		}
+		if len(delegate.Warnings) > 1 {
+			delegate.Warnings = delegate.Warnings[:len(delegate.Warnings)/2]
+			changed = true
+		}
+		session = delegate.Child
+	}
+	return changed
+}
+
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
 // encodes within activityMaxEncodedBytes. epochs — every visited session's
 // own generations, keyed by session ID — together with revision and resume
@@ -1616,6 +1698,16 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 		}
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
+		}
+		// Before sacrificing entries, shrink the ancestor chain's fixed
+		// content. A continuation page carries that chain as the path back to
+		// the page's target, and per-field caps do not bound their SUM across
+		// up to activityMaxContinuationPathLength ancestors — the more so
+		// because JSON encodes a control rune as six bytes. Only fields above
+		// the floor are cut, so an ordinary chain is untouched and the entry
+		// trim below behaves exactly as before.
+		if shrinkActivityAncestors(&tree.Root, resume.depth) {
+			continue
 		}
 		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, epochs, revision, resume)
 		if !ok {
