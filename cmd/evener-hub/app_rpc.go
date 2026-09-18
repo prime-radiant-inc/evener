@@ -366,11 +366,17 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
+// newHubAppServerWithNavigationAndTrace builds the RPC server and registers
+// every handler. It returns cfg back to the caller alongside the server: cfg
+// is a value, so the PluginResolveManager this function wires onto its own
+// local copy (for the closures it registers here) is invisible to the
+// caller's own copy unless handed back explicitly — the same reason web.go
+// assigns web.cfg from this return rather than reusing what it passed in.
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, hubcore.WebConfig) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -498,6 +504,20 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			auth:                authController,
 		}
 	}
+	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
+	wirePluginStoreBroadcast(pluginsController.mgr, server)
+	// Offer pluginsController's own wired Manager as cfg.PluginResolveManager
+	// (hubcore.WebConfig), so hubThreadStart and hubSpawnSlashCatalog's
+	// ResolveForLaunch resolves through it instead of a second, unwired
+	// Manager — this cfg value, not a package global, so a second server
+	// built later in the same process never answers for this one. Set before
+	// registerThreadHandlers below, whose closures capture this cfg by value.
+	cfg.PluginResolveManager = func(pluginRoot string) *plugins.Manager {
+		if pluginRoot == cfg.PluginRoot {
+			return pluginsController.mgr
+		}
+		return nil
+	}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
@@ -510,18 +530,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// root, not HubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg), cfg.APILogDefault)
 	registerLaunchHandlers(server, launchController)
-	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
-	wirePluginStoreBroadcast(pluginsController.mgr, server)
-	// Offer pluginsController's own wired Manager to hubResolvePlugins
-	// (app_threadlifecycle.go) for the same root, so thread/start and
-	// evener/spawn/slashCatalog's ResolveForLaunch resolves through it
-	// instead of a second, unwired Manager (issue #1734).
-	setHubResolvePluginManagerFor(func(pluginRoot string) *plugins.Manager {
-		if pluginRoot == cfg.PluginRoot {
-			return pluginsController.mgr
-		}
-		return nil
-	})
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
@@ -565,7 +573,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server, hostAdmin
+	return server, hostAdmin, cfg
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -1281,41 +1289,27 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 }
 
 // registerPluginHandlers registers the evener/marketplace/* and evener/plugin/*
-// RPC handlers, routed to the plugins controller. Mutations broadcast
-// evener/marketplace/updated or evener/plugin/updated.
+// RPC handlers, routed to the plugins controller. Every mutation here runs
+// through pluginsController.mgr, which wirePluginStoreBroadcast (its caller)
+// already wired to broadcast evener/marketplace/updated and/or
+// evener/plugin/updated for whatever its own lockStore session actually
+// wrote — the sole notification path for this surface; no handler below
+// calls notifyMarketplaceUpdated/notifyPluginUpdated itself.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 		return pluginsController.ListMarketplaces(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.AddMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.AddMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RemoveMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.RemoveMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RefreshMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.RefreshMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.EditMarketplace(ctx, params)
-		if err == nil {
-			// An edit can re-key installed plugins, so both lists refresh.
-			notifyMarketplaceUpdated(server)
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.EditMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
@@ -1327,46 +1321,22 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return pluginsController.Preview(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Install(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Install(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Upgrade(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Upgrade(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Remove(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Remove(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Enable(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Enable(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Disable(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Disable(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.SetAutoUpgrade(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.SetAutoUpgrade(ctx, params)
 	})
 }
 
@@ -1384,13 +1354,13 @@ func notifyPluginUpdated(server hostNotificationBroadcaster) {
 
 // wirePluginStoreBroadcast installs an OnStoreChanged callback (issue #1634)
 // on mgr that broadcasts evener/marketplace/updated and/or
-// evener/plugin/updated for whatever a lockStore session actually wrote.
-// This is in addition to, not instead of, the notifyMarketplaceUpdated/
-// notifyPluginUpdated calls each RPC handler above still makes by hand: it
-// closes the gaps those per-handler calls miss — a migration a list request
-// triggers, the auto-upgrade daemon's own marketplace refresh, a marker
-// recovery — by construction, without any caller needing to know it happened.
-// A handler covered by both simply broadcasts twice, which is harmless.
+// evener/plugin/updated for whatever a lockStore session actually wrote —
+// the sole path that broadcasts a plugin-store write reaching every Manager
+// this package constructs: the RPC handlers above, the auto-upgrade daemon
+// and its checkNow handler, hubSeedDefaults, hubPluginGC, and the resolver
+// path a Manager the caller wires as cfg.PluginResolveManager reaches by
+// construction, without any of them needing to call notify*/know this
+// happened.
 //
 // server takes hostNotificationBroadcaster (app_host_admin.go), the same
 // *appserver.Server-shaped seam the host-admin fan-out tests drive with a

@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -42,51 +41,24 @@ var (
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
 	hubAsideSession    = agent.AsideSession
-	hubResolvePlugins  = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		return hubPluginResolveManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
-	}
-)
-
-// hubResolvePluginManagerMu guards hubResolvePluginManagerFor:
-// registerRPCHandlers sets it once per hub server construction, and many
-// tests build servers concurrently (t.Parallel()), so an unsynchronized
-// assignment here is a real data race under -race — found running the CI
-// race gate locally on this PR, not a theoretical concern.
-var (
-	hubResolvePluginManagerMu  sync.RWMutex
-	hubResolvePluginManagerFor func(pluginRoot string) *plugins.Manager
-)
-
-// setHubResolvePluginManagerFor installs fn as hubResolvePlugins' Manager
-// selector (see hubPluginResolveManager), offering up the hub's own
-// already-wired pluginsController.mgr for the matching root, so a migration
-// ResolveForLaunch triggers from thread/start or evener/spawn/slashCatalog
-// still broadcasts (issue #1734) instead of writing through a second,
-// unwired Manager. Called once per server construction
-// (registerRPCHandlers); tests that override hubResolvePlugins directly
-// never touch this at all.
-func setHubResolvePluginManagerFor(fn func(pluginRoot string) *plugins.Manager) {
-	hubResolvePluginManagerMu.Lock()
-	defer hubResolvePluginManagerMu.Unlock()
-	hubResolvePluginManagerFor = fn
-}
-
-// hubPluginResolveManager is hubResolvePlugins' default Manager selection:
-// the installed selector for pluginRoot if one is set and recognizes it,
-// otherwise a fresh, unwired Manager — exactly the behavior before
-// setHubResolvePluginManagerFor existed, which is what every test that never
-// builds a server still gets (hubResolvePluginManagerFor stays nil).
-func hubPluginResolveManager(pluginRoot string) *plugins.Manager {
-	hubResolvePluginManagerMu.RLock()
-	selector := hubResolvePluginManagerFor
-	hubResolvePluginManagerMu.RUnlock()
-	if selector != nil {
-		if mgr := selector(pluginRoot); mgr != nil {
-			return mgr
+	// hubResolvePlugins resolves a launch's plugin inventory. resolveManager
+	// is the caller's cfg.PluginResolveManager (hubcore.WebConfig): when it is
+	// set and recognizes pluginRoot, resolution reaches the hub's own
+	// already-wired *plugins.Manager for that root — the same one
+	// evener/plugin/* and evener/marketplace/* mutations use — instead of a
+	// second, unwired Manager. nil, or a root it does not recognize, falls
+	// back to a fresh plugins.NewManager(pluginRoot); every caller that never
+	// builds a server (most tests) passes nil and gets that fallback.
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string, resolveManager func(string) *plugins.Manager) (plugins.LaunchPluginResolution, error) {
+		mgr := plugins.NewManager(pluginRoot)
+		if resolveManager != nil {
+			if wired := resolveManager(pluginRoot); wired != nil {
+				mgr = wired
+			}
 		}
+		return mgr.ResolveForLaunch(ctx, dirs, enabled)
 	}
-	return plugins.NewManager(pluginRoot)
-}
+)
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	if err := validateAppWireInputItems(params.Input); err != nil {
@@ -174,7 +146,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
-	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
+	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginResolveManager)
 	if pluginErr != nil {
 		// A resolver failure is fatal when a selection has to be honoured, and
 		// always when the failure IS the caller leaving: the next thing this

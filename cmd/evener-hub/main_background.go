@@ -25,7 +25,7 @@ var (
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
 		mgr := plugins.NewManager("")
 		wirePluginStoreBroadcast(mgr, web.appRPC)
-		startPluginAutoUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval, web.appRPC)
+		startPluginAutoUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval)
 	}
 )
 

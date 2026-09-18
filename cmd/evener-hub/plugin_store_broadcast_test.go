@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -165,28 +164,75 @@ func TestHubPluginGC_MigratesALegacyNameAndBroadcasts(t *testing.T) {
 	}
 }
 
-// TestNewWebServer_ConcurrentConstructionDoesNotRaceResolvePluginManager
-// reproduces the race the CI race gate caught in cmd/evener-hub: many
-// existing tests build a hub server (NewWebServer) with t.Parallel(), and
-// registerRPCHandlers wired hubResolvePluginManagerFor with a plain
-// assignment on every construction — a real data race under -race, not a
-// theoretical one, since the write races the read inside a concurrently
-// running hubResolvePlugins call as well as every other construction's own
-// write.
-func TestNewWebServer_ConcurrentConstructionDoesNotRaceResolvePluginManager(t *testing.T) {
-	const n = 8
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			root := t.TempDir()
-			web := NewWebServer(hubcore.WebConfig{PluginRoot: root})
-			if _, err := hubResolvePlugins(context.Background(), root, nil, nil); err != nil {
-				t.Errorf("hubResolvePlugins: %v", err)
-			}
-			_ = web
-		}(i)
+// TestNewWebServer_TwoServersEachResolveTheirOwnPluginManager is Medium 1's
+// regression test on the design itself: cfg.PluginResolveManager
+// (hubcore.WebConfig) is a value on each server's own cfg, not a package
+// global, so a second server built later in the same process cannot answer
+// for the first — the bug class a shared global (however carefully
+// mutex-guarded) could not avoid.
+func TestNewWebServer_TwoServersEachResolveTheirOwnPluginManager(t *testing.T) {
+	root1, root2 := t.TempDir(), t.TempDir()
+	web1 := NewWebServer(hubcore.WebConfig{PluginRoot: root1})
+	mgr1 := web1.cfg.PluginResolveManager(root1)
+	if mgr1 == nil || mgr1.Root != root1 {
+		t.Fatalf("web1.cfg.PluginResolveManager(%q) = %+v, want a Manager rooted there", root1, mgr1)
 	}
-	wg.Wait()
+
+	web2 := NewWebServer(hubcore.WebConfig{PluginRoot: root2})
+	mgr2 := web2.cfg.PluginResolveManager(root2)
+	if mgr2 == nil || mgr2.Root != root2 {
+		t.Fatalf("web2.cfg.PluginResolveManager(%q) = %+v, want a Manager rooted there", root2, mgr2)
+	}
+	if mgr1 == mgr2 {
+		t.Fatal("web1 and web2 resolved the same *plugins.Manager")
+	}
+
+	// The last-constructed server (web2) must not be able to answer for the
+	// first: re-resolving through web1's own cfg after web2 exists must
+	// still return web1's own Manager.
+	if again := web1.cfg.PluginResolveManager(root1); again != mgr1 {
+		t.Fatalf("web1.cfg.PluginResolveManager(%q) changed after web2 was constructed: %p -> %p", root1, mgr1, again)
+	}
+}
+
+// TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce is Medium
+// 2's regression test: registerPluginHandlers makes no notify call of its
+// own any more (deleted; the hook is the sole path), so a re-source-only
+// edit — which writes known_marketplaces.json alone (EditMarketplace's
+// non-renaming branch never calls saveRegistry) — must broadcast exactly
+// once, not twice.
+func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	addTestMarketplace(t, ctl, dir)
+	dir2 := t.TempDir()
+	writeTestMarketplaceManifest(t, dir2, "acme-resourced", "[]")
+
+	broadcaster := newRecordingBroadcaster()
+	wirePluginStoreBroadcast(ctl.mgr, broadcaster)
+
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerPluginHandlers(server, ctl)
+
+	resp, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodEvenerMarketplaceEdit,
+		Params: mustMarshal(t, appwire.MarketplaceEditParams{
+			Name:   "acme",
+			Source: &appwire.MarketplaceSourceInput{Kind: "directory", Path: dir2},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("dispatch edit: %v", err)
+	}
+	if _, ok := resp.(appwire.MarketplaceListResponse); !ok {
+		t.Fatalf("dispatch edit returned %T, want MarketplaceListResponse", resp)
+	}
+
+	got := broadcaster.broadcasts()
+	if len(got) != 1 || got[0].method != appwire.NotifyEvenerMarketplaceUpdated {
+		t.Fatalf("broadcasts = %+v, want exactly one %s (not doubled by a manual notify call)",
+			got, appwire.NotifyEvenerMarketplaceUpdated)
+	}
 }
