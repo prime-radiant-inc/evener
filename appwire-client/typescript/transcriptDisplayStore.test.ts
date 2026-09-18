@@ -368,6 +368,30 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.mobile).toBe("revision conflict");
   });
 
+  test("a post-apply durable failure applies the carried canonical state instead of surfacing an error", async () => {
+    // The hub's PATCH APPLIED (the error carries the canonical applied state,
+    // and the broadcast reconciles every other client) - only the follow-up
+    // sync back to the requester failed. Mirrors keybindingsStore.ts's
+    // keybindingsPostRename handling: reporting hubError here would disable
+    // editing over a default that is already live.
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("sync transcript display state: boom", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        applied: toWireDefault(hubDefault(4, mobileConfig)),
+      });
+    });
+
+    const applied = await store.getState().patchHubDefault("mobile", proposed);
+
+    expect(applied).toEqual(hubDefault(4, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(store.getState().hubErrors.mobile).toBeUndefined();
+    expect(store.getState().hubError).toBeNull();
+  });
+
   test("a conflict reply landing after the generation ended applies nothing", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);

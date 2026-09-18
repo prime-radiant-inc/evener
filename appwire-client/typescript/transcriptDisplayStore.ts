@@ -22,7 +22,7 @@
 // settingsHubGeneration.ts (D6 piece 8) with no re-derivation.
 
 import type { AppwireClient } from "./client";
-import { errorText, WireError } from "./errors";
+import { errorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
 import { createSettingsHubGeneration, retireSettingsHubPayload } from "./settingsHubGeneration";
@@ -483,6 +483,21 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       return canonical;
     } catch (error) {
       if (!stillMine()) throw new Error(WRITE_NOT_ACKNOWLEDGED_MESSAGE);
+      // Post-apply durable failure: the patch APPLIED on the hub (the error
+      // carries the canonical applied state, and the broadcast reconciles
+      // every other client) - only a follow-up sync failed. Apply locally
+      // and report success, the same posture keybindingsStore.ts's
+      // keybindingsPostRename handling takes: surfacing hubError here would
+      // disable editing over a default that is already live.
+      const applied = wireRejectionPayload(error, "transcriptDisplayPostApply", "applied", fromWireDefault);
+      if (applied !== undefined) {
+        applyHubDefault(layout, applied, {
+          ...clearPreview(layout),
+          hubError: null,
+          ...layoutError(layout, undefined),
+        });
+        return applied;
+      }
       const canonical = conflictCurrent(error, layout);
       if (canonical !== undefined) applyHubDefault(layout, canonical);
       const message = errorText(error);
