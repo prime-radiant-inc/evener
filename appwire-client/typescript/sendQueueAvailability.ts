@@ -30,9 +30,12 @@
 // harness-support bit for whether a queue is wired at all. A tier 2 would
 // restate the table, not correct it.
 //
-// Capability booleans are therefore still consulted ONLY in tier 3, which is
-// also where the legacy code treated them as authoritative (the "explicitly
-// known" queue-cap-false branch).
+// Capability booleans are therefore still consulted in tier 3, which is also
+// where the legacy code treated them as authoritative (the "explicitly known"
+// queue-cap-false branch) - and now in tier 6 too, whose live-snapshot check
+// reads `queue` to tell a harness with no seam from one the status has simply
+// not caught up with. Both reads are the same rule: the bit is the harness's,
+// the status is the client's.
 //
 // The active tier checks `statusType === "active"` ALONE - verified directly
 // against the cited renderer.js:479-513 (updateThreadState's sendBtn

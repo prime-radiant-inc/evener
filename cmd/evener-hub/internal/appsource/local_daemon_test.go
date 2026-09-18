@@ -595,11 +595,13 @@ func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing
 			t.Fatalf("%s did not advertise the queue capability: %+v", id, capsByID[id])
 		}
 	}
-	// A closed entry is the exception: the daemon withholds queue support once
-	// closed (queueFunc != nil && !closed), so the roster must too, or the same
-	// session reads differently from ListThreads and from ThreadRead.
-	if capsByID["th_closed"].Queue {
-		t.Fatalf("closed entry advertised the queue capability: %+v", capsByID["th_closed"])
+	// A closed entry is the exception: the daemon withholds steer, interrupt
+	// and queue support once closed (appCapabilitiesLocked's `!closed`), so the
+	// roster must too, or the same session reads differently from ListThreads
+	// and from ThreadRead.
+	closed := capsByID["th_closed"]
+	if closed.Queue || closed.Steer || closed.Interrupt {
+		t.Fatalf("closed entry advertised turn actions: %+v", closed)
 	}
 }
 

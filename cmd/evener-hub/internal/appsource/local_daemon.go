@@ -1111,20 +1111,21 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			Ref:        ref,
 			InstanceID: instanceID,
 			Capabilities: appwire.ThreadCapabilities{
-				Send:         true,
-				Steer:        true,
-				Interrupt:    true,
+				Send: true,
+				// Steer, Interrupt and Queue advertise harness support and are
+				// withheld the way the daemon withholds them: closed removes all
+				// three (appCapabilitiesLocked's `!closed`), while `active` moves
+				// none of them (#1363, #1375). Gating only Queue left a closed
+				// entry advertising two actions the daemon it mirrors refuses.
+				Steer:        status != appwire.ThreadStatusClosed,
+				Interrupt:    status != appwire.ThreadStatusClosed,
 				Compact:      true,
 				Clear:        !item.ReadOnlyAlias,
 				ForkFromTurn: true,
 				Shutdown:     true,
 				ChangeModel:  true,
-				// Queue advertises harness support, not a turn in flight (#1375):
-				// the daemon it mirrors answers queueFunc != nil && !closed, so an
-				// open idle entry advertises it exactly as Steer and Interrupt do.
-				// Folding `active` in here made ListThreads disagree with
-				// ThreadRead and the status frames for the same session; a closed
-				// entry is still withheld, as the daemon withholds it.
+				// Folding `active` into Queue made ListThreads disagree with
+				// ThreadRead and the status frames for the same session.
 				Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
 				Goal:        true,
 				SharedNotes: !item.ReadOnlyAlias,

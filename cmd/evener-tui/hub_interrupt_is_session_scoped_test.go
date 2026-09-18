@@ -21,8 +21,9 @@ import (
 // an id the REQUEST does not carry can only refuse a Stop the daemon would have
 // taken. A session the user can see running was one they could not interrupt.
 //
-// The capability stays the gate. Whether a turn has announced its name does
-// not.
+// The capability and the running status are the gate (interruptCommandAvailable:
+// Interrupt advertises harness support, #1375, and the command applies the
+// status itself). Whether a turn has announced its name does not.
 func TestInterruptCommandDoesNotWaitForATurnID(t *testing.T) {
 	command, ok := hubCommandByName("interrupt")
 	if !ok {

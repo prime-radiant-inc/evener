@@ -75,6 +75,37 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	}
 }
 
+// Interrupt must be advertised from the durable wiring a daemon has at startup,
+// not from the per-turn cancel it arms later. A fresh idle daemon installs its
+// authoritative turn/interrupt handler during setup, so its first thread/read
+// has to say interrupt:true; deriving the bit from the armed cancel alone
+// understated the harness until the first turn finished (#1375 review).
+func TestAppCapabilities_InterruptWiredByTheStartupHandler(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+			return appwire.TurnInterruptResponse{}, nil
+		},
+	})
+	if s.cancelFunc != nil {
+		t.Fatal("precondition: no cancel is armed before the first turn")
+	}
+	if caps := s.appCapabilities(appwire.ThreadStatusIdle, false); !caps.Interrupt {
+		t.Fatalf("idle daemon with its turn/interrupt handler wired advertised interrupt=false: %+v", caps)
+	}
+	// Closed still withholds it, and a daemon without the handler still reports
+	// it unsupported.
+	if caps := s.appCapabilities(appwire.ThreadStatusClosed, false); caps.Interrupt {
+		t.Fatalf("closed thread advertised interrupt: %+v", caps)
+	}
+	unwired := NewServer(ServerConfig{})
+	unwired.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{})
+	if caps := unwired.appCapabilities(appwire.ThreadStatusIdle, false); caps.Interrupt {
+		t.Fatalf("daemon without a turn/interrupt handler advertised interrupt: %+v", caps)
+	}
+}
+
 // Interrupt and Queue advertise harness support, exactly as Steer does: an
 // armed cancel or a wired queue seam means "this harness can stop a turn" and
 // "this harness can queue work", not "a turn is running right now". Clients
