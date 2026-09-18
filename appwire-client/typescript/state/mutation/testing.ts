@@ -1,9 +1,13 @@
 // Test-only builders shared by this subpath's suites (pendingEntries.test.ts,
-// pendingTurns.test.ts): a fully-populated, typed ThreadModel a test can
-// override the one or two fields it cares about on, rather than each suite
-// hand-rolling (or casting past) the shape.
+// pendingTurns.test.ts, projection.test.ts, commitFeed.test.ts): a
+// fully-populated, typed ThreadModel, outbox/recovery record and a store
+// wired to no-op ports, each overridable on the one or two fields a test
+// cares about, rather than every suite hand-rolling (or casting past) the
+// same shapes.
 
 import type { ThreadModel } from "../../model";
+import { createPendingTurnsStore, type PendingTurnsStore } from "./pendingTurns";
+import type { MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 export function threadModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -40,4 +44,40 @@ export function threadModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     ...rest,
     jobsTreeRevision,
   };
+}
+
+export function outboxRecord(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
+  return {
+    version: 1,
+    clientMutationId: "cmid-1",
+    targetRef: "ref-a",
+    method: "turn/start",
+    payload: {},
+    attachments: [],
+    optimisticDisplay: null,
+    intentSequence: 0,
+    createdAt: 0,
+    state: "submitting",
+    ...overrides,
+  };
+}
+
+export function recoveryRecord(overrides: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
+  return { ...outboxRecord(), recoveryKind: "rejected", ...overrides };
+}
+
+// A pending-turns store wired to no-op threads/draft ports and an
+// always-own identity - what a test needs when it exercises the store's own
+// state (recordSubmittedHere, setState) without reading a live thread model
+// or composer draft storage.
+export function testPendingTurnsStore(): PendingTurnsStore {
+  return createPendingTurnsStore({
+    threads: { getThreadModel: () => undefined },
+    draft: {
+      readDraftRevision: () => 0,
+      readComposerDraft: () => ({ text: "", skillNames: [] }),
+      clearDraft: () => undefined,
+    },
+    identity: { isOwnMutationRecord: () => true },
+  });
 }

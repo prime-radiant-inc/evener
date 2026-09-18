@@ -2,12 +2,14 @@ import {
   awaitingFirstFrameSend,
   blockedEntries,
   createMutationProjectionFence,
+  createMutationProjectionWorkTracker,
   createPendingTurnsStore,
   type MutationPersistencePort,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
   replaceTargetRecords,
+  wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -61,71 +63,39 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
 const projectionFence = createMutationProjectionFence<MutationAttachment>();
 const persistencePort: MutationPersistencePort<MutationAttachment> = { read: readMutationPersistence };
 
-// Every durable projection operation below is registered here while it runs.
-// The work is the mutation runtime's start plus real IndexedDB reads and
-// writes, so its wall time scales with machine load - a mount-to-activation
-// latency of 124-1246ms was measured for the Composer's own path (kata 3c7t).
-// That leaves a test with nothing to await but the operation itself: polling
-// its side effects against a fixed window is a race, not an assertion.
-const inFlightProjectionWork = new Set<Promise<unknown>>();
+// Every durable projection operation below is registered with this tracker
+// while it runs. The work is the mutation runtime's start plus real IndexedDB
+// reads and writes, so its wall time scales with machine load - a
+// mount-to-activation latency of 124-1246ms was measured for the Composer's
+// own path (kata 3c7t). That leaves a test with nothing to await but the
+// operation itself: polling its side effects against a fixed window is a
+// race, not an assertion. The stall tripwire and the macrotask yield the
+// tracker settles through are the package's; this binds them to the
+// browser's own timers and a MessageChannel hop.
+const projectionWorkTracker = createMutationProjectionWorkTracker({
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (timerId) => clearTimeout(timerId as ReturnType<typeof setTimeout>),
+  yieldMacrotask: () =>
+    new Promise<void>((resolve) => {
+      const hop = new MessageChannel();
+      hop.port1.onmessage = () => {
+        hop.port1.close();
+        resolve();
+      };
+      hop.port2.postMessage(undefined);
+    }),
+});
 
 function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
-  inFlightProjectionWork.add(work);
-  return work.finally(() => {
-    inFlightProjectionWork.delete(work);
-  });
-}
-
-// A round waits on real durable work, so its wall time scales with machine
-// load - but no amount of load turns work that has no completion left into
-// work that finishes. A test that stalls storage and then flushes without
-// releasing it parks HERE, inside the act() below, until vitest abandons the
-// whole test at its own timeout - and an abandoned act() leaves React's act
-// queue open for the rest of the FILE, so every later render produces nothing
-// and one hang becomes dozens of failures (issue #1187). This bound exists to
-// make that one named failure in the test that caused it, nothing else: it is
-// a tripwire for a stall, never pacing. The slowest round measured across the
-// whole web suite (10373 tests) under 32-way CPU contention was 165ms.
-const SETTLE_STALL_TRIPWIRE_MS = 4_000;
-
-async function awaitOutstandingProjectionWork(outstanding: Promise<unknown>[]): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const tripwire = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `pending-turns projection work stalled: ${outstanding.length} operation(s) still unsettled after ${SETTLE_STALL_TRIPWIRE_MS}ms - release whatever storage or transport this test is holding before flushing`,
-          ),
-        ),
-      SETTLE_STALL_TRIPWIRE_MS,
-    );
-  });
-  try {
-    await Promise.race([Promise.allSettled(outstanding), tripwire]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return projectionWorkTracker.track(work);
 }
 
 // Awaits whatever projection work is outstanding right now and reports how
 // much that was. Callers repeat until it reports zero, flushing React in
 // between: the components start this work from effects, so only a flush can
-// reveal whether anything is left. The macrotask hop drains every pending
-// microtask, so work chained onto an operation that just finished has already
-// registered itself by the time the caller looks again.
+// reveal whether anything is left.
 export async function settlePendingTurnsProjectionForTests(): Promise<number> {
-  const outstanding = [...inFlightProjectionWork];
-  await awaitOutstandingProjectionWork(outstanding);
-  await new Promise<void>((resolve) => {
-    const hop = new MessageChannel();
-    hop.port1.onmessage = () => {
-      hop.port1.close();
-      resolve();
-    };
-    hop.port2.postMessage(undefined);
-  });
-  return outstanding.length;
+  return projectionWorkTracker.settle();
 }
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
@@ -156,22 +126,13 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   return true;
 }
 
-subscribeMutationPersistence((targetRefs, committed) => {
-  if (committed) {
-    const { record, recoveryId } = committed;
-    projectionFence.advance(record.targetRef);
-    pendingTurnsStore.recordSubmittedHere({ outbox: [record], optimistic: [] });
-    pendingTurnsStore.setState((state) => {
-      const recovery = new Map(state.recovery);
-      if (recoveryId) recovery.delete(recoveryId);
-      return { outbox: new Map(state.outbox).set(record.clientMutationId, record), recovery };
-    });
-  }
-  if (targetRefs.length === 0) {
-    void refreshPendingTurnsProjection();
-    return;
-  }
-  for (const ref of targetRefs) void refreshPendingTurnsProjection(ref);
+// The commit feed's fast path (advancing the fence and landing the record
+// straight into the store, with no durable read at all) and the refresh it
+// triggers for every other changed target both live in the package; this
+// binds them to the browser's own durable-mutation feed and the refresh
+// declared below.
+wireMutationCommitFeed(pendingTurnsStore, projectionFence, { subscribe: subscribeMutationPersistence }, (ref) => {
+  void refreshPendingTurnsProjection(ref);
 });
 
 export interface SubmitWithPendingTrackingOptions {
@@ -453,7 +414,7 @@ export function resetPendingTurnsStoreForTests(): void {
   projectionFence.reset();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
-  inFlightProjectionWork.clear();
+  projectionWorkTracker.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

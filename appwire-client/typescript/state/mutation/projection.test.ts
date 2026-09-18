@@ -5,27 +5,7 @@ import {
   type MutationPersistenceSnapshot,
   replaceTargetRecords,
 } from "./projection";
-import type { MutationOutboxRecord, MutationRecoveryRecord } from "./records";
-
-function outboxRecord(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
-  return {
-    version: 1,
-    clientMutationId: "cmid-1",
-    targetRef: "ref-a",
-    method: "turn/start",
-    payload: {},
-    attachments: [],
-    optimisticDisplay: null,
-    intentSequence: 0,
-    createdAt: 0,
-    state: "submitting",
-    ...overrides,
-  };
-}
-
-function recoveryRecord(overrides: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
-  return { ...outboxRecord(), recoveryKind: "rejected", ...overrides };
-}
+import { outboxRecord, recoveryRecord } from "./testing";
 
 function emptySnapshot(): MutationPersistenceSnapshot {
   return { outbox: [], optimistic: [], recovery: [] };
