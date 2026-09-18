@@ -5,7 +5,6 @@ import type {
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
-  MutationOutboxState,
   MutationRecord,
   MutationRecoveryKind,
   MutationRecoveryRecord,
@@ -423,7 +422,7 @@ export class MutationOutboxIndexedDB {
 
   async markUnknown(
     clientMutationId: string,
-    state: MutationOutboxState,
+    state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean> {
     return this.#write(OUTBOX_STORE, undefined, async (transaction) => {

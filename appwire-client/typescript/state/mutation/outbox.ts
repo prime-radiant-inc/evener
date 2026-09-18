@@ -33,7 +33,6 @@ import type {
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
-  MutationOutboxState,
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
@@ -88,9 +87,14 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // The next record for one ref that is still waiting to be dispatched.
   nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined>;
   markAttempted(clientMutationId: string): Promise<boolean>;
+  // The state an uncertain-outcome write may move a record to is exactly
+  // "blockedUnknown" - the literal type is deliberate, so the type system
+  // rejects asking this method for any other state. "canceled" especially is
+  // the user's durable decision (only an explicit user Retry releases it), and
+  // "submitting" is the settle/reopen paths' verdict, never this one's.
   markUnknown(
     clientMutationId: string,
-    state: MutationOutboxState,
+    state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean>;
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;

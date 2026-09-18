@@ -382,6 +382,32 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  test("markUnknown's state parameter names exactly blockedUnknown", async () => {
+    const storage = store();
+    const row = await storage.enqueueIntent(intent("typed row"));
+    expect(await storage.markUnknown(row.clientMutationId, "blockedUnknown")).toBe(true);
+
+    // The compile-time half of the non-reclassifiable invariant (roborev PR
+    // #1873 low), beside the runtime guard pinned in the test above: the
+    // parameter's literal type is the contract, so asking the uncertain-outcome
+    // write for any other state is a type error - "canceled" is the user's
+    // durable decision (only an explicit user Retry releases it), and
+    // "submitting" is the settle/reopen paths' verdict. The two misuse
+    // bindings below are type-level only and never execute.
+    const legal: Parameters<MutationOutboxIndexedDB["markUnknown"]>[1] = "blockedUnknown";
+    // @ts-expect-error markUnknown cannot name "canceled"
+    const misusedCanceled: Parameters<MutationOutboxIndexedDB["markUnknown"]>[1] = "canceled";
+    // @ts-expect-error markUnknown cannot name "submitting"
+    const misusedSubmitting: Parameters<MutationOutboxIndexedDB["markUnknown"]>[1] = "submitting";
+    expect([legal, misusedCanceled, misusedSubmitting].filter((value) => value === "blockedUnknown")).toEqual([
+      "blockedUnknown",
+    ]);
+    // Nothing but the one legal call ever ran: the row is exactly where it
+    // left it.
+    expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("blockedUnknown");
+    storage.close();
+  });
+
   test("a canceled head row does not park the queue, but a blockedUnknown head still does", async () => {
     const storage = store();
     await storage.enqueueIntent(intent("canceled head"));
