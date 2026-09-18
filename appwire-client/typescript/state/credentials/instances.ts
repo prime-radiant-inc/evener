@@ -293,15 +293,36 @@ function changedCounts(before: Map<string, number>, now: Map<string, number>): S
 
 const REFETCH_DEBOUNCE_MS = 250;
 // Age budget from an own-echo marker's latest stamp - the issue, or the RPC
-// response that re-stamped it (authMutation's landed branch).
+// response that re-stamped it (authMutation's and applyMutation's landed
+// branches).
 const SELF_ECHO_WINDOW_MS = 2000;
-interface LocalAuthMutationMarker {
-  // Outstanding same-provider mutations issued but not yet consumed (by an
-  // echo) or retired (by an unconfirmed outcome).
-  count: number;
-  // The entry's latest life event: the most recent issue, or the RPC
-  // response that re-stamped it; ages the whole entry out together.
+// LocalMutationMarker is ONE outstanding mutation the store issued, not yet
+// consumed (by its echo) or retired (by an unconfirmed outcome). One marker per
+// mutation rather than one per provider is what lets a provider-instance
+// mutation correlate at all: its evener/auth/updated echo carries no provider,
+// so it is matched by the marker's absent provider plus the echoed
+// originClientId. It also keeps two same-subject mutations from sharing a
+// single stamp.
+interface LocalMutationMarker {
+  // The provider an auth mutation named, or undefined for a provider-instance
+  // mutation, whose echo names no provider.
+  provider: string | undefined;
+  // The marker's latest life event: the most recent issue, or the RPC response
+  // that re-stamped it; ages the marker out.
   issuedAt: number;
+  // True once the mutation's RPC response has landed. An unsettled marker
+  // belongs to a mutation still in flight, so it is never pruned however old it
+  // looks: a slow response must still be able to restamp it, and that
+  // mutation's late echo must still find it.
+  settled: boolean;
+}
+
+// staleLocalMutation reports whether a marker has outlived its meaning. Only a
+// SETTLED marker can go stale - the echo window ran from its response, so a
+// later echo is not this marker's. A marker still in flight is kept however old
+// its stamp looks.
+function staleLocalMutation(marker: LocalMutationMarker, now: number): boolean {
+  return marker.settled && now - marker.issuedAt > SELF_ECHO_WINDOW_MS;
 }
 
 export function createCredentialInstancesStore(deps: CredentialInstancesDeps): CredentialInstancesStore {
@@ -467,11 +488,9 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // A refused write reads nothing of its own, for instance writes and credential
   // writes alike: a failed reply may still follow a write the hub applied, and
   // the hub broadcasts evener/auth/updated for every write it applies
-  // (notifyInstanceUpdated, cmd/evener-hub/app_rpc.go) - an instance write's
-  // echo carries no origin and no marker was armed, so it reads as foreign here;
-  // a credential write's echo reads as foreign once the refused write's marker
-  // is retired (authMutation) - so the echo is what re-reads, and a refused
-  // write that applied nothing changed nothing to read.
+  // (notifyInstanceUpdated, cmd/evener-hub/app_rpc.go) - the refused write's
+  // marker is retired, so its echo reads as foreign here - so the echo is what
+  // re-reads, and a refused write that applied nothing changed nothing to read.
   //
   // Reads and writes share ordering: only the most recently started request
   // can replace the listing, even when responses arrive out of order. Reports
@@ -482,7 +501,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // wrote, which is what `reconcile` (MutationReconcile) places among newer
   // reads.
   async function applyMutation(
-    request: () => Promise<InstanceListResponse>,
+    request: (origin: { originClientId: string }) => Promise<InstanceListResponse>,
     reconcile: MutationReconcile,
   ): Promise<boolean> {
     const version = ++requestVersion;
@@ -490,10 +509,18 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     // Refreshes already landed when this write started: the answer is newer
     // than those rows and replaces them, as it always has.
     const before = new Map(refreshedInstances);
+    // An instance mutation's echo names no provider, so its marker is the one
+    // with an undefined subject (see the own-echo section below).
+    const marker = noteLocalMutation(undefined);
     try {
-      const response = await request();
+      const response = await request({ originClientId: deps.ownClientId() });
       const sameClient = connection.client === client;
       if (sameClient) bump(landedMutations, reconcile.instance);
+      // The write reached the hub - whether or not a newer request outran its
+      // answer, since every return below is still this request's own echo - so
+      // re-stamp so a late echo inside the window still correlates. A reconnect
+      // already cleared the marker, making this a no-op.
+      restampLocalMutation(marker);
       if (version !== requestVersion) {
         // A superseded answer from a client that is gone describes a listing
         // this client never had: reconciling it would write the dead client's
@@ -512,6 +539,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // so the listing it answered with is this connection's.
       store.setState(landedListing(applied));
       return true;
+    } catch (err) {
+      // Refused: this mutation's marker retires, so an echo that follows after
+      // all - the write landed and only its reply was lost - reads as foreign
+      // and re-reads. A reconnect already cleared the marker, making this a
+      // no-op.
+      retireLocalMutation(marker);
+      throw err;
     } finally {
       settleLoading(version);
     }
@@ -598,8 +632,17 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const basis = landedMutations.get(name) ?? 0;
     const version = (refreshVersions.get(name) ?? 0) + 1;
     refreshVersions.set(name, version);
+    const marker = noteLocalMutation(undefined);
     try {
-      const response = await client.request("evener/instance/refreshModels", { name });
+      const response = await client.request("evener/instance/refreshModels", {
+        name,
+        originClientId: deps.ownClientId(),
+      });
+      // The refresh reached the hub - whether or not a newer request outran its
+      // answer, since every return below is still this request's own echo - so
+      // re-stamp so a late echo inside the window still correlates. A reconnect
+      // already cleared the marker, making this a no-op.
+      restampLocalMutation(marker);
       if (
         refreshVersions.get(name) !== version ||
         (landedMutations.get(name) ?? 0) !== basis ||
@@ -638,6 +681,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       if (!known) merged.push({ ...row });
       bump(refreshedInstances, name);
       store.setState({ instances: merged, error: null });
+    } catch (err) {
+      // Refused: this refresh's marker retires, so an echo that follows after
+      // all - the refresh landed and only its reply was lost - reads as foreign
+      // and re-reads. A reconnect already cleared the marker, making this a
+      // no-op.
+      retireLocalMutation(marker);
+      throw err;
     } finally {
       // Only this client's entry: a reconnect clears the map, and the next
       // client's refresh for the same instance restarts at version 1 - the
@@ -653,116 +703,175 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   //
   // evener/auth/updated BroadcastAlls to every connected client after a
   // successful auth mutation (login/logout/apiKey set/an authorized device
-  // poll) from ANY of them - InstanceEntry's own activeSource/hasStoredOAuth/
-  // hasStoredFile/storedEmail fields are exactly what such a mutation changes,
-  // so a client that already loaded the instance list goes stale otherwise. On
-  // the wire it carries {provider, activeSource, originClientId} (notifyAuthUpdated,
-  // cmd/evener-hub/app_rpc.go) matching the generated EvenerAuthUpdatedParams.
+  // poll) or provider-instance CRUD mutation (create/edit/remove/setDefault/
+  // setModelDisabled/refreshModels) from ANY of them - InstanceEntry's own
+  // activeSource/hasStoredOAuth/hasStoredFile/storedEmail fields, and the list
+  // itself, are exactly what such a mutation changes, so a client that already
+  // loaded the instance list goes stale otherwise. On the wire it carries
+  // {provider, activeSource, originClientId} for an auth mutation
+  // (notifyAuthUpdated, cmd/evener-hub/app_rpc.go) and just {originClientId} for
+  // a provider-instance one (notifyInstanceUpdated, where no single
+  // provider/activeSource pair honestly summarizes "the list changed"),
+  // matching the generated EvenerAuthUpdatedParams.
   //
   // The originator is in that audience too, and it must keep receiving the
   // notification - other consumers of the broadcast depend on the originating
-  // client's own echo to refresh after its own save. But the
-  // LISTING refetch is redundant for the originator: the STORE schedules its own
-  // refresh the moment a local auth mutation succeeds - a refresh owned by the
-  // store survives the issuing dialog being canceled, hidden, or unmounted
+  // client's own echo to refresh after its own save. But the LISTING refetch is
+  // redundant for the originator: an auth mutation schedules the store's own
+  // refresh the moment a local write succeeds, and a provider-instance mutation
+  // already applied the full-list answer its RPC returned - a refresh owned by
+  // the store survives the issuing dialog being canceled, hidden, or unmounted
   // before the RPC resolves, which a caller-scoped refresh does not. Worse, the
   // echo's refetch is misread by a save/check in flight: a subscriber comparing
   // selfRefresh across the transition reads the echo-driven listing change as
   // someone else's and invalidates the fresh result or cancels the check. So
   // the originator's own echo schedules a self-marked
   // refresh rather than a foreign one: it coalesces with the store's own
-  // post-save refresh, and the mark is what keeps the flow from invalidating on
+  // post-write refresh, and the mark is what keeps the flow from invalidating on
   // the read that follows. It is correlated narrowly:
   //
-  // - Marked per provider when the mutation is ISSUED, then re-stamped when its
-  //   RPC response lands (authMutation's landed branch): the broadcast can reach
-  //   this client before the RPC response does, so a resolve-time marker alone
-  //   would miss an early echo, and a hub whose mutation + broadcast outlasts
-  //   the window would otherwise have its own LATE echo read as foreign. The
-  //   echo's window runs from whichever came last - issue or response.
-  // - COUNTED, not a single timestamp: back-to-back same-provider mutations
-  //   (two saves in a guided flow, a retry, a poll landing on top of a save)
-  //   each broadcast one echo, so a lone per-provider marker would let the
-  //   first echo consume the second mutation's marker and leave the second self
-  //   echo to be misread as an unrelated client's change. The per-provider
-  //   entry holds the count of outstanding mutations plus the latest stamp;
-  //   each matching notification consumes exactly one, and only a notification
-  //   beyond the outstanding count is foreign and still refetches.
-  // - Cleared on a device poll that comes back pending/expired (no write, so
-  //   no echo) and, unconditionally, on a failed RPC - even though a write
-  //   that applied before its later step failed (cmd/evener-hub/app_write_
-  //   applied.go) still broadcasts. That broadcast is never this mutation's
-  //   own echo to consume: the no-data form it uses (notifyInstanceUpdated)
-  //   carries neither a provider nor an originClientId, so consumeOwnAuthEcho
-  //   would read it as foreign regardless of whether a marker were still
-  //   outstanding. Distinguishing "applied, no echo attributable" from "never
-  //   applied" here would need the wire to say which, which it does not yet.
-  //   One outstanding marker is retired per such outcome (a floor, not an
-  //   unconditional clear): which mutation ended does not matter, only how
-  //   many echoed mutations remain outstanding.
+  // - ONE MARKER PER MUTATION, armed when the mutation is ISSUED, then
+  //   re-stamped when its RPC response lands (authMutation's and applyMutation's
+  //   landed branches): the broadcast can reach this client before the RPC
+  //   response does, so a resolve-time marker alone would miss an early echo, and
+  //   a hub whose mutation + broadcast outlasts the window would otherwise have
+  //   its own LATE echo read as foreign. The echo's window runs from whichever
+  //   came last - issue or response. A marker records the subject its echo can
+  //   name: the provider an auth write targeted, or nothing for an instance
+  //   mutation, whose echo names no provider.
+  // - COUNTED BY SUBJECT, not a single timestamp: back-to-back mutations (two
+  //   saves in a guided flow, a retry, a poll landing on top of a save, an edit
+  //   on top of a create) each broadcast one echo, so a lone marker would be
+  //   spent by the first echo and leave the second self echo to be misread as an
+  //   unrelated client's change. Each matching notification consumes exactly one
+  //   marker - the oldest outstanding one for its subject, since echoes arrive
+  //   in issue order - and only a notification beyond the outstanding count is
+  //   foreign and still refetches.
+  // - Retired when the response proves no echo will be attributed to it: a
+  //   failed RPC, or a device poll that came back pending/expired rather than
+  //   authorized. Each mutation retires exactly the marker it armed (never a
+  //   later mutation's), so an older reply that lands after a newer mutation was
+  //   issued cannot spend the newer mutation's echo. That covers the write that
+  //   applied before its later step failed (cmd/evener-hub/app_write_applied.go):
+  //   its broadcast is the no-data form - no provider, and no origin either,
+  //   because the hub drops the origin for an errored write - so it is
+  //   unattributable and always reads as foreign here, and the failing mutation
+  //   has already retired the marker it armed, so it cannot absorb that echo.
+  //   The store cannot tell "applied, no echo attributable" from "never
+  //   applied" without the wire saying which, which it does not yet.
   // - Bounded by a short age window from the marker's latest stamp, so a marker
   //   that is never consumed (the echo was lost, or the notification arrived
   //   pre-response and the client disconnected) cannot outlive its meaning.
   //
-  // Anything unmatched still refetches - other providers, unattributed
-  // notifications, the same provider with no live marker - so unrelated
-  // clients' changes keep arriving.
-  const localAuthMutations = new Map<string, LocalAuthMutationMarker>();
+  // Anything unmatched still refetches - other providers, an id-less
+  // provider-instance notification (which names no mutation this client could
+  // correlate on), a subject with no live marker - so unrelated clients'
+  // changes keep arriving.
+  let localMutations: LocalMutationMarker[] = [];
   let unsubscribeNotifications: (() => void) | undefined;
 
-  function noteLocalAuthMutation(provider: string): void {
-    const existing = localAuthMutations.get(provider);
-    localAuthMutations.set(provider, { count: (existing?.count ?? 0) + 1, issuedAt: Date.now() });
+  // firstMarker finds the OLDEST outstanding marker for a subject: the provider
+  // an auth notification named, or undefined for a provider-instance one.
+  // Echoes for one subject arrive on one connection in issue order, so the
+  // oldest is the one an arriving echo is for; taking the newest instead would
+  // let an early echo spend a LATER mutation's marker and leave that mutation's
+  // own echo to read as foreign.
+  function firstMarker(provider: string | undefined): LocalMutationMarker | undefined {
+    for (const marker of localMutations) {
+      if (marker.provider === provider) return marker;
+    }
+    return undefined;
   }
 
-  // retireLocalAuthMutation consumes one outstanding marker: an echo that
-  // arrived, a device poll that came back pending/expired (no write, so no
-  // echo), or a failed RPC - which can still broadcast when the write applied
-  // before its later step failed, but never as an echo this marker could
-  // consume (see the header comment above localAuthMutations). Which mutation
-  // ended does not matter, only how many echoed mutations remain outstanding,
-  // so this decrements whether or not it was the mutation that failed; once
-  // the count reaches zero the next same-provider notification is foreign
-  // again.
-  function retireLocalAuthMutation(provider: string): void {
-    const existing = localAuthMutations.get(provider);
-    if (existing === undefined) return;
-    if (existing.count <= 1) localAuthMutations.delete(provider);
-    else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
+  // firstLiveMarker is firstMarker with the stale markers in front of it dropped
+  // as it looks: a marker whose echo was lost must not shadow a newer live
+  // marker for the same subject and turn that newer mutation's id-less echo
+  // foreign.
+  function firstLiveMarker(provider: string | undefined): LocalMutationMarker | undefined {
+    const now = Date.now();
+    for (;;) {
+      const marker = firstMarker(provider);
+      if (marker === undefined) return undefined;
+      if (!staleLocalMutation(marker, now)) return marker;
+      retireLocalMutation(marker); // stale: no echo of ours left for it
+    }
   }
 
-  // restampLocalAuthMutation moves the provider's echo window to now, when its
-  // RPC response lands; a marker an early echo already consumed is gone, so
-  // this is then a no-op.
-  function restampLocalAuthMutation(provider: string): void {
-    const existing = localAuthMutations.get(provider);
-    if (existing !== undefined) localAuthMutations.set(provider, { count: existing.count, issuedAt: Date.now() });
+  // noteLocalMutation arms one marker for a mutation the store is about to
+  // issue and returns it, so that mutation can re-stamp or retire exactly its
+  // own marker. Acting on "the latest marker for the subject" instead would let
+  // one mutation's reply retarget another's marker when same-subject mutations
+  // overlap.
+  //
+  // Arming also drops markers that have outlived their meaning. A
+  // provider-instance marker can never be spent by an id-less notification
+  // (those stay foreign), so without this a hub that ignores originClientId -
+  // an older build - would strand one marker per successful instance mutation
+  // for the life of the connection. Only SETTLED markers are dropped: an
+  // in-flight marker must survive so its slow response can still restamp it and
+  // its late echo still correlate.
+  function noteLocalMutation(provider: string | undefined): LocalMutationMarker {
+    const now = Date.now();
+    localMutations = localMutations.filter((marker) => !staleLocalMutation(marker, now));
+    const marker: LocalMutationMarker = { provider, issuedAt: now, settled: false };
+    localMutations.push(marker);
+    return marker;
+  }
+
+  // retireLocalMutation drops the exact marker a mutation armed, if it is still
+  // outstanding: its echo arrived, or an outcome proved no echo will (a failed
+  // RPC, a device poll that came back pending/expired). A marker an echo already
+  // consumed - or a reconnect already cleared - is gone, so this is then a
+  // no-op.
+  function retireLocalMutation(marker: LocalMutationMarker): void {
+    const index = localMutations.indexOf(marker);
+    if (index !== -1) localMutations.splice(index, 1);
+  }
+
+  // restampLocalMutation settles the exact marker a mutation armed when its RPC
+  // response lands, moving its echo window to now; a marker an early echo
+  // already consumed is gone, so this is then a no-op.
+  function restampLocalMutation(marker: LocalMutationMarker): void {
+    if (!localMutations.includes(marker)) return;
+    marker.issuedAt = Date.now();
+    marker.settled = true;
   }
 
   // True exactly when this notification is this client's own echo of a
-  // just-issued auth mutation; consumes one outstanding marker, so a stale
-  // entry cannot suppress a later notification. A stale entry (its latest
-  // stamp older than the window) counts as no marker at all and is dropped.
+  // just-issued mutation; consumes one outstanding marker, so a stale marker
+  // cannot suppress a later notification.
   //
   // The broadcast carries the id the originating mutation sent, so an echo is
   // attributed by identity first: a notification whose originClientId is this
   // client's own is its echo, and one naming a different client is foreign
-  // however close in time. The provider-plus-latest-stamp rule stays for a
-  // notification with no id - an older build, or a mutation made from the TUI -
+  // however close in time. The provider-plus-latest-stamp rule stays for an
+  // id-less AUTH notification - an older build, or a mutation made from the TUI -
   // where it is still as exact as that wire allows, and where the residual stays
   // bounded: a matched notification still re-reads the listing, so only the
-  // guided flow's invalidation is skipped, and only within the window.
-  function consumeOwnAuthEcho(provider: string | undefined, originClientId: string | undefined): boolean {
-    if (provider === undefined) return false;
-    const marker = localAuthMutations.get(provider);
-    if (marker === undefined) return false;
+  // guided flow's invalidation is skipped, and only within the window. A
+  // provider-less notification with no id gets no such fallback: it names no
+  // provider to correlate on, so it could be any client's instance write or the
+  // server's own live-prefetch pass, and it stays foreign.
+  function consumeOwnEcho(provider: string | undefined, originClientId: string | undefined): boolean {
     if (originClientId) {
       if (originClientId !== deps.ownClientId()) return false;
-    } else if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
-      localAuthMutations.delete(provider); // stale: no marker, no echo of ours left
-      return false;
+      // The id proves this echo is ours, so the stale markers firstLiveMarker
+      // retires on the way are safe to drop. Consuming the OLDEST marker
+      // instead - stale or not - would leave a live marker behind for a later
+      // foreign id-less notification to absorb, presenting that foreign change
+      // as this store's own refresh.
+      const marker = firstLiveMarker(provider);
+      if (marker === undefined) return false;
+      retireLocalMutation(marker);
+      return true;
     }
-    retireLocalAuthMutation(provider);
+    // Id-less: only a provider-bearing auth notification can be correlated this
+    // way, and only against a marker still inside its window. A stale marker in
+    // front of a live one is dropped rather than ending the search.
+    if (provider === undefined) return false;
+    const marker = firstLiveMarker(provider);
+    if (marker === undefined) return false;
+    retireLocalMutation(marker);
     return true;
   }
 
@@ -770,12 +879,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     if (n.method !== "evener/auth/updated") return;
     // A notification this client takes for its own echo is suppressed as a
     // separate refresh, but it still schedules the store's own refresh: if the
-    // real echo was lost and another client's same-provider change arrived
+    // real echo was lost and another client's same-subject change arrived
     // first, the marker is consumed by that change, and the store's post-save
     // refresh has already run - without this the foreign change would stay
     // invisible until something else refetched. The self mark keeps the guided
     // flow from invalidating on the coalesced read while the listing moves.
-    scheduleRefetch(consumeOwnAuthEcho(n.params.provider, n.params.originClientId));
+    scheduleRefetch(consumeOwnEcho(n.params.provider, n.params.originClientId));
   }
 
   function listenTo(client: CredentialInstancesClient | null): void {
@@ -819,22 +928,22 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const client = requireWritableClient();
     const issued = connection;
     const version = ++requestVersion;
-    noteLocalAuthMutation(provider);
+    const marker = noteLocalMutation(provider);
     try {
       const result = await request(client, { originClientId: deps.ownClientId() });
       if (connection !== issued) return result;
       if (landed(result)) {
-        restampLocalAuthMutation(provider);
+        restampLocalMutation(marker);
         scheduleRefetch(true);
         // A write landed: count it against the instance it named so only that
         // instance's in-flight refreshModels is retired (see landedMutations).
         bump(landedMutations, provider);
-      } else retireLocalAuthMutation(provider);
+      } else retireLocalMutation(marker);
       return result;
     } catch (err) {
       // Refused: the marker retires, so an echo that follows after all - the
       // write landed and only its reply was lost - reads as foreign and re-reads.
-      if (connection === issued) retireLocalAuthMutation(provider);
+      if (connection === issued) retireLocalMutation(marker);
       throw err;
     } finally {
       settleLoading(version);
@@ -859,27 +968,37 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async create(params) {
       const client = requireWritableClient();
-      return applyMutation(() => client.request("evener/instance/create", params), { instance: params.name });
+      return applyMutation((origin) => client.request("evener/instance/create", { ...params, ...origin }), {
+        instance: params.name,
+      });
     },
 
     async edit(params) {
       const client = requireWritableClient();
-      return applyMutation(() => client.request("evener/instance/edit", params), { instance: params.name });
+      return applyMutation((origin) => client.request("evener/instance/edit", { ...params, ...origin }), {
+        instance: params.name,
+      });
     },
 
     async remove(name, expectedEndpointFingerprint) {
       const client = requireWritableClient();
       return applyMutation(
-        () => client.request("evener/instance/remove", { name, ...withFingerprint(expectedEndpointFingerprint) }),
+        (origin) =>
+          client.request("evener/instance/remove", {
+            name,
+            ...withFingerprint(expectedEndpointFingerprint),
+            ...origin,
+          }),
         { instance: name },
       );
     },
 
     async setDefault(name) {
       const client = requireWritableClient();
-      const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }), {
-        instance: name,
-      });
+      const applied = await applyMutation(
+        (origin) => client.request("evener/instance/setDefault", { name, ...origin }),
+        { instance: name },
+      );
       // A superseded response lost the store's ordering race: the read that won it
       // may have started before the hub applied the new default, so the listing
       // would keep the old flag until something else refreshed. The store's own
@@ -894,7 +1013,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // A toggle whose answer a newer request outran is not dropped: it holds
       // the authoritative outcome for the one model it wrote, so that row is
       // reconciled into whatever listing the store now has.
-      await applyMutation(() => client.request("evener/instance/setModelDisabled", params), {
+      await applyMutation((origin) => client.request("evener/instance/setModelDisabled", { ...params, ...origin }), {
         instance: params.name,
         supersededFor: (response) => reconcileToggledModel(response, params),
         written: { instance: params.name, model: params.model },
@@ -999,8 +1118,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     // A marker belongs to the connection its mutation was issued on: the echo
     // cannot arrive on a different one, so a marker left over from a replaced
     // or reconnected client is pure suppression risk for whatever
-    // same-provider notification comes next on the new connection.
-    localAuthMutations.clear();
+    // same-subject notification comes next on the new connection.
+    localMutations = [];
     // Whatever listing state holds was read through the connection that just
     // went away (or through the client being replaced); the rows stay on
     // screen until this connection's own read lands, but nothing may act on
@@ -1026,7 +1145,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     requestedList = false;
     clearClientBookkeeping();
     cancelRefetch();
-    localAuthMutations.clear();
+    localMutations = [];
     listenTo(null);
     connection = { client: null, state: "idle" };
     store.setState(store.getInitialState());
