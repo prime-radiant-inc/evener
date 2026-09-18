@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1456,6 +1458,456 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 
 	if got := restored.State(); got != SessionAwaiting {
 		t.Fatalf("restored state = %q, want %q (a trailing steering turn must not resolve the pending ask)", got, SessionAwaiting)
+	}
+}
+
+// streamAskUserThenFinish scripts a round that posts one ask_user call and
+// ends its turn on it — the streaming-adapter shape of toolCallResponse(ask),
+// for a scriptedStreamAdapter script map.
+func streamAskUserThenFinish(ask llm.ToolCallData) func(*llm.ChanStream) {
+	return func(st *llm.ChanStream) {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: ask.ID, Name: ask.Name, Type: "function"}})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: ask.ID, Arguments: ask.Arguments}})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &ask})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	}
+}
+
+// TestAskUser_RestoreResolvesAcrossInterrupt covers the interrupt half of the
+// boundary deriveAskQuestions.ts's isResolutionItem enforces on the client
+// (agent/session_lifecycle.go: the interrupt path calls clearAskPending
+// directly and appends a steering turn carrying SteeringKindInterrupted). The
+// restore-side derivation must reach the identical answer, or a client
+// re-deriving live from the SAME transcript shape disagrees with a server
+// that restored the OLD reading. Driven through two real ProcessInput rounds
+// on a scripted STREAMING adapter (a plain fakeAdapter.Complete never
+// returns an error, so it cannot produce a genuine cancellation): round one
+// posts and acks ask_user; round two's own model call is cancelled
+// mid-stream, the same way TestSettlement_InterruptWithNoSalvagePersistsNothing
+// drives a real interrupted round.
+func TestAskUser_RestoreResolvesAcrossInterrupt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	round := 0
+	c := llm.NewClient()
+	c.Register(&scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"gpt-5.2": func(st *llm.ChanStream) {
+				round++
+				if round == 1 {
+					streamAskUserThenFinish(ask)(st)
+					return
+				}
+				// Round two: the user's follow-up round is interrupted before
+				// the model produces anything — the same shape
+				// TestSettlement_InterruptWithNoSalvagePersistsNothing scripts.
+				st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "weighing options"})
+				cancel()
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: context.Canceled})
+			},
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	if _, err := sess.ProcessInput(context.Background(), "which db should we use?", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-interrupt pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.ProcessInput(ctx, "actually, hold on", nil); err == nil {
+		t.Fatal("second ProcessInput returned nil, want the mid-stream cancellation")
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the interrupt = %d, want 0", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (an interrupt resolves the pending ask)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreResolvesAcrossUserSteer covers the accepted-user-steer
+// half of the same boundary: a steer enters processOneInput as EntryUserInput,
+// which clears s.askPending unconditionally on entry. Driven through the real
+// steering-carrier entry point (AcceptClientMutationSteer, claimSteeringCarrierTurn,
+// acceptSteeringCarrierInput — the same production path
+// session_notes_refine_test.go's TestNotificationWakeFirstRequestReflectsURLRemoval
+// drives directly, and the one consumeSteeringMessage/appendSteeringTurn
+// actually build the persisted TurnSteering(source=user) turn through), not a
+// hand-built turn.
+func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-steer pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("focus on the tests", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the accepted steer = %d, want 0", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (an accepted user steer resolves the pending ask)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier covers the case a
+// user steer's OWN turn fails outright before posting anything: processOneInput
+// clears s.askPending unconditionally on entry (session_lifecycle.go's
+// "Pending asks resolve with this accepted turn" comment), before the turn's
+// model call ever runs, so a steering carrier that fails immediately ("it
+// carries no content of its own", session_lifecycle.go) has already resolved
+// the ask server-side even though it leaves no steering/user turn behind —
+// only a TurnFailure marker tagged SteeringCarrier (schema.TurnFailureInfo's
+// own doc comment). Driven through the real acceptSteeringCarrierInput ->
+// carrierSteerUndelivered path (session_notes_refine_test.go's harness), with
+// the steer's own transcript append forced to fail — not a hand-built
+// TurnFailure turn.
+func TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "carrier-1",
+		Input:            clientMutationInput("please hold", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	refusal := refuseSteerAppends(sess, "carrier-1")
+	refusal.refuse.Store(true)
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "carrier-1", StableTurnID: turnID, SteeringCarrier: true}); err == nil {
+		t.Fatal("acceptSteeringCarrierInput succeeded, want the injected append failure")
+	}
+	if got := refusal.refusals.Load(); got != 1 {
+		t.Fatalf("steer append attempts = %d, want 1", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (a failed steering carrier resolves the pending ask)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreResolvesAcrossFailedSteeringSelectionCarrier covers the
+// case a claimed carrier's OWN steer is retired for a different reason: its
+// skill selection could not be prepared (recordFailedSteeringSelection),
+// rather than its transcript append failing (the case above). The carrier
+// turn's mere acceptance still cleared askPending before the drain ever ran,
+// so the untagged TurnFailure the selection failure would otherwise leave
+// behind must be tagged SteeringCarrier too, or restore rescans past it to
+// the earlier ask_user call and re-derives a pending ask the live session
+// had already closed. Driven through the real claimSteeringCarrierTurn ->
+// acceptSteeringCarrierInput path with an unresolvable skill name, not a
+// hand-built TurnFailure.
+func TestAskUser_RestoreResolvesAcrossFailedSteeringSelectionCarrier(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "carrier-skill-1",
+		Input:            clientMutationInput("please hold", nil, []string{"no-such-skill"}),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	identity := queuedClientMutationIdentity{ClientMutationID: "carrier-skill-1", StableTurnID: turnID, SteeringCarrier: true}
+	if err := sess.acceptSteeringCarrierInput(ctx, identity); !errors.Is(err, errSteeringCarrierStoodDown) {
+		t.Fatalf("acceptSteeringCarrierInput error = %v, want errSteeringCarrierStoodDown", err)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (a failed steering-selection carrier resolves the pending ask)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreDoesNotResolveAcrossAnUnrelatedTurnFailure is the
+// narrowing this round adds: only a TurnFailure tagged SteeringCarrier
+// (session_lifecycle.go's acceptSteeringCarrierInput, carrierSteerUndelivered)
+// is a resolution boundary. An ordinary TurnFailure — here,
+// recordFailedSteeringSelection's record of a drained steer whose skill
+// selection could not be prepared (the "mid-turn steering-selection failure"
+// this round's fix explicitly preserves pending asks across) — must not
+// resolve anything: the ask_user call's own TurnToolResults, still ahead of
+// it in the backward scan, is what restore reads. Driven through the real
+// consumeSteeringMessage/recordFailedSteeringSelection path
+// TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure
+// also drives directly, appended AFTER a real ask_user round — not a
+// hand-built TurnFailure.
+func TestAskUser_RestoreDoesNotResolveAcrossAnUnrelatedTurnFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-failure pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if sess.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"no-such-skill"}}) == steeringAppendFailed {
+		t.Fatal("the failure record itself did not durably land (test setup broken)")
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after the unrelated failure = %d, want 1 (the failure never touched this round's own ask)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := len(restored.askPending); got != 1 {
+		t.Fatalf("restored askPending = %+v (len %d), want the one ask1 question still pending", restored.askPending, got)
+	}
+	if got := restored.askPending[0].Header; got != "DB choice" {
+		t.Fatalf("restored askPending[0].Header = %q, want %q", got, "DB choice")
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (the unrelated failure must not have resolved this ask)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer
+// covers the live half of the steer-resolution boundary: a user steer queued
+// while the ask_user round is still running is drained by
+// injectPostToolSteering, mid-round, well before any accepted-turn ENTRY
+// would otherwise clear askPending. Queuing the steer inside the adapter's
+// first-step closure (which runs and returns before the harness executes
+// ask_user's own tool call, in turn before injectPostToolSteering runs) puts
+// it in the queue in time for that same round's drain. Clearing askPending
+// mid-round is not enough on its own: the drained steer must also reach the
+// model on a second request rather than stranding the round at the ask
+// boundary it just resolved — the second fakeAdapter step only fires for a
+// genuine new round, and its request is asserted to carry the steer's text.
+func TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	var sess *Session
+	queueSteer := func() {
+		if err := sess.ensureClientMutationStore(); err != nil {
+			t.Fatalf("ensureClientMutationStore: %v", err)
+		}
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "mid-flight-steer",
+			Input:            clientMutationInput("go ahead and pick Postgres", nil, nil),
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer: %v", err)
+		}
+	}
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				queueSteer()
+				return toolCallResponse(ask)
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("using Postgres, thanks")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(fa)
+	var err error
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("askPendingCount after the mid-flight steer drained = %d, want 0 (the drained steer resolves the ask it landed after)", got)
+	}
+	var sawUserSteer bool
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnSteering && turn.SteeringSource == events.SteeringSourceUser {
+			sawUserSteer = true
+		}
+	}
+	if !sawUserSteer {
+		t.Fatal("no TurnSteering(source=user) landed in history; the drain never ran (test setup broken)")
+	}
+	requests := fa.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2 (a second request must read the drained steer, not strand it at the ask boundary)", len(requests))
+	}
+	if !requestContainsText(requests[1], "go ahead and pick Postgres") {
+		t.Fatalf("second model request did not carry the drained steer: %+v", requests[1])
 	}
 }
 

@@ -1260,11 +1260,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
+		s.clearAskPendingForResolvingSteer(t)
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
+	s.clearAskPendingForResolvingSteer(t)
 	return steeringDelivered
 }
 
@@ -1278,6 +1280,31 @@ func queuedInputFromSteering(msg steeringMessage) queuedInput {
 		Images:           msg.Images,
 		SkillNames:       msg.SkillNames,
 	}
+}
+
+// setSteeringCarrierClaimDrain records which steer (by client mutation id) a
+// claimed steering-carrier turn (acceptSteeringCarrierInput) is currently
+// draining, for steeringSelectionFailureIsCarrierClaim below to read; ""
+// clears it once the drain returns.
+func (s *Session) setSteeringCarrierClaimDrain(clientMutationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steeringCarrierClaimClientMutationID = clientMutationID
+}
+
+// steeringSelectionFailureIsCarrierClaim reports whether clientMutationID is
+// the steer a claimed steering-carrier turn is currently draining
+// (setSteeringCarrierClaimDrain above) — the one case where the turn's mere
+// acceptance already cleared askPending before this selection failure ran,
+// so the TurnFailure it produces must be a resolution boundary too
+// (schema.TurnFailureInfo.SteeringCarrier).
+func (s *Session) steeringSelectionFailureIsCarrierClaim(clientMutationID string) bool {
+	if clientMutationID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringCarrierClaimClientMutationID == clientMutationID
 }
 
 // recordFailedSteeringSelection durably records a steering input whose skill
@@ -1297,7 +1324,10 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(cause.Error()))
 	turn.ClientMutationID = msg.ClientMutationID
 	turn.StableTurnID = msg.StableTurnID
-	turn.Error = &schema.TurnFailureInfo{Message: cause.Error()}
+	turn.Error = &schema.TurnFailureInfo{
+		Message:         cause.Error(),
+		SteeringCarrier: s.steeringSelectionFailureIsCarrierClaim(msg.ClientMutationID),
+	}
 	turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,

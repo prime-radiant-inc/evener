@@ -2726,7 +2726,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
+	// Recorded for the duration of the drain so a skill-selection failure for
+	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
+	// can tag its TurnFailure as a resolution boundary too — this turn's mere
+	// acceptance already cleared askPending before the drain ever ran.
+	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
 	delivered := s.injectDrainedSteering()
+	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
@@ -2736,7 +2742,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was
