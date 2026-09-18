@@ -40,8 +40,10 @@ func goodStartFn(t *testing.T) func(context.Context, []string, io.Writer) (Stdio
 // gateHook replaces the fixed sleeps that used to order a test goroutine against
 // a host gate the test holds. Its hook signals arrival at the gate and parks the
 // caller until open, so the test decides which contender runs first rather than
-// hoping a sleep was long enough. It stays inert until armed, because the
-// manager is built — and usually attached — before the interleaving begins.
+// hoping a sleep was long enough. A test must arm it before triggering the race:
+// routing a call through the hook before arm is a test bug, since the hook would
+// return silently and the manager would pass the gate the test thinks it holds.
+// hook makes that loud instead of leaving it to a later timeout.
 type gateHook struct {
 	arrived  chan struct{}
 	release  chan struct{}
@@ -54,15 +56,18 @@ func newGateHook() *gateHook {
 	return &gateHook{arrived: make(chan struct{}), release: make(chan struct{})}
 }
 
-// arm makes subsequent hook calls signal and park.
+// arm begins the interleaving the gate holds: from here hook calls signal and
+// park, and a hook call before it panics.
 func (g *gateHook) arm() { g.armed.Store(true) }
 
 // hook reports the first armed caller's arrival and parks it; a later contender
 // arriving before open proceeds without parking, since the arrival it would
-// report has already been observed.
+// report has already been observed. A call before arm is a test ordering bug —
+// the hook is not holding anything yet — so it panics rather than letting the
+// manager run past the gate unnoticed.
 func (g *gateHook) hook() {
 	if !g.armed.Load() {
-		return
+		panic("gateHook.hook called before arm: the test armed too late, so the hook is not holding the contender it means to")
 	}
 	var first bool
 	g.once.Do(func() {
@@ -86,6 +91,20 @@ func (g *gateHook) wait(t *testing.T, what string) {
 // open releases a parked caller. Idempotent, so a test can defer it and still
 // release explicitly once the interleaving is established.
 func (g *gateHook) open() { g.openOnce.Do(func() { close(g.release) }) }
+
+// A hook call before arm means the test armed too late: the hook would return
+// silently, the manager would run straight through the gate the test believes it
+// holds, and the mistake would surface only as a later timeout. Reproduce that
+// mistake directly and require it to be loud.
+func TestGateHookHookBeforeArmFailsLoudly(t *testing.T) {
+	g := newGateHook()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("gateHook.hook before arm returned quietly; the late-arm ordering bug would stay silent")
+		}
+	}()
+	g.hook()
+}
 
 // exitSignal turns "the supervisor stood down" into an observation. Tests that
 // used to sleep long enough to hope a supervisor had finished wait on it
@@ -860,6 +879,10 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 			events := make(chan Event, 128)
 			supGate := newGateHook()
 			ensureGate := newGateHook()
+			// beforeHostGate runs at the top of every Ensure, the initial attach
+			// below included. Only the contender may reach the gate: the initial
+			// attach has to run free, and gateHook.hook panics on a pre-arm call.
+			var attached atomic.Bool
 			opts := Options{
 				OnEvent:     func(ev Event) { events <- ev },
 				BackoffBase: time.Millisecond,
@@ -868,7 +891,11 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 				jitter:      func(d time.Duration) time.Duration { return d },
 			}
 			if tc.parkEnsure {
-				opts.beforeHostGate = func(string) { ensureGate.hook() }
+				opts.beforeHostGate = func(string) {
+					if attached.Load() {
+						ensureGate.hook()
+					}
+				}
 			} else {
 				opts.beforeSuperviseGate = func(string, *Channel) { supGate.hook() }
 			}
@@ -886,6 +913,7 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 				gate = ensureGate
 			}
 			gate.arm()
+			attached.Store(true)
 			defer gate.open()
 
 			// Armed before the drop: the supervisor reaches beforeSuperviseGate the
