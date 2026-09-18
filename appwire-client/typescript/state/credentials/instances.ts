@@ -782,8 +782,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // own marker. Acting on "the latest marker for the subject" instead would let
   // one mutation's reply retarget another's marker when same-subject mutations
   // overlap.
+  //
+  // Arming also drops markers already outside the echo window. A
+  // provider-instance marker can never be spent by an id-less notification
+  // (those stay foreign), so without this a hub that ignores originClientId -
+  // an older build - would strand one marker per successful instance mutation
+  // for the life of the connection.
   function noteLocalMutation(provider: string | undefined): LocalMutationMarker {
-    const marker: LocalMutationMarker = { provider, issuedAt: Date.now() };
+    const now = Date.now();
+    localMutations = localMutations.filter((marker) => now - marker.issuedAt <= SELF_ECHO_WINDOW_MS);
+    const marker: LocalMutationMarker = { provider, issuedAt: now };
     localMutations.push(marker);
     return marker;
   }

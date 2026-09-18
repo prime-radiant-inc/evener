@@ -11886,12 +11886,24 @@ func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
 				t.Fatalf("%s: %v", tc.method, err)
 			}
 
-			params := waitForAuthUpdated(t, client)
-			if params.OriginClientId != "tab-a" {
-				t.Errorf("%s params=%+v: originClientId=%q, want %q (the caller's own id echoed back)",
-					tc.method, params, params.OriginClientId, "tab-a")
-			}
+			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdated(t, client), "tab-a")
 		})
+	}
+}
+
+// assertInstanceBroadcastShape requires an instance mutation's broadcast to echo
+// wantOrigin and to name no provider or active source. The emptiness is part of
+// the contract, not incidental: the SDK's own-echo correlation keys on the
+// absent provider to tell an instance echo from an auth one, so a stray
+// provider would reroute the notification into its auth fallback.
+func assertInstanceBroadcastShape(t *testing.T, method string, params appwire.EvenerAuthUpdatedParams, wantOrigin string) {
+	t.Helper()
+	if params.Provider != "" || params.ActiveSource != "" {
+		t.Errorf("%s params=%+v: provider=%q activeSource=%q, want both empty: an instance broadcast names no auth source",
+			method, params, params.Provider, params.ActiveSource)
+	}
+	if params.OriginClientId != wantOrigin {
+		t.Errorf("%s params=%+v: originClientId=%q, want %q", method, params, params.OriginClientId, wantOrigin)
 	}
 }
 
@@ -11923,11 +11935,7 @@ func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) 
 		t.Fatalf("evener/instance/refreshModels: %v", err)
 	}
 
-	params := waitForAuthUpdated(t, client)
-	if params.OriginClientId != "tab-a" {
-		t.Errorf("%s params=%+v: originClientId=%q, want %q (the caller's own id echoed back)",
-			appwire.NotifyEvenerAuthUpdated, params, params.OriginClientId, "tab-a")
-	}
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdated(t, client), "tab-a")
 }
 
 // TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
@@ -11943,11 +11951,7 @@ func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T)
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
-	params := waitForAuthUpdated(t, client)
-	if params.OriginClientId != "" {
-		t.Errorf("%s params=%+v: originClientId=%q, want empty: this caller sent none, so the broadcast must not name one",
-			appwire.NotifyEvenerAuthUpdated, params, params.OriginClientId)
-	}
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdated(t, client), "")
 }
 
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
@@ -12020,7 +12024,7 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	}
 
 	var resp appwire.InstanceListResponse
-	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
@@ -12030,14 +12034,10 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 		t.Fatal("the rename did not reach providers.toml")
 	}
 
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyEvenerAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
-	}
+	// A rename that persisted before it failed announces as loudly as a clean
+	// one, and it must still name the client that asked: the error reply is not
+	// the only signal every other client's list is stale.
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdated(t, client), "tab-a")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows

@@ -716,6 +716,34 @@ describe("instance mutations and their own echo", () => {
     await b;
   });
 
+  test("a stale instance marker is pruned, not stranded, so it cannot absorb a later echo", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/instance/create", () => LISTING);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // A's echo never arrives - a hub that ignores originClientId broadcasts an
+    // id-less, provider-less notification, which stays foreign - so A's marker
+    // is stranded until it ages out.
+    await store.getState().create({ name: "work", base: "anthropic" });
+    await vi.advanceTimersByTimeAsync(2500);
+    // Arming B prunes A's stranded marker.
+    await store.getState().create({ name: "work", base: "anthropic" });
+    const marked = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+
+    // Only B's marker ever existed here: a second own-id echo finds none and is
+    // foreign. Were A's stale marker still around it would absorb this one.
+    const afterOwn = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBe(afterOwn);
+  });
+
   test("every instance mutation stamps originClientId", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();

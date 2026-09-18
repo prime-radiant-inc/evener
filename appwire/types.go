@@ -2756,9 +2756,11 @@ type EvenerAuthUpdatedParams struct {
 	// identity of the client whose change it announces, so that client can
 	// recognize its own echo by id instead of by provider plus timing.
 	// Optional: a mutation from a client that sends none (an older build, the
-	// TUI) leaves the broadcast without an id, and a consumer matching a
-	// broadcast against its own mutation then falls back to
-	// provider-plus-timing correlation.
+	// TUI) leaves the broadcast without an id. A consumer matching a broadcast
+	// against its own mutation then falls back to provider-plus-timing
+	// correlation for a provider-bearing auth echo only; an id-less
+	// provider-instance broadcast names no provider to correlate on and is
+	// treated as a foreign change.
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
