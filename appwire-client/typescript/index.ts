@@ -296,8 +296,11 @@ export type { NotificationRoutingKey } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  foldWarningParams,
+  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  itemIdentityMatches,
   joinedReasoningParagraphs,
   mergeOlderItemPage,
   notificationRoutingKey,

@@ -1602,10 +1602,30 @@ describe("ConversationStore", () => {
       }
     });
 
-    it("replaces same transcriptKey across wire IDs and removes obsolete images", async () => {
+    // The replacement carries the transcript key, so it IS the same message
+    // under a new wire id — and it says nothing about images, so the ones
+    // already known stay with it (mergeItemImages, the hub's own rule: an
+    // absent or empty input-images list is not a removal signal).
+    it("replaces the same transcriptKey across wire IDs, images and all", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
+        turns: [
+          {
+            id: "t1",
+            status: "inProgress",
+            items: [
+              {
+                id: "wire-old",
+                turnId: "t1",
+                type: "userMessage",
+                transcriptKey: "stable-message",
+                text: "old",
+                images: [{ src: "https://hub.test/image" }],
+              },
+            ],
+          },
+        ],
         items: [
           {
             kind: "user",
@@ -1643,7 +1663,13 @@ describe("ConversationStore", () => {
       expect(
         items.find((item) => item.transcriptKey === "stable-message")?.id,
       ).toBe("wire-new");
-      expect(items.some((item) => item.kind === "attachments")).toBe(false);
+      // One attachment row, carried onto the replacement rather than orphaned
+      // on the old wire id.
+      const attachments = items.filter((item) => item.kind === "attachments");
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({
+        items: [{ src: "https://hub.test/image" }],
+      });
     });
   });
 
@@ -2470,6 +2496,61 @@ describe("ConversationStore", () => {
       expect(
         store.getState().getTruncatedItemIds().has("reason-truncated-1"),
       ).toBe(false);
+    });
+
+    it("preserves existing attachments when item/completed for the same user message carries no images field", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        turns: [
+          {
+            id: "t1",
+            status: "inProgress",
+            items: [
+              {
+                id: "msg-1",
+                turnId: "t1",
+                type: "userMessage",
+                text: "hello",
+                images: [{ src: "https://hub.test/image" }],
+              },
+            ],
+          },
+        ],
+        items: [
+          { kind: "user", id: "msg-1", text: "hello" },
+          {
+            kind: "attachments",
+            id: "msg-1:attachments",
+            items: [{ id: "image", src: "https://hub.test/image" }],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "msg-1",
+            text: "hello",
+            status: "completed",
+            // No images field: an absent input-image list means "unchanged",
+            // not "removed" (the same rule the package reducer's
+            // mergeItemImages already applies).
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.find(
+          (item): item is Extract<MobileTimelineItem, { kind: "attachments" }> =>
+            item.kind === "attachments" && item.id === "msg-1:attachments",
+        )?.items,
+      ).toEqual([{ id: "msg-1:0", src: "https://hub.test/image" }]);
     });
   });
 
@@ -6954,6 +7035,128 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation;
       expect(conv?.turns.flatMap((turn) => turn.items).filter((item) => item.type === "warning")).toEqual([]);
       expect(conv?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
+    });
+
+    // The live row must show the reducer-folded warning item's text/hint,
+    // not just params.message — a title/hint-only frame (no top-level
+    // message) folds to a non-blank text in the model (the hint), but the
+    // row applier was building its failure row from params.message alone
+    // and losing it.
+    it("shows the reducer-folded hint text for a title/hint-only warning with an active turn", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "Provider warning", hint: "slow down" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({
+        kind: "failure",
+        title: "Provider warning",
+        detail: "slow down",
+      });
+    });
+
+    // A warning carrying both a message and a hint must show both, the same
+    // as the web and TUI renderers — the live row must not drop the hint
+    // just because a message is also present.
+    it("composes both message and hint in the live row's detail", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "rate limit approaching", hint: "slow down" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({
+        kind: "failure",
+        detail: "rate limit approaching — slow down",
+      });
+    });
+
+    // A whitespace-only stored title is not real content, the same reading
+    // hasWarningText gives everywhere else — it must fall back to the
+    // generic "Warning" label rather than rendering a blank chip.
+    it("falls back to the generic Warning label for a whitespace-only title with an active turn", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "   ", message: "careful" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({ kind: "failure", title: "Warning" });
+    });
+
+    // Decision 2 in the model: a warning with no active turn has nowhere
+    // wire-true to land, so the reducer drops it and this row is the ONLY
+    // place the frame folds through. It must run the same validated shape
+    // as the reducer's own fold, not copy params.title/params.message raw —
+    // a malformed object value must never reach a string-typed timeline
+    // field (mobile-native's TimelineItem.tsx renders title/detail as React
+    // Native text and would crash on a non-string).
+    it("sanitizes a malformed warning without an active turn instead of copying params raw", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          ...target,
+          title: { nested: "object" } as unknown as string,
+          message: { nested: "object" } as unknown as string,
+        },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(typeof failureRow.title).toBe("string");
+        expect(typeof failureRow.detail).toBe("string");
+        expect(failureRow.title).toBe("Warning");
+      }
+    });
+
+    // The polymorphic `warning` field (a bare string, or an object with its
+    // own `message`) is a supported wire shape (warningMessage's own
+    // contract) that the no-active-turn path must honor too, not just
+    // top-level `message`.
+    it("reads a polymorphic warning field without an active turn", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, warning: "provider hiccup" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({ kind: "failure", detail: "provider hiccup" });
+    });
+
+    // A message-less warning frame's text is the up-to-2000-char raw JSON
+    // fallback (rawWarningFrame); the live row's id must never embed it —
+    // that bloats timeline ids and the ownership keys they feed. It falls
+    // back to the literal "Warning" (the same sanitized title the row
+    // displays), never folded.text.
+    it("keeps the live row id short for a message-less warning with no active turn", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        // No message/title/hint anywhere: folded.text is the bounded raw
+        // JSON fallback (up to 2000 chars) — the `extra` field forces it
+        // long enough that reusing folded.text for the id would be obvious.
+        params: { ...target, extra: "x".repeat(500) },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(failureRow.id.length).toBeLessThan(30);
+        expect(failureRow.id.startsWith("warning:Warning:")).toBe(true);
+      }
     });
   });
 

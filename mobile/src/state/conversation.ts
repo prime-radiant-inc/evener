@@ -20,8 +20,11 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  foldWarningParams,
+  hasWarningText,
   isActiveItem,
   isStaleCursorError,
+  itemIdentityMatches,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -29,6 +32,7 @@ import {
 import type {
   AnyNotification,
   InputItem,
+  ItemModel,
   MutationReceipt,
   ThreadItem,
 } from "@evener/appwire-client";
@@ -41,6 +45,7 @@ import type {
 import {
   activityState,
   clusterActivities,
+  itemAttachments,
   projectItemAttachments,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
@@ -744,6 +749,25 @@ function containingTurnStatus(
     return undefined;
   }
   return "inProgress";
+}
+
+// The reducer's own item/started and item/completed folds (applyNotification,
+// via mergeItemImages) already resolved this item's images against whatever
+// the model held before it — a raw wire item carrying no images field means
+// "unchanged", never "removed" (the same rule imagesToItemImagesForSession
+// documents). Finds that folded ItemModel in conv (already updated by
+// applyThreadNotification before this call) using the package's own
+// identity rule (itemIdentityMatches: transcriptKey when both sides carry
+// one, else id) rather than a local copy of it.
+function findFoldedItem(
+  conv: MobileConversation,
+  item: ThreadItem,
+): ItemModel | undefined {
+  for (const turn of conv.turns) {
+    const found = turn.items.find((candidate) => itemIdentityMatches(candidate, item));
+    if (found) return found;
+  }
+  return undefined;
 }
 
 // Project a wire ThreadItem into a mobile timeline item for insertion from
@@ -2524,7 +2548,10 @@ export function createConversationStore() {
                 truncateAndRecordSingle(projectedWithReasoning),
               ];
               const attachmentId = `${params.item.id}:attachments`;
-              const attachments = projectItemAttachments(params.item);
+              const foldedItem = findFoldedItem(conv, params.item);
+              const attachments = foldedItem
+                ? itemAttachments(foldedItem)
+                : projectItemAttachments(params.item);
               markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
                 replacement.push({
@@ -2808,13 +2835,30 @@ export function createConversationStore() {
           }
 
           case "warning": {
-            const params = n.params as { message?: string; title?: string };
-            const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
+            // The reducer's own "warning" fold (applyThreadNotification,
+            // above) computes this from n.params too — foldWarningParams is
+            // a pure function of params alone, so calling it here again
+            // gives the exact value the reducer stored on the model when
+            // there was an active turn to store it on, without reading that
+            // value back off the model. When there's no active turn the
+            // reducer drops the frame (nowhere wire-true to put it), so
+            // this row is the only place it folds through either way.
+            const folded = foldWarningParams(n.params);
+            const title = folded.title ?? "Warning";
+            // Compose every non-blank part rather than picking one with ||:
+            // a warning carrying both a message and a hint shows both, the
+            // same as the web and TUI renderers.
+            const detail = [folded.text, folded.hint].filter(hasWarningText).join(" — ");
+            // Built from the sanitized title, never folded.text: a
+            // message-less frame's text is the up-to-2000-char raw JSON
+            // fallback, which would otherwise bloat this id (and the
+            // ownership keys it feeds).
+            const id = `warning:${title}:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,
-              title: params.title ?? "Warning",
-              detail: params.message ?? "",
+              title,
+              detail,
             };
             // Residual 2: Mark as live-owned — created by an actual live
             // notification.

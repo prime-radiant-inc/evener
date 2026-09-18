@@ -118,6 +118,19 @@ function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. outputImagesToItemImages
+  // below reads the opposite way, because the wire itself means the opposite:
+  // OutputImages is omitzero, so nil (never had any) sends no key, while a
+  // non-nil empty list is the hub's only way to say "these are gone" — an
+  // explicit removal (appwire/output_images.go's nil/non-nil-empty/non-empty
+  // rule). Input images carry no removal signal at all (they're what the user
+  // sent), which is why they read every empty list the same as absent.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -486,7 +499,14 @@ function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): It
   });
 }
 
-function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+// Structural, not ItemModel-only: a wire ThreadItem carries the same
+// id/transcriptKey shape, so a caller matching a live wire item against
+// folded ItemModels (the mobile store's findFoldedItem) can call this
+// directly instead of re-implementing the rule.
+export function itemIdentityMatches(
+  left: { id: string; transcriptKey?: string },
+  right: { id: string; transcriptKey?: string },
+): boolean {
   if (left.transcriptKey && right.transcriptKey) {
     return left.transcriptKey === right.transcriptKey;
   }
@@ -985,6 +1005,62 @@ function warningMessage(params: WarningParams): string {
   return "";
 }
 
+// True when value is a non-blank string — the same "is this actually content"
+// reading warningMessage above and WarningItem.tsx's renderer both take for
+// title/hint, so the raw-frame fallback below and the structured fields it
+// would otherwise duplicate never disagree about which one has something to
+// show. A type predicate so a caller narrows `unknown` in one step instead of
+// repeating the typeof/trim check to get the same narrowing.
+export function hasWarningText(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+// A frame with no message anywhere is surfaced as the frame itself
+// (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
+// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
+// contract server-side). Bounded because params is unknown on the wire and
+// can carry anything; this is package-level code feeding both hosts, and
+// neither host's own display bound can be assumed to run before something
+// else reads item.text.
+const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+
+function rawWarningFrame(params: WarningParams): string {
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  const codePoints = Array.from(JSON.stringify(params));
+  return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+}
+
+// The one validated shape every warning row — live with a turn, live
+// without one, and (via the item this produces) a canonical reread — reads
+// title/hint/source from. params is unknown on the wire (WarningParams'
+// `warning` field, and title/hint despite their declared string type), so
+// this is the single place that turns it into string-or-absent fields; every
+// consumer reads the result, never params directly.
+export interface WarningFold {
+  text: string;
+  title?: string;
+  hint?: string;
+  source?: string;
+}
+
+export function foldWarningParams(params: WarningParams): WarningFold {
+  return {
+    text:
+      warningMessage(params) ||
+      (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
+    // Blank is absent too, not just "not a string" — hasWarningText's own
+    // reading, which every consumer must apply anyway. Normalizing it here
+    // means a future reader is never one missed hasWarningText call away
+    // from rendering blank content.
+    title: hasWarningText(params.title) ? params.title : undefined,
+    hint: hasWarningText(params.hint) ? params.hint : undefined,
+    source: hasWarningText(params.source) ? params.source : undefined,
+  };
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -1456,6 +1532,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // it client-side; only the liveness signal survives.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
       const params = n.params;
+      const folded = foldWarningParams(params);
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
@@ -1467,9 +1544,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            text: folded.text,
             status: "completed",
-            warning: { source: params.source, title: params.title, hint: params.hint },
+            warning: { source: folded.source, title: folded.title, hint: folded.hint },
           };
           return { ...turn, items: [...turn.items, item] };
         }),
