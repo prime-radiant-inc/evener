@@ -405,11 +405,8 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	delete(c.flows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
-	}
-	return appwire.AuthLoginCompleteResponse{Status: status}, nil
+	status, err := c.statusAfterWrite(provider, c.openAIInstanceStatus)
+	return appwire.AuthLoginCompleteResponse{Status: status}, err
 }
 
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
@@ -474,11 +471,8 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 	}
-	status, statusErr := c.openAIInstanceStatus(name)
-	if statusErr != nil {
-		return appwire.AuthLogoutResponse{}, statusErr
-	}
-	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+	status, err := c.statusAfterWrite(name, c.openAIInstanceStatus)
+	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
 }
 
 // credentialWriteBetween runs inside a credential write's critical section,
@@ -529,6 +523,28 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
 	return nil
+}
+
+// statusByProvider adapts Status to statusAfterWrite's reader shape, for a
+// caller whose write is a file-layer credential (ApiKeySet, ApiKeyClear,
+// CredentialJsonSet).
+func (c *hubAuthController) statusByProvider(name string) (appwire.AuthStatusResponse, error) {
+	return c.Status(appwire.AuthStatusParams{Provider: name})
+}
+
+// statusAfterWrite answers a write that has already landed with the
+// instance's status, read through read - c.statusByProvider for a file-layer
+// credential write, c.openAIInstanceStatus for one that already landed the
+// OAuth record (LoginComplete, Logout, DevicePoll). A read that fails does
+// not unwrite what it is reading, so it is reported as an applied write,
+// with the provider named for the broadcast and the rest of the status left
+// at what could not be read.
+func (c *hubAuthController) statusAfterWrite(name string, read func(string) (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
+	status, err := read(name)
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
 }
 
 // reloadRegistryLocked re-derives the instance set after a credential changed:
@@ -653,7 +669,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 // ApiKeyClear removes a stored file-layer key without touching any other
@@ -686,7 +702,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
@@ -853,11 +869,10 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
-	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, nil
+	// Authorized and applied: the record is saved. The state is what the
+	// handler reads to tell this from a pending poll, which writes nothing.
+	status, err := c.statusAfterWrite(provider, c.openAIInstanceStatus)
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
 }
 
 func (c *hubAuthController) config() authopenai.Config {
@@ -1175,7 +1190,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 // requiresGCPADC returns an InvalidParams error when the named instance does
