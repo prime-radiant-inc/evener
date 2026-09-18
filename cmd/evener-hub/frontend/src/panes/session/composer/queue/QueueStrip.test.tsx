@@ -995,6 +995,97 @@ describe("press-time controls", () => {
   });
 });
 
+// The local recovery fence is a press-time control too: the hub's recovery
+// admission refuses turn/promoteQueuedAsSteer, turn/drainAsSteer and
+// turn/cancelQueued for as long as the obligation stands (the same
+// sessionActionRecoveryError list turn/start sits in), so a press on a fenced
+// session could only mint durable intent that parks until the explicit Resume
+// action clears the fence. The obligation here is armed by the real hydration
+// (resumeRequired:true), not a hand-set store field, and the fence's refusal is
+// said out loud (kata 2f41) rather than leaving an enabled control that
+// silently parks.
+describe("recovery-fenced press gates", () => {
+  const QUEUED = { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] };
+
+  async function hydrateFenced(fake: FakeClient, ref: string): Promise<void> {
+    await hydrate(fake, ref, {
+      evener: { ref, capabilities: CAPABILITIES, resumeRequired: true, queue: QUEUED, activeTurnId: "turn_1" },
+    });
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  }
+
+  async function outboxFor(ref: string): Promise<MutationOutboxRecord[]> {
+    const storage = new MutationOutboxIndexedDB();
+    const rows = await storage.listOutbox(ref);
+    storage.close();
+    return rows;
+  }
+
+  test("steer-now is refused while the fence stands and mints no intent", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-promote";
+    await hydrateFenced(fake, ref);
+    applied(fake, "turn/promoteQueuedAsSteer");
+    renderStrip(defaultProps({ ref }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  test("steer queue now is refused while the fence stands and churns no busy state", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-drain";
+    await hydrateFenced(fake, ref);
+    applied(fake, "turn/drainAsSteer");
+    const onDrainBusyChange = vi.fn();
+    renderStrip(defaultProps({ ref, onDrainBusyChange }));
+    fireEvent.click(await screen.findByRole("button", { name: /steer queue now/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+    expect(onDrainBusyChange).not.toHaveBeenCalled();
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  test("remove from queue is refused while the fence stands and mints no intent", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-cancel";
+    await hydrateFenced(fake, ref);
+    renderStrip(defaultProps({ ref }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  // The queue is frozen while the fence stands, so an edit refuses as a
+  // whole: restoring the text without the cancel half would leave the row and
+  // the composer carrying the same message.
+  test("edit is refused while the fence stands without restoring to the composer", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-edit";
+    await hydrateFenced(fake, ref);
+    const onRestoreToComposer = vi.fn();
+    renderStrip(defaultProps({ ref, onRestoreToComposer }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(onRestoreToComposer).not.toHaveBeenCalled();
+    expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+});
+
 describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
     const fake = connectFakeClient();
