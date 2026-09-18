@@ -173,6 +173,22 @@ test("a steering item with source user AFTER an ask_user ack resolves it", () =>
   expect(liveAskQuestions(m)).toEqual([]);
 });
 
+// A human-note update also carries source "user" (the note text a human
+// wrote, steered in as SteeringKindHumanNote - agent/session_notes_rpc.go's
+// steeringOrigin machinery), but writing a note is not answering the
+// question: it must not resolve a pending ask, or the dock disappears while
+// the ask itself stays open on the server (the TS twin of the server's own
+// exclusion for this kind).
+test("a steering item with source user AND steeringKind human-note does NOT resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "note: check the logs", source: "user", steeringKind: "human-note" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
 // A daemon-originated steer with no user provenance (no steeringKind naming
 // an interrupt, no source "user") never resolves a pending ask - the user
 // has not spoken and has not stopped anything.

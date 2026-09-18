@@ -4944,6 +4944,43 @@ test("an oversized warning frame's fallback bounds a many-key object, not just d
   }
 });
 
+// The object-key COUNT cap (RAW_WARNING_FRAME_MAX_OBJECT_KEYS) bounds how
+// many properties survive the prune, but says nothing about how long each
+// property NAME is — a single key whose own name is multi-megabyte still
+// rides through verbatim into the pruned object and JSON.stringify's walk.
+test("an oversized warning frame's fallback bounds an oversized property NAME, not just its value", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const HUGE = 5_000_000;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: { [`k${"x".repeat(HUGE)}`]: "v" } };
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
 // Only the message-less raw-frame fallback was bounded; a huge message,
 // title, hint, or source string reaches item.text / ItemModel.warning
 // verbatim otherwise, leaving the same oversized-frame vector open through

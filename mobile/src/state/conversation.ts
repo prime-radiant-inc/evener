@@ -2540,7 +2540,12 @@ export function createConversationStore() {
               : projected;
             if (projectedWithReasoning !== null) {
               // Lifecycle events replace the whole source item, including any
-              // companion attachment row. An empty image list removes it.
+              // companion attachment row — but an empty or absent input-image
+              // list is unchanged, never a removal (mergeItemImages,
+              // imagesToItemImagesForSession; closes #1656), so the
+              // replacement below reads attachments from the reducer-folded
+              // item (findFoldedItem/itemAttachments), which already carries
+              // forward whatever images the fold kept.
               if (!preservesReasoningOutput) {
                 truncatedItemIds.delete(timelineIdentity(projectedWithReasoning));
               }

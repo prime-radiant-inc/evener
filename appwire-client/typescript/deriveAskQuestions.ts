@@ -75,15 +75,19 @@ function isAckedAskUserItem(item: ItemModel): boolean {
 // of that boundary - "the user is demonstrably present") and an accepted
 // user steer (which enters the drain loop as EntryUserInput, the same
 // accepted-turn path that clears askPending for a plain user message; its
-// item carries source "user", the wire's SteeringSourceUser - it can ALSO
-// carry a steeringKind, human-note being the one live case
-// (session_notes_rpc.go's SteeringKindHumanNote, web layoutRoles.ts's own
-// steeringKind !== "human-note" check), so `source === "user"` alone is
-// still the resolving half of this OR). A daemon-originated steer with
-// neither marker is not the user speaking and resolves nothing.
+// item carries source "user", the wire's SteeringSourceUser). A human-note
+// update ALSO carries source "user" (a human wrote the note - session_notes_
+// rpc.go's steeringOrigin machinery stamps it SteeringKindHumanNote), but
+// writing a note is not answering the question, so it is excluded from the
+// user-steer half of this OR - the same exclusion web layoutRoles.ts already
+// makes for its own, unrelated reason (routing the item to a divider instead
+// of a user bubble). A daemon-originated steer with neither marker, and a
+// human-note steer, are not the user speaking and resolve nothing.
 function isResolutionItem(item: ItemModel): boolean {
   if (item.type === "userMessage") return true;
-  return item.type === "steering" && (item.steeringKind === "interrupted" || item.source === "user");
+  if (item.type !== "steering") return false;
+  if (item.steeringKind === "interrupted") return true;
+  return item.source === "user" && item.steeringKind !== "human-note";
 }
 
 // lastResolutionIndex finds the position of the most recent resolution
