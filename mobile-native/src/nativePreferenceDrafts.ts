@@ -8,48 +8,90 @@ import type {
 	TranscriptDraftStorage,
 } from "./preferenceDraftRepository";
 
+/** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
+ * value `null` - a PRESENT record, distinct from no record at all (the
+ * DraftPort contract already treats a bare JS `null` as "no record" - see
+ * draftCheckpointPort.ts). Tagged rather than returned as the bare string
+ * "null": a stored JSON STRING "null" (the six bytes `"null"`) parses to
+ * that identical primitive, so a bare-string sentinel here would make the
+ * two indistinguishable - exactly the collision that let a present, invalid
+ * transcript checkpoint (the string case) read as no draft at all (the null
+ * case). */
+export interface StoredNullRecord {
+	readonly kind: "storedNull";
+}
+export const STORED_NULL_RECORD: StoredNullRecord = { kind: "storedNull" };
+export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
+	return typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "storedNull";
+}
+
+/** A stored record's bytes that JSON.parse could not decode at all. Tagged
+ * with the original bytes rather than returned bare: a bare string could
+ * coincidentally equal a legitimately decoded value (a checkpoint field, or
+ * STORED_NULL_RECORD's own would-be sentinel), which is the same class of
+ * collision StoredNullRecord exists to close. */
+export interface UnparseableDraftBytes {
+	readonly kind: "unparseable";
+	readonly raw: string;
+}
+export function isUnparseableDraftBytes(value: unknown): value is UnparseableDraftBytes {
+	return typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "unparseable";
+}
+
 /** Parses a draft record's stored bytes the way a backend's own get() must:
  * valid JSON decodes normally, and anything this build cannot use as a
- * record comes back as the RAW bytes instead of throwing, so the shared
+ * record comes back as a tagged marker instead of throwing, so the shared
  * store reads it as a present-but-unreadable record (draftUnreadable)
- * rather than a dead port. That includes a stored JSON `null` - the
- * DraftPort contract already treats a bare `null` as "no record" (see
- * draftCheckpointPort.ts), so handing one back unparsed keeps it a PRESENT
- * record distinct from that absent-record sentinel, and therefore
- * discardable through the unreadable-draft recovery path instead of
- * silently stuck. */
+ * rather than a dead port. */
 export function parseDraftBytes(raw: string): unknown {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-  return parsed === null ? raw : parsed;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return { kind: "unparseable", raw } satisfies UnparseableDraftBytes;
+	}
+	return parsed === null ? STORED_NULL_RECORD : parsed;
+}
+
+/** A canonical string encoding of `value` with every object's keys sorted
+ * recursively, so two structurally equal values compare equal regardless of
+ * key order - a byte-for-byte JSON.stringify compare only tolerates
+ * whitespace, not key order, which is not what "canonicalize" promises. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/** One comparison key for a draft identity, whether it is a real checkpoint,
+ * a StoredNullRecord, or UnparseableDraftBytes - matchesStoredBytes derives
+ * this for both the current stored bytes and the identity it is checking, so
+ * the two marker types compare by their own tag instead of falling through
+ * to a JSON compare that was never meant to describe them. */
+function draftIdentityKey(value: unknown): string {
+	if (isUnparseableDraftBytes(value)) return `raw:${value.raw}`;
+	if (isStoredNullRecord(value)) return "storedNull";
+	return `json:${canonicalJson(value)}`;
 }
 
 /** Whether `stored` (the exact bytes a backend's get() read, or null for no
  * key) names `value` - the compare deleteIf/replaceIf run before touching
- * storage. `value` is usually a checkpoint this build produced (JSON.stringify
- * round-trips it), but discardStoredDraft() also hands it the RAW value
- * get() returned for a record no build can decode - which is the original
- * bytes verbatim ONLY when JSON.parse itself failed (parseDraftBytes). A
- * record that parses as JSON but is not a valid checkpoint (still
- * "unreadable" - see isReadableKeybindingDraft) comes back as the PARSED
- * value instead, since parseDraftBytes has no reason to preserve raw bytes
- * once JSON.parse succeeds - so `value` there is an object, and a
- * byte-for-byte JSON.stringify compare against noncanonically formatted
- * stored bytes (key order, whitespace) would wrongly refuse to match it.
- * Parsing `stored` back and comparing its own re-encoding against `value`'s
- * handles both cases without needing to know which one `value` is. */
+ * storage. `value` is usually a checkpoint this build produced, but
+ * discardStoredDraft() also hands it the RAW value get() returned for a
+ * record no build can decode (a StoredNullRecord or UnparseableDraftBytes -
+ * see parseDraftBytes). Re-deriving what get() would return for `stored`
+ * right now and comparing identity keys handles a real checkpoint (key-order
+ * and whitespace both normalized), either marker, and a mismatch between the
+ * two kinds, all through the one path. */
 export function matchesStoredBytes(stored: string | null, value: unknown): boolean {
 	if (stored === null) return false;
-	if (stored === value) return true;
-	try {
-		return JSON.stringify(JSON.parse(stored)) === JSON.stringify(value);
-	} catch {
-		return false;
-	}
+	return draftIdentityKey(parseDraftBytes(stored)) === draftIdentityKey(value);
 }
 
 export interface NativePreferenceDraftBackend {
@@ -136,12 +178,15 @@ export function nativeTranscriptDrafts(
 		load: () => {
 			const value = backend.get(key);
 			// A stored JSON `null` comes back from the shared backend.get() as
-			// the raw string "null" (parseDraftBytes preserves it so the
-			// KEYBINDINGS port can classify it as a present-but-unreadable
-			// record - see nativeKeybindingDrafts). The transcript port has no
+			// STORED_NULL_RECORD (parseDraftBytes tags it so the KEYBINDINGS
+			// port can classify it as a present-but-unreadable record - see
+			// nativeKeybindingDrafts). The transcript port has no
 			// unreadable-record recovery path, so it keeps treating a stored
-			// null as no draft, the same as a plain JSON.parse always did.
-			if (value === undefined || value === null || value === "null") return null;
+			// null as no draft, the same as a plain JSON.parse always did - but
+			// ONLY that exact case: a stored JSON STRING "null" (a present,
+			// invalid checkpoint) is a different value and falls through to be
+			// rejected below, not silently read as no draft.
+			if (value === undefined || value === null || isStoredNullRecord(value)) return null;
 			return value as TranscriptDraftCheckpoint;
 		},
 		save: (checkpoint) => backend.set(key, checkpoint),

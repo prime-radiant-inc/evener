@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	draftUnreadableAfterDiscard,
+	isStoredNullRecord,
+	isUnparseableDraftBytes,
 	localDraftIsUnreadable,
 	matchesStoredBytes,
 	nativeKeybindingDrafts,
@@ -39,16 +41,12 @@ function rawBytesBackend() {
 			raw.delete(key);
 		},
 		deleteIf: (key: string, value: unknown): boolean => {
-			const stored = raw.get(key);
-			if (stored === undefined) return false;
-			if (stored !== value && stored !== JSON.stringify(value)) return false;
+			if (!matchesStoredBytes(raw.get(key) ?? null, value)) return false;
 			raw.delete(key);
 			return true;
 		},
 		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
-			const stored = raw.get(key);
-			if (stored === undefined) return false;
-			if (stored !== expected && stored !== JSON.stringify(expected)) return false;
+			if (!matchesStoredBytes(raw.get(key) ?? null, expected)) return false;
 			raw.set(key, JSON.stringify(next));
 			return true;
 		},
@@ -76,18 +74,19 @@ describe("nativeKeybindingDrafts", () => {
 	});
 
 	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
-		// The real backend hands back a value it cannot parse as its RAW bytes
-		// rather than throwing, so the shared store reads it as an unreadable
-		// record (draftUnreadable) instead of a dead port.
+		// The real backend hands back a value it cannot parse as a tagged
+		// UnparseableDraftBytes marker rather than throwing, so the shared
+		// store reads it as an unreadable record (draftUnreadable) instead of
+		// a dead port.
 		const { raw, b } = rawBytesBackend();
 		const storage = nativeKeybindingDrafts("hub", b);
 		raw.set("evener.native.keybinding-draft.hub", "{not json");
 
-		// Read back as the raw string, which is not a checkpoint.
-		expect(storage.load()).toBe("{not json");
+		const loaded = storage.load();
+		expect(isUnparseableDraftBytes(loaded)).toBe(true);
 
-		// And removable by handing those same bytes back.
-		expect(storage.removeIf("{not json" as never)).toBe(true);
+		// And removable by handing that same identity back.
+		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
 	});
 
@@ -102,6 +101,25 @@ describe("nativeKeybindingDrafts", () => {
 
 		const loaded = storage.load();
 		expect(loaded).not.toBeNull();
+		expect(isStoredNullRecord(loaded)).toBe(true);
+
+		expect(storage.removeIf(loaded as never)).toBe(true);
+		expect(storage.load()).toBeNull();
+	});
+
+	it("classifies a stored JSON string \"null\" as an unreadable record, distinct from a stored JSON null", () => {
+		// The stored bytes `"null"` (six characters, a JSON string) decode to
+		// the SAME primitive a stored JSON `null` would if either returned a
+		// bare string - the collision that used to let a corrupt checkpoint
+		// read as no draft at all (see nativeTranscriptDrafts below).
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeKeybindingDrafts("hub", b);
+		raw.set("evener.native.keybinding-draft.hub", '"null"');
+
+		const loaded = storage.load();
+		expect(loaded).toBe("null");
+		expect(isStoredNullRecord(loaded)).toBe(false);
+		expect(isUnparseableDraftBytes(loaded)).toBe(false);
 
 		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
@@ -142,6 +160,21 @@ describe("nativeTranscriptDrafts", () => {
 		const storage = nativeTranscriptDrafts("hub", b);
 
 		expect(storage.load()).toBeNull();
+	});
+
+	it("does not treat a stored JSON string \"null\" as no draft - it is a present, invalid checkpoint", () => {
+		// Distinct from the stored-JSON-null case above: the bytes `"null"`
+		// (a JSON string) decode to the JS string "null", which used to be
+		// indistinguishable from a stored JSON null once both came back as
+		// the bare string "null" - silently treating a corrupt checkpoint as
+		// no draft at all, contrary to this repository's contract to reject
+		// invalid checkpoints (see preferenceDraftRepository's
+		// validateCheckpoint, which throws on exactly this shape).
+		const { raw, b } = rawBytesBackend();
+		raw.set("evener.native.transcript-draft.hub", '"null"');
+		const storage = nativeTranscriptDrafts("hub", b);
+
+		expect(storage.load()).toBe("null");
 	});
 
 	it("still loads a real stored checkpoint", () => {
@@ -195,8 +228,23 @@ describe("matchesStoredBytes", () => {
 		expect(matchesStoredBytes(null, "{not json")).toBe(false);
 	});
 
-	it("matches raw bytes this build cannot parse at all", () => {
-		expect(matchesStoredBytes("{not json", "{not json")).toBe(true);
+	it("matches raw bytes this build cannot parse at all, by their UnparseableDraftBytes identity", () => {
+		expect(matchesStoredBytes("{not json", parseDraftBytes("{not json"))).toBe(true);
+	});
+
+	it("does not match UnparseableDraftBytes against a genuinely different raw value", () => {
+		expect(matchesStoredBytes("{not json", parseDraftBytes("{different"))).toBe(false);
+	});
+
+	it("matches a stored JSON null against its StoredNullRecord identity", () => {
+		expect(matchesStoredBytes("null", parseDraftBytes("null"))).toBe(true);
+	});
+
+	it("does not match a StoredNullRecord identity against a stored JSON string \"null\"", () => {
+		// The two decode to the same JS primitive if either comes back as a
+		// bare string - the collision parseDraftBytes's tagged markers exist
+		// to close.
+		expect(matchesStoredBytes('"null"', parseDraftBytes("null"))).toBe(false);
 	});
 
 	it("matches a decoded value against its exact re-encoding", () => {
@@ -204,17 +252,18 @@ describe("matchesStoredBytes", () => {
 		expect(matchesStoredBytes(JSON.stringify(value), value)).toBe(true);
 	});
 
-	// A record that parses as JSON but is not a valid checkpoint (still
-	// "unreadable" - see isReadableKeybindingDraft) comes back from
-	// parseDraftBytes as the PARSED value, not raw bytes - JSON.parse
-	// succeeded, so parseDraftBytes has no reason to preserve the original
-	// bytes. Noncanonical formatting in the stored bytes (key order,
-	// whitespace) then defeats a byte-for-byte JSON.stringify compare even
-	// though the value is unchanged.
+	// canonicalJson sorts every object's keys recursively, so two
+	// structurally equal values compare equal regardless of key order - not
+	// only the whitespace a byte-for-byte JSON.stringify compare tolerates.
 	it("matches a parsed value against noncanonically formatted stored bytes", () => {
 		const stored = '{\n  "value": "a",\n  "id": "d1"\n}';
 		const value = JSON.parse(stored) as unknown;
 		expect(matchesStoredBytes(stored, value)).toBe(true);
+	});
+
+	it("matches two values with the same fields in different key order", () => {
+		const stored = JSON.stringify({ a: 1, b: 2 });
+		expect(matchesStoredBytes(stored, { b: 2, a: 1 })).toBe(true);
 	});
 
 	it("does not match a genuinely different value", () => {
@@ -227,12 +276,24 @@ describe("parseDraftBytes", () => {
 		expect(parseDraftBytes('{"id":"d1"}')).toEqual({ id: "d1" });
 	});
 
-	it("returns bytes it cannot parse unchanged, as a present-but-unreadable record", () => {
-		expect(parseDraftBytes("{not json")).toBe("{not json");
+	it("returns a tagged UnparseableDraftBytes marker for bytes it cannot parse, never a bare string", () => {
+		const value = parseDraftBytes("{not json");
+		expect(isUnparseableDraftBytes(value)).toBe(true);
+		expect(value).toEqual({ kind: "unparseable", raw: "{not json" });
 	});
 
-	it("returns the raw bytes for a stored JSON null, never the absent-record sentinel", () => {
-		expect(parseDraftBytes("null")).toBe("null");
+	it("returns a tagged StoredNullRecord marker for a stored JSON null, never the absent-record sentinel", () => {
+		const value = parseDraftBytes("null");
+		expect(value).not.toBeNull();
+		expect(isStoredNullRecord(value)).toBe(true);
+	});
+
+	it("returns the plain JS string for a stored JSON string \"null\", distinct from a stored JSON null", () => {
+		// Both used to collide on the bare string "null" - the bug this
+		// marker design closes (see nativeTranscriptDrafts' own test).
+		const value = parseDraftBytes('"null"');
+		expect(value).toBe("null");
+		expect(isStoredNullRecord(value)).toBe(false);
 	});
 });
 
