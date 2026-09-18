@@ -71,7 +71,7 @@ export interface DraftRepository<Checkpoint> {
  * edit immediately followed by a discard would refuse (it would still be
  * naming what the edit just replaced) and silently restore the edit instead
  * of discarding it - the identity must track every write, not only reads. */
-export function createDraftRepository<Checkpoint>(
+export function createDraftRepository<Checkpoint extends object>(
   storage: DraftPort<Checkpoint>,
   decode: (value: unknown) => Checkpoint,
 ): DraftRepository<Checkpoint> {

@@ -11,8 +11,10 @@ import type { DraftPort } from "../draftCheckpointPort";
 
 export interface MemoryDraftStorage<Checkpoint> {
   storage: DraftPort<Checkpoint>;
-  /** What the port holds right now, as load() would return it. */
-  stored(): Checkpoint | null;
+  /** What the port holds right now, exactly as load() would return it -
+   * unknown, not Checkpoint: a corrupt() record is not one, and this
+   * accessor must be able to show that raw state too. */
+  stored(): unknown;
   /** Make save() throw (or stop making it throw). */
   failSave(fail?: boolean): void;
   /** Replace the stored value with something that is not a checkpoint. */
@@ -41,7 +43,7 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
   };
   return {
     storage,
-    stored: () => structuredClone(stored) as Checkpoint | null,
+    stored: () => structuredClone(stored),
     failSave(fail = true) {
       saveFails = fail;
     },
