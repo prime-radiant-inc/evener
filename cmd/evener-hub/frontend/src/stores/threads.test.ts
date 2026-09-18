@@ -5148,6 +5148,68 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(persistence.outbox[0]?.method).toBe("thread/clear");
   });
 
+  // A canceled row's only exits are explicit Retry and the thread going
+  // away: when the clear lands, the row leaves with the history it belonged
+  // to (docs/design/stop-cancellation-outbox.md §6).
+  test("clearThread removes the ref's canceled rows once the clear lands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
+    await threadsStore.getState().clearThread("ref_a");
+
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
+  });
+
+  // The other half of §6's removal rule: the hub's durable deletion fence is
+  // the moment the ref provably no longer exists, so its canceled rows go too.
+  test("a hub-deleted thread's canceled rows are removed when the deletion fence lands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_gone",
+      threadId: "thr_ref_gone",
+      method: "turn/queue",
+      payload: { ref: "ref_gone", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_gone");
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    // A deleted ref's ensureThread never settles (its retry loop treats every
+    // rejection as transient); the deletion fence, not the promise, is the
+    // observable outcome.
+    void threadsStore.getState().ensureThread("ref_gone");
+
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
+  });
+
   // One representative Conflict-mapping test standing in for every
   // thread-level action above - each wraps its client.request in the exact
   // same mapConflict try/catch as send/steer/queue/interrupt (proven

@@ -15,6 +15,9 @@ import { createSecureUUID } from "./secureUUID";
 type MutationOutboxOperation =
   | "markAttempted"
   | "enqueueIntent"
+  | "enqueueInterruptAndCancel"
+  | "cancelUnattempted"
+  | "discardCanceled"
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
@@ -51,6 +54,13 @@ export class MutationStorageTimeoutError extends Error {
 interface TargetSequence {
   targetRef: string;
   lastSequence: number;
+}
+
+// The rows a Stop may honestly cancel: still waiting ("submitting" or
+// "blockedUnknown") and never attempted. An attempted row may already be on
+// the wire; it is reported in-flight/uncertain, not canceled.
+function isCancelableByStop(record: MutationOutboxRecord): boolean {
+  return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted !== true;
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -137,6 +147,74 @@ export class MutationOutboxIndexedDB {
       return requestResult<MutationOutboxRecord | undefined>(
         transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
       );
+    });
+  }
+
+  // Stop's durable write: the ref's cancelable rows turn "canceled" in the
+  // same readwrite transaction that enqueues the turn/interrupt record, so
+  // the user's click is the cancel moment and both land or neither does.
+  // The cancellations are written before the interrupt is added so the scan
+  // cannot cancel the interrupt itself, and an aborted commit rolls both back.
+  async enqueueInterruptAndCancel(intent: MutationIntent): Promise<MutationOutboxRecord> {
+    if (!intent.targetRef.trim()) throw new Error("targetRef is required");
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "enqueueInterruptAndCancel", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      await this.#cancelUnattempted(transaction, intent.targetRef);
+      const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
+      const clientMutationId = this.#createMutationId();
+      const record: MutationOutboxRecord = {
+        ...intent,
+        payload: { ...intent.payload, clientMutationId },
+        version: 1,
+        clientMutationId,
+        originClientId: ownClientId(),
+        intentSequence,
+        createdAt: this.#now(),
+        state: "submitting",
+        attempted: false,
+      };
+      await requestResult(outbox.add(record));
+      return record;
+    });
+  }
+
+  // forceStop/shutdown carry no interrupt record, but their cancellation
+  // write obeys the same rule: rows canceled first, stop action second, so a
+  // storage failure aborts the stop instead of orphaning it. Returns the ids
+  // that moved to "canceled".
+  async cancelUnattempted(targetRef: string): Promise<string[]> {
+    return this.#write(OUTBOX_STORE, "cancelUnattempted", async (transaction) => {
+      return this.#cancelUnattempted(transaction, targetRef);
+    });
+  }
+
+  async #cancelUnattempted(transaction: IDBTransaction, targetRef: string): Promise<string[]> {
+    const store = transaction.objectStore(OUTBOX_STORE);
+    const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+    const canceled: string[] = [];
+    for (const record of records) {
+      if (record.targetRef !== targetRef) continue;
+      if (!isCancelableByStop(record)) continue;
+      await requestResult(store.put({ ...record, state: "canceled" }));
+      canceled.push(record.clientMutationId);
+    }
+    return canceled;
+  }
+
+  // A canceled row's only exits are an explicit Retry and the thread going
+  // away; this is the going-away half, called when a clear lands or the hub's
+  // deletion fence proves the ref is gone. Returns the deleted ids.
+  async discardCanceled(targetRef: string): Promise<string[]> {
+    return this.#write(OUTBOX_STORE, "discardCanceled", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+      const discarded: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef || record.state !== "canceled") continue;
+        await requestResult(store.delete(record.clientMutationId));
+        discarded.push(record.clientMutationId);
+      }
+      return discarded;
     });
   }
 
@@ -279,6 +357,10 @@ export class MutationOutboxIndexedDB {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (!record || (options?.onlyAttempted && record.attempted === false)) return false;
+      // A canceled row is the user's durable decision; an uncertain-outcome
+      // write must not reclassify it back into something restoreProvenAbsent
+      // could reopen.
+      if (record.state === "canceled") return false;
       if (record.state !== state) await requestResult(store.put({ ...record, state }));
       return true;
     });
@@ -412,8 +494,16 @@ export class MutationOutboxIndexedDB {
 
   async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord | undefined> {
     const records = await this.listOutbox(targetRef);
-    const first = records[0];
-    return first?.state === "submitting" ? first : undefined;
+    for (const record of records) {
+      if (record.state === "submitting") return record;
+      // A canceled row provably never left the client, so it cannot be
+      // reordered against the daemon and must not park what follows it —
+      // including the interrupt that canceled it. A blockedUnknown head is
+      // different: the daemon may already have applied it, so the FIFO stays
+      // closed behind it.
+      if (record.state === "blockedUnknown") return undefined;
+    }
+    return undefined;
   }
 
   async #open(): Promise<IDBDatabase> {

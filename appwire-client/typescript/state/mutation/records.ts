@@ -30,7 +30,11 @@ export interface MutationAttachmentRef {
   mediaType: string;
 }
 
-export type MutationOutboxState = "submitting" | "blockedUnknown";
+// "canceled" is the durable record of a user's Stop: the row was never
+// attempted, so cancellation is a fact about the client, not a guess about
+// the daemon. Only an explicit user Retry releases it; no scan, reopen, or
+// reclassification path may move it.
+export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
 export type MutationRecoveryKind = "rejected" | "orphaned";
 
 // One submission as the client made it. The attachment type is a parameter so

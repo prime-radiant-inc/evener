@@ -667,6 +667,7 @@ function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: Mut
 
 function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
   invalidateGoalResponseFallback(targetRef);
+  discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
   // A clear response is a newer authoritative cut than any thread/read that
@@ -1287,12 +1288,29 @@ async function hydrateAndSubscribe(
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
   releaseSubagentRows(ref);
+  discardCanceledMutations(ref);
   threadsStore.setState((s) => {
     if (s.deletedRefs.has(ref)) return s;
     const deletedRefs = new Set(s.deletedRefs);
     deletedRefs.add(ref);
     return { deletedRefs };
   });
+}
+
+// The removal half of a canceled row's lifecycle
+// (docs/design/stop-cancellation-outbox.md §6): when the thread is cleared or
+// the hub proves it deleted, its canceled rows leave with it. Best-effort —
+// a storage failure keeps the rows visible for an explicit Retry, and the
+// next clear/delete retries the removal.
+function discardCanceledMutations(targetRef: string): void {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  void runtime.storage
+    .discardCanceled(targetRef)
+    .then((discarded) => {
+      if (discarded.length > 0 && isCurrentMutationRuntime(runtime)) notifyMutationPersistence([targetRef]);
+    })
+    .catch(() => {});
 }
 
 // Lean watches omit turns until an expanded card asks for them; the shared

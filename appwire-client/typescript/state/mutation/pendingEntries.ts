@@ -4,7 +4,10 @@ import type { InputItem, PendingMutation } from "../../types.gen";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
 
 export type PendingMethod = "send" | "steer" | "queue" | "drain";
-export type PendingTurnState = "submitting" | "blockedUnknown" | "accepted" | "claimed";
+// "canceled" is the durable Stop cancellation state surfaced as-is: the entry
+// stays visible (with its Retry affordance) until the user retries it or the
+// thread goes away.
+export type PendingTurnState = "submitting" | "blockedUnknown" | "canceled" | "accepted" | "claimed";
 
 export interface PendingTurnEntry {
   id: string;
