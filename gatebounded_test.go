@@ -100,6 +100,42 @@ rm -rf "$dir"
 	}
 }
 
+// TestStopProcessTreeCatchesALateFork is the reason for rescanning: a parent
+// that ignores TERM and forks a child after cleanup has begun puts that child
+// behind a one-shot snapshot, so a single snapshot would let it escape to init.
+func TestStopProcessTreeCatchesALateFork(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+dir=$(mktemp -d)
+LATE="$dir/late" READY="$dir/ready" bash -c '
+trap "" TERM
+: > "$READY"
+sleep 1
+sleep 60 &
+echo $! > "$LATE"
+wait
+' &
+pid=$!
+for _ in $(seq 1 100); do [ -f "$dir/ready" ] && break; sleep 0.05; done
+stop_process_tree "$pid"
+for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
+late=""
+[ -s "$dir/late" ] && late=$(cat "$dir/late")
+escaped=unknown
+if [ -n "$late" ]; then
+	if kill -0 "$late" 2>/dev/null; then escaped=yes; else escaped=no; fi
+fi
+printf 'late=%s escaped=%s\n' "$late" "$escaped"
+kill -KILL "$pid" "$late" 2>/dev/null || :
+wait "$pid" 2>/dev/null || :
+rm -rf "$dir"
+`)
+	if !strings.Contains(got, "escaped=no") {
+		t.Fatalf("stop_process_tree = %q, want the child forked during cleanup reaped, not escaped", got)
+	}
+}
+
 // TestStopProcessTreeEscalatesToKill pins the escalation: a child that ignores
 // TERM is KILLed after the grace, and stop_process_tree returns once the grace
 // expires rather than waiting on a process that will not die. The child signals

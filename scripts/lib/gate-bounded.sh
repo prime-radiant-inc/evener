@@ -23,28 +23,27 @@ process_descendants() {
 # nothing here waits on a process past the grace, so a TERM-ignoring or
 # uninterruptible descendant cannot hold the caller open, and a survivor is left
 # to init rather than waited on.
+#
+# Descendants are rescanned on every pass and the parent is signalled last in
+# the final sweep: a process that forks during cleanup puts its children behind
+# a one-shot snapshot, and killing the parent first would reparent the rest to
+# init where no rescan can find them.
 stop_process_tree() {
-	local pid="$1" descendant alive grace
-	local -a targets=()
-	for descendant in $(process_descendants "$pid"); do
-		targets+=("$descendant")
-	done
-	targets+=("$pid")
-	for descendant in "${targets[@]}"; do
-		kill -TERM "$descendant" 2>/dev/null || :
-	done
+	local pid="$1" descendant grace alive
 	grace=$((SECONDS + 5))
 	while [ "$SECONDS" -lt "$grace" ]; do
 		alive=0
-		for descendant in "${targets[@]}"; do
-			kill -0 "$descendant" 2>/dev/null && alive=1
+		for descendant in $(process_descendants "$pid"); do
+			kill -TERM "$descendant" 2>/dev/null && alive=1
 		done
+		kill -TERM "$pid" 2>/dev/null && alive=1
 		[ "$alive" -eq 0 ] && break
 		sleep 0.1
 	done
-	for descendant in "${targets[@]}"; do
+	for descendant in $(process_descendants "$pid"); do
 		kill -KILL "$descendant" 2>/dev/null || :
 	done
+	kill -KILL "$pid" 2>/dev/null || :
 }
 
 # run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the

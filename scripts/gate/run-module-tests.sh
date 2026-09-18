@@ -293,14 +293,15 @@ run_bounded_timeout_diagnostic() {
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$retry" >&2
 }
 
-# run_list_build_flags runs the helper from whatever directory the caller is in
-# — the module's own directory on both enumeration paths — so any relative path
-# in the ambient GOFLAGS (`-modfile=alt.mod`, `-overlay=overlay.json`) resolves
-# here exactly as it does for the module's own `go test`. The evener-dev package
-# is named by its full import path so it resolves through the workspace from a
-# module that does not require the root module.
+# run_list_build_flags runs the repository-local helper by its checkout-relative
+# path from the repository root, so it always resolves from this checkout rather
+# than an import path that a GOWORK=off or unrelated workspace could redirect.
+# GOFLAGS is cleared for this one invocation: the helper only reads its
+# arguments, so the build here must not let a relative GOFLAGS path
+# (-modfile=alt.mod, -overlay=overlay.json) resolve against the repository root
+# and disagree with the module directory the enumeration and tests run in.
 run_list_build_flags() {
-	go run primeradiant.com/evener/cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"}
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} )
 }
 
 # derive_list_flags sets list_flags to the caller's flags that the `go list`
