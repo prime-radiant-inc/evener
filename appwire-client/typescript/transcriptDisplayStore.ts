@@ -471,9 +471,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       });
       if (!stillMine()) throw new Error(WRITE_NOT_ACKNOWLEDGED_MESSAGE);
       const canonical = decodePatchReply(result, layout, confirmed, config);
-      if (canonical.revision < (getState().hub[layout] ?? confirmed).revision) {
-        setState(clearPreview(layout));
-        throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
+      const current = getState().hub[layout] ?? confirmed;
+      if (canonical.revision < current.revision) {
+        // decodePatchReply already validated this reply as THIS write's own
+        // outcome - the write itself applied. A broadcast from another
+        // client's write raced ahead of it while it was in flight, so this
+        // client's own view is merely stale, not malformed: a superseded
+        // write resolves with the hub's current value, never an error.
+        setState({ ...clearPreview(layout), hubError: null, ...layoutError(layout, undefined) });
+        return current;
       }
       applyHubDefault(layout, canonical, {
         ...clearPreview(layout),

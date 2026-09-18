@@ -120,6 +120,20 @@ describe("hub defaults", () => {
     expect(layouts).toEqual(["desktop", "mobile"]);
   });
 
+  test("a GET reply with extra keys still decodes (forward compatibility)", async () => {
+    // fromWireDefault/fromWireDefaults must not be the odd one out: the PATCH
+    // reply decoder (fromWirePatchResponse) already tolerates a hub-added
+    // field, per Jesse's ruling that a decoder validates the keys it knows
+    // and ignores the rest.
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => ({
+      desktop: { ...toWireDefault(hubDefault(3, desktopConfig)), futureField: "ignored" },
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    const store = await readyStore(client);
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+  });
+
   test("a changed notification applies a newer revision and ignores a stale or equal one", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
@@ -368,6 +382,35 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.mobile).toBe("revision conflict");
   });
 
+  test("a conflict's canonical current with extra keys still decodes (forward compatibility)", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: { ...toWireDefault(hubDefault(4, desktopConfig)), futureField: "ignored" },
+      });
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+  });
+
+  test("a post-apply durable failure's carried canonical value with extra keys still decodes (forward compatibility)", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("sync transcript display state: boom", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        applied: { ...toWireDefault(hubDefault(4, mobileConfig)), futureField: "ignored" },
+      });
+    });
+
+    const applied = await store.getState().patchHubDefault("mobile", proposed);
+
+    expect(applied).toEqual(hubDefault(4, mobileConfig));
+  });
+
   test("a post-apply durable failure applies the carried canonical state instead of surfacing an error", async () => {
     // The hub's PATCH APPLIED (the error carries the canonical applied state,
     // and the broadcast reconciles every other client) - only the follow-up
@@ -450,7 +493,13 @@ describe("the direct write", () => {
     expect(store.getState().drafts.mobile).toBeUndefined();
   });
 
-  test("a reply the hub has already moved past drops the preview and keeps the newer value", async () => {
+  test("a reply the hub has already moved past resolves with the newer value instead of erroring - a superseded write, not a malformed one", async () => {
+    // decodePatchReply already validated the reply as THIS write's own
+    // outcome (composed against the revision it started from) - a broadcast
+    // from another client's write raced ahead of it while it was in flight.
+    // This client's own view is merely stale, not malformed: a superseded
+    // write resolves with the hub's current value, never an error (Jesse's
+    // ruling: the write itself applied on the hub).
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
     const reply = deferred<TranscriptDisplayPatchResponse>();
@@ -463,10 +512,12 @@ describe("the direct write", () => {
       params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
     });
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await expect(write).rejects.toThrow(/malformed/);
 
+    const result = await write;
+    expect(result).toEqual(hubDefault(7, mobileConfig));
     expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
     expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(store.getState().hubError).toBeNull();
   });
 
   test("a newer confirmed payload that contradicts a stranded preview clears it", async () => {
