@@ -2434,7 +2434,13 @@ test("explicit Resume follows the returned identity through transcript and new s
     await flushPendingTurnsProjectionForTests();
   });
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
-    expect.objectContaining({ clientMutationId: uncertain, state: "blockedUnknown" }),
+    // The Force stop above owns this row now: it was never attempted (the
+    // seed wrote blockedUnknown directly onto an undispatched record), so the
+    // write-first stop cancels it durably before the RPC
+    // (stop-cancellation-outbox §4/§5) instead of leaving it delivery-uncertain.
+    // The row still proves the test's own point: Resume cannot resend it - a
+    // canceled row only ever leaves storage through an explicit user Retry.
+    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
   ]);
   expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
   await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
@@ -2645,16 +2651,21 @@ test("a Stop on the resumed identity before the resume RPC leaves suppresses the
   // resume RPC leaves: resumeThread's reconnect await (fakeClient's microtask
   // hop) has not settled, so beforeRequest has not run yet. shutdown records
   // its Stop synchronously, ahead of that guard - fireEvent, not userEvent,
-  // so the two calls share one synchronous turn.
+  // so the two calls share one synchronous turn. The action's own completion
+  // is still awaited below: write-first ordering (stop-cancellation-outbox §4)
+  // makes shutdown's durable cancel write precede its RPC, so a fire-and-
+  // forget call would complete past this test's own client and fake.
+  let shutdownCompletion!: Promise<void>;
   act(() => {
     fireEvent.click(resume);
-    void threadsStore.getState().shutdown(currentRef);
+    shutdownCompletion = threadsStore.getState().shutdown(currentRef);
   });
   await act(async () => {});
   // The guarded-out resume never sent the RPC - the guard's whole point.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
   expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
+  await shutdownCompletion;
 });
 
 test("offers explicit resume after restart even without pending messages", async () => {

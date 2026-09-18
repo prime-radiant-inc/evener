@@ -31,6 +31,7 @@ import {
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
+  useCanceledMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
@@ -178,15 +179,24 @@ export function QueueStrip({
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
-    (entry) => entry.state !== "blockedUnknown",
+    // A queue-method row Stop canceled (or one whose delivery turned unknown)
+    // is a durable row below, not a bare pending one - the same slot rule the
+    // blocked state already follows.
+    (entry) => entry.state !== "blockedUnknown" && entry.state !== "canceled",
   );
   const recoveryEntries = useRecoveryEntries(sessionRef).filter(
     (record) => record.method !== "notes/human/set" && record.clientMutationId !== activeRecoveryId,
   );
+  // Canceled note saves are owned by the note editor (humanNoteDrafts reports
+  // "Note save was canceled by Stop"), the same way blocked ones are.
   const blockedEntries = useBlockedMutationEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
+  const canceledEntries = useCanceledMutationEntries(sessionRef).filter(
+    (record) => record.method !== "notes/human/set",
+  );
   const durableEntries = [
     ...recoveryEntries.map((record) => ({ kind: "recovery" as const, record })),
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
+    ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
@@ -364,6 +374,13 @@ export function QueueStrip({
         const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
         if (current?.state === "blockedUnknown")
           reportFailure("Delivery still cannot be checked. The original message is kept; you can send a new message.");
+        else if (current?.state === "canceled")
+          // The refused-press counterpart for a canceled row: its release is
+          // the FIRST durable step of the retry, so a refusal leaves the row
+          // exactly as it was. The row itself still says what it is; this says
+          // the press did nothing (kata 2f41's rule that a refused control
+          // has to say so).
+          reportFailure("Still canceled by Stop. The original message is kept; press Retry again.");
       }
     } catch (error) {
       reportFailure(errorText(error));
@@ -499,11 +516,17 @@ export function QueueStrip({
         {durableEntries.map(({ kind, record }) => {
           const rowBusy = busyEntryIds.has(record.clientMutationId);
           const retryError = retryErrors.get(record.clientMutationId);
-          if (kind === "blocked") {
+          if (kind === "blocked" || kind === "canceled") {
+            // Delivery-uncertain rows and Stop-canceled rows share one slot
+            // (stop-cancellation-outbox §6 Display): both are this client's
+            // own undelivered submissions sitting in durable storage, and
+            // they differ only in the label - uncertain delivery versus a
+            // cancellation the user's own click wrote. The Retry affordance,
+            // its gating, and the error slot are identical.
             return (
               <li key={record.clientMutationId} className={CLASS.row}>
                 <span className={CLASS.rowText}>
-                  <span>Delivery uncertain</span>
+                  <span>{kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain"}</span>
                   {" — "}
                   <span>{recordPreview(record)}</span>
                   {retryError !== undefined && <span role="alert">{retryError}</span>}

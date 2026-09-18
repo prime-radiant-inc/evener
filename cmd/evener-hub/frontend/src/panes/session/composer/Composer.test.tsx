@@ -2388,6 +2388,60 @@ test("an uncertain own send still routes the next message to queue", async () =>
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// The canceled counterpart of the test above: a row Stop canceled was
+// provably never sent - the durable cancel write IS the click moment
+// (stop-cancellation-outbox §4), so no turn can be running because of it.
+// Counting it for tier 6 parked the next message in queue mode behind a turn
+// that never started; the plain-send default is the honest route, exactly as
+// if the user had never typed the canceled message at all.
+test("a canceled own send no longer routes the next message to queue", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  fake.on("turn/queue", receipt);
+  fake.on("turn/start", (params) => ({
+    ...receipt(params),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.cancelUnattempted("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await user.type(textarea(), "second");
+  await user.click(submitButton());
+  await waitFor(async () => {
+    const records = await storage.listOutbox("ref_a");
+    const second = records.find(
+      (record) => (record.payload.input as { text?: string }[] | undefined)?.[0]?.text === "second",
+    );
+    expect(second?.method).toBe("turn/start");
+  });
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
 // Shift+Enter reaches the steer handler directly off the keydown event, so
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"

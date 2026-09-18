@@ -421,17 +421,33 @@ export function useRecoveryEntries(ref: string): MutationRecoveryRecord[] {
   }, [recovery, ref]);
 }
 
-export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
+// The shared body of the two outbox-state selectors below: one stable snapshot
+// per state, sorted by intent sequence the way the durable rows render.
+function useOutboxRecordsByState(ref: string, state: "blockedUnknown" | "canceled"): MutationOutboxRecord[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
     const records = [...outbox.values()]
-      .filter((record) => record.targetRef === ref && record.state === "blockedUnknown")
+      .filter((record) => record.targetRef === ref && record.state === state)
       .sort((left, right) => left.intentSequence - right.intentSequence);
     return records.length > 0 ? records : NO_BLOCKED;
-  }, [outbox, ref]);
+  }, [outbox, ref, state]);
+}
+
+// Delivery-uncertain rows only. Session's restart notice reads exactly this
+// selector: a canceled row is a settled fact (provably never sent), not a
+// recovery obligation, so it must stay out of that notice.
+export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
+  return useOutboxRecordsByState(ref, "blockedUnknown");
+}
+
+// Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
+// in the same durable-rows slot as blocked ones, where their explicit Retry
+// affordance lives.
+export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
+  return useOutboxRecordsByState(ref, "canceled");
 }
 
 // A durable mutation and the projection refresh that publishes it are one
