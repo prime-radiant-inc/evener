@@ -7,12 +7,24 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+	discardStoredKeybindingDraft,
+	isReadableKeybindingDraft,
+} from "@evener/appwire-client";
+import type {
+	AppwireClient,
+	DiscardStoredDraftResult,
+	TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
+	draftUnreadableAfterDiscard,
+	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	parseDraftBytes,
+	readDraftOutcome,
 } from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
@@ -25,13 +37,46 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
+	/** A locally stored keybindings draft is present but unreadable, checked
+	 * independently of `snapshot` (which stays null until a ready client
+	 * publishes a model - see bindNativePreferences). A cold offline start
+	 * never reaches that point, so this is what lets the "Discard unreadable
+	 * draft" action render before any hub has answered. Superseded by
+	 * `snapshot.keybindings.draftUnreadable` the moment a model publishes. */
+	offlineDraftUnreadable: boolean;
+	/** The offline draft probe or the store-free discard's own re-read hit a
+	 * genuine port failure (Storage.getItemSync threw) rather than an
+	 * unreadable record - the same distinction restoreDraft draws on a live
+	 * store. Nothing about `offlineDraftUnreadable` is known when this is
+	 * true; it is left at whatever it last was rather than guessed at. */
+	offlineStorageUnavailable: boolean;
+	/** Clears an unreadable keybindings draft record with no live model
+	 * required - the store-free path discardStoredKeybindingDraft documents
+	 * for a host with no connection to build one from (offline, or the
+	 * connection dropped after the record was shown). Returns the discard's
+	 * outcome (see DiscardStoredDraftResult); null when there is no hub to
+	 * discard for. */
+	discardUnreadableKeybindingsDraft(): DiscardStoredDraftResult | null;
 }
 const Context = createContext<Preferences | null>(null);
+/** Synchronous compare cannot interleave with a newer model's checkpoint,
+ * so deleteIf and replaceIf below share it as their one atomic check. See
+ * matchesStoredBytes for why a byte-for-byte re-encoding compare is not
+ * enough on its own. */
+function matches(key: string, value: unknown): boolean {
+	return matchesStoredBytes(Storage.getItemSync(key), value);
+}
 const backend = {
 	createId: () => Crypto.randomUUID(),
 	get(key: string): unknown {
 		const value = Storage.getItemSync(key);
-		return value === null ? null : JSON.parse(value);
+		// Bytes this build cannot use as a record - including a stored JSON
+		// null, distinct from no key at all - come back as the raw string
+		// (parseDraftBytes), so the shared store's own decoder classifies them
+		// as an unreadable RECORD (draftUnreadable, discardable) instead of
+		// either a throw it can only read as a dead port, or a silent "no
+		// record" that can never be discarded.
+		return value === null ? null : parseDraftBytes(value);
 	},
 	set(key: string, value: unknown) {
 		Storage.setItemSync(key, JSON.stringify(value));
@@ -39,10 +84,15 @@ const backend = {
 	delete(key: string) {
 		Storage.removeItemSync(key);
 	},
-	deleteIf(key: string, value: unknown) {
-		// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
-		if (Storage.getItemSync(key) === JSON.stringify(value))
-			Storage.removeItemSync(key);
+	deleteIf(key: string, value: unknown): boolean {
+		if (!matches(key, value)) return false;
+		Storage.removeItemSync(key);
+		return true;
+	},
+	replaceIf(key: string, expected: unknown, next: unknown): boolean {
+		if (!matches(key, expected)) return false;
+		Storage.setItemSync(key, JSON.stringify(next));
+		return true;
 	},
 };
 
@@ -60,6 +110,33 @@ export function NativePreferencesProvider({
 		snapshot: NativePreferencesSnapshot;
 		config: TranscriptDisplayConfigV1 | null;
 	} | null>(null);
+	const [offlineDraftUnreadable, setOfflineDraftUnreadable] = useState(false);
+	const [offlineStorageUnavailable, setOfflineStorageUnavailable] = useState(false);
+	useEffect(() => {
+		// Runs independently of connection state (see the field's own comment
+		// on Preferences.offlineDraftUnreadable): a cold offline start never
+		// fires bindNativePreferences' `ready` callback, so this is the only
+		// place the local record gets inspected before a model exists. Also
+		// re-runs on a connectivity change (`state`), not only a hub switch: a
+		// record that becomes corrupt while offline with no model would
+		// otherwise never surface the recovery action until `hubId` itself
+		// changed.
+		if (!hubId) {
+			setOfflineDraftUnreadable(false);
+			setOfflineStorageUnavailable(false);
+			return;
+		}
+		const outcome = readDraftOutcome(nativeKeybindingDrafts(hubId, backend), isReadableKeybindingDraft);
+		if (outcome === "storageUnavailable") {
+			// A genuine port failure, not a record this build cannot decode -
+			// nothing about draftUnreadable is known, so it is left alone
+			// rather than guessed at, the same posture restoreDraft takes.
+			setOfflineStorageUnavailable(true);
+			return;
+		}
+		setOfflineStorageUnavailable(false);
+		setOfflineDraftUnreadable(outcome === "unreadable");
+	}, [hubId, state]);
 	useEffect(() => {
 		if (!client || !hubId) return;
 		let unsubscribe = () => {};
@@ -93,6 +170,62 @@ export function NativePreferencesProvider({
 		};
 	}, [client, hubId]);
 	const selected = bound?.hubId === hubId ? bound : null;
+	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | null => {
+		if (!hubId) return null;
+		const storage = nativeKeybindingDrafts(hubId, backend);
+		let outcome: DiscardStoredDraftResult;
+		try {
+			// discardStoredDraft itself reads (and, on a refusal, re-reads) the
+			// port - any of those may throw a genuine storage failure, not a
+			// record this build cannot decode, so it is caught here rather than
+			// escaping this event handler uncaught.
+			outcome = discardStoredKeybindingDraft(storage, isReadableKeybindingDraft);
+		} catch {
+			setOfflineStorageUnavailable(true);
+			return null;
+		}
+		// A second, independent re-read (see draftUnreadableAfterDiscard):
+		// "refused" carries two different situations behind one outcome, and
+		// telling them apart needs to know the CURRENT record, not the one
+		// discardStoredDraft last saw. This may also throw.
+		const current = readDraftOutcome(storage, isReadableKeybindingDraft);
+		if (current === "storageUnavailable") {
+			setOfflineStorageUnavailable(true);
+			return outcome;
+		}
+		setOfflineStorageUnavailable(false);
+		// No live model to publish through (offline, or the connection
+		// dropped after the record was shown) - the stale snapshot
+		// NativePreferencesProvider otherwise keeps showing is updated here
+		// directly, the same fields restoreDraft would publish on a live
+		// store. Every outcome refreshes storageUnavailable/error, not only
+		// "removed": talking to the port at all (any outcome) proves it is
+		// reachable, and "absent" means the record the button named is
+		// already gone.
+		const draftUnreadable = draftUnreadableAfterDiscard(outcome, current);
+		// Kept in sync regardless of whether `bound` exists: the cold-offline
+		// signal below (offlineDraftUnreadable) is what the screen falls back
+		// to before any model has published a snapshot, and a discard can
+		// happen in exactly that state.
+		setOfflineDraftUnreadable(draftUnreadable);
+		setBound((previous) =>
+			previous?.hubId === hubId
+				? {
+						...previous,
+						snapshot: {
+							...previous.snapshot,
+							keybindings: {
+								...previous.snapshot.keybindings,
+								draftUnreadable,
+								storageUnavailable: false,
+								error: null,
+							},
+						},
+					}
+				: previous,
+		);
+		return outcome;
+	};
 	return (
 		<Context.Provider
 			value={{
@@ -101,6 +234,9 @@ export function NativePreferencesProvider({
 				snapshot: selected?.snapshot ?? null,
 				config: selected?.config ?? null,
 				connected: !!client && state === "ready" && selected?.client === client,
+				offlineDraftUnreadable,
+				offlineStorageUnavailable,
+				discardUnreadableKeybindingsDraft,
 			}}
 		>
 			{children}

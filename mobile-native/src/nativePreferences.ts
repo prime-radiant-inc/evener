@@ -36,6 +36,10 @@ export interface PreferenceState<T> {
 	conflict: boolean;
 	writeUncertain: boolean;
 	storageUnavailable: boolean;
+	/** The port answered but what it held could not be read - discardable
+	 * (never a dead port). Only the keybindings domain sets this; transcript
+	 * has no equivalent concept yet, so it stays false there. */
+	draftUnreadable: boolean;
 }
 
 /** The confirmed payload as the shared store holds it: its rule list is the
@@ -62,6 +66,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	conflict: false,
 	writeUncertain: false,
 	storageUnavailable: false,
+	draftUnreadable: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -156,11 +161,18 @@ function keybindingsDomain(
 					...(state.loadError === null ? {} : { loadError: state.loadError }),
 				}
 			: null,
-		draft: state.draft,
+		// state.draft carries its own `generation` staleness stamp (see
+		// readyGenerationFence.ts), which PreferenceState<ConfirmedKeybindings>
+		// has no field for - stripped here rather than forwarded structurally.
+		draft:
+			state.draft === null
+				? null
+				: { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
 		error: state.draftError ?? hubErrorMessage(state),
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
 	};
 }
 

@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
+import { clearsErrorAfterOfflineDiscard } from "./nativePreferenceDrafts";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -89,6 +90,14 @@ export function KeybindingPreferencesScreen({
 		};
 	}, []);
 	const domain = preferences.snapshot?.keybindings;
+	// A cold offline start never reaches bindNativePreferences' `ready`
+	// callback, so `domain` stays undefined until a model publishes -
+	// offlineDraftUnreadable is checked independently of it (see
+	// NativePreferencesProvider), so the recovery action can still render.
+	// The live domain's own value takes over the moment a model exists.
+	const draftUnreadable = domain
+		? domain.draftUnreadable
+		: preferences.offlineDraftUnreadable;
 	const rules = domain?.draft?.rules ?? domain?.confirmed?.rules ?? [];
 	const preview = useMemo(() => keybindingPreview(rules), [rules]);
 	const editor = route.params.editor;
@@ -173,6 +182,50 @@ export function KeybindingPreferencesScreen({
 							The save could not be confirmed. Your proposal is kept on this
 							phone. Check the hub before making another change.
 						</Copy>
+					)}
+					{draftUnreadable && (
+						<View style={{ gap: 12 }}>
+							<Copy>
+								A saved draft on this phone could not be read. Discard it to
+								continue editing shortcuts.
+							</Copy>
+							<Action
+								disabled={
+									model && preferences.connected
+										? !!domain?.loading || !!domain?.saving || !!domain?.writeUncertain
+										: !!domain?.saving || !!domain?.writeUncertain
+								}
+								onPress={() => {
+									if (model && preferences.connected) {
+										run(() => model.discardKeybindingsDraft());
+										return;
+									}
+									// Offline, or no live model: the client object survives a
+									// dropped connection (model stays non-null while
+									// preferences.connected is false), so `run` alone cannot
+									// tell disconnected apart from never-connected - checking
+									// connectivity directly is what routes both into the
+									// store-free path discardStoredKeybindingDraft documents,
+									// instead of a dead button.
+									try {
+										const outcome = preferences.discardUnreadableKeybindingsDraft();
+										// A stale error from an earlier failed action must not
+										// outlive a successful discard: ErrorMessage prioritizes
+										// this component-local error over domain?.error. But a
+										// null outcome means there was no hub to discard for (no
+										// action ran) - clearing the error then would hide that
+										// prior failure instead of reporting the one it describes.
+										if (clearsErrorAfterOfflineDiscard(outcome)) setError(null);
+									} catch {
+										setError(
+											"The change could not be completed. Check current shortcuts and review your changes.",
+										);
+									}
+								}}
+							>
+								Discard unreadable draft
+							</Action>
+						</View>
 					)}
 					{model && domain?.support === "supported" && (
 						<Action
