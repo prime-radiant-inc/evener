@@ -15,7 +15,12 @@ import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { readMutationPersistence, threadsStore, useThreadsStore } from "../../../../stores/threads";
+import {
+  readMutationPersistence,
+  retryBlockedBySnapshot,
+  threadsStore,
+  useThreadsStore,
+} from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
@@ -346,6 +351,8 @@ export function QueueStrip({
       next.delete(record.clientMutationId);
       return next;
     });
+    const reportFailure = (cause: string) =>
+      setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, `Retry failed: ${cause}`));
     try {
       if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
         // Refresh FIRST, then decide on the state the refresh observed. Reading
@@ -356,13 +363,10 @@ export function QueueStrip({
         const { outbox } = await readMutationPersistence(sessionRef);
         const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
         if (current?.state === "blockedUnknown")
-          throw new Error(
-            "Delivery still cannot be checked. The original message is kept; you can send a new message.",
-          );
+          reportFailure("Delivery still cannot be checked. The original message is kept; you can send a new message.");
       }
     } catch (error) {
-      const message = `Retry failed: ${errorText(error)}`;
-      setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, message));
+      reportFailure(errorText(error));
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -494,6 +498,7 @@ export function QueueStrip({
         ))}
         {durableEntries.map(({ kind, record }) => {
           const rowBusy = busyEntryIds.has(record.clientMutationId);
+          const retryError = retryErrors.get(record.clientMutationId);
           if (kind === "blocked") {
             return (
               <li key={record.clientMutationId} className={CLASS.row}>
@@ -501,9 +506,7 @@ export function QueueStrip({
                   <span>Delivery uncertain</span>
                   {" — "}
                   <span>{recordPreview(record)}</span>
-                  {retryErrors.has(record.clientMutationId) && (
-                    <span role="alert">{retryErrors.get(record.clientMutationId)}</span>
-                  )}
+                  {retryError !== undefined && <span role="alert">{retryError}</span>}
                 </span>
                 <div className={CLASS.rowActions}>
                   <Button
@@ -511,20 +514,18 @@ export function QueueStrip({
                     variant="quiet"
                     disabled={
                       rowBusy ||
-                      !model ||
-                      model.status.type === "restartRequired" ||
                       // Retry is offered only when retryBlockedMutation can
-                      // actually act: it refuses every notLoaded snapshot and
-                      // any ref without mutation authority (stores/threads.ts),
-                      // so a recovery-fenced local session keeps Retry disabled
-                      // until the explicit Resume action restores it.
-                      model.status.type === "notLoaded" ||
-                      !mutationAuthority ||
-                      // A restart-blocking obligation (a Stop, or a snapshot
-                      // the daemon reports as restartRequired/resumeRequired)
-                      // is the third refusal in retryBlockedMutation; without
-                      // it an idle fenced row offers a Retry that always fails.
-                      recoveryObligated
+                      // actually act. Its snapshot-level refusals - every
+                      // notLoaded or restartRequired snapshot, any ref without
+                      // mutation authority, and a restart-blocking obligation
+                      // (a Stop, or a snapshot the daemon reports as
+                      // restartRequired/resumeRequired) - are shared with it as
+                      // retryBlockedBySnapshot (stores/threads.ts), so a
+                      // recovery-fenced local session keeps Retry disabled until
+                      // the explicit Resume action restores it; without the
+                      // obligation term an idle fenced row would offer a Retry
+                      // that always fails.
+                      retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated)
                     }
                     onClick={() => void handleRetry(record)}
                   >

@@ -981,6 +981,27 @@ export function resumeStopBaseline(): (ref?: string) => void {
   };
 }
 
+// The snapshot-level refusals of retryBlockedMutation: a target the store
+// cannot act on regardless of what the retry would find -- no live status, a
+// restartRequired or notLoaded snapshot, no mutation authority, or a
+// restart-blocking obligation. Shared with QueueStrip's Retry button, which
+// disables on exactly these so a fenced row never offers a Retry that always
+// fails; the remaining refusals (an in-flight reconciliation or hydration, a
+// reconciliation failure, a missing dispatch client) stay retry-time checks.
+export function retryBlockedBySnapshot(
+  statusType: string | undefined,
+  hasMutationAuthority: boolean,
+  restartObligated: boolean,
+): boolean {
+  return (
+    statusType === undefined ||
+    statusType === "restartRequired" ||
+    statusType === "notLoaded" ||
+    !hasMutationAuthority ||
+    restartObligated
+  );
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",
@@ -993,14 +1014,19 @@ export async function retryBlockedMutation(
   // neither resume a session nor retry another kind of mutation.
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
-  if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
-  const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
-  if (!status || status === "restartRequired" || status === "notLoaded") return false;
+  const state = threadsStore.getState();
+  if (
+    retryBlockedBySnapshot(
+      state.threads.get(record.targetRef)?.status.type,
+      state.mutationAuthorityRefs.has(record.targetRef),
+      state.restartBlockingObligations.has(record.targetRef),
+    )
+  )
+    return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    threadsStore.getState().restartBlockingObligations.has(record.targetRef) ||
-    threadsStore.getState().mutationReconciliationFailures.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
