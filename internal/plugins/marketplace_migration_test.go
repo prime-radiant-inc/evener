@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2934,6 +2935,72 @@ func TestMarketplaceNameMigration_RecoveryRollbackFailureNamesNoPath(t *testing.
 		}
 	}
 	mustExist(t, renameMarkerFile(m))
+}
+
+// migrateMarketplaceName writes the rename marker before it moves anything,
+// so a fresh migration's very first write can fail - and writeRenameMarker's
+// own atomicWriteFile error names this machine's absolute plugin-store path
+// directly, unlike the marketplaces/registry writes saveFailed/saveRename
+// already scrub.
+func TestMarketplaceNameMigration_MarkerWriteFailureNamesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+
+	path := renameMarkerFile(m)
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(p string, data []byte, perm os.FileMode) error {
+		if filepath.Base(p) == renameMarkerFileName {
+			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+		}
+		return origWrite(p, data, perm)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("expected the marker write to fail")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), renameMarkerFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, renameMarkerFileName)
+	}
+}
+
+// migrateMarketplaceNames records a fresh migration in marketplace-migration.json
+// before it renames anything, so that write can fail too - and
+// saveMigrationRecord's own atomicWriteFile error names this machine's
+// absolute plugin-store path directly.
+func TestMarketplaceNameMigration_RecordWriteFailureNamesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+
+	path, pathErr := m.storePath(migrationRecordFileName)
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(p string, data []byte, perm os.FileMode) error {
+		if filepath.Base(p) == migrationRecordFileName {
+			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+		}
+		return origWrite(p, data, perm)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("expected the record write to fail")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), migrationRecordFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, migrationRecordFileName)
+	}
 }
 
 // An entry an interrupted fetch left has no recorded install location and can
