@@ -29,6 +29,7 @@ import type {
 } from "./project";
 import { applyNotification, hydrateThread } from "@evener/appwire-client";
 import {
+  liveAsksFor,
   MAX_ITEM_BYTES,
   projectConversation,
   projectTimeline,
@@ -2272,6 +2273,47 @@ it("a question row on screen implies askPending is true — the wire is the sing
     thread([turn("t", [askItem])], { evener: evenerThread({ askPending: false }) }),
   );
   expect(resolved.items.some((row) => row.kind === "question")).toBe(false);
+});
+
+// liveAsksFor memoizes askQuestionsByCall's scan by model.turns alone (its
+// own doc comment: "no memory of its own... reuses ONE scan for every
+// caller that shares that exact array"). A frame that changes ONLY
+// askPending (a status frame with no item of its own,
+// conversation.ts's changesRows) hands back the SAME turns reference with a
+// different askPending — the memo must not serve the stale answer it cached
+// under the old flag. liveAsksFor reads only turns and askPending, so a
+// minimal ThreadModel-shaped fixture stands in for the rest (this file's own
+// thread()/turn() build the WIRE shape hydrateThread consumes, not this).
+it("liveAsksFor re-derives when askPending changes even though turns did not", () => {
+  const askArgs =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+  const turns: TurnModel[] = [
+    {
+      id: "t",
+      status: "completed",
+      items: [
+        {
+          id: "ask-1",
+          turnId: "t",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          callId: "call-1",
+          argumentsJSON: askArgs,
+        } as ItemModel,
+      ],
+    },
+  ];
+  const notAsking = { turns, askPending: false } as unknown as ThreadModel;
+  expect(liveAsksFor(notAsking).size).toBe(0);
+  // Same turns reference, askPending now true.
+  const asking = { ...notAsking, askPending: true };
+  expect(asking.turns).toBe(notAsking.turns);
+  expect(liveAsksFor(asking).size).toBe(1);
+  // And back to false again re-derives to empty rather than serving the
+  // "asking" answer just cached under the same turns reference.
+  const resolvedAgain = { ...notAsking, askPending: false };
+  expect(liveAsksFor(resolvedAgain).size).toBe(0);
 });
 
 it("renders no question row when the ask arguments do not parse", () => {
