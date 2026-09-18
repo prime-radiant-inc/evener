@@ -107,9 +107,11 @@ it("useConnectionDisplay: everReady for the previous hub does not banner the nex
 it("useRenderClient: falls back to the last client through a null gap", () => {
 	const first = {} as AppwireClient;
 	let client: AppwireClient | null = first;
-	const hook = renderHook(() => useRenderClient(client, "hub-1"));
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useRenderClient(client, state, "hub-1"));
 	expect(hook.result.current).toBe(first);
 	client = null;
+	state = "connecting";
 	hook.rerender();
 	expect(hook.result.current).toBe(first);
 });
@@ -132,15 +134,46 @@ it("useLiveReadiness rejects a deferred callback after the client or hub changes
 	expect(hook.result.current()).toBe(false);
 });
 
+it("useRenderClient: a retry's not-yet-ready replacement never displaces the previous client", () => {
+	// hubConnection.ts's own sequence for a manual retry: `client` clears
+	// while the fresh one dials, then a NEW client object appears while
+	// `state` is still "connecting" - not yet safe to hand to a store.
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useRenderClient(client, state, "hub-1"));
+	expect(hook.result.current).toBe(first);
+
+	client = null;
+	state = "connecting";
+	hook.rerender();
+	expect(hook.result.current).toBe(first);
+
+	client = second;
+	// The replacement now exists, but has not reached "ready": still not
+	// safe to render.
+	hook.rerender();
+	expect(hook.result.current).toBe(first);
+
+	state = "ready";
+	hook.rerender();
+	expect(hook.result.current).toBe(second);
+});
+
 it("useRenderClient: a hub change drops the previous hub's client instead of falling back to it", () => {
 	const first = {} as AppwireClient;
 	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
 	let hubId = "hub-1";
-	const hook = renderHook(() => useRenderClient(client, hubId));
+	const hook = renderHook(() => useRenderClient(client, state, hubId));
 	expect(hook.result.current).toBe(first);
 	client = null;
+	state = "connecting";
 	hubId = "hub-2";
 	hook.rerender();
+	// Without the reset this would fall back to hub-1's client; hub-2 has
+	// nothing adopted yet and must get nothing instead.
 	expect(hook.result.current).toBeNull();
 });
 

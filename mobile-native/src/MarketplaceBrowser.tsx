@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
+  ConnectionState,
   MarketplaceAddParams,
   PluginRefParams,
 } from "@evener/appwire-client";
@@ -22,7 +23,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { whenReady, type LiveReadiness } from "./connectionDisplay";
+import { isReady, type LiveReadiness, whenReady } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
   runGatedMutation,
@@ -47,8 +48,8 @@ export function MarketplaceBrowser({
   hubName,
   installed,
   gate,
-  ready,
   canUseConnection,
+  connectionState,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
@@ -59,11 +60,12 @@ export function MarketplaceBrowser({
   // it takes has to outlive the view - and living at the screen means the
   // installed list sees a marketplace write as busy too, and vice versa.
   gate: PluginMutationGate;
-  ready: boolean;
   canUseConnection: LiveReadiness;
+  connectionState: ConnectionState;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
+  const ready = isReady(connectionState);
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
@@ -75,6 +77,19 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // Tells the store which connection its list/catalog cache belongs to, on
+  // every transition that connection reports - a passive flap keeps `client`
+  // itself unchanged, so the mount effect below is never rebuilt for one, and
+  // only this call tells the store to recover once ready again
+  // (storeLifecycle.ts's connectionChanged). Declared BEFORE the mount
+  // effect for the same reason PluginsScreen.tsx's identical wiring is: on
+  // mount, nothing has asked for the list yet, so this call's own "does
+  // anything want it" check is answered honestly before fetchMarketplaces()
+  // below says yes - reversed, this call would see that read already marked
+  // live and refetch a second time for the same first load.
+  useEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();
