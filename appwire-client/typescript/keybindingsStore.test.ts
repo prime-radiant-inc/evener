@@ -372,6 +372,30 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
+  // RoboRev round 24 Medium 1: the no-port fallback storage's replaceIf
+  // always returned false, so a settle path composing against it read
+  // "false" as "a concurrent writer replaced the record" and adopted
+  // restoreDraft (which reads null from the same fallback), silently
+  // dropping the in-memory draft even though there is no real backing store
+  // - and so no concurrent writer - to have raced against.
+  test("without a draft port, a revision conflict's settle does not misread the ephemeral fallback as a concurrent replacement", async () => {
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: payload(6, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+      });
+    });
+    const store = await readyStore(client); // no drafts port: the ephemeral fallback
+
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow("revision conflict");
+
+    expect(store.getState()).toMatchObject({ revision: 6, writeUncertain: false, draftConflict: true });
+    // The draft must still be here for review, not silently wiped to null.
+    expect(store.getState().draft).not.toBeNull();
+    expect(store.getState().draft?.rules).toEqual(rules);
+  });
+
   test("a post-rename durable failure during saveDraft applies the carried canonical state instead of leaving the outcome unknown", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
@@ -684,6 +708,40 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toBeNull();
     expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
     expect(() => store.getState().editDraft(rules)).not.toThrow();
+  });
+
+  // RoboRev round 24 Medium 2: restoreDraft's UnreadableDraftError catch set
+  // the port-failure flags but left draft/writeUncertain/draftConflict
+  // exactly as they were, so a record that becomes unreadable WHILE a write
+  // is still uncertain left writeUncertain stuck true - and assertDiscardable
+  // refuses on writeUncertain unconditionally, blocking the one recovery
+  // (discard) an unreadable record is supposed to allow.
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
   });
 
   test("a discard refuses and re-classifies when the unreadable record has been replaced", async () => {
