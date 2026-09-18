@@ -44,9 +44,11 @@ import type {
 } from "../conversation/project";
 import {
   activityState,
+  capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
   projectItemAttachments,
+  truncateItem as sharedTruncateItem,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -563,70 +565,25 @@ function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
 // private set. This allows genuine marker suffixes in content without
 // freezing delta appends.
 
-// Apply truncation to an activity detail's text-bearing fields (arguments,
-// output, error). Shared by an activity's own top-level detail and each of
-// its clustered members' details, so both are bounded the same way.
-function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
-  return {
-    ...detail,
-    arguments: detail.arguments
-      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
-      : detail.arguments,
-    output: detail.output
-      ? truncateText(detail.output, MAX_ITEM_BYTES)
-      : detail.output,
-    error: detail.error
-      ? truncateText(detail.error, MAX_ITEM_BYTES)
-      : detail.error,
-  };
+// Apply truncation to an item's text-bearing fields. Delegates to project.ts's
+// shared truncateItem so every row kind it bounds (user, assistant, notice,
+// failure, question, activity) is bounded here too — this store used to
+// truncate only "assistant" and "activity", so a pasted user message, a
+// daemon notice, a tool failure's stack, and a question's own text were never
+// bounded by the live path at all. The bound callback is a plain
+// truncateText call, not the caching one project.ts's own callers use — this
+// store already tracks per-item truncation ownership itself (the comment
+// above), so a second cache here would just be dead weight.
+export function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
+  return sharedTruncateItem(item, (text) => truncateText(text, MAX_ITEM_BYTES));
 }
 
-// Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields. Native transcript
-// projection expands a clustered activity's members directly, so each
-// member's own detail is truncated too — not just the cluster's top-level
-// detail (the first member's).
-function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
-  switch (item.kind) {
-    case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
-    case "attachments":
-      // Only the display name is bounded — it is plain display text the
-      // renderer inserts into accessibility labels and modal copy. src is a
-      // data URI or a resolved fetch URL, and cutting it yields something the
-      // renderer cannot decode, so it passes through verbatim.
-      return {
-        ...item,
-        items: item.items.map((attachment) => ({
-          ...attachment,
-          name: attachment.name
-            ? truncateText(attachment.name, MAX_ITEM_BYTES)
-            : attachment.name,
-        })),
-      };
-    case "activity":
-      return {
-        ...item,
-        detail: truncateActivityDetail(item.detail),
-        ...(item.members
-          ? {
-              members: item.members.map((member) => ({
-                ...member,
-                detail: truncateActivityDetail(member.detail),
-              })),
-            }
-          : {}),
-      };
-    default:
-      return item;
-  }
-}
-
-// Enforce the 500-item retained cap. Always retains the NEWEST items (end
-// of array) so the live tail is preserved for interactive scrolling.
+// Enforce the 500-item retained cap. Delegates to project.ts's shared
+// capItems, which also drops a leading attachment whose source item did not
+// survive the cut (this store's own cap used to just slice, leaving orphaned
+// attachments behind).
 function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
+  return sharedCapItems(items);
 }
 
 export interface ConversationState {

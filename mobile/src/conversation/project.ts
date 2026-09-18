@@ -1101,10 +1101,21 @@ export function truncateItem(item: MobileTimelineItem, bound: BoundText): Mobile
             }
           : {}),
       };
+    case "attachments":
+      // Only the display name is bounded — it is plain display text the
+      // renderer inserts into accessibility labels and modal copy. src is a
+      // data URI or a resolved fetch URL, and cutting it yields something the
+      // renderer cannot decode, so it passes through verbatim.
+      return {
+        ...item,
+        items: item.items.map((attachment) => ({
+          ...attachment,
+          name: attachment.name ? bound(attachment.name) : attachment.name,
+        })),
+      };
     default:
-      // attachments: an attachment's src IS the image (a data: URI for composer
-      // bytes), so cutting it yields something that cannot decode; the name is a
-      // filename. The wire bounds image payloads at the source instead.
+      // A forward-compatible row kind: nothing here knows its fields, so it
+      // passes through untouched rather than guessed at.
       return item;
   }
 }
