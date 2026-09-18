@@ -10045,6 +10045,26 @@ describe("Stop cancellation as durable outbox state", () => {
     expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(true);
   });
 
+  // §4's boundary: with no mutation store at all (IndexedDB unavailable to
+  // this tab) there are no durable rows a resurrection hazard could come
+  // from, so write-first has nothing to protect and the stop proceeds.
+  test("forceStop and shutdown proceed when no mutation store exists", async () => {
+    const indexedDB = globalThis.indexedDB;
+    vi.stubGlobal("indexedDB", undefined);
+    try {
+      const fake = connectFakeClient();
+      const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+      fake.on("thread/shutdown", () => ({}));
+
+      await threadsStore.getState().forceStop("ref_a");
+      expect(forceStopRpc).toHaveBeenCalledWith("ref_a");
+      await threadsStore.getState().shutdown("ref_a");
+      expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(true);
+    } finally {
+      vi.stubGlobal("indexedDB", indexedDB);
+    }
+  });
+
   // §9.7: only an explicit user Retry releases a canceled row.
   test("an explicit Retry releases a canceled row and dispatches it", async () => {
     const storage = new MutationOutboxIndexedDB();

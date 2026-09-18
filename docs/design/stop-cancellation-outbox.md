@@ -86,6 +86,10 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   successful Stop leaves no recovery obligation, so `forceStop` can fail while the
   daemon is already stopped") becomes structurally impossible: the dangerous order
   (stopped first, write second) no longer exists.
+  Boundary (ratified 2026-09-18): this abort applies to a *real store whose write
+  fails*. When no mutation store exists at all (IndexedDB unavailable to the tab),
+  there are no durable rows to cancel and the tab can neither resurrect nor reopen
+  any, so write-first has nothing to protect and forceStop/shutdown proceed.
 - **Mid-reconciliation Stops (Medium 5, 6, and the unfenced awaits in
   `publishAndReconcileThreadHydration`, `threads.ts:1703-1732`):** dissolved by
   durability. `restoreProvenAbsent` reads record state inside its own transaction;

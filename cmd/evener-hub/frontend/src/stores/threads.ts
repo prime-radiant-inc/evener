@@ -1327,10 +1327,14 @@ function discardCanceledMutations(targetRef: string): void {
 
 // The cancellation write every Stop path makes before its stop action
 // (stop-cancellation-outbox §4): forceStop/shutdown carry no interrupt
-// record, so this standalone write is their cancel moment. A failure throws,
-// aborting the stop before the daemon is touched.
+// record, so this standalone write is their cancel moment. A failure of a
+// real store's write throws, aborting the stop before the daemon is touched.
+// No store at all (IndexedDB unavailable to this tab) is different: there
+// are no durable rows to cancel and this tab can neither resurrect nor
+// reopen any, so the rule has nothing to protect and the stop proceeds.
 async function cancelUnattemptedMutations(ref: string): Promise<void> {
-  const runtime = requireMutationRuntime();
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
   await runtime.start;
   const canceled = await runtime.storage.cancelUnattempted(ref);
   if (canceled.length > 0) notifyMutationPersistence([ref]);
