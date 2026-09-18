@@ -28,7 +28,13 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
+import {
+  createDraftRepository,
+  type DiscardStoredDraftResult,
+  type DraftPort,
+  discardStoredDraft,
+  UnreadableDraftError,
+} from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -391,6 +397,19 @@ export function isReadableKeybindingDraft(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/** discardStoredDraft, defaulting `isReadable` to isReadableKeybindingDraft:
+ * the generic function's own default (a caller with no decoder at all gets
+ * the original always-remove behavior) is the wrong default for a
+ * keybinding-named export, since a caller that forgets to pass its own
+ * decoder would silently delete a record this build can actually read
+ * instead of refusing. */
+export function discardStoredKeybindingDraft(
+  storage: DraftPort<KeybindingDraftCheckpoint>,
+  isReadable: (value: unknown) => boolean = isReadableKeybindingDraft,
+): DiscardStoredDraftResult | "storageUnavailable" {
+  return discardStoredDraft(storage, isReadable);
 }
 
 /** Extracts a payload the hub attached to a rejection under `key` when the
