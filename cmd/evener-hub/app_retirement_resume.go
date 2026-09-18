@@ -157,6 +157,11 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
+	// Stamp the ownership-resolved target before the live-replacement early
+	// returns below: the deferred request completion captures this trace by
+	// reference, so those paths — which reuse an already-live replacement — must
+	// still record the resolved identity the explicit path records.
+	ctx, trace = trace.resolved(ctx, target)
 	// A successful retirement recovery is a completed resume, so record where
 	// the alias resolved exactly as resumeThread's defer does after
 	// ExplicitResumeCompleted. This defer covers the normal exit and the three
@@ -254,11 +259,6 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// sessionID would drive discovery and spawn for a stale alias whenever
 	// resumeOwnership resolved a different current owner (thread/clear), the
 	// same convention resumeThread follows by assigning sessionID = target.
-	//
-	// resumeThreadLocked records its lifecycle stages from the trace in the
-	// context (#1390). Stamp the ownership-resolved target so the stages below
-	// record the resolved_session_id the explicit path records.
-	ctx, trace = trace.resolved(ctx, target)
 	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return resumeErr
 }

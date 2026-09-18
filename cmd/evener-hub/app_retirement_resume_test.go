@@ -1180,6 +1180,98 @@ func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
 	assertThreadLifecycleOutcome(t, records, "request", "error", "failed")
 }
 
+// TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity pins the
+// review finding that the resolved target was stamped too late: resumeOwnership
+// resolves the alias before the function reaches its live-replacement early
+// return, so the deferred request completion must carry
+// resolved_session_id=target on that path too. While the stamp lived next to
+// resumeThreadLocked, this branch recorded resolved_session_id="-", losing the
+// requested/resolved correlation for the reuse-a-live-replacement race.
+func TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity(t *testing.T) {
+	alias := hubtest.SessionID(t)
+	stale := hubtest.SessionID(t)
+	target := hubtest.SessionID(t)
+
+	locks := hubcore.NewResumeLocks()
+	// A completed redirect alias -> stale is on record; the live entry below
+	// names target as the current session while still claiming alias, so
+	// resumeOwnership resolves target from live evidence.
+	if err := locks.PersistForceStop([]string{alias, stale}, stale); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(alias).Epoch
+	if err := locks.ExplicitResumeCompleted(stale, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(alias, stale, epoch)
+
+	entry := rendezvous.Entry{
+		PID:          6101,
+		Address:      "127.0.0.1:6101",
+		Endpoint:     "ws://127.0.0.1:6101/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     alias,
+		SessionID:    target,
+		WorkspaceRef: "local:" + alias,
+		InstanceID:   "live-replacement-instance",
+		StateDir:     t.TempDir(),
+		StartedAt:    time.Unix(1700003000, 0).UTC(),
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:          entry,
+		SessionID:      target,
+		Status:         appwire.ThreadStatusIdle,
+		Lifecycle:      &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+		LifecycleFresh: true,
+	})
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: locks}
+
+	original := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stderr = original
+		_ = readEnd.Close()
+	})
+	os.Stderr = writeEnd
+	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + alias})
+	_ = writeEnd.Close()
+	os.Stderr = original
+	data, _ := io.ReadAll(readEnd)
+
+	if resumeErr != nil {
+		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
+	}
+	records := assertThreadLifecycleRecords(t, string(data))
+	for _, record := range records {
+		if record["operation"] != "resume" || record["session_id"] != alias {
+			t.Fatalf("lost live-replacement correlation: %#v, want operation=resume session_id=%s", record, alias)
+		}
+	}
+	complete := false
+	for _, record := range records {
+		if record["stage"] != "request" || record["state"] != "complete" {
+			continue
+		}
+		complete = true
+		if record["result"] != "success" || record["resolved_session_id"] != target {
+			t.Fatalf("request completion: %#v, want success resolved_session_id=%s", record, target)
+		}
+	}
+	if !complete {
+		t.Fatalf("missing request completion: %#v", records)
+	}
+}
+
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {
 	// A run dir that is a regular file makes rendezvous discovery unreadable;
 	// turn/start must fail instead of guessing at a replacement.
