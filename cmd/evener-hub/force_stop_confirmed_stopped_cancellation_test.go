@@ -348,6 +348,9 @@ func TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid(t *testing.T
 			t.Fatal(err)
 		}
 		runDir := t.TempDir()
+		// A connection established before the shortcut's fence captured this
+		// sequence; a refusal that canceled nothing must not leave it stale.
+		connection := locks.RecoverySequence()
 		resident := rendezvous.Entry{
 			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
 			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
@@ -409,6 +412,9 @@ func TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid(t *testing.T
 		}
 		if got := locks.RecoveryState(sessionID).Epoch; got != resumeEpoch {
 			t.Fatalf("refused force stop advanced the recovery admission epoch: got %d, want %d", got, resumeEpoch)
+		}
+		if got := locks.RecoveryState(sessionID).LastRecoverySequence; got > connection {
+			t.Fatalf("refused force stop left the connection-level sequence advanced: got %d, connection captured %d", got, connection)
 		}
 		// The in-flight Resume finishes against the replacement daemon exactly
 		// as resumeThread's defer does after a successful launch.

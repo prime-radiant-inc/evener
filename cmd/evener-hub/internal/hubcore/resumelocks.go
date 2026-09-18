@@ -26,6 +26,7 @@ type ResumeLocks struct {
 	active        map[string]map[*ActiveResume]struct{}
 	recovery      map[string]SessionRecoveryState
 	sequence      uint64
+	fences        []*forceStopFence // held admission fences, newest last; guarded by mu
 }
 
 // NewResumeLocks returns an empty registry ready for use.
@@ -618,38 +619,84 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
 		r.recovery = make(map[string]SessionRecoveryState)
 	}
 	r.sequence++
+	fence := &forceStopFence{aliases: slices.Clone(aliases), previous: make(map[string]uint64, len(aliases)), sequence: r.sequence}
 	for _, id := range aliases {
 		state := r.recovery[id]
+		fence.previous[id] = state.LastRecoverySequence
 		state.Epoch++
 		state.LastRecoverySequence = r.sequence
 		state.Stopping++
 		r.recovery[id] = state
 	}
+	r.fences = append(r.fences, fence)
 	return func(stopped bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		r.fences = slices.DeleteFunc(r.fences, func(held *forceStopFence) bool { return held == fence })
 		r.sequence++
 		for _, id := range aliases {
 			state := r.recovery[id]
 			state.Stopping--
-			state.LastRecoverySequence = r.sequence
+			// A rejected fence's release keeps the connection-level sequence
+			// rolled back: the refusal canceled nothing, so connections from
+			// before the fence must not be staled by its release either.
+			if !fence.rejected {
+				state.LastRecoverySequence = r.sequence
+			}
 			state.ResumeRequired = state.ResumeRequired || stopped
 			r.recovery[id] = state
 		}
 	}
 }
 
-// RejectForceStop makes a refused force-stop fence epoch-neutral: it gives
-// back the admission epochs the fence advanced. The in-flight Resume a refusal
+// forceStopFence is the rollback token of one held admission fence, created by
+// beginForceStopLocked the same way its finish closure is and dropped by that
+// finish when the fence ends. It carries the connection-level sequence metadata
+// the fence advanced so a refusal that canceled nothing can give it back.
+type forceStopFence struct {
+	aliases  []string
+	previous map[string]uint64
+	sequence uint64
+	rejected bool
+}
+
+// RejectForceStop makes a refused force-stop fence admission-neutral: it gives
+// back the admission epochs the fence advanced and rolls back the
+// connection-level sequence metadata the fence wrote, so a connection
+// established before the fence is not refused as stale by the refusal — the
+// force stop was refused and canceled nothing. The in-flight Resume a refusal
 // deliberately preserved was admitted under the pre-fence epoch and completes
 // through ExplicitResumeCompleted, which ignores a stale epoch — the durable
 // resume requirement would stay set even though the Resume succeeded. Call it
 // only on refusals that have canceled nothing, while the fence is still held:
 // with Stopping above zero no admission can bind the advanced epoch before the
-// finish(false) release restores eligibility.
+// finish(false) release restores eligibility, and a rejected fence's release
+// keeps the sequence rolled back. The rollback token is the fence record
+// itself: the newest held, unrejected fence whose aliases match. An alias a
+// newer fence has since advanced keeps the newer value, so a refused fence
+// cannot un-stale a connection the newer fence must keep refusing.
 func (r *ResumeLocks) RejectForceStop(aliases []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for i := len(r.fences) - 1; i >= 0; i-- {
+		fence := r.fences[i]
+		if fence.rejected || !slices.Equal(fence.aliases, aliases) {
+			continue
+		}
+		fence.rejected = true
+		for _, id := range aliases {
+			state := r.recovery[id]
+			state.Epoch--
+			// Roll back only what this fence wrote and nothing since has
+			// overwritten: an alias a newer fence has advanced keeps that
+			// fence's value until the newer fence releases it.
+			if state.LastRecoverySequence == fence.sequence {
+				state.LastRecoverySequence = fence.previous[id]
+			}
+			r.recovery[id] = state
+		}
+		return
+	}
 	for _, id := range aliases {
 		state := r.recovery[id]
 		state.Epoch--

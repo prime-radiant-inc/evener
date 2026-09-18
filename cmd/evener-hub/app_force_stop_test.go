@@ -2492,6 +2492,9 @@ func TestForceStopFenceRefusalLeavesAdmissionEpochsUnchanged(t *testing.T) {
 			return &forceStopProcess{events: &events}, nil
 		})}
 		completed := make(chan error, 1)
+		// A connection established before the fence captured this sequence; a
+		// refusal that canceled nothing must not leave it stale.
+		connection := locks.RecoverySequence()
 		go func() {
 			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
 		}()
@@ -2518,6 +2521,9 @@ func TestForceStopFenceRefusalLeavesAdmissionEpochsUnchanged(t *testing.T) {
 		active.Complete(nil)
 		if got := locks.RecoveryState(sessionID).Epoch; got != resumeEpoch {
 			t.Fatalf("refused force stop left the recovery admission epoch advanced: got %d, want %d", got, resumeEpoch)
+		}
+		if got := locks.RecoveryState(sessionID).LastRecoverySequence; got > connection {
+			t.Fatalf("refused force stop left the connection-level sequence advanced: got %d, connection captured %d", got, connection)
 		}
 		if slices.Contains(events, "kill") {
 			t.Fatalf("stale force stop killed a process: %v", events)
