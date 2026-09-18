@@ -80,8 +80,8 @@ export interface KeybindingDraftStorage {
  * backing store here - only this one repository instance ever touches it -
  * so there is no concurrent writer a compare-and-swap could actually lose to;
  * removeIf/replaceIf report success unconditionally rather than the refusal
- * a byte-aware port reports when a record it named is gone (round 24
- * Medium 1): reporting false there reads as "someone else replaced it" and
+ * a byte-aware port reports when a record it named is gone: reporting false
+ * there reads as "someone else replaced it" and
  * adopts a restoreDraft that reads null right back from this same fallback,
  * silently dropping the in-memory draft over a race that cannot happen
  * without real storage behind it. */
@@ -324,8 +324,8 @@ export { discardStoredDraft } from "./draftCheckpointPort";
 /** discardStoredDraft specialized to this store's checkpoint shape: a caller
  * with no store (no connection, so no client to build one from) still gets a
  * typed port instead of the generic repository's own `<Checkpoint>`. */
-export function discardStoredKeybindingDraft(storage: KeybindingDraftStorage): void {
-  discardStoredDraft(storage);
+export function discardStoredKeybindingDraft(storage: KeybindingDraftStorage): boolean {
+  return discardStoredDraft(storage);
 }
 
 function invalidDraft(): never {
@@ -954,7 +954,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           writeUncertain: false,
         });
       } catch {
-        return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
+        return { storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE };
       }
       // The checkpoint this write was settling is gone, replaced by another
       // window's edit while the outcome was unknown: adopt whatever is
