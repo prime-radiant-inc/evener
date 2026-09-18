@@ -3383,6 +3383,44 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// Regression for the RoboRev Medium on PR 1393 (298d8ac): the ended-session
+// Send gate consulted only the notLoaded-scoped fence, while availabilityFor
+// fences every non-active status. The hub stamps CLOSED frames with send:true
+// too (stampClosedThreadCapabilities), and a live notification folds that
+// frame in without clearing the store's restart-blocking obligation, so a
+// closed local session can advertise Send while the obligation still fences
+// it. availabilityFor refuses both routes for exactly that snapshot, so an
+// ENABLED Send here could only produce the refusal toast this branch exists
+// to eliminate; the rendered Send must be disabled instead.
+test("a fenced closed local session that advertises send renders a disabled Send", async () => {
+  const user = userEvent.setup();
+  const ref = "local:closed-send-advertised";
+  const fake = await mountComposer(ref, {
+    status: { type: "closed" },
+    evener: {
+      ref,
+      // The hub's closed-frame stamp (send stays true), held beside the
+      // store's restart-blocking obligation: resumeRequired:true sets the
+      // obligation at hydrate, and only a compatible read without it clears
+      // the obligation - a closed frame is not that read.
+      capabilities: PAST_THREAD_CAPABILITIES,
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "one more thing");
+  expect(submitButton().disabled).toBe(true);
+  // The chord reaches the form by the same route the button does; it refuses too.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // --- interrupt ---------------------------------------------------------------
 
 test("clicking Stop calls turn/interrupt", async () => {

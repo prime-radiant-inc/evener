@@ -1714,12 +1714,15 @@ export function Composer({ ref, focused }: ComposerProps) {
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
                           // The capability alone does not lift the recovery fence:
-                          // a fenced session whose snapshot still advertises
-                          // send:true renders a disabled Send, not a refusal toast.
+                          // availabilityFor refuses every non-active fenced
+                          // status, so a fenced session whose snapshot still
+                          // advertises send:true (the hub stamps it on closed
+                          // frames too) renders a disabled Send, not a refusal
+                          // toast.
                           disabled={
                             actionPending ||
                             !hasContent ||
-                            !(ended ? canSendWhenEnded && !recoveryFencedLocal : canCompose)
+                            !(ended ? canSendWhenEnded && !isLocalRecoveryFenced(ref, recoveryRequired) : canCompose)
                           }
                         >
                           <span className={CLASS.submitLabel}>Send</span>
