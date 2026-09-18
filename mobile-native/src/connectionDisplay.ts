@@ -48,6 +48,21 @@ export function useConnectionDisplay(
 	return connectionDisplay(state, everReady.current, fatal);
 }
 
+/** Wraps a handler so it no-ops unless `ready`: the shared guard an
+ * `onPress` that issues a request uses, in place of an ad hoc
+ * `if (ready) ...` (or its inverse, `if (!ready) return`) copied at each call
+ * site. Pairs with the `disabled` prop reading the same `isReady(state)`, so
+ * a missed `disabled` or a programmatic press still cannot start the
+ * request. */
+export function whenReady<A extends unknown[]>(
+	ready: boolean,
+	handler: (...args: A) => void,
+): (...args: A) => void {
+	return (...args: A) => {
+		if (ready) handler(...args);
+	};
+}
+
 /** The client a ready-only screen renders with while retained through the
  * brief client-null window of a manual retry (hubConnection.ts clears
  * `client` while it dials a fresh one; a passive flap never does - its own

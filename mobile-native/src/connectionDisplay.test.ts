@@ -1,13 +1,14 @@
 // The decision every ready-only screen's wall used to make inline
 // (`!client || state !== "ready"`), extracted so it is testable without
 // mounting a screen (mobile-native has no RTL harness yet - #1908).
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import {
 	connectionDisplay,
 	isReady,
 	useConnectionDisplay,
 	useRenderClient,
+	whenReady,
 } from "./connectionDisplay";
 import { renderHook } from "./renderNative.testkit";
 
@@ -81,4 +82,12 @@ it("useRenderClient: falls back to the last client through a null gap", () => {
 	client = null;
 	hook.rerender();
 	expect(hook.result.current).toBe(first);
+});
+
+it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
+	const handler = vi.fn();
+	whenReady(false, handler)("a", 1);
+	expect(handler).not.toHaveBeenCalled();
+	whenReady(true, handler)("a", 1);
+	expect(handler).toHaveBeenCalledExactlyOnceWith("a", 1);
 });

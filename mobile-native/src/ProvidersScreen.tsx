@@ -28,7 +28,7 @@ import {
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, useConnectionDisplay } from "./connectionDisplay";
+import { isReady, useConnectionDisplay, whenReady } from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
@@ -163,6 +163,12 @@ function Providers({
     setActionError(null);
   }
   async function act(action: () => Promise<void>, secret = false) {
+    // The single place every mutation below (save key/JSON, make-default,
+    // clear stored key, logout, remove) checks readiness: AppWire rejects
+    // the request anyway, and bailing before touching any state here is
+    // what keeps a request that cannot be sent from clearing input the user
+    // may still want once ready again.
+    if (!ready) return;
     const version = editorVersion.current;
     setActionError(null);
     try {
@@ -182,6 +188,7 @@ function Providers({
     }
   }
   function confirm(title: string, action: () => Promise<void>) {
+    if (!ready) return;
     Alert.alert(title, `${selected} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -210,11 +217,13 @@ function Providers({
           <View style={{ gap: 8, paddingBottom: 12 }}>
             <Copy muted>{hubName}</Copy>
             <Action
-              disabled={!state.data || state.busy || state.data.writesRefused}
-              onPress={() => {
+              disabled={
+                !state.data || state.busy || state.data.writesRefused || !ready
+              }
+              onPress={whenReady(ready, () => {
                 close();
                 setConfiguration("create");
-              }}
+              })}
             >
               Add provider instance
             </Action>
@@ -305,7 +314,9 @@ function Providers({
                   instance={configuration === "edit" ? instance : undefined}
                   providers={state.data?.availableProviders ?? []}
                   model={model}
-                  disabled={state.busy || !!state.data?.writesRefused}
+                  disabled={
+                    state.busy || !!state.data?.writesRefused || !ready
+                  }
                   onSaved={(name) => {
                     setConfiguration(null);
                     setSelected(name);
@@ -368,17 +379,20 @@ function Providers({
                         />
                         <View style={styles.row}>
                           <Action
-                            disabled={state.busy || !key.trim()}
-                            onPress={() => {
+                            disabled={state.busy || !key.trim() || !ready}
+                            onPress={whenReady(ready, () => {
+                              // The clear happens on act()'s own success path
+                              // (below), never here: clearing before knowing
+                              // whether the request could even be sent would
+                              // lose input act() is about to refuse to send.
                               const value = key.trim();
-                              setKey("");
                               void act(
                                 () => editingCredential === "credentialJson"
                                   ? model.setCredentialJson(instance.name, value)
                                   : model.setApiKey(instance.name, value),
                                 true,
                               );
-                            }}
+                            })}
                           >
                             {editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"}
                           </Action>
@@ -399,11 +413,12 @@ function Providers({
                           disabled={
                             state.busy ||
                             state.loading ||
-                            !!state.credentialTest?.pending
+                            !!state.credentialTest?.pending ||
+                            !ready
                           }
-                          onPress={() => {
+                          onPress={whenReady(ready, () => {
                             void model.testCredentials(instance.name);
-                          }}
+                          })}
                         >
                           {state.credentialTest?.provider === instance.name &&
                           state.credentialTest.pending
@@ -415,8 +430,8 @@ function Providers({
                             <Copy>{state.credentialTest.result.message}</Copy>
                           )}
                         <Action
-                          disabled={state.busy || state.data?.writesRefused}
-                          onPress={() => setConfiguration("edit")}
+                          disabled={state.busy || state.data?.writesRefused || !ready}
+                          onPress={whenReady(ready, () => setConfiguration("edit"))}
                         >
                           Edit instance
                         </Action>
@@ -436,26 +451,26 @@ function Providers({
                         )}
                         {instance.authModes?.includes("apiKey") && (
                           <Action
-                            disabled={state.busy}
-                            onPress={() => setEditingCredential("apiKey")}
+                            disabled={state.busy || !ready}
+                            onPress={whenReady(ready, () => setEditingCredential("apiKey"))}
                           >
                             {instance.hasStoredFile ? "Replace key" : "Set key"}
                           </Action>
                         )}
                         {instance.authModes?.includes("credentialJson") && (
                           <Action
-                            disabled={state.busy}
-                            onPress={() => setEditingCredential("credentialJson")}
+                            disabled={state.busy || !ready}
+                            onPress={whenReady(ready, () => setEditingCredential("credentialJson"))}
                           >
                             {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                           </Action>
                         )}
                         {!instance.isDefault && (
                           <Action
-                            disabled={state.busy || state.data?.writesRefused}
-                            onPress={() => {
+                            disabled={state.busy || state.data?.writesRefused || !ready}
+                            onPress={whenReady(ready, () => {
                               void act(() => model.setDefault(instance.name));
-                            }}
+                            })}
                           >
                             Make default
                           </Action>
@@ -463,36 +478,36 @@ function Providers({
                         {instance.hasStoredFile &&
                           instance.activeSource !== "store" && (
                             <Action
-                              disabled={state.busy}
-                              onPress={() =>
+                              disabled={state.busy || !ready}
+                              onPress={whenReady(ready, () =>
                                 confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
                                   model.clearStoredKey(instance.name),
                                 )
-                              }
+                              )}
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
                           )}
                         {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
-                            disabled={state.busy}
-                            onPress={() =>
+                            disabled={state.busy || !ready}
+                            onPress={whenReady(ready, () =>
                               confirm("Clear active credentials?", () =>
                                 model.logout(instance.name),
                               )
-                            }
+                            )}
                           >
                             Clear credentials
                           </Action>
                         )}
                         {!instance.implicit && (
                           <Action
-                            disabled={state.busy || state.data?.writesRefused}
-                            onPress={() =>
+                            disabled={state.busy || state.data?.writesRefused || !ready}
+                            onPress={whenReady(ready, () =>
                               confirm("Remove provider instance?", () =>
                                 model.remove(instance.name),
                               )
-                            }
+                            )}
                           >
                             Remove instance
                           </Action>

@@ -148,3 +148,47 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	expect(text).toContain("Connect to");
 	expect(text).toContain("to manage providers.");
 });
+
+it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	const row = tree.root.findAll(
+		(node) =>
+			(node.type as unknown) === "Pressable" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("work"),
+	)[0];
+	await act(async () => {
+		row.props.onPress();
+	});
+	// Named by their button text, which Action forwards as accessibilityLabel
+	// when no separate `label` is given (ui.tsx).
+	const label = (name: string) =>
+		tree.root.findByProps({ accessibilityLabel: name });
+	expect(label("Add provider instance").props.disabled).toBe(false);
+	expect(label("Test credentials").props.disabled).toBe(false);
+	expect(label("Edit instance").props.disabled).toBe(false);
+	expect(label("Clear credentials").props.disabled).toBe(false);
+	expect(label("Remove instance").props.disabled).toBe(false);
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	expect(label("Add provider instance").props.disabled).toBe(true);
+	expect(label("Test credentials").props.disabled).toBe(true);
+	expect(label("Edit instance").props.disabled).toBe(true);
+	expect(label("Clear credentials").props.disabled).toBe(true);
+	expect(label("Remove instance").props.disabled).toBe(true);
+});
