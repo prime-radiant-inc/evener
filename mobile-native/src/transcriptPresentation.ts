@@ -210,14 +210,23 @@ function eventVisible(
 	return config.advanced.systemEvents;
 }
 
+// A cumulative field's Go zero value ("0") signals absence, not a real
+// measurement of zero — the same rule sessionTokens applies to inputTokens/
+// outputTokens (threadUsage.ts). cacheReadTokens/totalTokens get no such
+// derivation of their own (they are read straight off the wire), so that
+// rule is applied here, once, at the point they are read.
+function noZero(value: number | undefined): number | undefined {
+	return value === 0 ? undefined : value;
+}
+
 function accountingFor(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
 	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
-	const cacheReadTokens = config.advanced.tokenCounts ? conversation.usage?.cacheReadTokens : undefined;
-	const totalTokens = config.advanced.tokenCounts ? conversation.usage?.totalTokens : undefined;
+	const cacheReadTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.cacheReadTokens) : undefined;
+	const totalTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.totalTokens) : undefined;
 	return {
 		usage:
 			tokens || cacheReadTokens !== undefined || totalTokens !== undefined

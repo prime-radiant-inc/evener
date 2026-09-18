@@ -331,6 +331,18 @@ it("keeps a total-only cumulative breakdown even when sessionTokens finds no inp
 	expect(result.usage).toEqual({ usage: { totalTokens: 500 }, cost: null });
 });
 
+// D18 B3 round 6 (Low): a cumulative field's Go zero value signals absence,
+// the same rule sessionTokens already applies to inputTokens/outputTokens
+// (threadUsage.ts) - a real "0 tokens" for cacheReadTokens/totalTokens is
+// indistinguishable from an unset field, so it must not render as data.
+it("treats a zero cacheReadTokens/totalTokens the same as an absent one", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { cacheReadTokens: 0, totalTokens: 0 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: null, cost: null });
+});
+
 // A sparse cumulative object (total-only, no input/output) alongside a
 // truncated turn window: sessionTokens sums the turns and scopes the result
 // "loaded", but the cumulative total is a whole-session figure and must

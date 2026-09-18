@@ -32,7 +32,6 @@ import type {
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
-  TurnModel,
   TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
 import {
@@ -89,6 +88,7 @@ export interface ConversationReadProjection {
   conversation: MobileConversation;
   activity: ActivityView;
   olderCursor: string | null;
+  turnsPage?: ThreadTurnsListResponse;
   hasEarlierItems?: boolean;
   hasLaterItems?: boolean;
 }
@@ -99,11 +99,14 @@ export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
-    // The page's own turns (TurnModel, carrying usage) - the store merges
-    // these into conversation.turns alongside items, so sessionTokens's
-    // turn-summed fallback covers what's actually loaded, not just the
-    // first page. Optional so existing test doubles need not supply it.
-    turns?: TurnModel[];
+    // The page's own wire turns, wrapped for mergeOlderItemPage - the store
+    // folds these into conversation.turns via the package's own
+    // identity-aware merge (a turn can be split into fragments across the
+    // page boundary; an id-only filter drops or double-counts the split),
+    // so sessionTokens's turn-summed fallback covers what's actually loaded,
+    // not just the first page. Optional so existing test doubles need not
+    // supply it.
+    turnsPage?: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -748,6 +751,11 @@ export function createConversationService(
         conversation,
         activity,
         olderCursor,
+        // The fresh read's own turns, wrapped in the wire shape
+        // mergeOlderItemPage expects — so a rehydrate can fold them against
+        // page-loaded history through the package's own identity-aware merge
+        // (turnsMatch/mergePageTurn) instead of a second, id-only one.
+        turnsPage: { data: thread.turns ?? [], nextCursor: olderCursor ?? undefined },
         hasEarlierItems:
           thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
         hasLaterItems:
@@ -797,10 +805,10 @@ export function createConversationService(
       // Project the older turns into mobile items by hydrating a minimal
       // Thread containing just these turns; the display rows AND the turns
       // themselves are kept (the store merges both into the conversation).
-      const { items, turns } = projectOlderTurns(response, threadId);
+      const items = projectOlderTurns(response, threadId);
       return {
         items,
-        turns,
+        turnsPage: response,
         nextCursor: response.nextCursor,
         hasEarlierItems: response.data.some(
           (turn) => turn.hasEarlierItems === true,
@@ -1222,8 +1230,8 @@ export function createConversationService(
 function projectOlderTurns(
   page: ThreadTurnsListResponse,
   threadId: string | null,
-): { items: MobileTimelineItem[]; turns: TurnModel[] } {
-  if (page.data.length === 0) return { items: [], turns: [] };
+): MobileTimelineItem[] {
+  if (page.data.length === 0) return [];
   const id = threadId ?? "older";
   const thread: Thread = {
     id,
@@ -1264,10 +1272,5 @@ function projectOlderTurns(
   // page-local projection otherwise resurrects settled calls. All other
   // projected page items/order/cursor are preserved — only question rows are
   // omitted.
-  const items = projectTimeline(model).filter((item) => item.kind !== "question");
-  // model.turns is this page's own turns merged against an empty model (the
-  // fake thread above starts with turns: []), so it is exactly what this page
-  // adds — the store merges it into the real conversation.turns alongside
-  // items, keeping sessionTokens's turn-summed fallback in sync with paging.
-  return { items, turns: model.turns };
+  return projectTimeline(model).filter((item) => item.kind !== "question");
 }

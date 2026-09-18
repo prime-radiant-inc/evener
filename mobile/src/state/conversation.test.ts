@@ -20,6 +20,7 @@ import type {
   Thread,
   ThreadCapabilities,
   ThreadItem,
+  ThreadTurnsListResponse,
   Turn,
 } from "@evener/appwire-client";
 import type {
@@ -161,6 +162,17 @@ function textInput(text: string): InputItem[] {
   return [{ type: "text", text }];
 }
 
+// A wire Turn (thread/turns/list's own shape) carrying usage - what a
+// loadOlder/rehydrate mock returns before hydration, distinct from the
+// already-hydrated TurnModel makeConversation's turns take.
+function wireTurn(id: string, inputTokens: number, outputTokens: number): Turn {
+  return { id, itemsView: "fragment", status: "completed", usage: { inputTokens, outputTokens } };
+}
+
+function turnsPage(data: Turn[], nextCursor?: string): ThreadTurnsListResponse {
+  return { data, nextCursor };
+}
+
 // A fake ConversationService that returns scripted values without any network.
 class FakeConversationService implements LiveConversationService {
   ref: string | null = null;
@@ -168,7 +180,7 @@ class FakeConversationService implements LiveConversationService {
   olderCursor: string | null = null;
   olderItems: {
     items: MobileConversation["items"];
-    turns?: MobileConversation["turns"];
+    turnsPage?: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -196,6 +208,7 @@ class FakeConversationService implements LiveConversationService {
     conversation: MobileConversation;
     activity: ActivityView;
     olderCursor: string | null;
+    turnsPage?: ThreadTurnsListResponse;
   } | null = null;
   readProjectionBlock: Promise<ConversationReadProjection> | null = null;
   readProjectionCalls: { ref: string }[] = [];
@@ -234,7 +247,7 @@ class FakeConversationService implements LiveConversationService {
   }
   async loadOlder(_cursor: string): Promise<{
     items: MobileConversation["items"];
-    turns?: MobileConversation["turns"];
+    turnsPage?: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -3948,7 +3961,7 @@ describe("ConversationStore", () => {
 
       service.olderItems = {
         items: [],
-        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
       await store.getState().loadOlder(service);
@@ -3979,10 +3992,7 @@ describe("ConversationStore", () => {
       // new older turn on the same page.
       service.olderItems = {
         items: [],
-        turns: [
-          { id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } },
-          { id: "t2", status: "completed", items: [], usage: { inputTokens: 999, outputTokens: 999 } },
-        ],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20), wireTurn("t2", 999, 999)]),
         nextCursor: undefined,
       };
       await store.getState().loadOlder(service);
@@ -4020,7 +4030,7 @@ describe("ConversationStore", () => {
       }
       service.olderItems = {
         items: olderItems,
-        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "more"),
         nextCursor: "more", // the wire says there IS more history...
       };
       await store.getState().loadOlder(service);
@@ -4051,10 +4061,11 @@ describe("ConversationStore", () => {
         conversation: latest,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
+        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       service.olderItems = {
         items: [{ kind: "user", id: "old", text: "old" }],
-        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
       await store.getState().openProjected(service, sink, "ref-1");
@@ -4064,9 +4075,12 @@ describe("ConversationStore", () => {
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
       // The existing item-history merge (preservePageHistory) already keeps
-      // "old" prepended; the same gate must keep t1 too.
+      // "old" prepended; the same gate must keep t1 too. Turn order is not
+      // asserted: mergeOlderItemPage places the resp argument's turns first
+      // (here, the fresh reread), and only the SET of turns/usage matters to
+      // sessionTokens, which sums regardless of order.
       expect(conv.items.map((i) => i.id)).toEqual(["old", "new"]);
-      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      expect(conv.turns.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
       // Both turns still count (not just the fresh reread's own window), and
       // the scope stays "loaded": conversation.olderCursor takes the same
       // accumulated cursor mergedCursor already prefers for the items merge,
@@ -4097,6 +4111,98 @@ describe("ConversationStore", () => {
   // covered above by "merges the older page's turns..." and "keeps
   // conversation.olderCursor at the wire's cursor...". The remaining rows,
   // plus the two regressions the panel found, are below.
+  describe("D18 B3 round 6: turn merges reuse the package's own identity-aware merge, never an id-only filter", () => {
+    // Failing-first (a): thread/turns/list is itself item-paginated, so a
+    // turn can be split into fragments across the page boundary. An id-only
+    // filter treats a same-id fragment as a pure duplicate and drops it,
+    // losing whatever content/usage it alone carries.
+    it("a turn split across a page boundary keeps its usage instead of being dropped by an id-only filter", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // The turn's later fragment is already loaded, with no usage of its
+      // own — usage arrives on the fragment that continues further back.
+      service.openConv = makeConversation({
+        usage: null,
+        turns: [{ id: "t1", status: "completed", items: [] }],
+        olderCursor: "cursor-1",
+      });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)]),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      const conv = store.getState().conversation!;
+      // The two fragments merge into one turn, not two, and the usage the
+      // older fragment carried survives — an id-only filter would have kept
+      // only the already-loaded (usage-less) copy and lost it.
+      expect(conv.turns).toHaveLength(1);
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 500, outputTokens: 20, scope: "session" });
+    });
+
+    // Failing-first (b): preserveTurnHistory being true only means page
+    // history EXISTS somewhere in this session's lifetime, not that THIS
+    // rehydrate's merge actually contributed anything beyond the fresh
+    // reread's own window (its own window can grow to cover what page
+    // history already supplied). Carrying the accumulated cursor
+    // unconditionally then mislabels a now-complete read as "loaded".
+    it("rehydrate with page history but a fully-covering fresh window: scope follows the fresh read, not a stale accumulated cursor", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        turns: [{ id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      // Page history now exists (pageOwnedTurnIds has "t1").
+
+      // A fresh rehydrate whose own window now covers BOTH turns and says
+      // there is nothing more beyond it.
+      const fresh = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        turns: [
+          { id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } },
+          { id: "t2", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } },
+        ],
+        olderCursor: undefined,
+      });
+      service.readProjectionResult = {
+        conversation: fresh,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+        turnsPage: turnsPage([wireTurn("t1", 500, 20), wireTurn("t2", 60, 40)]),
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
+      expect(conv.olderCursor).toBeUndefined();
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "session" });
+    });
+  });
+
   describe("D18 B3 round 5: conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
     it("initial: conversation.olderCursor and turns come straight from the hydrated model", async () => {
       const service = new FakeConversationService();
@@ -4142,6 +4248,7 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
+        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().openProjected(service, sink, "ref-1");
 
@@ -4151,7 +4258,7 @@ describe("ConversationStore", () => {
       for (let i = 0; i < 200; i++) olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
       service.olderItems = {
         items: olderItems,
-        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "more"),
         nextCursor: "more",
       };
       await store.getState().loadOlder(service);
@@ -4164,6 +4271,7 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
+        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4202,6 +4310,7 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: null,
+        turnsPage: turnsPage([wireTurn("t2", 20, 8)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4242,7 +4351,7 @@ describe("ConversationStore", () => {
       // is genuinely new.
       service.olderItems = {
         items: [{ kind: "user", id: "existing", text: "existing" }],
-        turns: [{ id: "t1", status: "completed", items: [], usage: { inputTokens: 500, outputTokens: 20 } }],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
       await store.getState().loadOlder(service);
@@ -4260,10 +4369,12 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
+        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
-      expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
+      // Order is not asserted (see the "rehydrate preserves..." test above).
+      expect(conv.turns.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
       expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
     });
   });

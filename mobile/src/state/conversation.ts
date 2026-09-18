@@ -22,6 +22,7 @@ import {
   applyNotification,
   isActiveItem,
   isStaleCursorError,
+  mergeOlderItemPage,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -1653,6 +1654,7 @@ export function createConversationStore() {
             conversation,
             activity,
             olderCursor,
+            turnsPage,
             hasEarlierItems,
             hasLaterItems,
           } = await service.readProjection(ref);
@@ -1893,11 +1895,23 @@ export function createConversationStore() {
           // capped value here would flip a partial sum's scope to "session".
           let mergedTurns = conversation.turns;
           let wireOlderCursor = conversation.olderCursor;
-          if (preserveTurnHistory && currentConvForMerge !== null) {
+          if (preserveTurnHistory && currentConvForMerge !== null && turnsPage) {
+            // D18 B3 round 6 (a): fold the fresh reread's own turns into the
+            // ACCUMULATED prior model (page history and all) through the
+            // package's own mergeOlderItemPage, the same identity-aware merge
+            // loadOlder uses — an id-only filter here has the same
+            // split-fragment bug loadOlder had. Turn order in the result
+            // doesn't matter (conversation.turns is summed, never displayed
+            // in order), only which turns and usage values survive.
+            mergedTurns = mergeOlderItemPage(currentConvForMerge, turnsPage).turns;
+            // D18 B3 round 6 (b): only carry the prior conversation's own
+            // wire cursor when merging actually contributed a turn beyond
+            // the fresh reread's own window — otherwise a fresh, complete
+            // read (mergedTurns === conversation.turns) would be mislabeled
+            // "loaded" using a stale cursor from before this reread ran.
             const rereadTurnIds = new Set(conversation.turns.map((turn) => turn.id));
-            const olderTurns = currentConvForMerge.turns.filter((turn) => !rereadTurnIds.has(turn.id));
-            mergedTurns = [...olderTurns, ...conversation.turns];
-            wireOlderCursor = currentConvForMerge.olderCursor;
+            const hasOlderTurns = mergedTurns.some((turn) => !rereadTurnIds.has(turn.id));
+            if (hasOlderTurns) wireOlderCursor = currentConvForMerge.olderCursor;
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
@@ -2070,19 +2084,23 @@ export function createConversationStore() {
             // the flag still true offers a load that early-returns "ignored".
             const atCap = merged.length >= RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
-            // D18 B3 round 3: conversation.turns/olderCursor (the ThreadModel
-            // fields sessionTokens reads) must stay in sync with items/the
-            // store's own olderCursor, or a session with no cumulative usage
-            // keeps summing only the first page after older turns load.
-            // result.turns is this page's own turns (deduped against what's
-            // already loaded, by id).
-            const existingTurnIds = new Set(currentConv.turns.map((turn) => turn.id));
-            const newTurns = (result.turns ?? []).filter((turn) => !existingTurnIds.has(turn.id));
-            const mergedTurns = [...newTurns, ...currentConv.turns];
+            // D18 B3 round 3/6: conversation.turns/olderCursor (the
+            // ThreadModel fields sessionTokens reads) must stay in sync with
+            // items/the store's own olderCursor, or a session with no
+            // cumulative usage keeps summing only the first page after older
+            // turns load. thread/turns/list is itself item-paginated, so an
+            // older page can carry a fragment of a turn already in the
+            // window; folding through the package's own mergeOlderItemPage
+            // (turnsMatch/mergePageTurn) reconciles that by identity instead
+            // of an id-only filter, which would drop the fragment or
+            // double-count it under a different id.
+            const mergedTurns = result.turnsPage
+              ? mergeOlderItemPage(currentConv, result.turnsPage).turns
+              : currentConv.turns;
             // D18 B3 round 5 (2): record page ownership by TURN id, separate
             // from pageOwnedIds (item ids) below — a turn survives here even
             // when every one of its display rows is deduped away or evicted.
-            for (const turn of newTurns) pageOwnedTurnIds.add(turn.id);
+            for (const turn of result.turnsPage?.data ?? []) pageOwnedTurnIds.add(turn.id);
             set({
               // D18 B3 round 4 (1): conversation.olderCursor is the WIRE
               // truth (result.nextCursor), never the capped nextCursor above.
