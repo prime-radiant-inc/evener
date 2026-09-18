@@ -537,8 +537,16 @@ func (e *resumeCleanupError) Error() string {
 }
 func (e *resumeCleanupError) Unwrap() error { return e.cause }
 
-func reapResumeChild(child resumeChild, reaped <-chan struct{}) error {
+func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.ActiveResume) error {
 	if err := child.kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if active != nil {
+			// The kill handle must outlive the launcher, which is about to
+			// return: retaining it on the active lifetime lets the stop that
+			// drains this Resume retry the kill until the child is confirmed
+			// reaped, instead of stranding a live child no later action can
+			// address behind the retained cleanup error.
+			active.RetainChildCleanup(child.kill)
+		}
 		select {
 		case <-reaped:
 			return nil
@@ -643,7 +651,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
 	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, child.pid, 0)
 	if err != nil {
-		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped)))
+		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
 		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
@@ -651,7 +659,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 		return rendezvous.Entry{}, failure
 	}
 	if err := dlog.promote(); err != nil {
-		promotionErr := errors.Join(fmt.Errorf("promote daemon log: %w", err), finishLaunch(true, reapResumeChild(child, reaped)))
+		promotionErr := errors.Join(fmt.Errorf("promote daemon log: %w", err), finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
 		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, tail)

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 
@@ -234,6 +235,10 @@ type ActiveResume struct {
 	childReaped   bool
 	launchFailed  bool
 	cleanupDone   chan struct{}
+	// childCleanup is the kill handle a launch left behind after it failed to
+	// kill its own child; guarded by owner.mu. Retained until the child is
+	// confirmed reaped so the stop draining this Resume can retry it.
+	childCleanup func() error
 }
 
 func (a *ActiveResume) Context() context.Context { return a.ctx }
@@ -276,6 +281,19 @@ func (a *ActiveResume) ChildReaped() {
 	defer r.mu.Unlock()
 	a.childReaped = true
 	a.settleLocked()
+}
+
+// RetainChildCleanup keeps a launch's child kill handle for the active-resume
+// lifetime after the launcher failed to kill the child itself. The launcher is
+// about to return; without the retained handle its failure would strand a live
+// child no later action can address, while the unconfirmed cleanup keeps this
+// Resume retained and its aliases blocked. The stop that drains the Resume
+// retries the handle until the child is confirmed reaped.
+func (a *ActiveResume) RetainChildCleanup(kill func() error) {
+	r := a.owner
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a.childCleanup = kill
 }
 
 // LaunchFinished distinguishes failed startup from a ready daemon handed off
@@ -450,6 +468,28 @@ func (s *ResumeStop) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return errors.Join(cleanupErr, ctx.Err())
 		case <-active.done:
+			// A launch whose child kill failed left the kill handle on the
+			// active lifetime: retry it here, where the stop that canceled the
+			// launch drains it, and wait for the confirmed reap. Once cleanup
+			// is confirmed the retained cleanup error no longer describes the
+			// world — the child is dead and the aliases settled — so only an
+			// unconfirmed failure reaches the caller.
+			active.owner.mu.Lock()
+			cleanup := active.childCleanup
+			confirmed := active.cleanupDone
+			active.owner.mu.Unlock()
+			if cleanup != nil {
+				retryErr := cleanup()
+				if retryErr == nil || errors.Is(retryErr, os.ErrProcessDone) {
+					select {
+					case <-confirmed:
+						continue
+					case <-ctx.Done():
+						return errors.Join(cleanupErr, ctx.Err())
+					}
+				}
+				cleanupErr = errors.Join(cleanupErr, retryErr)
+			}
 			active.owner.mu.Lock()
 			cleanupErr = errors.Join(cleanupErr, active.cleanupErr)
 			active.owner.mu.Unlock()

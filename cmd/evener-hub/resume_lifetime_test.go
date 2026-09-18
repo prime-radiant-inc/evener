@@ -714,6 +714,86 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	}
 }
 
+// TestResumeStopRetriesFailedChildKillUntilReaped is the Medium RoboRev
+// reported against reapResumeChild: when the child kill failed, the launcher
+// returned immediately and the kill handle was lost with it, while the
+// active Resume stayed retained on its unconfirmed cleanup — refusing every
+// later resume and the force stop that canceled the launch — with a
+// potentially live child and no recovery path. The stop that drains the
+// Resume is that recovery path: it must retry the retained handle until the
+// child is confirmed reaped, releasing the aliases for the next Resume.
+func TestResumeStopRetriesFailedChildKillUntilReaped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		locks := hubcore.NewResumeLocks()
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting, retryKilled, abandon := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		defer close(abandon)
+		var kills atomic.Int32
+		original := startResumeChild
+		defer func() { startResumeChild = original }()
+		startResumeChild = func(*exec.Cmd) (resumeChild, error) {
+			return resumeChild{pid: 4242, kill: func() error {
+				if kills.Add(1) == 1 {
+					return errors.New("FIXTURE_KILL_DENIED")
+				}
+				close(retryKilled)
+				return nil
+			}, wait: func() error {
+				close(waiting)
+				select {
+				case <-retryKilled:
+					return nil
+				case <-abandon:
+					return nil
+				}
+			}}, nil
+		}
+		launched := make(chan error, 1)
+		go func() {
+			_, err := resumeDaemon(active.Context(), "fixture-evener", runDir, hubcore.ResumeRequest{SessionID: sessionID, ActiveResume: active, CompletionOwned: true}, time.Hour, io.Discard)
+			launched <- err
+		}()
+		<-waiting
+		stop := locks.BeginActiveResumeStop(sessionID)
+		if stop == nil {
+			t.Fatal("force stop found no active Resume to drain")
+		}
+		var launchErr error
+		select {
+		case launchErr = <-launched:
+		case <-time.After(time.Second):
+			t.Fatal("canceled launch did not return")
+		}
+		if launchErr == nil || !strings.Contains(launchErr.Error(), "resume child cleanup is unconfirmed") {
+			t.Fatalf("canceled launch error = %v, want the unconfirmed cleanup failure", launchErr)
+		}
+		// The handler completes exactly as resumeThread's deferred Complete does.
+		active.Complete(nil)
+		// The stop that canceled the launch is the only remaining recovery path
+		// for the live child: it must retry the failed kill and wait for the
+		// confirmed reap instead of refusing on the retained error alone.
+		if err := stop.Wait(t.Context()); err != nil {
+			t.Fatalf("stop could not recover the failed child kill: %v", err)
+		}
+		stop.Release()
+		if kills.Load() != 2 {
+			t.Fatalf("child kill attempts = %d, want the failed attempt plus the stop's retry", kills.Load())
+		}
+		if locks.HasActiveResume([]string{sessionID}) {
+			t.Fatal("confirmed reap left the active Resume retained")
+		}
+		epochs := map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch}
+		if _, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs); err != nil {
+			t.Fatalf("later resume still refused after the child was confirmed reaped: %v", err)
+		}
+	})
+}
+
 // TestRegisterResumeCleanupFailureIsUnavailable pins the RegisterResume
 // boundary: a registration refused because another active Resume's child
 // cleanup is unconfirmed is a retryable "cleanup remains unconfirmed" state and
