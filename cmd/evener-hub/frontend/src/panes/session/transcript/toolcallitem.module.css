@@ -85,6 +85,31 @@
   height: 100%;
 }
 
+/* The agent's stated reason for the call - the one part of the row written for
+ * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
+ * review call) italics: a rationale reads as commentary on the call, set off
+ * from the machine text below it without a colour or size of its own.
+ *
+ * overflow-wrap:anywhere so long machine text can still break when the
+ * intent itself is the long part.
+ *
+ * This base rule precedes the [data-intent-trailing] overrides below: the
+ * override is MORE specific, so this ordering keeps specificity ascending
+ * (biome's noDescendingSpecificity) and does not change the cascade. */
+.intent {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  /* The title line-height (1.3, not the body's 1.5): the rationale-to-call
+   * gap is mostly half-leading, so tightening the line box is what actually
+   * pulls the call up against its description. */
+  line-height: var(--line-height-title);
+  font-style: italic;
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
 /* data-intent-trailing marks an intent-only row whose trailing Open affordance
  * rides the disclosure line (ToolRow.tsx's grammar). The visible content is a
  * sibling of the overlay trigger so its valid DOM order can be text, Open,
@@ -227,27 +252,6 @@
     min-height: var(--tap-min);
     justify-content: center;
   }
-}
-
-/* The agent's stated reason for the call - the one part of the row written for
- * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
- * review call) italics: a rationale reads as commentary on the call, set off
- * from the machine text below it without a colour or size of its own.
- *
- * overflow-wrap:anywhere so long machine text can still break when the
- * intent itself is the long part. */
-.intent {
-  flex: 1 1 0;
-  min-width: 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  /* The title line-height (1.3, not the body's 1.5): the rationale-to-call
-   * gap is mostly half-leading, so tightening the line box is what actually
-   * pulls the call up against its description. */
-  line-height: var(--line-height-title);
-  font-style: italic;
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
 }
 
 /* verb + target + meta, the descriptor's own summary() string: the sans
