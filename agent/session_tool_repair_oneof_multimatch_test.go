@@ -83,4 +83,7 @@ func TestOffendingKeywordLocation_NestedOneOfNoMatchNotOverMatch(t *testing.T) {
 	if !strings.Contains(msg, `send all of "b"`) {
 		t.Fatalf("outer no-match must still describe its describable branch requirement: %q", msg)
 	}
+	if strings.Contains(msg, "Example:") {
+		t.Fatalf("nested oneOf no-match must not append an example matching zero branches (roborev follow-up): %q", msg)
+	}
 }

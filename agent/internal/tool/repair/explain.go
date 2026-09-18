@@ -812,7 +812,16 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	if !rendered {
 		return ""
 	}
-	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	if keyword != "oneOf" {
+		// The delegate "not" shape (keyword "not") keeps its example: there the
+		// top-level required list is the selector the described branches need.
+		// A nested oneOf no-match reaches here with keyword "oneOf", and
+		// minimalExample reflects only top-level required fields — it ignores
+		// the combinator arms — so it would print an object matching none of the
+		// branches just enumerated. Omit it rather than coach an invalid retry
+		// (roborev follow-up on #623).
+		fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	}
 	return b.String()
 }
 
