@@ -439,7 +439,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	codex := false
 	removed := false
 	if err := c.credentialWriteExclusive(func() error {
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr, credentialFingerprintWording); err != nil {
 			return err
 		}
 		codex = c.instanceIsCodex(name)
@@ -652,7 +652,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if !c.nameIsConnectable(name) {
 			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
 		}
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr, credentialFingerprintWording); err != nil {
 			return err
 		}
 		return c.setCredential(name, params.Value)
@@ -685,7 +685,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	// client has re-pointed since must not have its replacement instance's key
 	// removed.
 	if err := c.credentialWrite(func() error {
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr, credentialFingerprintWording); err != nil {
 			return err
 		}
 		return c.clearCredential(name)
@@ -1042,21 +1042,58 @@ func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpa
 // at all. There the write fails closed, with a refusal the user can act on.
 func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
 	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
-	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr)
+	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr, credentialFingerprintWording)
+}
+
+// endpointFingerprintWording is what a refused endpoint assertion tells its
+// caller. The verification is one rule for every caller, but the remedy is not:
+// a credential write has a form to enter the secret on again, while a removal
+// has no credential to re-enter and can only ask for another attempt.
+type endpointFingerprintWording struct {
+	// against names the thing the caller asserted the endpoint against, as the
+	// clause "the endpoint this ...": a credential form the user had open, or a
+	// removal confirmation.
+	against string
+	// remedy closes a refusal whose destination the caller can look at again.
+	remedy string
+	// keyRemedy closes a refusal the hub cannot key at all.
+	keyRemedy string
+}
+
+// credentialFingerprintWording is the wording for the credential writes, whose
+// message names the form the user can enter the secret on again.
+var credentialFingerprintWording = endpointFingerprintWording{
+	against:   "the endpoint this form was opened on",
+	remedy:    "review its destination and enter the credential again",
+	keyRemedy: "review its destination and enter the credential again",
+}
+
+// removalFingerprintWording is the wording for hubInstancesController.Remove: a
+// removal has no credential form to re-enter, so it names what a caller of a
+// removal can actually do - review the destination and retry the removal - and,
+// when the hub cannot key the check at all, that the retry waits on the
+// fingerprint key being repairable.
+var removalFingerprintWording = endpointFingerprintWording{
+	against:   "the endpoint this confirmation named",
+	remedy:    "review its destination and retry the removal",
+	keyRemedy: "review its destination and retry the removal once the fingerprint key is repairable",
 }
 
 // verifyEndpointFingerprintWithKey is verifyEndpointFingerprint over a key the
 // caller resolved before taking its credential lock, with keyErr the reason it
-// has none. The credential writes resolve the key before that lock and call
-// this form, because a resolution here could repair the key file (an
-// inter-process lock and a write) while every listing and credential op waited
-// on credMu. Threading the result in keeps the answer for every case: keyErr is
-// the failed resolution the empty assertion is refused for, and a key the hub
-// could not resolve is the empty current value an assertion is refused against.
-func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
+// has none, and wording the refusal phrased for the caller. The credential
+// writes resolve the key before that lock and call this form, because a
+// resolution here could repair the key file (an inter-process lock and a write)
+// while every listing and credential op waited on credMu. Threading the result
+// in keeps the answer for every case: keyErr is the failed resolution the empty
+// assertion is refused for, and a key the hub could not resolve is the empty
+// current value an assertion is refused against. Only the remedy and the thing
+// the caller asserted against vary; the check is shared so no caller can weaken
+// it.
+func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error, wording endpointFingerprintWording) error {
 	if asserted == "" {
 		if keyErr != nil {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+			return appwire.Conflict(name + " cannot be checked against " + wording.against + ": the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so " + wording.keyRemedy)
 		}
 		return nil
 	}
@@ -1069,10 +1106,10 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	// is nothing to check only while the hub can key a fingerprint or has no
 	// state root at all.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+		return appwire.Conflict(name + " cannot be checked against " + wording.against + ": the hub cannot resolve it now, so " + wording.remedy)
 	}
 	if current != asserted {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+		return appwire.Conflict(name + " no longer resolves to " + wording.against + ": " + wording.remedy)
 	}
 	return nil
 }
@@ -1174,7 +1211,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		if err := c.requiresGCPADC(name); err != nil {
 			return err
 		}
-		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr, credentialFingerprintWording); err != nil {
 			return err
 		}
 		return c.setCredential(name, value)

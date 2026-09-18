@@ -53,6 +53,79 @@ func TestOAuthAsideInstanceKnowsBothMarkers(t *testing.T) {
 	}
 }
 
+// TestOAuthAsideMarkerSwapUsesTheTrailingMarker: a copy of an instance whose own
+// name holds a marker (a legal provider name; the parser corpus uses
+// x.removing-cfg-1) must have its TRAILING marker swapped, not the substring
+// inside the instance name. A swap that rewrites the first marker it finds
+// anywhere mangles the copy into the aside of a different instance
+// (x.removed-cfg-1.json.removing-5), which the parser then reads as an in-flight
+// copy of x.removed-cfg-1: the reclaim skips it and startup recovery restores or
+// sweeps its bytes under that other name, so the commit mark is defeated for the
+// copy the removal actually made.
+func TestOAuthAsideMarkerSwapUsesTheTrailingMarker(t *testing.T) {
+	const inst = "x.removing-cfg-1"
+	inFlight := inst + ".json" + oauthAsideMarker + "5"
+	committed := inst + ".json" + oauthCommittedMarker + "5"
+	for _, name := range []string{inFlight, committed} {
+		if _, _, _, aside := oauthAsideInstance(name); !aside {
+			t.Fatalf("fixture drift: %q must parse as an aside copy", name)
+		}
+	}
+
+	if got := oauthCommittedAsideName(inFlight); got != committed {
+		t.Fatalf("oauthCommittedAsideName(%q) = %q, want the trailing marker swapped: %q", inFlight, got, committed)
+	}
+	if got := oauthInFlightAsideName(committed); got != inFlight {
+		t.Fatalf("oauthInFlightAsideName(%q) = %q, want the trailing marker swapped: %q", committed, got, inFlight)
+	}
+
+	// Both directions must stay parseable as a copy of THIS instance, with the
+	// shape the swap promises.
+	for _, tc := range []struct {
+		name      string
+		committed bool
+	}{{inFlight, false}, {committed, true}} {
+		a, ok := parseOAuthAside(tc.name)
+		if !ok || a.inst != inst || a.committed != tc.committed || a.configBacked {
+			t.Fatalf("parseOAuthAside(%q) = (%+v, %v), want a credential-only copy of %q (committed=%v)", tc.name, a, ok, inst, tc.committed)
+		}
+	}
+}
+
+// TestCommitOAuthAsideKeepsAMarkerBearingInstanceName drives the rename the
+// removal's commit mark and its reclaim both perform for a copy of an instance
+// whose own name holds a marker. The copy must land on its own committed name,
+// not a name built from the instance-name substring, and the committed name must
+// still read as a copy of that instance so the sweep can classify it.
+func TestCommitOAuthAsideKeepsAMarkerBearingInstanceName(t *testing.T) {
+	dir := t.TempDir()
+	const inst = "x.removing-cfg-1"
+	inFlight := filepath.Join(dir, inst+".json"+oauthAsideMarker+"5")
+	committed := filepath.Join(dir, inst+".json"+oauthCommittedMarker+"5")
+	const content = "the copy\n"
+	if err := os.WriteFile(inFlight, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := commitOAuthAside(inFlight)
+	if err != nil {
+		t.Fatalf("commitOAuthAside: %v", err)
+	}
+	if got != committed {
+		t.Fatalf("commitOAuthAside(%q) = %q, want %q", inFlight, got, committed)
+	}
+	if _, err := os.Lstat(inFlight); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the in-flight copy is still at %s (Lstat = %v), want it moved", inFlight, err)
+	}
+	if b, rerr := os.ReadFile(committed); rerr != nil || string(b) != content {
+		t.Fatalf("committed bytes = %q (%v), want the copy moved intact", b, rerr)
+	}
+	gotInst, isCommitted, configBacked, aside := oauthAsideInstance(filepath.Base(got))
+	if !aside || gotInst != inst || !isCommitted || configBacked {
+		t.Fatalf("oauthAsideInstance(%q) = (%q, %v, %v, %v), want a committed credential-only copy of %q", filepath.Base(got), gotInst, isCommitted, configBacked, aside, inst)
+	}
+}
+
 // committedAsideStamps returns the stamps of every COMMITTED copy filed for name
 // in the fixture's auth directory, ascending.
 func committedAsideStamps(t *testing.T, f *instancesFixture, name string) []int64 {
@@ -500,6 +573,81 @@ func TestInstances_RemoveRestoresTheRecordWhenTheReloadFailsAgainstACommittedCop
 	}
 	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
 		t.Fatalf("openai-codex = %+v (ok = %v), want the instance back on its record after the retry reload", inst, ok)
+	}
+}
+
+// TestInstances_RolledBackRemovalUnmarksTheCopiesItMarked: a removal whose commit
+// mark ran but whose reload failed rolls back. When the removal owns no copy of
+// its own - the record was already set aside by an earlier failed removal - the
+// rollback used to restore only the path it was handed, which was empty, leaving
+// the PRE-EXISTING in-flight copy committed. Startup never puts a committed copy
+// back while the restored config carries the name, so a removal reported as
+// rolled back left the instance without its only OAuth credential. The rollback
+// must return the copies THIS removal marked to the in-flight shape startup
+// recovery reads.
+func TestInstances_RolledBackRemovalUnmarksTheCopiesItMarked(t *testing.T) {
+	// Load 1 is the fixture's own; load 2 primes the config; load 3 is the
+	// removal's reload, whose failure rolls the removal back; load 4 is the
+	// rollback's retry, which succeeds.
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatalf("fixture: work is not in the registry; instances = %+v", f.ctl.reg.Get().Instances())
+	}
+
+	// The record an earlier failed removal set aside and could not put back: in
+	// flight, and the only credential work has.
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const content = "the only credential of work\n"
+	aside := filepath.Join(dir, "work.json"+oauthConfigAsideMarker+"1757000000000000000")
+	if err := os.WriteFile(aside, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", aside, err)
+	}
+	if _, err := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: the record path holds a file (Lstat = %v), want the removal to own no copy", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil || !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the removal reported as rolled back", err)
+	}
+
+	// The fix: the copy the removal marked committed is back in the in-flight
+	// shape startup recovery reads, under work's own name.
+	var inFlight []string
+	for _, name := range authDirEntries(t, f) {
+		inst, committed, _, aside := oauthAsideInstance(name)
+		if !aside || inst != "work" {
+			continue
+		}
+		if committed {
+			t.Fatalf("the rollback left the committed copy %s, which startup never restores while the config carries work", name)
+		}
+		inFlight = append(inFlight, name)
+	}
+	if len(inFlight) != 1 {
+		t.Fatalf("the auth directory holds in-flight copies %v, want exactly the one work's rollback returned", inFlight)
+	}
+
+	// Startup recovery then puts work's only credential back.
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if !restored {
+		t.Fatal("startup put nothing back, want work's only credential restored")
+	}
+	got, rerr := os.ReadFile(authopenai.AuthFilePath(f.stateDir, "work"))
+	if rerr != nil || string(got) != content {
+		t.Fatalf("restored record = %q (%v), want %q", got, rerr, content)
 	}
 }
 
@@ -1626,7 +1774,7 @@ func TestInstances_RollbackWriteFailureReloadsToMatchTheWrittenConfig(t *testing
 		}
 	}()
 
-	err = f.ctl.rollBackFailedRemoval(before, "work", "", false, "", true, errors.New("commit mark failed"))
+	err = f.ctl.rollBackFailedRemoval(before, "work", "", false, oauthCommitMark{}, true, errors.New("commit mark failed"))
 	if err == nil {
 		t.Fatal("rollBackFailedRemoval = nil, want the failed rollback reported")
 	}
@@ -1665,7 +1813,7 @@ func TestInstances_RollbackWriteFailureReportsAFailedReloadToo(t *testing.T) {
 		t.Fatalf("WriteFile(obstacle): %v", err)
 	}
 
-	err = f.ctl.rollBackFailedRemoval(before, "work", "", false, "", true, errors.New("commit mark failed"))
+	err = f.ctl.rollBackFailedRemoval(before, "work", "", false, oauthCommitMark{}, true, errors.New("commit mark failed"))
 	if err == nil {
 		t.Fatal("rollBackFailedRemoval = nil, want the failed rollback reported")
 	}
@@ -1711,10 +1859,11 @@ func TestInstances_RollbackWriteFailureKeepsADefaultOnlyImplicitInstanceRemoved(
 	if err != nil {
 		t.Fatalf("setAsideOAuthFile: %v", err)
 	}
-	aside, err = f.ctl.markOAuthAsidesCommitted("openai-codex", aside)
+	mark, err := f.ctl.markOAuthAsidesCommitted("openai-codex", aside)
 	if err != nil {
 		t.Fatalf("markOAuthAsidesCommitted: %v", err)
 	}
+	aside = mark.own
 	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{}); err != nil {
 		t.Fatalf("WriteConfigFile(removal output): %v", err)
 	}
@@ -1730,7 +1879,7 @@ func TestInstances_RollbackWriteFailureKeepsADefaultOnlyImplicitInstanceRemoved(
 		}
 	}()
 
-	err = f.ctl.rollBackFailedRemoval(before, "openai-codex", "", false, aside, true, errors.New("commit mark failed"))
+	err = f.ctl.rollBackFailedRemoval(before, "openai-codex", "", false, oauthCommitMark{own: aside}, true, errors.New("commit mark failed"))
 	if err == nil {
 		t.Fatal("rollBackFailedRemoval = nil, want the failed rollback reported")
 	}
@@ -1780,10 +1929,11 @@ func TestInstances_RollbackWriteFailureKeepsAnAuthoredCuratedProviderRemoved(t *
 	if err != nil {
 		t.Fatalf("setAsideOAuthFile: %v", err)
 	}
-	aside, err = f.ctl.markOAuthAsidesCommitted("openai-codex", aside)
+	mark, err := f.ctl.markOAuthAsidesCommitted("openai-codex", aside)
 	if err != nil {
 		t.Fatalf("markOAuthAsidesCommitted: %v", err)
 	}
+	aside = mark.own
 	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{}); err != nil {
 		t.Fatalf("WriteConfigFile(removal output): %v", err)
 	}
@@ -1799,7 +1949,7 @@ func TestInstances_RollbackWriteFailureKeepsAnAuthoredCuratedProviderRemoved(t *
 		}
 	}()
 
-	err = f.ctl.rollBackFailedRemoval(before, "openai-codex", "", false, aside, true, errors.New("commit mark failed"))
+	err = f.ctl.rollBackFailedRemoval(before, "openai-codex", "", false, oauthCommitMark{own: aside}, true, errors.New("commit mark failed"))
 	if err == nil {
 		t.Fatal("rollBackFailedRemoval = nil, want the failed rollback reported")
 	}

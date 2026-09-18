@@ -1565,7 +1565,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
 	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr, removalFingerprintWording); err != nil {
 		return err
 	}
 
@@ -1671,7 +1671,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// a mark that fails transiently costs nothing once a later removal flushes
 	// the copy and marks it; a failure that persists here rejects this removal
 	// instead.
-	oauthAside, markErr := c.markOAuthAsidesCommitted(name, oauthAside)
+	mark, markErr := c.markOAuthAsidesCommitted(name, oauthAside)
 	var reloadErr error
 	if markErr == nil {
 		reloadErr = c.reg.Reload()
@@ -1681,7 +1681,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		if cause == nil {
 			cause = reloadErr
 		}
-		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, oauthAside, configChanged, cause)
+		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, mark, configChanged, cause)
 	}
 	// The removal stands, so every copy of this name's record is unwanted now:
 	// the one this call set aside and any an earlier removal of the name left
@@ -1855,6 +1855,15 @@ func oauthAsideMarkerFor(configBacked bool) string {
 	return oauthAsideMarker
 }
 
+// oauthCommittedMarkerFor names the committed marker for a removal of the given
+// kind, the counterpart of oauthAsideMarkerFor.
+func oauthCommittedMarkerFor(configBacked bool) string {
+	if configBacked {
+		return oauthConfigCommittedMarker
+	}
+	return oauthCommittedMarker
+}
+
 // oauthAsideShapes is the aside-name grammar in the order it must be tried: the
 // config-backed pair before the plain pair because the config-backed markers
 // share the plain ones' prefix, and within each pair the committed shape before
@@ -1880,6 +1889,13 @@ type oauthAside struct {
 	committed    bool
 	configBacked bool
 	stampText    string
+	// marker is the aside marker the grammar matched and markerIndex is where
+	// that occurrence starts in name. Together they identify the TRAILING
+	// occurrence a swap must rewrite: an instance whose own name holds a marker
+	// would otherwise have the name's substring swapped instead of the copy's
+	// own marker (swapOAuthAsideMarker).
+	marker      string
+	markerIndex int
 }
 
 // parseOAuthAside reads the aside-name grammar once, so a caller that needs any
@@ -1901,7 +1917,14 @@ func parseOAuthAside(name string) (oauthAside, bool) {
 		if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
 			continue
 		}
-		return oauthAside{strings.TrimSuffix(record, ".json"), m.committed, m.configBacked, stamp}, true
+		return oauthAside{
+			inst:         strings.TrimSuffix(record, ".json"),
+			committed:    m.committed,
+			configBacked: m.configBacked,
+			stampText:    stamp,
+			marker:       m.marker,
+			markerIndex:  i,
+		}, true
 	}
 	return oauthAside{}, false
 }
@@ -1927,40 +1950,40 @@ func oauthAsideStampText(name string) string {
 // orders against the others the same way - and the KIND is preserved, so the
 // committed shape still records whether the removal was config-backed. name must
 // be an in-flight copy (oauthAsideInstance returned it with committed false), so
-// it carries one of the in-flight markers; the config-backed pair is tried first
-// because it shares the plain marker's prefix.
+// the grammar parses it and swapOAuthAsideMarker rewrites the trailing marker it
+// matched.
 func oauthCommittedAsideName(name string) string {
-	return oauthAsideMarkerSwap(name, [][2]string{
-		{oauthConfigAsideMarker, oauthConfigCommittedMarker},
-		{oauthAsideMarker, oauthCommittedMarker},
-	})
+	a, _ := parseOAuthAside(name)
+	return swapOAuthAsideMarker(name, a, oauthCommittedMarkerFor(a.configBacked))
 }
 
-// oauthAsideMarkerSwap returns name with the first present marker at the head of
-// one pair replaced by that pair's tail. The pairs are tried in order; the
-// config-backed pair comes first in each direction because it shares the plain
-// marker's prefix. oauthCommittedAsideName and oauthInFlightAsideName are the
-// same swap in opposite directions.
-func oauthAsideMarkerSwap(name string, pairs [][2]string) string {
-	for _, p := range pairs {
-		if i := strings.LastIndex(name, p[0]); i >= 0 {
-			return name[:i] + p[1] + name[i+len(p[0]):]
-		}
+// swapOAuthAsideMarker returns name with the marker occurrence the aside grammar
+// matched replaced by replacement. It rewrites the position the PARSER matched,
+// not the first marker that appears anywhere: for a copy of an instance whose own
+// name holds a marker (`x.removing-cfg-1`, a legal provider name), a search would
+// rewrite the instance-name substring and mangle the copy into the aside of a
+// different instance - `x.removed-cfg-1.json.removing-5`, which the parser reads
+// as an in-flight copy of `x.removed-cfg-1`, defeating the commit mark for the
+// copy the removal actually made. The matched occurrence is by construction the
+// last marker that leaves an all-digits tail, so it is also the greatest-index
+// marker among the four. A name the grammar does not parse is returned unchanged.
+func swapOAuthAsideMarker(name string, a oauthAside, replacement string) string {
+	if a.marker == "" {
+		return name
 	}
-	return name
+	return name[:a.markerIndex] + replacement + name[a.markerIndex+len(a.marker):]
 }
 
 // oauthInFlightAsideName returns the name a COMMITTED copy takes when a failing
 // rollback cannot put it back at the record path: the in-flight shape startup
 // recovery reads (restoreUncommittedOAuthAsides). The stamp and the KIND are
 // preserved, the exact inverse of oauthCommittedAsideName. name must be a
-// committed copy (oauthAsideInstance returned it with committed true), so it
-// carries one of the committed markers; the config-backed pair is tried first.
+// committed copy (oauthAsideInstance returned it with committed true), so the
+// grammar parses it and swapOAuthAsideMarker rewrites the trailing marker it
+// matched.
 func oauthInFlightAsideName(name string) string {
-	return oauthAsideMarkerSwap(name, [][2]string{
-		{oauthConfigCommittedMarker, oauthConfigAsideMarker},
-		{oauthCommittedMarker, oauthAsideMarker},
-	})
+	a, _ := parseOAuthAside(name)
+	return swapOAuthAsideMarker(name, a, oauthAsideMarkerFor(a.configBacked))
 }
 
 // maxAsideStamp is the largest stamp an aside name can carry. freeAsideName
@@ -2676,18 +2699,30 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	return restored, nil
 }
 
+// oauthCommitMark is what one removal's commit point (markOAuthAsidesCommitted)
+// changed: the path this removal's own copy now carries ("" when it set nothing
+// aside) and every path the mark touched, the own one included. The rollback
+// needs the whole set, not just the own path: a copy the mark committed for a
+// removal that then rolled back would otherwise be left in the committed shape
+// startup never restores, stranding an instance's only OAuth credential
+// (rollBackFailedRemoval). A copy whose commit rename failed stays in the
+// in-flight shape and is returned unchanged.
+type oauthCommitMark struct {
+	own    string
+	marked []string
+}
+
 // markOAuthAsidesCommitted moves every IN-FLIGHT copy filed under name to its
-// committed shape, and returns the path this removal's own copy carries
-// afterwards (own unchanged when its rename failed, "" when this removal set
-// nothing aside) together with an error naming anything it could not mark. It is
-// the removal's commit point, run once the aside, the credential deletions and
-// the providers.toml write have all landed and immediately before the reload
-// that publishes the removal (Remove), so a hub that dies anywhere from there
-// onward leaves copies startup will never put back
-// (restoreUncommittedOAuthAsides) instead of restoring a removal the user
-// carried out. The mark is not left to the reclaim below because the reclaim
-// runs only after the reload: the whole reload would then sit inside a window a
-// crash turns back into an in-flight copy.
+// committed shape, and returns the paths it touched - this removal's own copy
+// and every other copy of the name an earlier failed removal left behind - with
+// an error naming anything it could not mark. It is the removal's commit point,
+// run once the aside, the credential deletions and the providers.toml write have
+// all landed and immediately before the reload that publishes the removal
+// (Remove), so a hub that dies anywhere from there onward leaves copies startup
+// will never put back (restoreUncommittedOAuthAsides) instead of restoring a
+// removal the user carried out. The mark is not left to the reclaim below
+// because the reclaim runs only after the reload: the whole reload would then
+// sit inside a window a crash turns back into an in-flight copy.
 //
 // A failure to mark is reported, not swallowed: the caller rolls the removal back
 // through the same path a failed reload takes (rollBackFailedRemoval), so an
@@ -2697,18 +2732,19 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 // removal. The reclaim still performs the same rename as a retry
 // (reclaimOAuthAsides), so a mark that fails transiently costs nothing beyond
 // this rejection: the rollback renames the copy back, and the next removal sets
-// it aside and marks it again.
-func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (string, error) {
-	committedOwn := own
+// it aside and marks it again. The returned mark is what lets that rollback undo
+// the mark for the copies it did not set aside itself (reinstateMarkedAsides).
+func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (oauthCommitMark, error) {
+	mark := oauthCommitMark{own: own}
 	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// No directory is nothing to mark: a state root that never held a record
 		// has no copy of one.
 		if errors.Is(err, os.ErrNotExist) {
-			return committedOwn, nil
+			return mark, nil
 		}
-		return committedOwn, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %w", name, err)
+		return mark, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %w", name, err)
 	}
 	var problems []string
 	for _, e := range entries {
@@ -2721,17 +2757,51 @@ func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (str
 		}
 		path := filepath.Join(dir, e.Name())
 		renamed, markErr := commitOAuthAside(path)
+		mark.marked = append(mark.marked, renamed)
 		if own != "" && e.Name() == filepath.Base(own) {
-			committedOwn = renamed
+			mark.own = renamed
 		}
 		if markErr != nil {
 			problems = append(problems, fmt.Sprintf("%s (%v)", path, markErr))
 		}
 	}
 	if len(problems) > 0 {
-		return committedOwn, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %s", name, strings.Join(problems, ", "))
+		return mark, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %s", name, strings.Join(problems, ", "))
 	}
-	return committedOwn, nil
+	return mark, nil
+}
+
+// reinstateMarkedAsides returns the copies one removal's commit mark moved to the
+// committed shape but the rollback did not put back, renaming each to the
+// in-flight shape startup recovery reads (restoreUncommittedOAuthAsides). The own
+// copy is left to the caller's rename-back (restoreFailedRemoval); every other
+// copy belongs to a removal that did not stand, and startup never restores a
+// committed copy while the restored config carries the name - so leaving one
+// committed would strand an instance's only credential. A copy whose commit
+// rename already failed is still in flight and is skipped. A copy whose return
+// cannot land is reported, because its bytes then sit in the shape the sweep
+// deletes rather than the one recovery reads.
+func (c *hubInstancesController) reinstateMarkedAsides(mark oauthCommitMark) []string {
+	var problems []string
+	ownBase := ""
+	if mark.own != "" {
+		ownBase = filepath.Base(mark.own)
+	}
+	for _, path := range mark.marked {
+		base := filepath.Base(path)
+		if base == ownBase {
+			continue
+		}
+		_, committed, _, aside := oauthAsideInstance(base)
+		if !aside || !committed {
+			continue
+		}
+		inFlight := filepath.Join(filepath.Dir(path), oauthInFlightAsideName(base))
+		if err := renameNoReplace(path, inFlight); err != nil {
+			problems = append(problems, fmt.Sprintf("the committed copy %s could not be returned to the in-flight shape startup recovery reads (%v)", base, err))
+		}
+	}
+	return problems
 }
 
 // reclaimOAuthAsides deletes the copies of one name's OAuth record that a
@@ -2839,14 +2909,21 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 // never parked the registry, so without the reload the hub would keep serving an
 // instance providers.toml no longer carries). It restores the credentials this
 // call deleted and the record from whichever aside path it now carries
-// (restoreFailedRemoval renames whatever path it is handed), then reloads. On the
-// rollback-write failure that reload is over the removal's file; on every other
-// path it is over the restored pre-removal file, where the retry is the recovery
-// for a failed reload that parked the registry on the implicit-only view a failed
-// load leaves. configChanged is what selects both the rollback write and the
-// wording of a retry that fails, so a caller can tell whether the config the
-// rollback restored loads.
-func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, name, storedKey string, hasStoredKey bool, oauthAside string, configChanged bool, cause error) error {
+// (restoreFailedRemoval renames whatever path it is handed), returns every OTHER
+// copy this removal's mark committed to the in-flight shape startup recovery
+// reads (reinstateMarkedAsides), then reloads. The un-marking is what keeps a
+// removal reported as rolled back from stranding an instance whose only OAuth
+// copy an earlier failed removal had already set aside: startup never restores a
+// committed copy while the restored config carries the name. A rollback that
+// fails at the write leaves the removal standing, so the copies stay committed
+// and the reclaim or the sweep collects them. On the rollback-write failure that
+// reload is over the removal's file; on every other path it is over the restored
+// pre-removal file, where the retry is the recovery for a failed reload that
+// parked the registry on the implicit-only view a failed load leaves.
+// configChanged is what selects both the rollback write and the wording of a
+// retry that fails, so a caller can tell whether the config the rollback
+// restored loads.
+func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, name, storedKey string, hasStoredKey bool, mark oauthCommitMark, configChanged bool, cause error) error {
 	if configChanged {
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
@@ -2906,7 +2983,10 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 					remnant = fmt.Errorf("%w; and the credentials this removal deleted could not be kept deleted (%w)", remnant, rerr)
 				}
 			} else {
-				remnant = c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside, remnant, "the entry is gone from the config")
+				remnant = c.restoreFailedRemoval(name, storedKey, hasStoredKey, mark.own, remnant, "the entry is gone from the config")
+				if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+					remnant = fmt.Errorf("%w; %s", remnant, strings.Join(more, " and "))
+				}
 			}
 			if reloadErr := c.reg.Reload(); reloadErr != nil {
 				return removePersistedError{fmt.Errorf("%w; the registry could not be reloaded over the removal the config still carries either (%w)", remnant, reloadErr)}
@@ -2921,8 +3001,11 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 	// not rebuild that view. The pane would then show a stored key beside no
 	// active source, and the next launch would be refused for missing
 	// credentials, until some later write happened to reload again.
-	restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
+	restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, mark.own,
 		fmt.Errorf("removing %q was rolled back: %w", name, cause), "the instance is still configured")
+	if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+		restored = fmt.Errorf("%w; %s", restored, strings.Join(more, " and "))
+	}
 	if reloadErr := c.reg.Reload(); reloadErr != nil {
 		if configChanged {
 			// The file this rollback put back is the pre-removal one, and the

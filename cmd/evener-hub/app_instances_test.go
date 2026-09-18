@@ -1696,6 +1696,71 @@ func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveRefusalNamesARemovalRemedy: Remove checks the endpoint
+// assertion through the same rule as the credential writes, but a removal has no
+// credential form to re-enter. Its refusal must name what a caller of a removal
+// can actually do - review the destination and retry - and, when the hub cannot
+// key fingerprints at all, that the retry waits on the fingerprint key being
+// repairable. The credential writes keep their own remedy; this pins that the
+// removal caller does not inherit it.
+func TestInstances_RemoveRefusalNamesARemovalRemedy(t *testing.T) {
+	// The stale confirmation: the endpoint moved after the row was listed, so the
+	// refusal names the destination to review and the retry.
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://work.example.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	shown := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if shown == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://elsewhere.example.test/v1"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work", ExpectedEndpointFingerprint: shown})
+	if err == nil {
+		t.Fatal("Remove accepted a confirmation given against an endpoint work no longer resolves to")
+	}
+	moved := err.Error()
+	if strings.Contains(moved, "enter the credential again") {
+		t.Fatalf("Remove refusal = %q, want no credential-form remedy for a removal", moved)
+	}
+	if !strings.Contains(moved, "review its destination and retry the removal") {
+		t.Fatalf("Remove refusal = %q, want the removal remedy named", moved)
+	}
+
+	// The hub cannot key the check at all: the remedy must name the repairable
+	// fingerprint key, which is the only thing a removal caller can wait on. A
+	// fresh fixture keeps the key file uncreated, so the unkeyable root produces
+	// the key error this branch is about; an empty confirmation is the case that
+	// consults it (a non-empty one is refused against the unresolvable current
+	// value, the branch above).
+	u := newInstancesFixture(t, nil)
+	if err := u.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://work.example.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	unkeyableStateRoot(t, u.stateDir)
+	err = u.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil {
+		t.Fatal("Remove accepted a confirmation whose destination the hub cannot key a fingerprint for")
+	}
+	cannotKey := err.Error()
+	if strings.Contains(cannotKey, "enter the credential again") {
+		t.Fatalf("Remove refusal = %q, want no credential-form remedy for a removal", cannotKey)
+	}
+	if !strings.Contains(cannotKey, "retry the removal once the fingerprint key is repairable") {
+		t.Fatalf("Remove refusal = %q, want the repairable fingerprint key named", cannotKey)
+	}
+}
+
 // unwritableCredentialsPath puts a directory where credentials.toml belongs, so
 // the store's next persist cannot land: the shape of a credentials path that is
 // gone, read-only, or on a filesystem that has stopped taking writes.
