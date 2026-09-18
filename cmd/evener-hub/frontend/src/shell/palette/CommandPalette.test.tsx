@@ -119,7 +119,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  useCommandCatalog.setState({ commands: [] });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

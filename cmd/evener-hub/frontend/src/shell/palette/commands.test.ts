@@ -278,7 +278,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
-  useCommandCatalog.setState({ commands: [] });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();

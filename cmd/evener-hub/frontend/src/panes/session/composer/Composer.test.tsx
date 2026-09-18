@@ -801,7 +801,7 @@ beforeEach(() => {
   // by every OTHER test in this file - only the slash-completion tests
   // below ever populate it - so resetting it here is purely additive
   // isolation, never a behavior change for the rest of the suite.
-  useCommandCatalog.setState({ commands: [] });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
