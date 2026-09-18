@@ -18,6 +18,7 @@ type MutationOutboxOperation =
   | "enqueueInterruptAndCancel"
   | "cancelUnattempted"
   | "discardCanceled"
+  | "releaseCanceled"
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
@@ -215,6 +216,19 @@ export class MutationOutboxIndexedDB {
         discarded.push(record.clientMutationId);
       }
       return discarded;
+    });
+  }
+
+  // The one release of a canceled row: an explicit user Retry. Background
+  // reconciliation and reopen paths never reach this — it transitions only
+  // canceled -> submitting and refuses every other state.
+  async releaseCanceled(clientMutationId: string): Promise<boolean> {
+    return this.#write(OUTBOX_STORE, "releaseCanceled", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      if (record?.state !== "canceled") return false;
+      await requestResult(store.put({ ...record, state: "submitting" }));
+      return true;
     });
   }
 

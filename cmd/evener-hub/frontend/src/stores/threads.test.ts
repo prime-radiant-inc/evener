@@ -9942,3 +9942,158 @@ test("a stale client's ready callback cannot begin a generation for a replaced c
   // in its first statement after incrementing readyEpoch.
   expect(threadsStore.getState().mutationAuthorityRefs.size).toBe(authorityRefsSizeBeforeStale);
 });
+
+// docs/design/stop-cancellation-outbox.md: the user's click is the cancel
+// moment, recorded durably on the outbox rows themselves.
+describe("Stop cancellation as durable outbox state", () => {
+  // §9.1: the UI's real Stop path is the cancellation path.
+  test("interrupt durably cancels the ref's pending rows and a later discovery scan does not resend them", async () => {
+    // Fake the outbox's interval so the only scans are the ones this test
+    // drives explicitly; flushIndexedDBUntil still works (it awaits real
+    // IndexedDB operations, never timers).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const storage = new MutationOutboxIndexedDB();
+    try {
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      // A queued send still waiting in the outbox: never attempted.
+      const queued = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "queued behind the stop" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      let queuedSends = 0;
+      fake.on("turn/queue", (params) => {
+        queuedSends += 1;
+        return { receipt: mutationReceipt(params.clientMutationId) };
+      });
+      fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+      await threadsStore.getState().interrupt("ref_a");
+
+      // The interrupt dispatches (its own record settles, leaving only the
+      // canceled row) even though the canceled row sorts ahead of it.
+      await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+      expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true);
+      expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      await flushIndexedDBUntil(() => false);
+      expect((await storage.listOutbox("ref_a")).map((record) => record.method)).toEqual(["turn/queue"]);
+      expect(queuedSends).toBe(0);
+
+      // A later discovery scan finds the ref (the canceled row still pins it)
+      // but cannot resend it.
+      let notified = false;
+      const unsubscribe = subscribeMutationPersistence(() => {
+        notified = true;
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushIndexedDBUntil(() => notified);
+        expect(notified).toBe(true);
+        await flushIndexedDBUntil(() => queuedSends > 0);
+        expect(queuedSends).toBe(0);
+        expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // §9.5: the cancellation write is the cancel moment, so its failure aborts
+  // the stop before the daemon is touched, and the stop stays retryable.
+  test("forceStop aborts before touching the daemon when the cancellation write fails", async () => {
+    let failWrites = true;
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit(operation) {
+        if (failWrites && operation === "cancelUnattempted") throw new Error("storage unavailable");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+    await expect(threadsStore.getState().forceStop("ref_a")).rejects.toThrow("storage unavailable");
+    expect(forceStopRpc).not.toHaveBeenCalled();
+
+    failWrites = false;
+    await threadsStore.getState().forceStop("ref_a");
+    expect(forceStopRpc).toHaveBeenCalledWith("ref_a");
+  });
+
+  test("shutdown aborts before touching the daemon when the cancellation write fails", async () => {
+    let failWrites = true;
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit(operation) {
+        if (failWrites && operation === "cancelUnattempted") throw new Error("storage unavailable");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    fake.on("thread/shutdown", () => ({}));
+
+    await expect(threadsStore.getState().shutdown("ref_a")).rejects.toThrow("storage unavailable");
+    expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(false);
+
+    failWrites = false;
+    await threadsStore.getState().shutdown("ref_a");
+    expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(true);
+  });
+
+  // §9.7: only an explicit user Retry releases a canceled row.
+  test("an explicit Retry releases a canceled row and dispatches it", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const queued = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped, then retried" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+    let queuedSends = 0;
+    fake.on("turn/queue", (params) => {
+      queuedSends += 1;
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+
+    expect(await retryBlockedMutation(queued.clientMutationId)).toBe(true);
+
+    await flushIndexedDBUntil(() => queuedSends > 0);
+    expect(queuedSends).toBe(1);
+    // The receipt settled the retried row: nothing is left canceled.
+    await flushIndexedDBUntil(() => false);
+    expect(await storage.getOutbox(queued.clientMutationId)).toBeUndefined();
+  });
+
+  test("a background retry never releases a canceled row", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const queued = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "still stopped" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    expect(await retryBlockedMutation(queued.clientMutationId, "backgroundNote")).toBe(false);
+
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+    expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+  });
+});

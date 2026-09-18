@@ -1017,7 +1017,11 @@ export async function retryBlockedMutation(
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
-  if (record?.state !== "blockedUnknown") return false;
+  if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
+  // Only an explicit user Retry releases a canceled row (the one reversal the
+  // design allows); background retry modes exist for delivery-uncertain rows
+  // and must never resurrect a user's Stop.
+  if (record.state === "canceled" && mode !== "user") return false;
   // A background note save keeps its blocked draft when Stop wins; it must
   // neither resume a session nor retry another kind of mutation.
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
@@ -1040,6 +1044,14 @@ export async function retryBlockedMutation(
   const client = currentDispatchClient();
   if (!client) return false;
   const epoch = dispatchReadyEpoch;
+  if (record.state === "canceled") {
+    // The release is durable before any dispatch. A canceled row provably
+    // never reached the daemon, so it needs no reconciliation to prove
+    // absence — release, then let the same fenced resync-and-dispatch tail
+    // every user retry uses carry it out.
+    if (!(await runtime.storage.releaseCanceled(clientMutationId))) return false;
+    notifyMutationPersistence([record.targetRef]);
+  }
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
   await handleReady(
@@ -1053,7 +1065,7 @@ export async function retryBlockedMutation(
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
-  return current?.state !== "blockedUnknown";
+  return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
 
 export async function updateRecoveryMutation(
@@ -1313,6 +1325,17 @@ function discardCanceledMutations(targetRef: string): void {
     .catch(() => {});
 }
 
+// The cancellation write every Stop path makes before its stop action
+// (stop-cancellation-outbox §4): forceStop/shutdown carry no interrupt
+// record, so this standalone write is their cancel moment. A failure throws,
+// aborting the stop before the daemon is touched.
+async function cancelUnattemptedMutations(ref: string): Promise<void> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const canceled = await runtime.storage.cancelUnattempted(ref);
+  if (canceled.length > 0) notifyMutationPersistence([ref]);
+}
+
 // Lean watches omit turns until an expanded card asks for them; the shared
 // threadReadParams carries the rest (subscribe:false for a ref this
 // connection generation already subscribes — the read still refreshes the
@@ -1451,6 +1474,7 @@ function composerMutationIntent(
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<MutationOutboxRecord> {
   const ref = intent.targetRef;
   const client = requireClient();
@@ -1465,7 +1489,10 @@ async function enqueueMutationIntent(
   }
   let record: MutationOutboxRecord;
   try {
-    record = await runtime.outbox.enqueueIntent(intent, onCommitted);
+    record =
+      durableWrite === "interruptAndCancel"
+        ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
+        : await runtime.outbox.enqueueIntent(intent, onCommitted);
   } catch (error) {
     if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
     throw error;
@@ -1481,15 +1508,20 @@ async function enqueueMutation(
   payload: Record<string, unknown>,
   optimisticDisplay: unknown,
   attachments?: InputAttachment[],
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<void> {
-  await enqueueMutationIntent({
-    targetRef: ref,
-    threadId: threadsStore.getState().threads.get(ref)?.threadId,
-    method,
-    payload,
-    attachments: durableAttachments(attachments),
-    optimisticDisplay,
-  });
+  await enqueueMutationIntent(
+    {
+      targetRef: ref,
+      threadId: threadsStore.getState().threads.get(ref)?.threadId,
+      method,
+      payload,
+      attachments: durableAttachments(attachments),
+      optimisticDisplay,
+    },
+    undefined,
+    durableWrite,
+  );
   notifyMutationPersistence([ref]);
 }
 
@@ -2949,6 +2981,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       "turn/interrupt",
       { ref, expectedInstanceId: expectedInstanceID(ref) },
       { method: "turn/interrupt" },
+      undefined,
+      // The click is the cancel moment (stop-cancellation-outbox §4): the
+      // ref's non-attempted rows turn "canceled" in the same transaction that
+      // enqueues the interrupt, so both are durable or neither is.
+      "interruptAndCancel",
     );
   },
 
@@ -3098,6 +3135,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async forceStop(ref) {
     cancelPendingUserIntents(ref);
+    // Write-first (stop-cancellation-outbox §4): the cancellation lands
+    // durably before the stop RPC, so a storage failure aborts the stop here
+    // with the daemon untouched and the user free to retry.
+    await cancelUnattemptedMutations(ref);
     try {
       await requireClient().forceStop(ref);
     } catch (error) {
@@ -3120,6 +3161,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async shutdown(ref) {
     cancelPendingUserIntents(ref);
+    await cancelUnattemptedMutations(ref);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });

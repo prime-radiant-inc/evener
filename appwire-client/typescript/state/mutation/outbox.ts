@@ -62,6 +62,9 @@ export type MutationDiscoveryReason =
 export interface MutationOutboxStorage<A extends MutationAttachmentRef = MutationAttachmentRef> {
   // --- used by MutationOutbox ---
   enqueueIntent(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
+  // Stop's combined durable write: cancel the ref's non-attempted rows and
+  // enqueue the interrupt record in one transaction — both or neither.
+  enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
   // Every ref with a record still waiting, for a full scan.
   listTargetRefs(): Promise<string[]>;
   // --- used by the dispatcher ---
@@ -224,6 +227,22 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     onCommitted?: (record: MutationOutboxRecord<A>) => void,
   ): Promise<MutationOutboxRecord<A>> {
     const record = await this.#storage.enqueueIntent(intent);
+    this.#announceCommit(record, onCommitted);
+    return record;
+  }
+
+  // The same announce-and-discover tail as enqueueIntent, over the storage's
+  // combined Stop write: cancellation and the interrupt record commit together.
+  async enqueueInterruptAndCancel(
+    intent: MutationIntent<A>,
+    onCommitted?: (record: MutationOutboxRecord<A>) => void,
+  ): Promise<MutationOutboxRecord<A>> {
+    const record = await this.#storage.enqueueInterruptAndCancel(intent);
+    this.#announceCommit(record, onCommitted);
+    return record;
+  }
+
+  #announceCommit(record: MutationOutboxRecord<A>, onCommitted?: (record: MutationOutboxRecord<A>) => void): void {
     onCommitted?.(record);
     // The commit owns the message. Lifecycle scans also discover it if a
     // closing client cannot broadcast; that cannot turn acceptance into failure.
@@ -234,7 +253,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
       } satisfies MutationOutboxWakeup),
     );
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
-    return record;
   }
 
   async connectionReady(): Promise<void> {
