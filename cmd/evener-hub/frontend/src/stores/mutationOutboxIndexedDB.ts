@@ -296,73 +296,88 @@ export class MutationOutboxIndexedDB {
   }
 
   async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], "settleReceipt", async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-      const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-      ]);
-      const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
-      if (!source) return false;
-      await this.#discardSupersededNoteRecovery(transaction, source);
-      await this.#discardSupersededCanceledNotes(transaction, source);
+    let settledSource: MutationRecord | undefined;
+    const settled = await this.#write(
+      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
+      "settleReceipt",
+      async (transaction) => {
+        const outbox = transaction.objectStore(OUTBOX_STORE);
+        const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+        const recovery = transaction.objectStore(RECOVERY_STORE);
+        const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
+          requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+          requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
+          requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
+        ]);
+        const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
+        if (!source) return false;
+        await this.#discardSupersededNoteRecovery(transaction, source);
+        settledSource = source;
 
-      const display = source.optimisticDisplay;
-      const retainsOptimisticDisplay =
-        projectionState === "pending" &&
-        display !== null &&
-        typeof display === "object" &&
-        "input" in display &&
-        Array.isArray(display.input);
-      if (retainsOptimisticDisplay) {
-        const accepted: MutationOptimisticRecord = {
-          version: source.version,
-          clientMutationId: source.clientMutationId,
-          // Provenance survives the outbox -> optimistic transition: dropping
-          // it here would make the accepted-but-unreflected mutation
-          // unattributed, and every tab would claim it as its own send.
-          originClientId: source.originClientId,
-          intentSequence: source.intentSequence,
-          createdAt: source.createdAt,
-          targetRef: source.targetRef,
-          threadId: source.threadId,
-          method: source.method,
-          payload: source.payload,
-          attachments: source.attachments,
-          optimisticDisplay: source.optimisticDisplay,
-          state: "accepted",
-        };
-        await requestResult(optimistic.put(accepted));
-      } else if (optimisticRecord) {
-        await requestResult(optimistic.delete(clientMutationId));
-      }
-      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-      return true;
-    });
+        const display = source.optimisticDisplay;
+        const retainsOptimisticDisplay =
+          projectionState === "pending" &&
+          display !== null &&
+          typeof display === "object" &&
+          "input" in display &&
+          Array.isArray(display.input);
+        if (retainsOptimisticDisplay) {
+          const accepted: MutationOptimisticRecord = {
+            version: source.version,
+            clientMutationId: source.clientMutationId,
+            // Provenance survives the outbox -> optimistic transition: dropping
+            // it here would make the accepted-but-unreflected mutation
+            // unattributed, and every tab would claim it as its own send.
+            originClientId: source.originClientId,
+            intentSequence: source.intentSequence,
+            createdAt: source.createdAt,
+            targetRef: source.targetRef,
+            threadId: source.threadId,
+            method: source.method,
+            payload: source.payload,
+            attachments: source.attachments,
+            optimisticDisplay: source.optimisticDisplay,
+            state: "accepted",
+          };
+          await requestResult(optimistic.put(accepted));
+        } else if (optimisticRecord) {
+          await requestResult(optimistic.delete(clientMutationId));
+        }
+        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        return true;
+      },
+    );
+    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    return settled;
   }
 
   async settleApplied(clientMutationId: string): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], undefined, async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-      const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-      ]);
-      if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
-      await this.#discardSupersededNoteRecovery(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
-      await this.#discardSupersededCanceledNotes(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
-      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-      if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-      return true;
-    });
+    let settledSource: MutationRecord | undefined;
+    const settled = await this.#write(
+      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
+      undefined,
+      async (transaction) => {
+        const outbox = transaction.objectStore(OUTBOX_STORE);
+        const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+        const recovery = transaction.objectStore(RECOVERY_STORE);
+        const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
+          requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+          requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
+          requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
+        ]);
+        if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
+        const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
+        await this.#discardSupersededNoteRecovery(transaction, source);
+        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+        if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        settledSource = source;
+        return true;
+      },
+    );
+    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    return settled;
   }
 
   // A later accepted note supersedes refused earlier text, not chat recovery
@@ -389,23 +404,31 @@ export class MutationOutboxIndexedDB {
   // its note text - would pin listTargetRefs until the thread is cleared or
   // deleted. Only canceled rows leave: a newer save supersedes nothing that is
   // delivery-uncertain.
-  async #discardSupersededCanceledNotes(
-    transaction: IDBTransaction,
-    source: MutationRecord | undefined,
-  ): Promise<void> {
+  // The supersede discard runs in its own write AFTER the settlement
+  // commits, never inside it: the settle's commit boundary is the moment the
+  // world (and the note editor's parked-save replay) observes the settle, and
+  // carrying this scan inside the transaction delayed that boundary past what
+  // the replay's staging tolerates (NotesPanel's B-save-behind-A tests).
+  // Supersede cleanup is best-effort: a failed write leaves the canceled rows
+  // for the next settle, clear, or delete - the discardCanceledMutations rule.
+  #discardSupersededCanceledNotesAfterSettle(source: MutationRecord | undefined): void {
     if (source?.method !== "notes/human/set") return;
-    const store = transaction.objectStore(OUTBOX_STORE);
-    const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
-    for (const record of records) {
-      if (
-        record.method === "notes/human/set" &&
-        record.targetRef === source.targetRef &&
-        record.state === "canceled" &&
-        record.intentSequence < source.intentSequence
-      ) {
-        await requestResult(store.delete(record.clientMutationId));
+    void this.#write(OUTBOX_STORE, "discardCanceled", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+      for (const record of records) {
+        if (
+          record.method === "notes/human/set" &&
+          record.targetRef === source.targetRef &&
+          record.state === "canceled" &&
+          record.intentSequence < source.intentSequence
+        ) {
+          await requestResult(store.delete(record.clientMutationId));
+        }
       }
-    }
+    }).catch(() => {
+      // Left for the next settle, clear, or delete.
+    });
   }
 
   // Commit attempt evidence before transport so another tab or a reload cannot
