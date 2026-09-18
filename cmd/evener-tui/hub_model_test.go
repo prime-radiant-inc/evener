@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1299,9 +1300,7 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	m.session.setInputValue("/dashboard")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	// Leaving the session also clears the terminal title; no async work.
-	if title, ok := windowTitleFromCmd(cmd); !ok || title != "" {
-		t.Fatalf("/dashboard issued an unexpected command: title=(%q, %v)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd, "")
 	got := updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/dashboard mode=%v", got.mode)
@@ -1312,9 +1311,7 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	// Navigating to the project dashboard also clears the terminal title; no
 	// async work.
-	if title, ok := windowTitleFromCmd(cmd); !ok || title != "" {
-		t.Fatalf("/project issued an unexpected command: title=(%q, %v)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd, "")
 	got = updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/project mode=%v, want dashboard", got.mode)
@@ -2108,9 +2105,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	updated, cmd = model.Update(cmd())
 	// Entering the session now also titles the terminal; anything else would be
 	// an unexpected follow-up command.
-	if title, ok := windowTitleFromCmd(cmd); !ok || title != "spawned session" {
-		t.Fatalf("session detail returned unexpected command: title=(%q, %v)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd, "spawned session")
 	model = updated.(hubModel)
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
 		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
@@ -4468,7 +4463,36 @@ func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 	}
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+		// quitCmd clears the terminal window title, then quits, as one ordered
+		// sequence: a quit from a session view must not leave the session title
+		// on the terminal after the TUI exits.
+		seq := reflect.ValueOf(msg)
+		if seq.Kind() != reflect.Slice {
+			t.Fatalf("expected tea.QuitMsg or an ordered quit sequence, got %T", msg)
+		}
+		var titles []string
+		quit := false
+		for i := 0; i < seq.Len(); i++ {
+			child, ok := seq.Index(i).Interface().(tea.Cmd)
+			if !ok {
+				t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
+			}
+			switch childMsg := child().(type) {
+			case tea.QuitMsg:
+				quit = true
+			default:
+				if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
+					titles = append(titles, fmt.Sprint(childMsg))
+				}
+			}
+		}
+		if !quit {
+			t.Fatalf("quit sequence does not quit: %T", msg)
+		}
+		if len(titles) != 1 || titles[0] != "" {
+			t.Fatalf("quit must clear the window title first: titles=%q", titles)
+		}
+		return
 	}
 }
 

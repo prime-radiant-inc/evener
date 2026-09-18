@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -9,17 +10,17 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// windowTitleFromCmd runs cmd (and any tea.Batch it contains) and returns the
-// title of the tea.SetWindowTitle command it finds. bubbletea's
-// setWindowTitleMsg is unexported, so the command is identified by its message
-// type name; the walk executes every command it is handed, so callers must
-// pass a command whose legs do not block.
-func windowTitleFromCmd(cmd tea.Cmd) (string, bool) {
-	var title string
-	var found bool
+// windowTitleCmds runs cmd (flattening every tea.Batch level) and returns the
+// title of the tea.SetWindowTitle command it contains, whether it was found,
+// and every other message the batch produced. bubbletea's setWindowTitleMsg is
+// unexported, so the title command is identified by its message type name.
+//
+// Callers that mean "and nothing else" must check others: a batch carrying an
+// unexpected extra command would otherwise pass on finding the title.
+func windowTitleCmds(cmd tea.Cmd) (title string, found bool, others []tea.Msg) {
 	var walk func(tea.Cmd)
 	walk = func(c tea.Cmd) {
-		if c == nil || found {
+		if c == nil {
 			return
 		}
 		switch msg := c().(type) {
@@ -31,11 +32,29 @@ func windowTitleFromCmd(cmd tea.Cmd) (string, bool) {
 			if fmt.Sprintf("%T", msg) == "tea.setWindowTitleMsg" {
 				title = fmt.Sprint(msg)
 				found = true
+				return
 			}
+			others = append(others, msg)
 		}
 	}
 	walk(cmd)
-	return title, found
+	return title, found, others
+}
+
+// requireOnlyWindowTitle asserts cmd produced exactly one SetWindowTitle with
+// want and no other command.
+func requireOnlyWindowTitle(t *testing.T, cmd tea.Cmd, want string) {
+	t.Helper()
+	title, ok, others := windowTitleCmds(cmd)
+	if !ok {
+		t.Fatalf("no tea.SetWindowTitle command in %T", cmd)
+	}
+	if title != want {
+		t.Fatalf("SetWindowTitle = %q, want %q", title, want)
+	}
+	if len(others) != 0 {
+		t.Fatalf("SetWindowTitle came with unexpected commands: %#v", others)
+	}
 }
 
 // enterWindowTitleSession drives a real session entry so the tests start from
@@ -67,13 +86,7 @@ func TestUpdateSetsWindowTitleOnSessionEntry(t *testing.T) {
 		},
 		ref: "local:th_1",
 	})
-	title, ok := windowTitleFromCmd(cmd)
-	if !ok {
-		t.Fatal("session entry returned no tea.SetWindowTitle command")
-	}
-	if title != "Fix the flaky test" {
-		t.Fatalf("SetWindowTitle = %q, want %q", title, "Fix the flaky test")
-	}
+	requireOnlyWindowTitle(t, cmd, "Fix the flaky test")
 }
 
 // A session-name change (a user rename, the auto-namer's first name, or a
@@ -98,12 +111,19 @@ func TestUpdateSetsWindowTitleOnNameChanged(t *testing.T) {
 	if got := hm.detail.Title; got != "Compaction refresh name" {
 		t.Fatalf("detail title = %q, want %q", got, "Compaction refresh name")
 	}
-	title, ok := windowTitleFromCmd(cmd)
+	title, ok, others := windowTitleCmds(cmd)
 	if !ok {
 		t.Fatal("name-changed event returned no tea.SetWindowTitle command")
 	}
 	if title != "Compaction refresh name" {
 		t.Fatalf("SetWindowTitle = %q, want %q", title, "Compaction refresh name")
+	}
+	// The only other leg is the frame wait, primed above.
+	if len(others) != 1 {
+		t.Fatalf("unexpected commands beside the title: %#v", others)
+	}
+	if _, isDrain := others[0].(hubNotificationMsg); !isDrain {
+		t.Fatalf("extra command = %T, want the primed frame drain", others[0])
 	}
 }
 
@@ -117,13 +137,7 @@ func TestUpdateClearsWindowTitleOnDashboardReturn(t *testing.T) {
 	if hm.mode != hubModeDashboard {
 		t.Fatalf("mode = %v, want hubModeDashboard after ctrl+o", hm.mode)
 	}
-	title, ok := windowTitleFromCmd(cmd)
-	if !ok {
-		t.Fatal("dashboard return returned no tea.SetWindowTitle command")
-	}
-	if title != "" {
-		t.Fatalf("SetWindowTitle = %q, want an empty (clearing) title", title)
-	}
+	requireOnlyWindowTitle(t, cmd, "")
 }
 
 // The display name's fallback chain reaches the session id, then the ref, when
@@ -135,17 +149,13 @@ func TestWindowTitleFallsBackThroughSessionIdentity(t *testing.T) {
 		ref:    "local:th_1",
 	})
 	hm := updated.(hubModel)
-	if title, ok := windowTitleFromCmd(cmd); !ok || title != "01SESS" {
-		t.Fatalf("SetWindowTitle = (%q, %v), want (\"01SESS\", true)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd, "01SESS")
 
 	_, cmd2 := hm.Update(hubSessionMsg{
 		detail: hubSessionDetail{Ref: "local:th_2", SessionID: "", State: appwire.ThreadStatusIdle},
 		ref:    "local:th_2",
 	})
-	if title, ok := windowTitleFromCmd(cmd2); !ok || title != "local:th_2" {
-		t.Fatalf("SetWindowTitle = (%q, %v), want (\"local:th_2\", true)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd2, "local:th_2")
 }
 
 // An ordinary update that neither changes the view nor the name must not
@@ -153,8 +163,8 @@ func TestWindowTitleFallsBackThroughSessionIdentity(t *testing.T) {
 func TestWindowTitleNotReemittedWhenUnchanged(t *testing.T) {
 	m := enterWindowTitleSession(t, "Stable name")
 	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if _, ok := windowTitleFromCmd(cmd); ok {
-		t.Fatal("an unchanged title re-emitted tea.SetWindowTitle")
+	if title, ok, others := windowTitleCmds(cmd); ok || len(others) != 0 {
+		t.Fatalf("unchanged title emitted a command: title=(%q,%v) others=%#v", title, ok, others)
 	}
 }
 
@@ -162,45 +172,50 @@ func TestWindowTitleNotReemittedWhenUnchanged(t *testing.T) {
 func TestWindowTitleEmptyOutsideSessionView(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if _, ok := windowTitleFromCmd(cmd); ok {
-		t.Fatal("dashboard update emitted a tea.SetWindowTitle command")
+	if title, ok, others := windowTitleCmds(cmd); ok || len(others) != 0 {
+		t.Fatalf("dashboard update emitted a command: title=(%q,%v) others=%#v", title, ok, others)
 	}
 }
 
 // A name carrying terminal control characters must not reach the OSC title:
-// BEL or ESC would close the escape string early and inject sequences into the
-// user's terminal (OSC 52 clipboard writes, cursor/keyboard-mode changes).
+// C0 BEL/ESC would close the escape string early, and a UTF-8 terminal can read
+// the C1 range (U+009B/U+009D as CSI/OSC introducers, U+009C as OSC end) the
+// same way — injecting sequences (OSC 52 clipboard writes, mode changes) into
+// the user's terminal.
 func TestWindowTitleSanitizesControlSequences(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	_, cmd := m.Update(hubSessionMsg{
 		detail: hubSessionDetail{
 			Ref:       "local:th_1",
 			SessionID: "sess_1",
-			Title:     "evil\x1b]52;c;clip\x07name\x07",
+			Title:     "evil\x1b]52;c;clip\x07name\u009b31m\u009d\u009cend",
 			State:     appwire.ThreadStatusIdle,
 		},
 		ref: "local:th_1",
 	})
-	title, ok := windowTitleFromCmd(cmd)
+	title, ok, others := windowTitleCmds(cmd)
 	if !ok {
 		t.Fatal("session entry returned no tea.SetWindowTitle command")
 	}
-	const want = "evil]52;c;clipname"
+	const want = "evil]52;c;clipname31mend"
 	if title != want {
 		t.Fatalf("SetWindowTitle = %q, want %q", title, want)
 	}
+	if len(others) != 0 {
+		t.Fatalf("SetWindowTitle came with unexpected commands: %#v", others)
+	}
 	for _, r := range title {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			t.Fatalf("SetWindowTitle %q still carries control rune %#U", title, r)
 		}
 	}
 }
 
-// The sanitizer strips C0 controls and DEL, preserves printable text including
+// The sanitizer strips C0, DEL, and C1, preserves printable text including
 // non-ASCII, and caps length so a hostile preview cannot flood the title bar.
 func TestTerminalTitleStripsControlsAndCapsLength(t *testing.T) {
-	if got := terminalTitle("a\tb\x1bc\x07d\x7fe"); got != "abcde" {
-		t.Fatalf("terminalTitle = %q, want %q", got, "abcde")
+	if got := terminalTitle("a\tb\x1bc\x07d\x7fe\u009bf\u009cg"); got != "abcdefg" {
+		t.Fatalf("terminalTitle = %q, want %q", got, "abcdefg")
 	}
 	if got := terminalTitle("café ☕"); got != "café ☕" {
 		t.Fatalf("terminalTitle dropped printable runes: %q", got)
@@ -217,10 +232,10 @@ func TestHubDetailFromThreadSanitizesDisplayName(t *testing.T) {
 	detail := hubDetailFromThread(appwire.Thread{
 		ID:        "th_1",
 		SessionID: "sess_1",
-		Name:      "a\x07b\x1bc",
+		Name:      "a\x07b\x1bc\u009bd",
 	})
-	if detail.Title != "abc" {
-		t.Fatalf("detail.Title = %q, want %q", detail.Title, "abc")
+	if detail.Title != "abcd" {
+		t.Fatalf("detail.Title = %q, want %q", detail.Title, "abcd")
 	}
 }
 
@@ -248,5 +263,77 @@ func TestThreadNameChangedUpdatesCachedDashboardTitle(t *testing.T) {
 	}
 	if hm.tree.Live[0].Title != "New name" {
 		t.Fatalf("tree node title = %q, want %q", hm.tree.Live[0].Title, "New name")
+	}
+}
+
+// A rename that arrives while the dashboard is showing (another client, or an
+// auto-namer finishing) must still refresh the cached row and tree node: the
+// dashboard has no periodic refresh.
+func TestThreadNameChangedUpdatesDashboardOutsideSessionView(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test") // dashboard mode
+	ref, err := appwire.ParseRef("local:th_1")
+	if err != nil {
+		t.Fatalf("parse ref: %v", err)
+	}
+	m.rows = []hubRow{{kind: hubRowSession, ref: ref, title: "Old name"}}
+	m.tree.Live = []hubTreeNode{{Ref: "local:th_1", SessionID: "sess_1", Title: "Old name"}}
+	m.detail = hubSessionDetail{Ref: "local:th_2", SessionID: "other", Title: "Other session"}
+
+	message := appwire.NotificationMessage(appwire.NotifyThreadNameChanged, appwire.ThreadNameChangedParams{
+		ThreadID: "sess_1",
+		Ref:      "local:th_1",
+		Name:     "New name",
+		Source:   "user",
+	})
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *message.Notification})
+	hm := updated.(hubModel)
+	if hm.mode != hubModeDashboard {
+		t.Fatalf("mode = %v, want dashboard", hm.mode)
+	}
+	if hm.rows[0].title != "New name" {
+		t.Fatalf("row title = %q, want %q", hm.rows[0].title, "New name")
+	}
+	if hm.tree.Live[0].Title != "New name" {
+		t.Fatalf("tree node title = %q, want %q", hm.tree.Live[0].Title, "New name")
+	}
+	if hm.detail.Title != "Other session" {
+		t.Fatalf("renamed a different session's detail: %q", hm.detail.Title)
+	}
+}
+
+// Quitting from a session must clear the terminal title before the program
+// exits, or the terminal keeps the session title.
+func TestQuitClearsWindowTitleBeforeQuitting(t *testing.T) {
+	cmd := quitCmd()
+	msg := cmd()
+	// tea.Sequence returns an unexported ordered cmd slice.
+	seq := reflect.ValueOf(msg)
+	if seq.Kind() != reflect.Slice {
+		t.Fatalf("quitCmd produced %T, want an ordered sequence", msg)
+	}
+	var titles []string
+	sawQuit := false
+	for i := 0; i < seq.Len(); i++ {
+		child, ok := seq.Index(i).Interface().(tea.Cmd)
+		if !ok {
+			t.Fatalf("sequence element %d is not a tea.Cmd", i)
+		}
+		switch childMsg := child().(type) {
+		case tea.QuitMsg:
+			if len(titles) == 0 {
+				t.Fatal("quit ran before the window title was cleared")
+			}
+			sawQuit = true
+		default:
+			if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
+				titles = append(titles, fmt.Sprint(childMsg))
+			}
+		}
+	}
+	if len(titles) != 1 || titles[0] != "" {
+		t.Fatalf("titles = %q, want one empty clear", titles)
+	}
+	if !sawQuit {
+		t.Fatal("quitCmd did not quit")
 	}
 }

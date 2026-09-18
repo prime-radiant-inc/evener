@@ -45,6 +45,24 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySandboxEscalation(params, notificationPendingRef(notification))
 		}
 		return nil
+	case appwire.NotifyThreadNameChanged:
+		// Handled ABOVE the mode/session filters so a rename that arrives while
+		// the dashboard is showing still refreshes the cached row and tree node
+		// (the dashboard has no periodic refresh — only `r` or a reconnect
+		// re-fetches). The viewed session's detail follows when the frame is for
+		// it; the Update wrapper emits the new terminal title from that. The name
+		// is untrusted wire text, sanitized before it is stored or rendered, and
+		// an absent, blank, or all-control name is not a name.
+		var params appwire.ThreadNameChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if name := sanitizeDisplayName(params.Name); strings.TrimSpace(name) != "" {
+				m.updateDashboardRowTitle(params.Ref, name)
+				if m.notificationMatchesCurrentSession(notification) {
+					m.detail.Title = name
+				}
+			}
+		}
+		return nil
 	}
 
 	// Streaming deltas dominate the hot path (one frame per chunk); fold each
@@ -225,22 +243,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.detail.ReasoningEffortLevels = params.ReasoningEffortLevels
 			m.detail.SupportsReasoning = params.SupportsReasoning
 			m.updateDashboardRowModel(params.Ref, params.Model)
-		}
-	case appwire.NotifyThreadNameChanged:
-		// The session's display name changed (a user rename, or the auto-namer
-		// naming the session / refreshing the name after a compaction). Fold it
-		// onto the cached detail so the session header and the terminal title
-		// (hub_window_title.go, emitted by the Update wrapper) both follow the
-		// frame, and onto the cached dashboard row so a later return to the
-		// dashboard does not show the old name. The name is untrusted wire text
-		// and is sanitized before it is stored or rendered. An absent, blank, or
-		// all-control name is not a name: leave the current one.
-		var params appwire.ThreadNameChangedParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			if name := sanitizeDisplayName(params.Name); strings.TrimSpace(name) != "" {
-				m.detail.Title = name
-				m.updateDashboardRowTitle(params.Ref, name)
-			}
 		}
 	case appwire.NotifyThreadReasoningEffortChanged:
 		var params appwire.ThreadReasoningEffortChangedParams

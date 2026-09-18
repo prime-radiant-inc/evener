@@ -126,9 +126,7 @@ func TestHubModelCtrlOClearsSessionOverlay(t *testing.T) {
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
 	// Leaving the session also clears the terminal title; no async work.
-	if title, ok := windowTitleFromCmd(cmd); !ok || title != "" {
-		t.Fatalf("ctrl+o dashboard return issued an unexpected command: title=(%q, %v)", title, ok)
-	}
+	requireOnlyWindowTitle(t, cmd, "")
 	got := updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("mode=%v, want dashboard", got.mode)

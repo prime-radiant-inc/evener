@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/envvars"
@@ -68,16 +69,28 @@ func terminalTitle(name string) string {
 	return name
 }
 
-// sanitizeDisplayName strips terminal control characters (C0 and DEL) from
-// session display text. Session names and previews arrive from the wire
-// (thread.Name, thread.Preview, raw prompts, evener/thread/name/changed) and
-// are written to the terminal — both into escape strings (the window title) and
-// as rendered text (the session header, the dashboard row). Stripping the
-// controls where the name is derived keeps every one of those sinks safe;
+// quitCmd clears the terminal window title and then quits. The Update wrapper
+// emits a clear when a session view is left, but a quit never leaves the view:
+// the model still reads as a session on the way out, so without this the
+// terminal keeps the session title after the TUI exits. Sequence, not Batch, so
+// the clear is written before the program tears down.
+func quitCmd() tea.Cmd {
+	return tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+}
+
+// sanitizeDisplayName strips terminal control characters from session display
+// text: the full Unicode control range — C0, DEL, and C1 (U+0080–U+009F).
+// Session names and previews arrive from the wire (thread.Name, thread.Preview,
+// raw prompts, evener/thread/name/changed) and are written to the terminal —
+// both into escape strings (the window title) and as rendered text (the session
+// header, the dashboard row). C1 matters as much as C0 here: a UTF-8-aware
+// terminal can read U+009B/U+009D as CSI/OSC introducers and U+009C as an OSC
+// terminator, so leaving C1 through reopens the same injection the C0 strip
+// closes. Stripping at the point the name is derived keeps every sink safe;
 // printable text, including non-ASCII runes, is preserved.
 func sanitizeDisplayName(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return -1
 		}
 		return r
