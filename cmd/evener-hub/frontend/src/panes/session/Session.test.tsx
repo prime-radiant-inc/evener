@@ -2148,6 +2148,14 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       method: "item/completed",
       params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
     });
+    // The hub stamps askPending onto the thread/status/changed frame that
+    // goes with the turn ending on this ask_user call
+    // (server/appwire_runtime.go's stampAskPendingOnStatusChange); askPending
+    // is the wire's own source for a pending ask (deriveAskQuestions.ts).
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" }, askPending: true },
+    });
   });
 
   let dock: HTMLElement | null = null;
@@ -2218,6 +2226,11 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
       fake.emitNotification({
         method: "item/completed",
         params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+      });
+      // askPending: see the comment on the pending-ask test above.
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" }, askPending: true },
       });
     });
 
