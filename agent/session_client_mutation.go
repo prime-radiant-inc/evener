@@ -361,9 +361,20 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return queuedInput{}, false, err
 	}
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the refusal is read inside using only the writer's
+	// own lock, so the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
 	var claimed queuedInput
 	claimedQueue := false
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		// The claim decides the poisoned-transcript refusal on the generation it
+		// commits against: the publish path between ProcessClientMutationStart's
+		// cheap pre-check and this claim is wide, and a poisoning that lands in
+		// it must not durably claim a turn the transcript cannot record.
+		if refusal := refuseOnPoisonedTranscript(writer); refusal != nil {
+			return refusal
+		}
 		for id, pending := range snapshot.PendingExecutions {
 			if pending.Method != clientMutationMethodStart ||
 				(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {

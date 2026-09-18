@@ -1324,8 +1324,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// error because this branch returns it: without that the
 						// caller hears only the interrupt and nothing says the
 						// transcript is what stopped the drain.
-						if queued, refusal := s.popQueueHeadRefusingPoison(); refusal != nil {
+						//
+						// The check is unconditional: an interrupt whose own
+						// record poisoned the writer still owes the caller that
+						// reason when nothing is claimable to drain. The claim
+						// re-decides it on the generation it commits against,
+						// which covers a poisoning that lands in this window.
+						if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
 							err = errors.Join(err, refusal)
+						} else if queued, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
+							err = errors.Join(err, claimRefusal)
 						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
 							next = queued.Text
 							nextImages = queued.Images
@@ -1678,7 +1686,26 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 // Its callers only reach it when they have work in hand, so an idle wake against
 // a dead transcript still stands down quietly.
 func (s *Session) refuseBeforeClaimingOnPoisonedTranscript() error {
-	if !s.attachedTranscript().Poisoned() {
+	return refuseOnPoisonedTranscript(s.attachedTranscript())
+}
+
+// refuseOnPoisonedTranscript is refuseBeforeClaimingOnPoisonedTranscript for a
+// writer the caller already sampled. It reads only the writer's own lock, so a
+// claim inside the mutation-store serializer can decide the refusal without
+// waiting on Session.mu: the serializer never waits on s.mu, and a Session.mu
+// holder that then reaches the serializer would deadlock. Nil-safe, like the
+// writer's own doors -- a session with no state directory has no writer and so
+// nothing to refuse.
+//
+// The read is as tight as the lock order allows, but it is not atomic with the
+// claim's commit: the writer's lock and the store's are different resources, and
+// holding the writer's across the commit would invert their order. A poisoning
+// that lands between this read and the commit is therefore still possible; what
+// the claim guarantees is that the refusal and the claim decision see one
+// generation, and both claim callers give the claim back when the turn loop then
+// refuses it.
+func refuseOnPoisonedTranscript(writer *transcript.Writer) error {
+	if !writer.Poisoned() {
 		return nil
 	}
 	return errTranscriptRefusesRecords()

@@ -329,6 +329,10 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	if s.cfg.testOnly.steeringCarrierClaiming != nil {
 		s.cfg.testOnly.steeringCarrierClaiming()
 	}
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the claim reads only the writer's own lock inside, so
+	// the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
 	var carrier queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
@@ -339,7 +343,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			// claim commits against. Returning it from the mutation is what
 			// keeps the refusal from committing anything -- a nil return would
 			// save the generation the claim then declined to change.
-			if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+			if refusal := refuseOnPoisonedTranscript(writer); refusal != nil {
 				return refusal
 			}
 			snapshot.ActiveTurnID = turnID

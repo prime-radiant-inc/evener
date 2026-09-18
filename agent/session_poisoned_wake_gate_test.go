@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -97,7 +98,10 @@ func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
 	queueOneMutation(t, sess, "queued-behind-a-dead-transcript", "runs after the restart")
 	poisonSessionTranscript(t, sess)
 
-	claimed := sess.popQueueHead()
+	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	if !errors.Is(refusal, transcript.ErrWriterPoisoned) {
+		t.Fatalf("popQueueHeadRefusingPoison refusal = %v, want one wrapping transcript.ErrWriterPoisoned", refusal)
+	}
 	if claimed.ClientMutationID != "" {
 		t.Fatalf("popQueueHead claimed %q on a poisoned transcript; the turn it announced cannot be recorded", claimed.ClientMutationID)
 	}
@@ -106,5 +110,47 @@ func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
 	}
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("ActiveTurnID = %q after the refused claim, want empty", got)
+	}
+}
+
+// TestClaimSamplesSessionMuOutsideTheStoreSerializer: a claim holds
+// clientMutations.mu for the whole of its mutation, and the serializer must
+// never wait on Session.mu there -- a Session.mu holder that then reaches the
+// serializer would deadlock. The claim samples the transcript writer under
+// Session.mu before it enters the serializer and reads the refusal with only the
+// writer's own lock inside (issue #1165 review).
+func TestClaimSamplesSessionMuOutsideTheStoreSerializer(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "queued-for-the-lock-order-check", "runs")
+
+	// Hold Session.mu across the claim, the way a meta construction or a history
+	// fold that later reaches the serializer would.
+	sess.mu.Lock()
+	claimDone := make(chan struct{})
+	go func() {
+		defer close(claimDone)
+		_, _ = sess.popQueueHeadRefusingPoison()
+	}()
+
+	// Let the claim reach the serializer. It cannot finish while Session.mu is
+	// held either way; the question is only what it holds while it waits.
+	time.Sleep(250 * time.Millisecond)
+	select {
+	case <-claimDone:
+		sess.mu.Unlock()
+		t.Fatal("the claim finished while Session.mu was held; the test's setup is wrong")
+	default:
+	}
+	// The store serializer must remain free: if the claim waited on Session.mu
+	// while holding clientMutations.mu, that mutex would be held right now.
+	held := !sess.clientMutations.mu.TryLock()
+	if !held {
+		sess.clientMutations.mu.Unlock()
+	}
+	sess.mu.Unlock()
+	<-claimDone
+	if held {
+		t.Fatal("the queue claim held the mutation-store mutex while waiting on Session.mu: the serializer must never wait on s.mu")
 	}
 }
