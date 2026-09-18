@@ -93,6 +93,12 @@ export function createMutationProjectionFence<
   const refreshGenerations = new Map<string, number>();
   let refreshEpoch = 0;
 
+  // Private helper: true if a target's current generation is still fresh
+  // enough to apply this refresh's results.
+  function targetIsCurrent(generation: number, target: string): boolean {
+    return generation >= Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0);
+  }
+
   return {
     epoch: () => refreshEpoch,
 
@@ -118,7 +124,7 @@ export function createMutationProjectionFence<
             : [ref],
         );
         for (const target of candidates) {
-          if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0)) {
+          if (!targetIsCurrent(generation, target)) {
             candidates.delete(target);
           } else {
             refreshGenerations.set(target, generation);
@@ -140,7 +146,7 @@ export function createMutationProjectionFence<
             // not when (or whether) its own read ever resolves.
             if (refreshEpoch !== epoch) return new Set();
             for (const target of accepted) {
-              if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0)) {
+              if (!targetIsCurrent(generation, target)) {
                 accepted.delete(target);
               }
             }
