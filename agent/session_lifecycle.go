@@ -1324,9 +1324,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// error because this branch returns it: without that the
 						// caller hears only the interrupt and nothing says the
 						// transcript is what stopped the drain.
-						if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+						if queued, refusal := s.popQueueHeadRefusingPoison(); refusal != nil {
 							err = errors.Join(err, refusal)
-						} else if queued := s.popQueueHead(); inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
+						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
@@ -1422,7 +1422,16 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			}
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
 			// turn; its image attachments ride along as ContentImage parts.
-			queued = s.popQueueHead()
+			//
+			// The claim refuses poison itself, on the generation it commits
+			// against, so a poisoning that lands after the check above still
+			// cannot pop a message for a turn the transcript will refuse. That
+			// refusal ends the input exactly as the check would.
+			var popRefusal error
+			queued, popRefusal = s.popQueueHeadRefusingPoison()
+			if popRefusal != nil {
+				return strings.Join(outputs, "\n"), s.refuseTurnOnPoisonedTranscript(processCtx)
+			}
 			// User steering the turn that just ran left behind -- a queue
 			// drained as steering after its last model call was in flight --
 			// has no turn of its own, and the input is not over until it has
@@ -1439,7 +1448,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// wake, and this rung is not one. The selector sees the park too
 			// and takes goIdle ahead of the autonomous rungs.
 			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
-				if carrier, ok := s.claimSteeringCarrierInput(); ok {
+				carrier, carrierRefusal := s.claimSteeringCarrierInput()
+				if carrierRefusal != nil {
+					return strings.Join(outputs, "\n"), s.refuseTurnOnPoisonedTranscript(processCtx)
+				}
+				if carrier.SteeringCarrier {
 					queued = carrier
 					if s.cfg.testOnly.steeringCarrierClaimed != nil {
 						s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)

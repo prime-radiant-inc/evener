@@ -220,22 +220,18 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
-	// Refuse only a wake that has something to claim. An idle poll against a
-	// dead transcript claims nothing and loses nothing, and answering it with an
-	// error would turn every poll into a logged failure for the rest of the
-	// session's life; the start path takes the same shape by checking after its
-	// runnable test. Parked work is idle work for this purpose: a Stop holds the
-	// queue and the steering rail, and both claims below refuse a held entry, so
-	// asking the claims' own predicates is what keeps the refusal and the claim
-	// from disagreeing about what counts as work. Predicates rather than the
-	// claims themselves because claiming is the durable act this guard exists to
-	// prevent.
-	if s.wakeHasClaimableWork() {
-		if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
-			return "", false, err
-		}
+	// Each claim below decides the poisoned-transcript refusal on the same
+	// generation it claims on, so nothing here has to read a claimability
+	// snapshot the claim might then contradict. A wake that claims nothing --
+	// an idle poll, or work a Stop parked in the meantime -- stands down
+	// quietly, because answering it with an error would turn every poll into a
+	// logged failure for the rest of the session's life; a wake that would
+	// claim a poisoned transcript refuses before announcing a turn it cannot
+	// record.
+	queued, refusal := s.popQueueHeadRefusingPoison()
+	if refusal != nil {
+		return "", false, refusal
 	}
-	queued := s.popQueueHead()
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.steeringParkedNow() {
 		// A wake the daemon buffered before the last attempt failed -- the
 		// steer's own acceptance wake, held while the input that then ran the
@@ -244,8 +240,11 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		return "", false, nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
-		var claimed bool
-		if queued, claimed = s.claimSteeringCarrierInput(); !claimed {
+		carrier, carrierRefusal := s.claimSteeringCarrierInput()
+		if carrierRefusal != nil {
+			return "", false, carrierRefusal
+		}
+		if !carrier.SteeringCarrier {
 			// Another mutation already owns the active-turn slot, or an
 			// interrupt fence is ending one: this wake cannot name itself.
 			// Stand down rather than run unaddressable -- the steering stays
@@ -253,6 +252,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// contract mintRunningTurnID's callers rely on.
 			return "", false, nil
 		}
+		queued = carrier
 		// The claim is handed back by the run itself, on every exit: the
 		// drain loop after each turn, and the entry gate when it refuses a
 		// closed session before the loop (releaseSteeringCarrierClaim). One
@@ -297,23 +297,29 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 // -- rather than minting a fresh one, so the id returned in that mutation's
 // Applied receipt is the id that actually runs.
 //
-// Returns ok=false when nothing is claimable: an interrupt fence is ending a
-// turn, another mutation already holds the active-turn slot, or (a benign
-// race with whatever cleared hasPendingUserSteering's answer between the
+// It returns a zero carrier when nothing is claimable: an interrupt fence is
+// ending a turn, another mutation already holds the active-turn slot, or (a
+// benign race with whatever cleared hasPendingUserSteering's answer between the
 // caller's check and this call) no user steering is left pending. The caller
-// treats every case the same way -- stand down -- because the steering that
-// prompted the wake, if still queued, stays queued for whichever turn runs
+// treats every such case the same way -- stand down -- because the steering
+// that prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
-func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
+//
+// It returns a refusal instead when it would have claimed on a poisoned
+// transcript. That refusal is decided on the same generation the claim acts on
+// (inside the mutate below), so a poisoning or a Stop that lands after the
+// caller decided the steer was runnable cannot hand the steer to a turn the
+// transcript cannot record.
+func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, refusal error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering carrier admission failed: %v", admissionErr)})
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
 	// Eligibility is decided on one sample: the store as the serializer holds
 	// it, plus the in-flight set taken under s.mu just before -- the serializer
@@ -323,16 +329,28 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 	if s.cfg.testOnly.steeringCarrierClaiming != nil {
 		s.cfg.testOnly.steeringCarrierClaiming()
 	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
 		if id, turnID := claimableSteeringCarrier(snapshot, inFlight); turnID != "" {
+			// The refusal is part of the claim decision, on the generation this
+			// claim commits against.
+			if refusal = s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+				return nil
+			}
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
 		}
 		return nil
-	}); err != nil {
+	})
+	// A refusal is the transcript's, not the store's: it is reported even if
+	// the no-op commit that carried it also failed, because the refusal already
+	// proves this claim claimed nothing.
+	if refusal != nil {
+		return queuedInput{}, refusal
+	}
+	if err != nil {
 		// A refused write parks the steer the way a failed append does: it
 		// stays accepted and queued, runnable (hasRunnableUserSteering keeps
 		// the session from resting), and nothing here arms a wake of its own
@@ -341,9 +359,9 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 		// returns nil above.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		s.parkSteering()
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
-	return carrier, carrier.SteeringCarrier
+	return carrier, nil
 }
 
 // steeringCarrierRailOpen reports whether the steering rail is open to a claim
@@ -414,24 +432,6 @@ func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) car
 		return carrierSteerUndelivered
 	}
 	return carrierSteerDelivered
-}
-
-// steeringCarrierClaimable reports whether claimSteeringCarrierInput would take a
-// carrier turn: the rail is open and a steer is ready to use it. Like
-// queueHeadClaimable it is the whole of that decision, so a caller asking
-// whether this session has steering it could actually run asks the question the
-// claim asks.
-func steeringCarrierClaimable(snapshot *clientMutationSnapshot, inFlight map[string]string) bool {
-	_, turnID := claimableSteeringCarrier(snapshot, inFlight)
-	return steeringCarrierRailOpen(snapshot) && turnID != ""
-}
-
-// wakeHasClaimableWork reports whether this wake has work it could actually
-// take, by the same predicates the two claims decide with.
-func (s *Session) wakeHasClaimableWork() bool {
-	inFlight := s.steeringInFlightSample()
-	snapshot := s.clientMutations.snapshot()
-	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot, inFlight)
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored
