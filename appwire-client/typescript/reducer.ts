@@ -1023,13 +1023,88 @@ export function hasWarningText(value: unknown): value is string {
 // neither host's own display bound can be assumed to run before something
 // else reads item.text.
 const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+// Generous bounds for the pre-stringify prune below: comfortably above what
+// any real warning frame carries, but small enough that a transport-sized
+// (up to 128 MiB) malformed frame can never make JSON.stringify walk more
+// than a tiny fraction of it.
+const RAW_WARNING_FRAME_MAX_FIELD_CHARS = RAW_WARNING_FRAME_MAX_CHARS;
+const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
+const RAW_WARNING_FRAME_MAX_OBJECT_KEYS = 50;
+const RAW_WARNING_FRAME_MAX_DEPTH = 6;
+// Total object/array entries the prune will walk across the WHOLE frame,
+// regardless of how the size is spread across depth and breadth. The
+// per-level array/key caps alone leave a gap: many small objects, each
+// individually within the array/key/depth bounds, can still sum to a huge
+// tree for JSON.stringify to walk.
+const RAW_WARNING_FRAME_MAX_NODES = 500;
+
+// Prunes a value to a small bound before it ever reaches JSON.stringify:
+// every string truncated to RAW_WARNING_FRAME_MAX_FIELD_CHARS UTF-16 units,
+// every array/object to its first 50 items/keys, nesting cut off at 6
+// levels, and the whole walk cut off after RAW_WARNING_FRAME_MAX_NODES
+// entries regardless of shape. Without this, JSON.stringify(params) itself
+// walks the WHOLE frame — up to the transport's 128 MiB limit — before
+// rawWarningFrame gets a chance to slice anything; bounding the input, not
+// just the output, is what keeps that walk small regardless of how large
+// or how shaped the wire frame actually is.
+function prunedForStringify(value: unknown, depth: number, budget: { remaining: number }): unknown {
+  if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
+  budget.remaining -= 1;
+  if (typeof value === "string") {
+    return value.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS
+      ? `${value.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…`
+      : value;
+  }
+  if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
+    return typeof value === "object" && value !== null ? "…" : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
+  }
+  if (typeof value === "object" && value !== null) {
+    // A wire key literally named "__proto__" is a real, own, enumerable
+    // property on the parsed object (JSON.parse never invokes a setter) -
+    // assigning into a plain `{}` here would invoke Object.prototype's
+    // __proto__ setter instead of creating an own property, silently
+    // dropping that field from the pruned result. Object.create(null) has
+    // no such setter, so every assignment below is a genuine own property.
+    const pruned: Record<string, unknown> = Object.create(null);
+    // for...in still needs one full enumeration of value's own keys (so
+    // does Object.keys/Object.entries) — that step is O(keys), the same
+    // order as the JSON.parse that produced this object in the first
+    // place, so it adds no NEW asymptotic cost on top of what parsing the
+    // wire frame already paid. What for...in avoids is allocating a
+    // [key, value] PAIR per key and READING more values than survive the
+    // cap: Object.entries reads and copies every value up front, while this
+    // loop counts and breaks, reading (and copying) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS + 1 property values regardless of
+    // how many keys the object has.
+    let taken = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (taken >= RAW_WARNING_FRAME_MAX_OBJECT_KEYS || budget.remaining <= 0) break;
+      taken++;
+      // The key-count cap above bounds how many properties survive, but
+      // says nothing about how long any one property NAME is — an
+      // oversized key would otherwise ride through verbatim, the same
+      // vector the value-length bound above closes for string values.
+      const boundedKey =
+        key.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS ? `${key.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…` : key;
+      pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
+    }
+    return pruned;
+  }
+  return value;
+}
 
 function rawWarningFrame(params: WarningParams): string {
   // Array.from splits a string into code points, not UTF-16 units, so a
   // surrogate pair (an emoji, or anything outside the BMP) straddling the
   // bound is kept or dropped whole - a plain String#slice(0, N) can instead
   // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
-  const codePoints = Array.from(JSON.stringify(params));
+  const codePoints = Array.from(
+    JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES })),
+  );
   return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
 }
 
