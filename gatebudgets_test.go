@@ -305,3 +305,48 @@ func TestRunModuleTestsWiresThroughGateBudgets(t *testing.T) {
 		}
 	}
 }
+
+// TestGateShardConcurrencyFollowsTheLoadAwareBudget pins the total shard
+// concurrency the gate exports. The agent-shards runner starts one process per
+// shard, and each shard's AGENT_SHARD_PARALLEL bounds only the tests inside it,
+// so this budget is what keeps a one-CPU cgroup from getting one process per
+// shard. gate_budget 8 8 is min(cores, 8) on an idle machine, so a host with at
+// least 8 CPUs still starts every shard at once (unchanged) while a smaller or
+// busier one starts fewer.
+func TestGateShardConcurrencyFollowsTheLoadAwareBudget(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		cores string
+		load  string
+		want  string
+	}{
+		{"idle host with at least 8 CPUs starts every shard", "16", "0", "8"},
+		{"idle 4-core host is capped by its cores", "4", "0", "4"},
+		{"idle one-CPU cgroup starts one shard", "1", "0", "1"},
+		{"a loaded host backs the cap off", "16", "13.5", "2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := runSourcedGate(t, stubProbes(tc.cores, tc.load)+
+				`gate_init_budgets
+printf '%s' "$AGENT_SHARD_CONCURRENCY"`)
+			if got != tc.want {
+				t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q (cores=%s load=%s)", got, tc.want, tc.cores, tc.load)
+			}
+		})
+	}
+}
+
+// TestGateShardConcurrencyHonorsEnvironmentOverride pins that an explicit value
+// wins over the budget, the way the other AGENT_SHARD_* budgets behave.
+func TestGateShardConcurrencyHonorsEnvironmentOverride(t *testing.T) {
+	t.Parallel()
+	got := runSourcedGateEnv(t, stubProbes("16", "0")+
+		`gate_init_budgets
+printf '%s' "$AGENT_SHARD_CONCURRENCY"`, "AGENT_SHARD_CONCURRENCY=3")
+	if want := "3"; got != want {
+		t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q from the environment", got, want)
+	}
+}
