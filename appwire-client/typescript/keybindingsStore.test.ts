@@ -15,7 +15,7 @@ import {
 } from "./keybindingsStore";
 import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
-import { FakeClient, gateRequests } from "./testing/fakeClient";
+import { FakeClient, gateSettlements, type Settlement } from "./testing/fakeClient";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
@@ -45,13 +45,13 @@ async function readyStore(client: FakeClient, deps: Partial<KeybindingsStoreDeps
   return store;
 }
 
-/** The Nth call's resolver from gateRequests, or a loud failure - indexed
+/** The Nth call's settlement from gateSettlements, or a loud failure - indexed
  * access into that array is possibly undefined to the type checker even
  * once a `toHaveLength` assertion has proven the call landed. */
-function replyAt(replies: ((response: unknown) => void)[], index: number): (response: unknown) => void {
-  const release = replies[index];
-  if (!release) throw new Error(`no gated request at index ${index}`);
-  return release;
+function replyAt(settlements: Settlement[], index: number): Settlement {
+  const settlement = settlements[index];
+  if (!settlement) throw new Error(`no gated request at index ${index}`);
+  return settlement;
 }
 
 function clientServing(revision: number, served: KeybindingsOverrides["rules"] = []): FakeClient {
@@ -809,7 +809,7 @@ describe("the checkpointed draft editor", () => {
     const client = clientServing(3);
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
-    const replies = gateRequests(client, patchMethod);
+    const replies = gateSettlements(client, patchMethod);
     const direct = store.getState().patchOverrides(rules);
     await vi.waitFor(() => expect(replies).toHaveLength(1));
 
@@ -825,11 +825,11 @@ describe("the checkpointed draft editor", () => {
     // gated reply so it can settle without touching the abandoned one.
     const save = store.getState().saveDraft(rules);
     await vi.waitFor(() => expect(replies).toHaveLength(2));
-    replyAt(replies, 1)(payload(4, rules));
+    replyAt(replies, 1).resolve(payload(4, rules));
     await expect(save).resolves.toBeDefined();
 
     // The abandoned reply, landing later, is superseded and touches nothing.
-    replyAt(replies, 0)(payload(5, rules));
+    replyAt(replies, 0).resolve(payload(5, rules));
     await direct;
   });
 
@@ -837,7 +837,7 @@ describe("the checkpointed draft editor", () => {
     const client = clientServing(3);
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
-    const replies = gateRequests(client, patchMethod);
+    const replies = gateSettlements(client, patchMethod);
 
     const one = store.getState().patchOverrides(rules);
     await vi.waitFor(() => expect(replies).toHaveLength(1));
@@ -858,7 +858,7 @@ describe("the checkpointed draft editor", () => {
     // instead of a bare `await` - the bug this guards against is exactly a
     // saveDraft call slipping past the gate and hanging on a PATCH reply
     // nothing in this test ever sends.
-    replyAt(replies, 0)(payload(4, rules));
+    replyAt(replies, 0).resolve(payload(4, rules));
     await one;
     const attempt = store.getState().saveDraft(rules);
     attempt.catch(() => {});
@@ -872,7 +872,7 @@ describe("the checkpointed draft editor", () => {
     expect(outcome).toBe("rejected:Hub keybindings settings are unavailable.");
     expect(replies).toHaveLength(2);
 
-    replyAt(replies, 1)(payload(5, rules));
+    replyAt(replies, 1).resolve(payload(5, rules));
     await two;
   });
 
