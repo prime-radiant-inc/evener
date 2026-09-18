@@ -135,8 +135,15 @@ describe("two stores share nothing", () => {
     storeA.getState().editDraft(otherRules);
 
     // storeB's own edit, composed against its now-stale classification, must
-    // refuse rather than clobber storeA's newer checkpoint.
-    expect(() => storeB.getState().editDraft(otherRules)).toThrow("Could not save the shortcut draft locally.");
+    // refuse and adopt storeA's checkpoint - a conflict, not a storage
+    // failure that never happened.
+    const attempted = [{ action: ACTIONS.railToggle, chord: "Control+R" }];
+    expect(() => storeB.getState().editDraft(attempted)).toThrow("Shortcuts changed again. Review the current values.");
+    expect(storeB.getState()).toMatchObject({
+      storageUnavailable: false,
+      draftError: null,
+      draft: { version: 1, revision: 3, rules: otherRules },
+    });
     expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: otherRules });
   });
 });
@@ -464,6 +471,37 @@ describe("the checkpointed draft editor", () => {
       storageUnavailable: true,
       draftError: "Could not save the shortcut draft locally.",
     });
+  });
+
+  test("editDraft's persistDraft refusal adopts the replacement instead of reporting storageUnavailable", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const mine: KeybindingDraftCheckpoint = { id: "mine", baseRevision: 3, rules, writeUncertain: false };
+    drafts.storage.save(mine);
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+
+    // Another window replaces the SAME classified record while this store
+    // still thinks it owns it - a CAS mismatch, not a storage exception.
+    const otherRules = [{ action: ACTIONS.railToggle, chord: "Control+R" }];
+    const replacement: KeybindingDraftCheckpoint = {
+      id: "other",
+      baseRevision: 3,
+      rules: otherRules,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    const attempted = [{ action: ACTIONS.paletteOpen, chord: "Meta+K" }];
+    expect(() => store.getState().editDraft(attempted)).toThrow("Shortcuts changed again. Review the current values.");
+
+    // The refusal adopts what is actually on disk rather than reporting a
+    // storage failure and leaving the stale classification in place.
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: false,
+      draftError: null,
+      draft: { version: 1, revision: 3, rules: otherRules },
+    });
+    expect(drafts.stored()).toEqual(replacement);
   });
 
   // The no-port fallback storage's removeIf/replaceIf report success

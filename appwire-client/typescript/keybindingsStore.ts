@@ -78,7 +78,14 @@ export type KeybindingDraftStorage = DraftPort<KeybindingDraftCheckpoint>;
  * silently dropping the in-memory draft over a race that cannot happen
  * without real storage behind it. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true, replaceIf: () => true };
+  return {
+    createId: () => "memory",
+    load: () => null,
+    save() {},
+    insertIfAbsent: () => true,
+    removeIf: () => true,
+    replaceIf: () => true,
+  };
 }
 
 export interface KeybindingsStoreFields {
@@ -250,6 +257,7 @@ const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the shortcut draft local
 const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft. Check current shortcuts to retry.";
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
+const DRAFT_REVIEW_AGAIN_MESSAGE = "Shortcuts changed again. Review the current values.";
 
 /** The hub's whitespace, enumerated: `strings.TrimSpace` tests each rune with
  * Go's `unicode.IsSpace`, which is U+0009-U+000D, U+0020, U+0085 and U+00A0
@@ -1197,18 +1205,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
+    const checkpoint = { ...input, id: drafts.createId() };
+    let saved: boolean;
     try {
-      const checkpoint = { ...input, id: drafts.createId() };
-      // save()'s own refusal (another writer replaced the classified record
-      // since - see createDraftRepository) is treated the same as a storage
-      // exception: either way, this checkpoint was not durably recorded as
-      // the caller (editDraft, saveDraft, rebaseDraft) intended.
-      if (!drafts.save(checkpoint)) throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
-      return checkpoint;
+      saved = drafts.save(checkpoint);
     } catch {
       setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });
       throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
     }
+    if (!saved) {
+      // save()'s own refusal (another writer replaced the classified record
+      // since - see createDraftRepository) is a conflict, not a storage
+      // exception: adopt whatever is actually on disk, the same posture
+      // discardDraft/settleWrite take on their own refusal, rather than
+      // reporting storageUnavailable and leaving the stale classification
+      // in place.
+      setState(restoreDraft(getState()));
+      throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
+    }
+    return checkpoint;
   }
 
   function editDraft(rules: readonly KeybindingsRule[]): void {
@@ -1430,7 +1445,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const current = assertEditable();
     const { draft, hubLoading } = getState();
     if (draft === null || hubLoading || current.revision !== reviewedRevision)
-      throw new Error("Shortcuts changed again. Review the current values.");
+      throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
     persistDraft({ baseRevision: current.revision, rules: draft.rules, writeUncertain: false });
     setState({ draft: { ...draft, revision: current.revision }, draftConflict: false, draftError: null });
   }
