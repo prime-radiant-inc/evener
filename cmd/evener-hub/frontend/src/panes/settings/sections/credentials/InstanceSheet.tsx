@@ -424,11 +424,12 @@ export function InstanceSheet({
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
       const applied = await credentialsStore.getState().edit(params);
+      const listedInstances = credentialsStore.getState().instances;
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can
       // take - so the entry is checked against the instance this save renamed.
-      const listedRename = renamedInstanceLanded(credentialsStore.getState().instances, instance, params);
+      const listedRename = renamedInstanceLanded(listedInstances, instance, params);
       if (applied || listedRename !== undefined) toast.push("success", `Saved ${params.newName ?? instance.name}`);
       // The sheet may have moved on while the request was in flight: dismissed,
       // or pointed at another row. The write stands and the toast above is
@@ -451,7 +452,7 @@ export function InstanceSheet({
           // the save landed as — without reseeding, which would discard the
           // draft. The next Save then compares like against like instead of
           // refusing an instance that was never replaced.
-          const landed = supersededSaveLanded(credentialsStore.getState().instances, instance, params);
+          const landed = supersededSaveLanded(listedInstances, instance, params);
           if (landed !== undefined) seededIdentity.current = draftIdentity(landed);
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);
