@@ -17,15 +17,18 @@ package dev
 // whose text is `-race`, and reading it as a build flag would hand the
 // enumeration a sanitiser the caller never asked for. Normalisation and the
 // value-taking tables are shardplan.go's, so both readers consume values from
-// the same spellings, including `-test.run` for `-run`.
+// the same spellings, including `-test.run` for `-run`. Both `-args` and the
+// build-level `--` end the flags: everything after either belongs to the test
+// binary, not to `go test`.
 //
 // Two cases are refused rather than forwarded. -C changes directory before the
 // command runs, and the gate has already anchored the enumeration to each
 // module's own directory, so applying it to only one of `go list` and `go test`
 // would recreate the tree mismatch this exists to prevent. A selection-flag
-// value containing whitespace cannot be forwarded intact either: the gate
-// word-splits its `go test` invocation, so the two commands would see different
-// values.
+// value that is empty or contains whitespace cannot be forwarded intact either:
+// the gate word-splits its `go test` invocation, so the two commands would see
+// different values (and an empty value would vanish from the line-per-flag
+// handover to the shell).
 
 import (
 	"errors"
@@ -48,17 +51,19 @@ var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-
 
 // consumesValue reports whether name's value is the next argument, and so must
 // be skipped over rather than read as a flag. -tags is a selection flag this
-// walker forwards, not a skip, and -args terminates the flags; both are handled
-// by the walker itself.
+// walker forwards, not a skip, and -args/-- terminate the flags; all three are
+// handled by the walker itself.
 func consumesValue(name string) bool {
-	if name == "-tags" || name == "-args" {
+	if name == "-tags" || name == "-args" || name == "--" {
 		return false
 	}
 	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
 }
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given,
-// or an error for a flag that cannot be applied to both commands.
+// or an error for a flag that cannot be applied to both commands. Every value
+// is emitted in the `name=value` form, so a value is never a line of its own
+// that a line-oriented reader could drop.
 func packageSelectionFlags(args []string) ([]string, error) {
 	var out []string
 	for i := 0; i < len(args); i++ {
@@ -67,29 +72,22 @@ func packageSelectionFlags(args []string) ([]string, error) {
 		if name == "-C" {
 			return nil, errors.New("-C is not supported here: the gate enumerates each module from its own directory, so a -C would make go list describe a different tree than go test builds")
 		}
-		if name == "-args" {
-			// Everything after -args belongs to the test binary, not to `go
-			// test`: a word spelled -race there is an argument whose text is
-			// -race, and enumerating under it would build a tree nobody asked
-			// for.
+		if name == "-args" || name == "--" {
 			return out, nil
 		}
 		switch {
 		case packageSelectionValueFlags[name]:
-			if inline {
-				if err := checkSelectionValue(name, value); err != nil {
-					return nil, err
+			if !inline {
+				if i+1 >= len(args) {
+					continue
 				}
-				out = append(out, whole)
-				continue
-			}
-			if i+1 < len(args) {
 				i++
-				if err := checkSelectionValue(name, args[i]); err != nil {
-					return nil, err
-				}
-				out = append(out, name, args[i])
+				value = args[i]
 			}
+			if err := checkSelectionValue(name, value); err != nil {
+				return nil, err
+			}
+			out = append(out, name+"="+value)
 		case packageSelectionBareFlags[name]:
 			out = append(out, whole)
 		case consumesValue(name) && !inline:
@@ -102,8 +100,13 @@ func packageSelectionFlags(args []string) ([]string, error) {
 
 // checkSelectionValue refuses a value the gate's word-split `go test`
 // invocation cannot carry whole: `go list` would be given it intact and
-// `go test` would not, so the two would enumerate and build different trees.
+// `go test` would not, so the two would enumerate and build different trees. An
+// empty value is covered too, since an empty argv word is lost entirely to that
+// split.
 func checkSelectionValue(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("the %s value is empty, which the gate's word-split go test invocation drops; pass a non-empty value or omit the flag", name)
+	}
 	if strings.ContainsAny(value, " \t\n") {
 		return fmt.Errorf("the %s value %q contains whitespace, which the gate's word-split go test invocation cannot forward intact; pass it without whitespace", name, value)
 	}
@@ -114,8 +117,9 @@ func listBuildFlagsMain(args []string) int {
 	return listBuildFlags(args, os.Stdout, os.Stderr)
 }
 
-// listBuildFlags prints one flag per line, which is how a shell can read them
-// into an array without splitting a value on its spaces.
+// listBuildFlags prints one flag per line, each in `name=value` form for a flag
+// that takes a value. That is how a shell can read them into an array without
+// splitting a value on its spaces and without an empty value vanishing.
 func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("list-build-flags", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -136,7 +140,12 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 		// A short write would hand the gate a truncated flag list, and it would
 		// enumerate under flags the caller never set. Fail loudly instead, so
 		// the gate's own guard stops the run.
-		if _, err := fmt.Fprintln(stdout, f); err != nil {
+		line := f + "\n"
+		n, err := io.WriteString(stdout, line)
+		if err == nil && n != len(line) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "evener-dev list-build-flags: writing flags: %v\n", err)
 			return 1
 		}

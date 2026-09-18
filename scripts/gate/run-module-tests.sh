@@ -291,77 +291,77 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-root_package_list_timeout_diagnostic() {
-	local what="$1" bound="$2" package_list_log="$3" worktree gocache gomodcache
+# package_list_timeout_diagnostic <what> <bound> <module> <log-file> — the
+# cache-stall diagnostic for a bounded step. It names the module the step ran in
+# and a retry command anchored at the repository root, so a timeout in the flag
+# derivation or in any module's enumeration reads the same way.
+package_list_timeout_diagnostic() {
+	local what="$1" bound="$2" module="$3" log_file="$4" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
 	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$bound" >&2
-	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
+	printf 'run-module-tests.sh: worktree: %s (module %s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
-	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
+	printf 'run-module-tests.sh: retained log: %s\n' "$log_file" >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
-	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %s/scripts/gate/run-module-tests.sh -short -count=1\n' \
+		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$repo_root" >&2
+}
+
+# run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the
+# background, capture its stdout in log-file, and bound it: a step that outlives
+# <bound> has its whole process tree stopped and gets the cache diagnostic,
+# rather than hanging the gate. stderr is kept as <log-file>.stderr and replayed
+# on a nonzero exit. A stalled Go cache or filesystem must never hang the gate.
+run_bounded() {
+	local bound="$1" what="$2" module="$3" log_file="$4"; shift 4
+	local pid started_at status
+	"$@" >"$log_file" 2>"${log_file}.stderr" &
+	pid="$!"
+	started_at=$SECONDS
+	while kill -0 "$pid" 2>/dev/null; do
+		if [ $((SECONDS - started_at)) -ge "$bound" ]; then
+			stop_process_tree "$pid"
+			package_list_timeout_diagnostic "$what" "$bound" "$module" "${log_file}.stderr"
+			return 1
+		fi
+		sleep 0.1
+	done
+	if wait "$pid"; then
+		return 0
+	else
+		status=$?
+		cat "${log_file}.stderr" >&2
+		return "$status"
+	fi
+}
+
+# run_list_build_flags runs the helper from the repository root, where the
+# evener-dev package resolves, whatever module's directory the caller sits in.
+run_list_build_flags() {
+	( cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} )
 }
 
 # derive_list_flags sets list_flags to the caller's flags that the `go list`
-# enumeration also needs, one per line from evener-dev so a value with a space
-# in it survives into the array. It runs only on the enumeration paths (root and
-# sharded agent), and under its own bound: this `go run` compiles evener-dev
-# first, and a stalled GOCACHE/GOMODCACHE must not hang the gate before its own
-# timeout diagnostic can speak.
+# enumeration also needs, one per line from evener-dev in name=value form, so a
+# value with a space cannot be split and an empty value cannot vanish. It runs
+# only on the enumeration paths (root and sharded agent), under its own bound:
+# this `go run` compiles evener-dev first, and a stalled GOCACHE/GOMODCACHE must
+# not hang the gate before its own timeout diagnostic can speak.
 derive_list_flags() {
-	local module="$1" out_file err_file list_pid started_at list_status list_flag
+	local module="$1" out_file list_flag
 	out_file="$logdir/$module.list-build-flags"
-	err_file="${out_file}.stderr"
-	( cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} ) >"$out_file" 2>"$err_file" &
-	list_pid="$!"
-	started_at=$SECONDS
-	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$LIST_BUILD_FLAGS_TIMEOUT" ]; then
-			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic 'evener-dev list-build-flags' "$LIST_BUILD_FLAGS_TIMEOUT" "$err_file"
-			return 1
-		fi
-		sleep 0.1
-	done
-	if wait "$list_pid"; then
-		list_flags=()
-		while IFS= read -r list_flag; do
-			[ -n "$list_flag" ] && list_flags+=("$list_flag")
-		done <"$out_file"
-		return 0
-	else
-		list_status=$?
+	if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev list-build-flags' "$module" "$out_file" run_list_build_flags; then
 		printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
-		cat "$err_file" >&2
-		return "$list_status"
+		return 1
 	fi
-}
-
-run_root_package_list() {
-	local package_list="$1" package_list_stderr list_pid started_at list_status
-	package_list_stderr="${package_list}.stderr"
-	( go list ${list_flags[@]+"${list_flags[@]}"} ./... >"$package_list" 2>"$package_list_stderr" ) &
-	list_pid="$!"
-	started_at=$SECONDS
-	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
-			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic 'go list ./...' "$ROOT_PACKAGE_LIST_TIMEOUT" "$package_list_stderr"
-			return 1
-		fi
-		sleep 0.1
-	done
-	if wait "$list_pid"; then
-		return 0
-	else
-		list_status=$?
-		cat "$package_list_stderr" >&2
-		return "$list_status"
-	fi
+	list_flags=()
+	while IFS= read -r list_flag; do
+		[ -n "$list_flag" ] && list_flags+=("$list_flag")
+	done <"$out_file"
+	return 0
 }
 
 run_module() {
@@ -374,7 +374,7 @@ run_module() {
 		local pkg package_list
 		package_list="$logdir/root.packages"
 		derive_list_flags "$m" || return $?
-		run_root_package_list "$package_list" || return $?
+		run_bounded "$ROOT_PACKAGE_LIST_TIMEOUT" 'go list ./...' "$m" "$package_list" go list ${list_flags[@]+"${list_flags[@]}"} ./... || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
@@ -412,19 +412,16 @@ run_module() {
 		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
-		local pkg list_output list_status=0
-		# A failed enumeration must not pass as "no subpackages": the shard run
-		# above is already green, so a silently empty list would report a pass
-		# for packages that were never tested.
-		list_output="$(go list ${list_flags[@]+"${list_flags[@]}"} ./...)" || list_status=$?
-		if [ "$list_status" -ne 0 ]; then
-			printf 'run-module-tests.sh: go list ./... in the agent module exited %s; refusing to report a pass over an incomplete package list\n' "$list_status" >&2
-			return "$list_status"
-		fi
+		local pkg agent_list
+		agent_list="$logdir/agent.packages"
+		# Same bound and exit-status check as the root enumeration: a failed or
+		# hung go list must not pass as "no subpackages" over an already-green
+		# shard run.
+		run_bounded "$ROOT_PACKAGE_LIST_TIMEOUT" 'go list ./...' "$m" "$agent_list" go list ${list_flags[@]+"${list_flags[@]}"} ./... || return $?
 		while IFS= read -r pkg; do
 			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done <<<"$list_output"
+		done <"$agent_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi

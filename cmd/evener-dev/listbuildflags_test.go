@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,22 +36,25 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "nothing to forward", args: []string{"-short", "-count=1"}},
 		{name: "the race tag selects files", args: []string{"-race", "-short"}, want: []string{"-race"}},
 		{name: "and so do the other two sanitisers", args: []string{"-msan", "-asan"}, want: []string{"-msan", "-asan"}},
-		{name: "tags in the two-argument form", args: []string{"-tags", "integration", "-short"}, want: []string{"-tags", "integration"}},
+		{name: "tags in the two-argument form", args: []string{"-tags", "integration", "-short"}, want: []string{"-tags=integration"}},
 		{name: "tags written inline", args: []string{"--tags=integration"}, want: []string{"-tags=integration"}},
 		{name: "the boolean spelling of a sanitiser", args: []string{"-race=true"}, want: []string{"-race=true"}},
 		// The flags that change the module graph or the file set move with
 		// their value, so the enumeration resolves the same tree.
-		{name: "an overlay moves with its file", args: []string{"-overlay", "o.json"}, want: []string{"-overlay", "o.json"}},
-		{name: "and so do the module flags", args: []string{"-mod", "mod", "-modfile", "alt.mod"}, want: []string{"-mod", "mod", "-modfile", "alt.mod"}},
+		{name: "an overlay moves with its file", args: []string{"-overlay", "o.json"}, want: []string{"-overlay=o.json"}},
+		{name: "and so do the module flags", args: []string{"-mod", "mod", "-modfile", "alt.mod"}, want: []string{"-mod=mod", "-modfile=alt.mod"}},
 		{name: "and the compiler", args: []string{"--compiler=gccgo"}, want: []string{"-compiler=gccgo"}},
 		// -C cannot be applied to an enumeration the gate anchors to the
 		// module's own directory, so it is refused rather than half-applied.
 		{name: "-C is refused", args: []string{"-C", "somewhere"}, wantErr: true},
 		{name: "-C is refused inline too", args: []string{"-C=somewhere"}, wantErr: true},
 		// The gate word-splits its go test invocation, so a value with
-		// whitespace cannot reach go test the way it reaches go list.
+		// whitespace, and an empty value, cannot reach go test the way they
+		// reach go list.
 		{name: "a whitespace value is refused", args: []string{"-tags", "a b"}, wantErr: true},
 		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, wantErr: true},
+		{name: "an empty value is refused", args: []string{"-tags", ""}, wantErr: true},
+		{name: "and an inline empty value too", args: []string{"-tags="}, wantErr: true},
 		// The bug this table exists for: a regex whose text is -race is a
 		// regex, and forwarding it would enumerate under a sanitiser nobody
 		// asked for.
@@ -61,9 +65,11 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		// consumed from the same walk the shard runner uses.
 		{name: "the test-side spelling of run", args: []string{"-test.run", "-race", "-short"}},
 		{name: "and its inline form still forwards a real flag", args: []string{"-test.run=foo", "-race"}, want: []string{"-race"}},
-		// Everything after -args is the test binary's own argument list.
+		// Everything after -args, or the build-level --, is the test binary's
+		// own argument list.
 		{name: "-args ends the flags", args: []string{"-args", "foo", "-race"}},
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
+		{name: "a bare -- ends the flags too", args: []string{"-race", "--", "-tags", "x"}, want: []string{"-race"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := packageSelectionFlags(tc.args)
@@ -85,17 +91,23 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 
 func TestListBuildFlagsPrintsOnePerLine(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := listBuildFlags([]string{"--", "-tags", "a b", "-race", "-short"}, &stdout, &stderr); code == 0 {
+	if code := listBuildFlags([]string{"--", "-tags", "integration", "-race", "-short"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("listBuildFlags = %d, stderr = %q", code, stderr.String())
+	}
+	// One per line, in name=value form, is what lets a shell read the flags
+	// into an array without splitting or dropping a value.
+	if got := stdout.String(); got != "-tags=integration\n-race\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := listBuildFlags([]string{"--", "-tags", "a b"}, &stdout, &stderr); code == 0 {
 		t.Fatalf("listBuildFlags with a whitespace value = 0, want nonzero; stdout = %q", stdout.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := listBuildFlags([]string{"--", "-tags", "integration", "-race", "-short"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("listBuildFlags = %d, stderr = %q", code, stderr.String())
-	}
-	// One per line is what lets a shell read a value with a space in it.
-	if got := stdout.String(); got != "-tags\nintegration\n-race\n" {
-		t.Fatalf("stdout = %q", got)
+	if code := listBuildFlags([]string{"--", "-tags", ""}, &stdout, &stderr); code == 0 {
+		t.Fatalf("listBuildFlags with an empty value = 0, want nonzero; stdout = %q", stdout.String())
 	}
 }
 
@@ -113,16 +125,33 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write refused") }
 
+// shortWriter reports a partial write with no error, the other way a write can
+// fail to deliver the whole flag list.
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
 // TestListBuildFlagsFailsOnAShortWrite pins the guard: a truncated flag list
 // would make the gate enumerate under flags the caller never set, so the
-// subcommand must not report success when its output cannot be delivered.
+// subcommand must not report success when its output cannot be delivered,
+// whether the failure is an error or a short count.
 func TestListBuildFlagsFailsOnAShortWrite(t *testing.T) {
-	var stderr bytes.Buffer
-	if code := listBuildFlags([]string{"--", "-race"}, failingWriter{}, &stderr); code == 0 {
-		t.Fatalf("listBuildFlags with a failing writer = 0, want nonzero")
-	}
-	if !strings.Contains(stderr.String(), "writing flags") {
-		t.Fatalf("stderr = %q, want a write diagnostic", stderr.String())
+	for _, tc := range []struct {
+		name   string
+		writer io.Writer
+	}{
+		{name: "an error", writer: failingWriter{}},
+		{name: "a short count", writer: shortWriter{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if code := listBuildFlags([]string{"--", "-race"}, tc.writer, &stderr); code == 0 {
+				t.Fatalf("listBuildFlags with %s = 0, want nonzero", tc.name)
+			}
+			if !strings.Contains(stderr.String(), "writing flags") {
+				t.Fatalf("stderr = %q, want a write diagnostic", stderr.String())
+			}
+		})
 	}
 }
 
