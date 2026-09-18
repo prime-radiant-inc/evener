@@ -63,7 +63,38 @@ const (
 	// cannot fit the name — see explainActivitySkippedEntry.
 	activitySkippedEntrySuffix       = " is too large to render in one response and was skipped"
 	activitySkippedEntryShortMessage = "one entry was too large to render and was skipped"
+	// activityMaxLabelRunes and activityMaxDelegateProseRunes cap the
+	// free-form text the activity projection copies out of a session's own
+	// metadata or a delegate descriptor. Both are otherwise unbounded: a
+	// session with no generated name labels itself with its OriginalPrompt
+	// verbatim (a pasted prompt can be megabytes), and a delegate's
+	// Task/Mandate/Description are whatever the spawner passed. They are the
+	// response's FIXED parts — a label sits on every session and a
+	// continuation page carries its ancestor chain's delegate metadata no
+	// matter how the entries are trimmed — so an unbounded one goes out over
+	// activityMaxEncodedBytes with nothing left to drop (see
+	// markActivityEnvelopeTooLarge). The label cap mirrors the hub's own
+	// sidebar title cap (hubcore.maxTitleRunes), which exists for the same
+	// reason; the delegate cap is far above any ordinary brief yet bounds a
+	// max-length (activityMaxNewDepth+1) ancestor chain's Task+Description to
+	// a small fraction of the envelope.
+	activityMaxLabelRunes         = 200
+	activityMaxDelegateProseRunes = 4096
 )
+
+// truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
+// truncates so a reader can tell a capped value from a genuinely short one.
+// Rune-safe: never splits a multi-byte character.
+func truncateActivityText(s string, maxRunes int) string {
+	if maxRunes < 1 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes-1]) + "…"
+}
 
 // activityContinuation is a real, checked cursor position: resuming from
 // one re-enters the exact session a prior page's mid-list cutoff stopped
@@ -1021,7 +1052,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	projected := appwire.JobActivitySession{
 		SessionID:   snapshot.SessionID,
 		Ref:         snapshot.Ref,
-		Label:       snapshot.Label,
+		Label:       truncateActivityText(snapshot.Label, activityMaxLabelRunes),
 		Entries:     make([]appwire.JobActivityEntry, 0),
 		Diagnostics: append([]string(nil), snapshot.Diagnostics...),
 	}
@@ -1040,27 +1071,32 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 
 	entryIndex := 0
 	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
+	// Reported once for the whole list, counted: one sentence per record would
+	// make Branch.Error grow with the journal, an unbounded envelope input. It
+	// is hoisted out of the loop so an early truncation return cannot make a
+	// page's error depend on how far it got.
+	if message := unsupportedActivityJobTypesError(records); message != "" {
+		appendActivityBranchError(&projected.Branch, message)
+	}
 	for _, rec := range records {
-		if rec == nil {
+		// Unsupported records (anything but a shell job) are counted once for
+		// the whole list by unsupportedActivityJobTypesError above, not
+		// rendered and not re-reported here.
+		if rec == nil || rec.Type != jobstore.JobShell {
 			continue
 		}
-		switch rec.Type {
-		case jobstore.JobShell:
-			if entryIndex < effectiveResumeIndex {
-				entryIndex++
-				continue
-			}
-			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
-				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
-				return projected
-			}
+		if entryIndex < effectiveResumeIndex {
 			entryIndex++
-			job := projectActivityJob(rec, snapshot.Ref)
-			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
-		default:
-			appendActivityBranchError(&projected.Branch, fmt.Sprintf("job %q has unsupported type %q", rec.JobID, rec.Type))
+			continue
 		}
+		if !activityConsumeWorkUnit(budget, 1) {
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
+			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
+			return projected
+		}
+		entryIndex++
+		job := projectActivityJob(rec, snapshot.Ref)
+		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
 	}
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
 		if entryIndex < effectiveResumeIndex {
@@ -1098,9 +1134,9 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
 		NotResumableReason:  row.notResumableReason,
-		Mandate:             descriptor.Task,
-		Task:                descriptor.Task,
-		Description:         descriptor.Description,
+		Mandate:             truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
+		Task:                truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes),
+		Description:         truncateActivityText(descriptor.Description, activityMaxDelegateProseRunes),
 		AgentType:           descriptor.AgentType,
 		RequestedModel:      descriptor.RequestedModel,
 		ResolvedProfileID:   descriptor.ResolvedProfileID,
@@ -1345,6 +1381,35 @@ func appendActivityBranchError(branch *appwire.JobActivityBranchState, message s
 		return
 	}
 	branch.Error += "; " + message
+}
+
+// unsupportedActivityJobTypesError summarizes the job records this projection
+// cannot render into one counted message. One sentence per record would make
+// Branch.Error grow with the journal — an unbounded envelope input, and
+// unreadable besides — while the count and the first offender are what a
+// reader needs. A single offender keeps the original per-record wording so
+// the common case reads exactly as it always did.
+func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
+	count := 0
+	firstID := ""
+	firstType := jobstore.JobType("")
+	for _, rec := range records {
+		if rec == nil || rec.Type == jobstore.JobShell {
+			continue
+		}
+		count++
+		if count == 1 {
+			firstID, firstType = rec.JobID, rec.Type
+		}
+	}
+	switch count {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("job %q has unsupported type %q", firstID, firstType)
+	default:
+		return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, firstID, firstType)
+	}
 }
 
 func activityOutcome(status jobstore.Status) (bool, string) {
