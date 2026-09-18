@@ -560,6 +560,45 @@ describe("effective transcript display state", () => {
     });
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: preset("tools") });
   });
+
+  test("a stale client's ready callback cannot begin a generation once it has been replaced", async () => {
+    const stale = new FakeClient("connecting");
+    const current = new FakeClient("ready");
+    current.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    }));
+    const staleReady = vi.spyOn(stale, "onReady");
+    connectionStore.getState().connect(stale);
+    connectionStore.setState({
+      features: { ...(await stale.connect()).features, transcriptDisplaySettings: true },
+    });
+    // The callback the module registered on `stale`, captured before it ever
+    // fires - `stale` is still mid-handshake, so nothing has begun yet.
+    const staleReadyCallback = staleReady.mock.calls[0]?.[0];
+    expect(staleReadyCallback).toBeDefined();
+
+    connectionStore.getState().connect(current);
+    connectionStore.setState({
+      features: { ...(await current.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: preset("tools") });
+
+    // The race this fixes: `stale`'s own dispatch can snapshot its ready
+    // handlers before rewireClient's unsubscribe removes this one, so it
+    // still runs - after `current` is already the wired client.
+    staleReadyCallback?.(await stale.connect());
+
+    // A live notification on the CURRENT client's own subscription must still
+    // apply: the stale firing must not have rewired the notification listener
+    // onto `stale`, or fenced `current`'s own generation out.
+    current.emitNotification({
+      method: "evener/settings/transcriptDisplay/changed",
+      params: { layout: "desktop", revision: 2, config: toWireConfig(preset("full")) },
+    });
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });
+  });
 });
 
 function waitForHubRevision(revision: number): Promise<void> {
