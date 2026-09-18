@@ -329,6 +329,19 @@ function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. outputImagesToItemImages
+  // below reads the opposite way, because the wire itself means the opposite:
+  // OutputImages is omitzero, so nil (never had any) sends no key, while a
+  // non-nil empty list is the hub's only way to say "these are gone" — an
+  // explicit removal (appwire/output_images.go's nil/non-nil-empty/non-empty
+  // rule). Input images carry no removal signal at all (they're what the user
+  // sent), which is why they read every empty list the same as absent.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -1196,6 +1209,33 @@ function warningMessage(params: WarningParams): string {
   return "";
 }
 
+// True when value is a non-blank string — the same "is this actually content"
+// reading warningMessage above and WarningItem.tsx's renderer both take for
+// title/hint, so the raw-frame fallback below and the structured fields it
+// would otherwise duplicate never disagree about which one has something to
+// show.
+function hasWarningText(value: unknown): boolean {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+// A frame with no message anywhere is surfaced as the frame itself
+// (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
+// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
+// contract server-side). Bounded because params is unknown on the wire and
+// can carry anything; this is package-level code feeding both hosts, and
+// neither host's own display bound can be assumed to run before something
+// else reads item.text.
+const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+
+function rawWarningFrame(params: WarningParams): string {
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  const codePoints = Array.from(JSON.stringify(params));
+  return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -1678,7 +1718,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            // A real message wins. When there is truly nothing anywhere —
+            // no message, no title, no hint — the frame falls back to itself
+            // (rawWarningFrame's own comment) rather than a blank row; a
+            // title or hint alone is something to show, so the fallback
+            // never fires just because message is blank (it would otherwise
+            // duplicate title/hint and expose the routing envelope beside
+            // them, WarningItem.tsx's own contract).
+            text:
+              warningMessage(params) ||
+              (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };

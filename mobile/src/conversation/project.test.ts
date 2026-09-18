@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import type {
+  AnyNotification,
   EvenerThread,
   InputItem,
   QueueState,
@@ -22,7 +23,7 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { hydrateThread } from "@evener/appwire-client";
+import { applyNotification, hydrateThread } from "@evener/appwire-client";
 import { projectConversation } from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
@@ -1353,6 +1354,32 @@ describe("projectThread", () => {
       ]);
       const c = projectThread(t);
       expect(kinds(c)).toEqual(["activity"]);
+    });
+
+    // A live "warning" notification is the only way an ItemModel ever carries
+    // type "warning" (reducer.ts's case "warning" fold; there is no wire
+    // ThreadItem.warning field, so hydrateThread alone can never produce one) -
+    // this test drives that fold directly rather than a static fixture.
+    it("surfaces a warning's title/hint even when the fold left text blank (message-less frame)", () => {
+      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
+        evener: evenerThread({ activeTurnId: "t1" }),
+      });
+      let model = hydrateThread({ thread: t }, "ref-1", 1000);
+      model = applyNotification(
+        model,
+        {
+          method: "warning",
+          params: { threadId: "thread-1", ref: "ref-1", title: "Sandbox blocked", hint: "retry later" },
+        } as AnyNotification,
+        2000,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toContain("Sandbox blocked");
+        expect(a.detail.output).toContain("retry later");
+      }
     });
   });
 

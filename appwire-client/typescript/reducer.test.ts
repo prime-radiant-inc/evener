@@ -2576,6 +2576,251 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
   expect(result.olderCursor).toBe("cursor_0");
 });
 
+// A hydrate reads an empty input-images list the same way a live frame does: as
+// absence. The wire rarely sends one — `appwire.ThreadItem.Images` is
+// `json:",omitempty"` and the producers send nil — but a real fixture does
+// (`fixtures/tool-and-jobs.jsonl:4`), and folding it to absent is what keeps an
+// older page's images from being erased on merge.
+test("an empty input-images list on the wire leaves the item's images unset", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [],
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
+});
+
+// One rule for both directions of the same fact: a settle that says nothing
+// about an item's images keeps the ones the item already has, exactly as the hub
+// keeps them on its own upsert (`len(incoming.Images) == 0` →
+// `incoming.Images = existing.Images`, server/appwire_turns.go:884-889). The wire
+// carries no "the input images are gone" signal, so a live item/completed whose
+// payload omits them — or carries an empty list, which reads the same — must not
+// clear the attachment row the reader is looking at. Closes #1656.
+test.each([
+  ["an empty list", [] as unknown],
+  ["no images field at all", undefined],
+])("a settle carrying %s keeps the images the item already had", (_case, images) => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "inProgress",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "turn_1",
+        item: {
+          id: "user-item",
+          turnId: "turn_1",
+          type: "userMessage",
+          text: "look",
+          status: "completed",
+          ...(images === undefined ? {} : { images }),
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).status).toBe("completed");
+});
+
+// The same rule on the turn's own settle path: a turn/completed carrying
+// itemsView "full" restates the turn's items, and an item in that payload that
+// says nothing about images keeps the ones the model already holds — the merge
+// chain there is the same composition item/completed uses, so it must carry the
+// same fields.
+test("a full turn settle that omits image fields keeps the item's images", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "inProgress",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+          {
+            id: "tool-item",
+            turnId: "turn_1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-1",
+            text: "",
+            status: "inProgress",
+            outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { id: "user-item", turnId: "turn_1", type: "userMessage", text: "look", status: "completed" },
+            {
+              id: "tool-item",
+              turnId: "turn_1",
+              type: "commandExecution",
+              toolName: "shell",
+              callId: "call-1",
+              text: "",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
+// An INPUT image list that arrives empty says nothing about the item's images:
+// the hub keeps whatever list it already had when the incoming one is empty
+// (`server/appwire_turns.go`'s and `internal/apptranscript/logical_turn.go`'s
+// `len(incoming.Images) == 0` branches), and a real fixture sends exactly that —
+// `fixtures/tool-and-jobs.jsonl:4`, a steering notification with `images: []`.
+// Reading it as "the images are gone" erases an older page's input images on
+// merge.
+//
+// OUTPUT images are a separate question this PR takes no position on: the wire
+// change that decides whether an empty output list is a value or an absence is
+// its own PR, and nothing here asserts either reading.
+test("an empty input-image list says nothing, so the images already known survive", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "user-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+
+  // A live frame carries an empty list: it says nothing, so the settle keeps the
+  // images the item already had (mergeItemImages).
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "shared-turn",
+        item: {
+          id: "user-item",
+          transcriptKey: "shared-key",
+          position: { entry: 4, item: 0 },
+          turnId: "shared-turn",
+          type: "userMessage",
+          text: "look",
+          status: "completed",
+          images: [],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+
+  // And an older page replaying the item agrees: nothing ever denied them.
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "user-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  });
+  expect(itemAt(turnAt(merged, 0), 0).images).toHaveLength(1);
+});
+
 test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
   const thread = testThread({
     turns: [
@@ -4488,12 +4733,19 @@ test("warning with bare-string `warning` and no top-level message renders that s
   expect(item.text).toBe("provider hiccup");
 });
 
+// A warning frame that carries no message anywhere renders the frame itself,
+// not a blank row — the same contract appwire/warning.go's EffectiveMessage/
+// DecodeWarningParams enforces server-side (cmd/evener-tui/hub_notifications_test.go's
+// "no message anywhere renders the frame itself, not a bare title"): a
+// malformed or message-less warning must stay visible, or a producer's typo
+// vanishes silently instead of surfacing as the diagnosis it is. Bounded
+// because the frame's shape is unknown on the wire and can carry anything.
 test.each([
   ["blank string warning", ""],
   ["object warning with no message field", { source: "x" }],
   ["object warning with non-string message", { message: 42 }],
   ["number warning", 42],
-])("warning with no message anywhere (%s) falls back to the raw frame", (_case, warning) => {
+])("warning with no message anywhere (%s) renders the frame itself, bounded", (_case, warning) => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -4509,6 +4761,118 @@ test.each([
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text).toBe(JSON.stringify(params));
+});
+
+// The wire-shaped fixture RoboRev's round-20 review of #1580 named directly:
+// a warning frame that is nothing but `{"warning":42}` — no threadId/ref
+// wrapping at all — still renders its own JSON rather than a blank item.
+test('warning with only {"warning":42} and no routing envelope renders that frame itself', () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42 };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe(JSON.stringify(params));
+});
+
+// A raw-frame fallback that is itself oversized must not paste an unbounded
+// blob into ItemModel.text: this is package-level code feeding both hosts,
+// and neither host's own display bound can be assumed to run before
+// something else reads item.text (a test, a notification log). `warning: 42`
+// is message-less (warningMessage returns "" for a non-string, non-object
+// warning field), so this actually reaches rawWarningFrame — a plain string
+// `warning` IS a usable message and would short-circuit before the fallback
+// ever runs, making the bound assertion trivially true either way.
+test("an oversized warning frame's fallback text stays bounded", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "x".repeat(10_000) };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeLessThan(JSON.stringify(params).length);
+  expect(item.text.length).toBeGreaterThan(0);
+});
+
+// rawWarningFrame's bound must truncate by code point, not by UTF-16 unit: a
+// plain String#slice can cut a surrogate pair (an emoji, a codepoint outside
+// the BMP - two UTF-16 units) exactly in half, leaving a lone, unpaired
+// surrogate at the tail. warning: 42 keeps warningMessage from short-
+// circuiting on a usable message, so text falls all the way to
+// rawWarningFrame(params) - the JSON.stringify of the whole frame, `extra`
+// included.
+test("an oversized warning frame's fallback text never splits a surrogate pair at the truncation boundary", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  const EMOJI = "😀"; // U+1F600: one surrogate pair, two UTF-16 code units.
+  const marker = '"extra":"';
+  const withoutContent = JSON.stringify({ threadId: "thr_t", ref: "ref_t", warning: 42, extra: "" });
+  const contentStart = withoutContent.indexOf(marker) + marker.length;
+  // Pad so the emoji's high surrogate lands exactly at index 2000 (0-indexed
+  // 1999) of the stringified frame - the byte a naive slice(0, 2000) keeps,
+  // cutting the low surrogate that follows.
+  const padLen = MAX_CHARS - 1 - contentStart;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "a".repeat(padLen) + EMOJI };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // Bounded by CODE POINTS, not UTF-16 units: keeping the boundary emoji
+  // whole can run one code point's worth of extra UTF-16 units past
+  // MAX_CHARS, which is exactly what must happen instead of splitting it.
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  const lastUnit = item.text.charCodeAt(item.text.length - 1);
+  expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
+});
+
+// A message-less frame that DOES carry a title or hint is something to show:
+// the fold leaves ItemModel.text blank rather than duplicating title/hint
+// with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
+// mobile's warning fallback reads them from item.warning when text is blank -
+// see mobile/src/conversation/project.ts's warningFallbackText).
+test("a message-less warning with a title leaves text blank instead of falling back to the raw frame", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", title: "Sandbox blocked" };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("");
+  expect(item.warning?.title).toBe("Sandbox blocked");
 });
 
 // Settled tool calls keep their arguments: the live projector's

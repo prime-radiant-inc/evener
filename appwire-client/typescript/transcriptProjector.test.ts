@@ -173,6 +173,17 @@ describe("transcript projector", () => {
     expect(entries[7]).toMatchObject({ kind: "item", isMessage: false });
   });
 
+  test("a warning item's non-string title does not crash the projector", () => {
+    // warning.title/hint ride an untyped wire param map (WarningParams' warning
+    // field is `unknown`), so a malformed frame can hand this a number despite
+    // ItemModel's own type declaring title as string — reducer.ts folds
+    // params.title straight through with no runtime coercion.
+    const model = threadWith(item("warning", "warning", { text: "", warning: { title: 42 as unknown as string } }));
+
+    const entries = entriesFor(model, preset("full"));
+    expect(entries).toMatchObject([{ kind: "critical", sourceItemId: "warning" }]);
+  });
+
   test.each(["chat", "intent", "tools", "activity", "full"] as const)(
     "keeps interactions and non-tool failures critical at the %s level",
     (level) => {

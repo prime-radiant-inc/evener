@@ -506,10 +506,25 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: item.text || item.output },
+        detail: { ...activityDetail(item), output: item.text || warningFallbackText(item) || item.output },
       },
     },
   };
+}
+
+// A message-less warning frame (a title or hint alone, no top-level message)
+// folds to text: "" on the wire side (reducer.ts's warning fold): web's
+// WarningItem.tsx reads item.warning directly, but this generic fallback
+// only ever reads item.text/item.output, so a title/hint-only warning became
+// a blank row here. Joins whatever non-blank parts item.warning carries so
+// the phone shows the same content the web renders, without needing a
+// dedicated warning display path.
+function warningFallbackText(item: ItemModel): string | undefined {
+  if (item.type !== "warning" || !item.warning) return undefined;
+  const parts = [item.warning.title, item.warning.hint].filter(
+    (part): part is string => typeof part === "string" && part.trim() !== "",
+  );
+  return parts.length > 0 ? parts.join(" — ") : undefined;
 }
 
 function activityDescription(item: ItemModel): string | undefined {
