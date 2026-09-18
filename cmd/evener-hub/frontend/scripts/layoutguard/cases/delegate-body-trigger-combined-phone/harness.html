@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>delegate-body-trigger-combined-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  /* Below the 700px breakpoint production has no rail gutter and the .rowIcon
+   * negative pull is off, so the icon leads the line inline (matched here). */
+  .railBox { box-sizing: border-box; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ToolRow.tsx's intent-only expandable branch when the body trigger ALSO
+     shares the intent line (showIntentTrailing && bodyTriggerOnIntentLine), at
+     a PHONE viewport where tokens.css declares --tap-min: 44px:
+
+       <div class="row" data-intent="true" data-intent-trailing="true"
+            data-body-trigger-intent="true" data-intent-suppressed="true">
+         [<button class="trigger intentOverlayTrigger"></button>]  (suppressed on a delegate)
+         <span class="intentTriggerContent">
+           <span class="rowIcon">…</span>
+           <span class="status">…</span>
+           <span class="intent">{statedIntent}</span>
+         </span>
+         <span class="intentTrailing">{Open control}</span>
+         [<span class="chevron">…</span>]            (suppressed on a delegate)
+         <button class="bodyTrigger"><span class="chevron">…</span></button>
+       </div>
+
+     Both trailing items grow to --tap-min on a phone: the .inline Open shell
+     (openbutton.module.css) and the .bodyTrigger (toolcallitem.module.css).
+     The .intentTriggerContent max-width reservation must therefore subtract
+     var(--tap-min, 14px) for the body trigger; a hard-coded 14px under-reserves
+     by 30px and the body trigger wraps to line 2.
+
+     Two shapes share that one rule:
+       delegate  - summary-less, so intentControlSuppressed: no decorative
+                   chevron (the body trigger is the only one);
+       collapsed - a non-delegate row whose summary line is collapsed while the
+                   body is expanded: the decorative chevron IS present. -->
+<div class="fixtures"></div>
+<script>
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.5" fill="none"></circle></svg>';
+const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--ink-mid)"></span>';
+
+function rowHtml(id, intent, withDecorativeChevron) {
+  // The summary-less delegate shape (intentControlSuppressed) renders NO
+  // overlay intent trigger - the body trigger is its one control - so the
+  // fixture must not render one either (roborev): an extra disclosure control
+  // would be measured and hit-tested, unlike production.
+  const suppressed = !withDecorativeChevron;
+  return `
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true"${suppressed ? ' data-intent-suppressed="true"' : ""}>
+      ${suppressed ? "" : `<button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>`}
+      <span class="intentTriggerContent" id="content-${id}">
+        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="status" id="status-${id}">${STATUS_DOT}</span>
+        <span class="intent" id="intent-${id}">${intent}</span>
+      </span>
+      <span class="intentTrailing" id="trailing-${id}">
+        <span class="inline" data-open-shell>
+          <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open">
+            <span class="icon" aria-hidden="true">${OPEN_SVG}</span>
+          </button>
+        </span>
+      </span>
+      ${withDecorativeChevron ? `<span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="false">${CHEVRON_SVG}</span>` : ""}
+      <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="true" aria-label="Toggle body">
+        <span class="chevron" id="bodychevron-${id}" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span>
+      </button>
+    </div>`;
+}
+
+const SHORT_INTENT = "Scout the frontend for the open-widget renderer.";
+const LONG_INTENT = "Locate the delegate row renderer in the transcript pane, trace how its trailing open-transcript control and body trigger are composed against the disclosure trigger, and confirm the inline placement holds when the stated intent wraps across more than one line inside the row.";
+
+const CONFIGS = [
+  { key: "delegate-long", intent: LONG_INTENT, withChevron: false, label: "390px phone, delegate (no decorative chevron), long intent (binding)" },
+  { key: "collapsed-long", intent: LONG_INTENT, withChevron: true, label: "390px phone, collapsed non-delegate (decorative chevron present), long intent (binding)" },
+];
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  section.className = "fixture";
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.innerHTML = rowHtml(c.key, c.intent, c.withChevron);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+function firstLineBox(intentEl) {
+  const range = document.createRange();
+  range.selectNodeContents(intentEl);
+  const rects = range.getClientRects();
+  const first = rects[0];
+  let right = first.right;
+  for (const r of rects) {
+    if (r.top < first.bottom && r.bottom > first.top) right = Math.max(right, r.right);
+  }
+  return { top: first.top, bottom: first.bottom, left: first.left, right };
+}
+
+window.measure = () => {
+  const fixtures = document.querySelector(".fixtures");
+  return {
+    // The documentation comment above must be ONE comment: a nested `<!--`
+    // would close it early and render the example markup (a stray .bodyTrigger,
+    // .row, etc.) as live content above .fixtures. That both adds unrelated
+    // elements and makes elementFromPoint hit-testing depend on prose edits.
+    fixturesIsFirstBodyChild: document.body.firstElementChild === fixtures,
+    strayOutsideFixtures: document.querySelectorAll(
+      "body > .row, body > .bodyTrigger, body > .intentTriggerContent, body > .intentTrailing, body > .chevron",
+    ).length,
+    fixtures: CONFIGS.map((c) => {
+      const row = box(document.getElementById(`row-${c.key}`));
+      const content = box(document.getElementById(`content-${c.key}`));
+      const body = box(document.getElementById(`body-${c.key}`));
+      const open = box(document.getElementById(`open-${c.key}`));
+      const chevronEl = document.getElementById(`chevron-${c.key}`);
+      const chevron = chevronEl ? box(chevronEl) : null;
+      const intentEl = document.getElementById(`intent-${c.key}`);
+      const line1 = firstLineBox(intentEl);
+      const bodyElement = document.getElementById(`body-${c.key}`);
+      const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
+      const columnGap = parseFloat(getComputedStyle(document.getElementById(`row-${c.key}`)).columnGap);
+      // Production renders the overlay intent trigger only on the non-suppressed
+      // shape; a suppressed fixture must not carry the extra control (roborev).
+      const overlayTriggerCount = document.getElementById(`row-${c.key}`).querySelectorAll(".intentOverlayTrigger").length;
+      // Everything the reservation should cover: the trailing items after the
+      // content and the column gaps between them. A summary-less delegate
+      // renders no decorative chevron, so it must NOT reserve for one.
+      const trailingItemCount = chevron ? 3 : 2;
+      const expectedContentWidth = row.width - open.width - body.width - (chevron ? chevron.width : 0) - trailingItemCount * columnGap;
+      return {
+        id: c.key,
+        label: c.label,
+        row,
+        content,
+        body,
+        open,
+        chevron,
+        line1,
+        columnGap,
+        overlayTriggerCount,
+        expectedContentWidth,
+        contentWidthSlack: content.width - expectedContentWidth,
+        bodySameLine: body.top < line1.bottom - 1,
+        openSameLine: open.top < line1.bottom - 1,
+        bodyDropBelowLine1: body.top - line1.bottom,
+        bodyHitIsBody: Boolean(bodyHit && bodyElement.contains(bodyHit)),
+      };
+    }),
+  };
+};
+</script>
+</body>
+</html>

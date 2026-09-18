@@ -4647,6 +4647,88 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
   expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
 });
 
+// prunedForStringify truncates a field's own string value with its own
+// UTF-16 slice, one level in from the outer frame's boundedCodePoints - a
+// surrogate pair straddling THAT boundary can be split the same way the
+// test above closes for the outer frame. The outer frame bound is the SAME
+// 2000-code-point cap, so anything the field-level slice mangles near ITS
+// own boundary always sits past the frame's own cutoff and would otherwise
+// be silently dropped rather than observed - spying on JSON.stringify's
+// argument inspects the pruned object BEFORE the outer bound ever runs.
+test("prunedForStringify's own field truncation never splits a surrogate pair either", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_FIELD_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_FIELD_CHARS
+  const EMOJI = "😀"; // U+1F600: one surrogate pair, two UTF-16 code units.
+  // 1999 'a' code points + one emoji code point = exactly 2000 code points -
+  // within the field cap, so a code-point-safe truncation must leave this
+  // value untouched. A naive UTF-16 slice(0, 2000) instead cuts at UTF-16
+  // index 2000 (extraValue.length is 2001, one past the emoji's high
+  // surrogate), splitting the pair.
+  const extraValue = "a".repeat(MAX_FIELD_CHARS - 1) + EMOJI;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: extraValue };
+
+  const originalStringify = JSON.stringify;
+  let prunedArg: { extra?: unknown } | undefined;
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    if (prunedArg === undefined) prunedArg = args[0] as { extra?: unknown };
+    return originalStringify(...args);
+  });
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  expect(prunedArg?.extra).toBe(extraValue);
+});
+
+// #1731 piece 3 round 2 Low finding: rawWarningFrame must bound its input
+// BEFORE expanding to code points, not after — Array.from(JSON.stringify
+// (params)) on the whole frame is an O(frame-size) temporary allocation, and
+// the transport allows frames up to 128 MiB. Spies on Array.from to prove
+// every string it actually expands is already bounded well under the huge
+// frame, never the full JSON blob.
+test("an oversized warning frame's fallback bounds its input before Array.from, not after", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  const HUGE = 500_000;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "x".repeat(HUGE) };
+  const originalArrayFrom = Array.from;
+  const stringArgLengths: number[] = [];
+  const spy = vi.spyOn(Array, "from").mockImplementation((...args: unknown[]) => {
+    const [input] = args;
+    if (typeof input === "string") stringArgLengths.push(input.length);
+    // biome-ignore lint/suspicious/noExplicitAny: passes through to the real Array.from, whatever its overload.
+    return (originalArrayFrom as (...a: any[]) => unknown[])(...args);
+  });
+
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  expect(stringArgLengths.length).toBeGreaterThan(0);
+  for (const len of stringArgLengths) {
+    // Nowhere near the ~500,000-char frame: bounded well before expansion.
+    expect(len).toBeLessThan(MAX_CHARS * 4);
+  }
+});
+
 // rawWarningFrame's own JSON.stringify(params) call walks the whole object
 // graph before this file gets a chance to slice anything — a transport-sized
 // (up to 128 MiB) malformed warning can still make that ONE call allocate
@@ -4873,6 +4955,127 @@ test("prunedForStringify preserves a wire key literally named __proto__ instead 
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text).toContain("present");
+});
+
+// Only the message-less raw-frame fallback was bounded; a huge message,
+// title, hint, or source string reaches item.text / ItemModel.warning
+// verbatim otherwise, leaving the same oversized-frame vector open through
+// a different field. Every string the fold puts into the model must be
+// bounded, not just the fallback.
+test("an oversized message, title, hint, and source are each bounded at the fold", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const HUGE = 5_000_000;
+  const params = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    message: "m".repeat(HUGE),
+    title: "t".repeat(HUGE),
+    hint: "h".repeat(HUGE),
+    source: "s".repeat(HUGE),
+  };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(item.text.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.title?.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.hint?.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.source?.length).toBeLessThan(MAX_CHARS * 2);
+});
+
+// warningMessage and hasWarningText decide "is there any content here" with
+// a regex scan of the raw wire value, never a copy of it (a bounded copy
+// then trimmed used to be how this was answered, which was also the source
+// of the misclassification the test above closes - the bound ran before the
+// scan). Spies on String.prototype.trim to prove hasWarningText no longer
+// calls it at all.
+test("a huge warning message is never trimmed at full size before it's bounded", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const HUGE = 5_000_000;
+  const originalTrim = String.prototype.trim;
+  const trimmedLengths: number[] = [];
+  const spy = vi.spyOn(String.prototype, "trim").mockImplementation(function (this: string) {
+    trimmedLengths.push(this.length);
+    return originalTrim.call(this);
+  });
+
+  const params = { threadId: "thr_t", ref: "ref_t", message: "m".repeat(HUGE) };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(trimmedLengths.length).toBe(0);
+});
+
+// hasWarningText bounded its candidate to RAW_WARNING_FRAME_MAX_CHARS code
+// points BEFORE checking for non-blank content, so real text starting past
+// that bound was invisible to the check - a message with more than 2000
+// leading blank code points then real text was misclassified as blank
+// (falling back to the raw-frame JSON dump instead of storing the message).
+// boundedContent then keeps the window starting at the message's own first
+// non-whitespace code point, not the leading padding, so the real text is
+// what item.text ends up holding.
+test("a warning message with more than 2000 leading blank code points is not misclassified as blank", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", message: `${" ".repeat(3000)}real content` };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("real content");
+});
+
+// hasWarningText detects a title's content anywhere in the string, but the
+// stored title used to be bounded from index 0 regardless - a title with
+// more than 2000 leading blank code points then real text passed
+// hasWarningText yet was stored as nothing but the blank prefix, so
+// WarningItem.tsx (which renders item.warning.title verbatim) had nothing
+// visible to show. Invariant: stored warning strings are the bounded
+// prefix of the CONTENT, never of the padding in front of it.
+test("a warning title with more than 2000 leading blank code points renders its real text, not the padding", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", title: `${" ".repeat(3000)}URGENT` };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.warning?.title).toBe("URGENT");
 });
 
 // A message-less frame that DOES carry a title or hint is something to show:
