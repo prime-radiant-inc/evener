@@ -1806,6 +1806,40 @@ test("a summary-less delegate row names its sole body control from the intent an
   expect(control.getAttribute("aria-describedby")).toBe(status.id);
 });
 
+// --- #1253 review: a collapsed two-level row names its intent and body
+//     controls DISTINCTLY. The intent fallback on the body trigger belongs only
+//     to the summary-less row whose intent control is suppressed; a row that
+//     still has an intent disclosure must not hand the body trigger the same
+//     accessible name, or a screen reader sees two adjacent, identically named
+//     buttons that do different things.
+test("a collapsed two-level row keeps distinct accessible names for its intent and body controls", () => {
+  registerToolRenderer({ match: "tci_two_level_names", summary: () => "Ran the suite", body: () => <div>body</div> });
+  const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  renderWithConfig(
+    chatConfig,
+    item({ id: "two_level_names", toolName: "tci_two_level_names", description: "Running the test suite" }),
+  );
+
+  // Chat level: the summary line is collapsed, so no body trigger is in flow.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+
+  // Reach the state where the body is expanded while the summary is hidden:
+  // open the summary, expand the body, then collapse the summary again. The
+  // body trigger now rides the intent line beside the intent disclosure.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+
+  const intentTrigger = screen.getByTestId("tool-row-trigger");
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  // The intent disclosure is content-named from the intent; exactly one button
+  // carries that name.
+  expect(intentTrigger.getAttribute("aria-label")).toBeNull();
+  expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
+  // The body trigger keeps the bare fallback rather than duplicating it.
+  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+});
+
 // --- entity cards on ids in non-content summary fields ---------------------
 //
 // A tool summary is a plain string, but a job_/dlg_/watch_ id inside it names a

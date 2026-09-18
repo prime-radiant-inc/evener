@@ -165,9 +165,14 @@
 }
 
 /* When the body chevron ALSO rides an intent line that carries Open, the
- * reservation grows by its 14px and one more column gap. */
+ * reservation grows by the body trigger's own width and one more column gap.
+ * That width is var(--tap-min, 14px), NOT a hard-coded 14px: on a phone the
+ * .bodyTrigger block below grows it to --tap-min (44px), and a hard-coded 14px
+ * under-reserves by 30px, so the line sums past 100% and the body trigger wraps
+ * (roborev). The 14px term before it is the decorative disclosure chevron, which
+ * is only rendered on the non-delegate collapsed shape. */
 .row[data-intent-trailing="true"][data-body-trigger-intent="true"] .intentTriggerContent {
-  max-width: calc(100% - var(--tap-min, 28px) - 14px - 14px - var(--space-2) - var(--space-2) - var(--space-2));
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--tap-min, 14px) - var(--space-2) - var(--space-2) - var(--space-2));
 }
 
 .summaryLine {
@@ -257,11 +262,28 @@
  * 14px chevron. min-*, not width/height, mirroring iconbutton.module.css's own
  * phone block, so the desktop rules above stay the desktop rule. The
  * [data-intent-trailing] reservations above reserve the grown width through
- * the same var() fallback. */
+ * the same var() fallback.
+ *
+ * Scoped to the IN-FLOW intent-line trigger (.row > .bodyTrigger) on purpose.
+ * The other body trigger is an ABSOLUTE overlay across the summary line
+ * (position: absolute; inset: 0 above), whose height comes FROM its containing
+ * block: forcing it to a 44px min-height overflows a short summary line
+ * downward, so the invisible button escapes into the rows and gaps below and
+ * captures taps/focus there (roborev). The overlay keeps the line's own height
+ * as its hit target - which is what it always had - and only the standalone
+ * intent-line trigger, which has no line box of its own, takes the floor. */
 @media (max-width: 899px) {
-  .bodyTrigger {
+  .row[data-intent-trailing="true"] > .bodyTrigger {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
+    /* The base .bodyTrigger is align-items: baseline, which seats the 14px
+     * chevron at the TOP of the grown 44px hit target (measured: topInset 0,
+     * bottomInset 30, chevron center 15px above the box center - roborev Low).
+     * Center the glyph in the target instead. The row's baseline alignment
+     * keeps the chevron level with the intent text either way (measured
+     * unchanged: chevron top 1px above / bottom 3px above the text line), so
+     * this only moves the invisible box, not the row's visual baseline. */
+    align-items: center;
     justify-content: center;
   }
 }

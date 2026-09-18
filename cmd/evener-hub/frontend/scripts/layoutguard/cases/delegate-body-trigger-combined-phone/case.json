@@ -1,0 +1,19 @@
+{
+  "name": "delegate-body-trigger-combined-phone",
+  "description": "At a PHONE viewport the combined shape - the intent line carrying BOTH a trailing Open control and the two-level body trigger - must reserve each trailing item's real phone width. Under @media (max-width: 899px) the Open control (.inline) and the body trigger both grow to --tap-min (44px), so the .intentTriggerContent max-width reservation must subtract var(--tap-min, 14px) for the body trigger, not a hard-coded 14px; a hard-coded 14px under-reserves by 30px, the line sums past 100%, and flex line-breaking wraps the body trigger to its own line. The delegate-open-widget-inline case cannot see this: its combined fixtures run at a 1200px viewport, so the phone block never applies. Two shapes share the same rule: the summary-less delegate (no decorative chevron; intentControlSuppressed) and the collapsed non-delegate (decorative chevron present).",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: in .row[data-intent-trailing=\"true\"][data-body-trigger-intent=\"true\"] .intentTriggerContent, change the body-trigger term var(--tap-min, 14px) back to a hard-coded 14px",
+    "verified": "2026-09-18",
+    "expect": "fail",
+    "note": "With the hard-coded 14px the phone-grown 44px body trigger is under-reserved by 30px; the long-intent fixtures sum past 100% and the body trigger wraps to line 2 (sameLine fails)."
+  }
+}

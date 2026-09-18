@@ -868,17 +868,24 @@ export function ToolRow({
     </>
   );
   // The accessible name for a body disclosure trigger: the failure prefix
-  // (if failed), the summary text (if any), else the stated intent on a
-  // summary-less intent-bearing row, or a bare "Tool call" fallback. Used by
-  // the intent-less overlay trigger and the two-level body chevron
-  // (.bodyTrigger). A summary-less delegate row's .bodyTrigger is its ONE
-  // control (the intent trigger is suppressed), so it must carry the visible
-  // intent's context - blanking the summary must not reduce the name to
-  // "Tool call" (#1253 review).
+  // (if failed), the summary text (if any), else the stated intent ONLY on
+  // the summary-less row whose intent control is suppressed, else a bare
+  // "Tool call" fallback. Used by the intent-less overlay trigger and the
+  // two-level body chevron (.bodyTrigger).
+  //
+  // The intent fallback is gated on intentControlSuppressed on purpose. A
+  // NORMAL two-level row whose summary line is collapsed passes summary=""
+  // while its summary TEXT still exists (hasSummaryText), and its body is
+  // often expanded: there the intent overlay trigger is present and already
+  // named from the intent (below), so naming the body trigger from the intent
+  // too would put two adjacent, identically named buttons with different jobs
+  // (toggle summary vs. toggle body) in front of a screen reader. Only the
+  // bare summary-less row - one control, no intent trigger - takes the intent
+  // name (#1253 review).
   const summaryLabel = [
     failed ? "Failed" : undefined,
-    hasSummary ? summary : hasIntent ? statedIntent : undefined,
-    !hasSummary && !hasIntent && !failed ? "Tool call" : undefined,
+    hasSummary ? summary : intentControlSuppressed && hasIntent ? statedIntent : undefined,
+    !hasSummary && !(intentControlSuppressed && hasIntent) && !failed ? "Tool call" : undefined,
   ]
     .filter((part): part is string => part !== undefined)
     .join(" ");
