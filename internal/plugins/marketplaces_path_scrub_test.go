@@ -157,9 +157,8 @@ func TestRemoveMarketplaceSaveFailureNamesNoPath(t *testing.T) {
 }
 
 // Once RemoveMarketplace's save has landed, a failure removing the now
-// orphaned clone is litter the caller cannot undo - previously swallowed
-// with only a log line, this now reaches the caller as an error, and that
-// error must not carry os.RemoveAll's own path.
+// orphaned clone is litter the caller cannot undo, reported as an error that
+// must not carry os.RemoveAll's own path.
 func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

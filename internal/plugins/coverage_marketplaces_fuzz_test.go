@@ -244,9 +244,8 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The metadata save lands before the clone removal that follows it, so a
-	// clone-removal failure here (the save itself succeeds) reaches the
-	// caller as an error rather than the silent, log-only warning this used
-	// to be - the marketplace is still gone from the listing either way (see
+	// clone-removal failure here (the save itself succeeds) is returned as
+	// an error - the marketplace is gone from the listing either way (see
 	// TestRemoveMarketplaceCloneRemovalFailureNamesNoPath).
 	removeBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}, InstallLocation: "old"}})
 	marketplaceReadFile = func(string) ([]byte, error) { return removeBody, nil }
