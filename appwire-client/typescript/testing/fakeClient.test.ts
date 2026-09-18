@@ -8,7 +8,7 @@
 // calls — or listens for — a name the hub stopped serving.
 import { describe, expect, test, vi } from "vitest";
 import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
-import { FakeClient } from "./fakeClient";
+import { FakeClient, gateSettlements, type Settlement } from "./fakeClient";
 import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
 
 // A name the hub has never served. Cast because MethodName correctly refuses
@@ -140,5 +140,53 @@ describe("FakeClient ready handoff", () => {
 
     expect(ready).toHaveBeenNthCalledWith(1, first);
     expect(ready).toHaveBeenNthCalledWith(2, second);
+  });
+});
+
+// The gate's own contract: it holds each call to `method` until the test
+// settles it, either way, one handle per call. The suites that need to answer
+// or fail a request out of order (storeLifecycle's gatedWrite, launchLayer's
+// gated read) turn on exactly this, so it is pinned here rather than only
+// through them.
+describe("FakeClient request gates", () => {
+  function gateAt(gates: Settlement[], index: number): Settlement {
+    const gate = gates[index];
+    if (!gate) throw new Error(`expected a gate at index ${index}`);
+    return gate;
+  }
+
+  test("resolves the request in flight with the value it is handed", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const reply = { ref: "ref_a" } as never;
+    const inflight = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 0).resolve(reply);
+    await expect(inflight).resolves.toBe(reply);
+  });
+
+  test("rejects the request in flight with the error it is handed", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const boom = new Error("boom");
+    const inflight = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 0).reject(boom);
+    await expect(inflight).rejects.toBe(boom);
+  });
+
+  test("hands back one gate per call, settleable out of order", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const first = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    const second = fake.request("thread/read", { ref: "ref_b", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 1).resolve("second" as never);
+    gateAt(gates, 0).resolve("first" as never);
+    await expect(first).resolves.toBe("first");
+    await expect(second).resolves.toBe("second");
   });
 });

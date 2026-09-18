@@ -47,7 +47,11 @@ func (m *Manager) saveRegistry(reg Registry) error {
 	if err != nil {
 		return err
 	}
-	return installSaveRegistry(path, reg)
+	if err := installSaveRegistry(path, reg); err != nil {
+		return err
+	}
+	m.markStoreChanged(StoreChanged{Plugins: true})
+	return nil
 }
 
 // catalogPlugin finds a named plugin's entry + its marketplace ref, lazily

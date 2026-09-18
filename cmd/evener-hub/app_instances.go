@@ -1486,9 +1486,10 @@ func environmentBacked(inst registry.Instance) bool {
 // that exists from the environment has no entry to delete and would come
 // straight back, so it is refused with a message saying what to unset instead
 // (spec §5.1); one the user credentialed through the UI has no entry either,
-// and there the credential cleanup is the removal (environmentBacked). A name
-// that resolves to no instance follows Create and Edit's convention
-// (#717/#748): the caller sent it, so it comes back as appwire.InvalidParams.
+// and there the credential cleanup is the removal (environmentBacked). Refusals
+// that blame the name the caller sent - a name that resolves to no instance or
+// an environment-only one that cannot be deleted - follow Create and Edit's
+// convention (#717/#748): appwire.InvalidParams, not a generic wire error.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -1557,7 +1558,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(inst) {
-		return fmt.Errorf("%s exists without an authored entry (%s), so deleting the instance is not what takes it away: %s", name, describeImplicit(inst), removalRemedy(inst))
+		return appwire.InvalidParams(fmt.Sprintf("%s exists without an authored entry (%s), so deleting the instance is not what takes it away: %s", name, describeImplicit(inst), removalRemedy(inst)))
 	}
 
 	// The confirmation this removal carries names the row the client listed, so

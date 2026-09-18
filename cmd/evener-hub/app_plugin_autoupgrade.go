@@ -82,16 +82,14 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 
 // startPluginAutoUpgradeDaemon runs runPluginAutoUpgradeTick once immediately
 // (the design's "plus once on hub start") and then every interval until ctx is
-// canceled, broadcasting evener/plugin/updated for each plugin actually
-// upgraded. Meant to be launched with `go` from main, mirroring the hub's
-// other ticker goroutines (roster watch, past-index rebuild, attention
-// watcher).
-func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, interval time.Duration, server *appserver.Server) {
+// canceled. mgr is wired (wirePluginStoreBroadcast) by the caller, so a
+// marketplace refresh or plugin upgrade that writes broadcasts on its own;
+// this loop makes no notify call of its own. Meant to be launched with `go`
+// from main, mirroring the hub's other ticker goroutines (roster watch,
+// past-index rebuild, attention watcher).
+func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, interval time.Duration) {
 	tick := func() {
-		updated, _ := pluginAutoUpgradeTick(ctx, mgr, os.Stderr)
-		if len(updated) > 0 {
-			notifyPluginUpdated(server)
-		}
+		_, _ = pluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 	}
 	tick()
 	ticker := newPluginAutoUpgradeTicker(interval)
@@ -111,16 +109,15 @@ func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, int
 // happened, so a user isn't stuck waiting up to the full interval to see an
 // opted-in plugin move. The full evener/plugin/* CRUD surface (list, install,
 // upgrade, ...) is a separate phase's hubPluginsController; this handler only
-// owns the auto-upgrade tick.
+// owns the auto-upgrade tick. mgr is wired (wirePluginStoreBroadcast) by the
+// caller, so a marketplace refresh or plugin upgrade this tick makes
+// broadcasts on its own; this handler makes no notify call of its own.
 func registerPluginAutoUpgradeHandlers(server *appserver.Server, mgr *plugins.Manager) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckNow, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginCheckNowResponse, error) {
 		updated, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 		refs := make([]string, len(updated))
 		for i, u := range updated {
 			refs[i] = u.Plugin + "@" + u.Marketplace
-		}
-		if len(updated) > 0 {
-			notifyPluginUpdated(server)
 		}
 		return appwire.PluginCheckNowResponse{Updated: refs, Errors: errs}, nil
 	})

@@ -663,6 +663,10 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
 		t.Fatalf("the refusal names the variable that creates the instance: %v", err)
 	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
+	}
 }
 
 // listedInstance reports whether a listing still carries a row under name.
