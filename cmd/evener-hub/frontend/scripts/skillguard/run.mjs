@@ -117,6 +117,17 @@ const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 // comes back fails with the last reading that stood in for a baseline.
 const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
 
+// selectAll feeds a replacement edit -- the queue journey selects the draft a
+// queued entry returned and types over it -- so a caret the editor left at the
+// end of the text instead of the whole selection would send the next typeText
+// into the wrong place. Setting a DOM range is how a user selects text, and the
+// editor adopts it asynchronously, so selectAll confirms the editor actually
+// holds the whole-text selection before returning. The confirmation waits for
+// the editor to settle (a selection a render has not reset yet reads as held
+// once) and re-applies it a bounded number of times; an editor that will not
+// hold it fails loudly rather than being typed into.
+const SELECT_ALL_ATTEMPTS = 4;
+
 // envMillis reads a millisecond budget from the environment, defaulting when
 // unset or BLANK and refusing anything else non-numeric rather than silently
 // treating it as NaN (which would disable a timeout entirely). Blank is not
@@ -436,9 +447,29 @@ export class Driver {
   }
 
   async selectAll(ref) {
-    const state = await evaluate(this.send, this.composerEditStateExpr(ref));
-    check(state, `selectAll(${ref}): editor missing`);
-    await this.selectRange(ref, 0, state.value.length);
+    for (let attempt = 1; attempt <= SELECT_ALL_ATTEMPTS; attempt++) {
+      const state = await this.composerEditState(ref);
+      check(state, `selectAll(${ref}): editor missing`);
+      await this.selectRange(ref, 0, state.value.length);
+      // settleComposer returns the state the editor stopped changing on, so a
+      // selection a render is about to reset does not read as held.
+      const settled = await this.settleComposer(ref);
+      if (settled.start === 0 && settled.end === state.value.length) return;
+      if (attempt < SELECT_ALL_ATTEMPTS) {
+        console.error(
+          `skillguard: ${ref}: a render reset the selection after selectAll; re-selecting (attempt ${attempt}/${SELECT_ALL_ATTEMPTS})`,
+        );
+      }
+    }
+    throw new Error(
+      `selectAll(${ref}): the editor would not hold the whole-text selection (${SELECT_ALL_ATTEMPTS} attempts)`,
+    );
+  }
+
+  // composerEditState reads one session's editor state: its text, its selection
+  // as serialized-text offsets, and whether it holds focus.
+  async composerEditState(ref) {
+    return evaluate(this.send, this.composerEditStateExpr(ref));
   }
 
   // #1669: macOS Chrome does not hand a page the OS clipboard without a
