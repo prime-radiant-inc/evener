@@ -134,8 +134,13 @@ func gapsIn(blocks []covstmt.Block, pattern string, top int, w io.Writer) {
 	}
 	var rows []row
 	total := 0
+	// Match the way Python did: both the pattern (argv, raw bytes in Go) and
+	// each file name are viewed through os.fsdecode's surrogateescape, then
+	// compared as rune sequences. A byte scan would let a raw 0xa9 pattern byte
+	// match the 0xc3 0xa9 tail of 'é', which Python does not.
+	patternRunes := surrogateEscapeRunes(pattern)
 	for _, b := range blocks {
-		if b.Covered || !strings.Contains(b.File, pattern) {
+		if b.Covered || !containsRunes(surrogateEscapeRunes(b.File), patternRunes) {
 			continue
 		}
 		rows = append(rows, row{ns: b.StmtCount, file: b.File, startLine: b.StartLine, endLine: b.EndLine})
@@ -262,6 +267,48 @@ func pctOf(covered, total int) float64 {
 	return 100.0 * float64(covered) / float64(total)
 }
 
+// surrogateEscapeRunes decodes s the way Python's os.fsdecode does: a byte that
+// is not part of a valid UTF-8 sequence becomes U+DC00+byte. It gives argv (raw
+// bytes in Go) the same Unicode view Python saw, so repr() and substring
+// matching agree with it.
+func surrogateEscapeRunes(s string) []rune {
+	runes := make([]rune, 0, len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			runes = append(runes, 0xDC00+rune(s[i]))
+			i++
+			continue
+		}
+		runes = append(runes, r)
+		i += size
+	}
+	return runes
+}
+
+// containsRunes reports whether haystack contains needle as a contiguous rune
+// subsequence. Matching runes (not bytes) is what keeps --in equivalent to
+// Python's `in_pattern not in f`: a raw 0xa9 argv byte is U+DCA9 and must not
+// match the 0xc3 0xa9 that ends 'é', where a byte scan would falsely match.
+func containsRunes(haystack, needle []rune) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // pyRepr renders s the way Python's repr() does: single-quoted, switching to
 // double quotes when the string contains a single quote but no double quote,
 // with backslashes, the chosen quote, and every non-printable rune escaped.
@@ -275,19 +322,7 @@ func pctOf(covered, total int) float64 {
 // the raw bytes, and ranging over the string would replace them with U+FFFD;
 // decode the same way Python does so a non-UTF-8 pattern reprs identically.
 func pyRepr(s string) string {
-	// surrogateescape: each byte that is not part of a valid UTF-8 sequence
-	// becomes U+DC00+byte, matching Python's os.fsdecode.
-	runes := make([]rune, 0, len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			runes = append(runes, 0xDC00+rune(s[i]))
-			i++
-			continue
-		}
-		runes = append(runes, r)
-		i += size
-	}
+	runes := surrogateEscapeRunes(s)
 	decoded := string(runes)
 	quote := '\''
 	if strings.Contains(decoded, "'") && !strings.Contains(decoded, `"`) {

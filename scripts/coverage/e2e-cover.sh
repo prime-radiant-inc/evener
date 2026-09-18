@@ -171,18 +171,15 @@ if $merge_unit; then
 	# Skip inputs that do not exist (as the Python did), but fail loudly on any
 	# other read or write error: a partially written combined profile would be
 	# counted as if it were whole and print a wrong, successful-looking number.
-	for prof in "$unit_prof" "$e2e_prof"; do
-		[ -f "$prof" ] || continue
-		# Terminate each profile with a newline before the next begins. A
-		# profile whose final block line lacks one would otherwise fuse with the
-		# next profile's "mode:" header, and the parser would skip BOTH lines —
-		# silently dropping that block. The deleted Python opened each file
-		# separately, so this restores the separation textual concatenation lost.
-		if ! { cat "$prof"; printf '\n'; } >>"$combined"; then
-			echo "e2e-cover: cannot append $prof to $combined" >&2
-			exit 1
-		fi
-	done
+	# union_profiles checks each append's status individually (a brace group
+	# would mask a `cat` failure) and separates the profiles with a newline so a
+	# final line lacking one cannot fuse two profiles together.
+	# shellcheck source=../lib/union-profiles.sh
+	. "$repo_root/scripts/lib/union-profiles.sh"
+	if ! union_profiles "$combined" "$unit_prof" "$e2e_prof"; then
+		echo "e2e-cover: cannot build the combined profile $combined" >&2
+		exit 1
+	fi
 	# Capture the count and check its status before parsing: a failed `go run`
 	# or covstmt must fail this report loudly, not leave `read` with empty
 	# fields that print as a malformed, successful-looking coverage line.

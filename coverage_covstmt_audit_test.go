@@ -58,6 +58,63 @@ func TestCoverageGapsScriptDelegatesToGoCovstmt(t *testing.T) {
 	}
 }
 
+// TestUnionProfilesSeparatesAndFailsLoudly pins the profile-union helper
+// e2e-cover.sh uses. Existing inputs are appended in order, each terminated by a
+// newline separator so a profile whose last line lacks one cannot fuse with the
+// next profile's header; missing inputs are skipped. A read failure returns
+// non-zero so the caller aborts instead of counting a partial union — the case
+// a brace group's single exit status would have masked. A stub `cat` drives the
+// failure path.
+func TestUnionProfilesSeparatesAndFailsLoudly(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.cov")
+	b := filepath.Join(dir, "b.cov")
+	// a has NO trailing newline; b starts with a header that must not fuse.
+	if err := os.WriteFile(a, []byte("mode: set\nblockA"), 0o644); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	if err := os.WriteFile(b, []byte("mode: set\nblockB\n"), 0o644); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+
+	t.Run("separates existing inputs and skips missing ones", func(t *testing.T) {
+		out := filepath.Join(dir, "combined.cov")
+		cmd := exec.Command("bash", "-c",
+			`. scripts/lib/union-profiles.sh && union_profiles "$@"`,
+			"bash", out, a, filepath.Join(dir, "missing.cov"), b)
+		if combined, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("union_profiles failed: %v\n%s", err, combined)
+		}
+		got, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("read combined profile: %v", err)
+		}
+		// a terminated by the separator, then b's content and its own separator.
+		// The extra trailing newline is a blank line the parser skips; the point
+		// is that a's unterminated last line cannot fuse with b's header.
+		want := "mode: set\nblockA\nmode: set\nblockB\n\n"
+		if string(got) != want {
+			t.Fatalf("combined profile = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("fails loudly when a read fails", func(t *testing.T) {
+		out := filepath.Join(dir, "partial.cov")
+		stub := t.TempDir()
+		if err := os.WriteFile(filepath.Join(stub, "cat"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatalf("write stub cat: %v", err)
+		}
+		cmd := exec.Command("bash", "-c",
+			`. scripts/lib/union-profiles.sh && union_profiles "$@"`,
+			"bash", out, a)
+		cmd.Env = append(os.Environ(), "PATH="+stub+":"+os.Getenv("PATH"))
+		if outBytes, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("union_profiles returned success on a read failure; output:\n%s", outBytes)
+		}
+	})
+}
+
 // TestCoverageScriptsUseGoCovstmt guards the #616 consolidation against a
 // reintroduced Python counter: neither coverage script may run python3, and each
 // must call the Go primitive. The scan ignores comment lines, so a comment

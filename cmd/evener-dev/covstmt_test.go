@@ -225,6 +225,27 @@ func TestCovstmtGapsInTopTruncatesTableNotSummary(t *testing.T) {
 	}
 }
 
+// TestCovstmtGapsInMatchesRunesNotBytes pins --in against Python's Unicode
+// substring. A single non-UTF-8 pattern byte (0xa9) decodes to U+DCA9 under
+// surrogateescape and must NOT match the 0xc3 0xa9 bytes that end 'é'; a
+// byte-wise scan would match and list the block. The expected line is the
+// deleted Python's output for this fixture.
+func TestCovstmtGapsInMatchesRunesNotBytes(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, "mode: set\npkg/\u00e9.go:1.1,2.2 9 0\n")
+
+	var out, errOut strings.Builder
+	args := []string{"--gaps", "--in", "\xa9", profile}
+	if code := covstmtRun(args, &out, &errOut); code != 0 {
+		t.Fatalf("covstmtRun(%q) exits %d, want 0 (stderr: %q)", args, code, errOut.String())
+	}
+	want := "no uncovered blocks in files matching '\\udca9'\n"
+	if got := out.String(); got != want {
+		t.Fatalf("covstmtRun(%q) output = %q, want %q (byte-wise matching would list the block)",
+			args, got, want)
+	}
+}
+
 // TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the
 // exit is still 0 (an empty result is information, not a failure).
 func TestCovstmtGapsNoMatch(t *testing.T) {
