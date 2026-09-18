@@ -142,7 +142,8 @@
 /* A summary-less two-level row renders its intent as a BARE direct child (no
  * overlay trigger, no .intentTriggerContent wrapper) while the body trigger
  * shares the line - the delegate row's shape when it has no trailing
- * affordance (#1253). Same constraint as the wrapper rules above: the intent
+ * affordance (issue #1253). Same constraint as the wrapper rules above: the
+ * intent
  * must shrink to its text and leave room for the body chevron, never grow to
  * fill the line and spring the chevron to the far edge. The reservation is the
  * body trigger's own width: the 14px chevron on desktop, --tap-min when the
@@ -241,7 +242,8 @@
 
 /* Phone tap floor (tokens.css's --tap-min, decision 4 of the mobile session
  * layout design): the two-level body trigger is sometimes the row's ONLY
- * control (a summary-less delegate row, #1253) and would otherwise be a bare
+ * control (a summary-less delegate row, issue #1253) and would otherwise be a
+ * bare
  * 14px chevron. min-*, not width/height, mirroring iconbutton.module.css's own
  * phone block, so the desktop rules above stay the desktop rule. The
  * [data-intent-trailing] reservations above reserve the grown width through
