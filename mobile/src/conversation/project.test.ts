@@ -2314,17 +2314,20 @@ it("liveAsksFor re-derives when askPending changes even though turns did not", (
 
 it("renders no question row when the ask arguments do not parse", () => {
   const projected = projectThread(
-    thread([
-      turn("t", [
-        item({
-          id: "ask-bad",
-          type: "commandExecution",
-          toolName: "ask_user",
-          status: "completed",
-          argumentsJson: "{{not valid json",
-        }),
-      ]),
-    ]),
+    thread(
+      [
+        turn("t", [
+          item({
+            id: "ask-bad",
+            type: "commandExecution",
+            toolName: "ask_user",
+            status: "completed",
+            argumentsJson: "{{not valid json",
+          }),
+        ]),
+      ],
+      { evener: evenerThread({ askPending: true }) },
+    ),
   );
   expect(projected.items.some((row) => row.kind === "question")).toBe(false);
 });
