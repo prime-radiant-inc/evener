@@ -288,12 +288,14 @@ the on-disk `hub.toml` fingerprint against a cached fingerprint lock-free. On a
 match the read serves immediately from the last published snapshot. On a
 mismatch the read still serves immediately, but never the raw stale snapshot:
 it synchronously filters the last published snapshot against the current
-on-disk file state. The filter runs one bounded synchronous read: a lock-free
-re-read of the file bytes' host set — names, not content — plus a synchronous
-content compare for names present in both:
-the re-read parses each still-present declared entry and compares its
-effective-entry content hash against the snapshot's persisted per-name
-fingerprint; a name whose content changed renders unavailable — its row omitted
+on-disk file state. The filter runs one bounded synchronous read: the hub reads
+the file bytes ONCE per call into a single snapshot and derives both the host
+set and the per-entry content hashes from those same bytes — never a host-set
+re-read plus a separate content-hash parse, so no inter-read edit can make a
+changed entry look unchanged or deleted. A fingerprint re-validation after
+filtering covers the residual race: if the file changed across the single read,
+the read falls back to unavailable instead of serving the filtered view. A
+name whose content changed renders unavailable — its row omitted
 from `list`, its `status` a typed changed-entry refusal (conflict class, discriminator
 `changed-entry`, data carrying the changed name; §11 pins the arm and §12
 the envelope pair, asserted by the protocol-shapes test) directing the caller
@@ -774,7 +776,9 @@ receipts and teardown-remnant records: `mutationReceipts` maps the scoped
 receipt key (mutationId, host name, mutation kind, post-commit generation,
 incarnation id — §5; a lookup compares all five) to `{outcome, row,
 generation, incarnationId, committedAt, droppedEntry?, winningFingerprint?,
-remnantId?, remnantResolvedAt?, bootRecovered?}`.
+remnantId?, remnantResolvedAt?, recoveryAttestation?, bootRecovered?}` —
+`recoveryAttestation` (`{operator, statement, observedAt}`) is present exactly
+on receipts resolved through `teardown-recover`, absent otherwise.
 `droppedEntry` (the staged entry the post-rename reconcile dropped) and
 `winningFingerprint` (the winning `hub.toml` fingerprint) are present exactly
 on `collision-dropped` receipts — a replay renders the dropped arm from these
@@ -1072,20 +1076,24 @@ refuses it with `orphan-fenced-busy`, never a clearance past an unverified
 orphan) — (params
 `{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
-cleared `remnantId`): the call verifies the operator attestation is present and
-well-formed, re-runs the safety checks (no live handle tagged with the
-remnant's `(generation, incarnationId)` pair exists, no supervisor or channel
-binding names the remnant's pinned target), and only then clears the remnant in
-one atomic sidecar write — recording the attestation (operator, statement,
-observedAt) on the original mutation receipt beside `remnantResolvedAt` — so
+cleared `remnantId`): the call try-acquires the host's per-host gate first — the
+same gate `teardown-retry` holds — failing fast with the typed busy error when a
+retry is in flight, and holds it through the clearance. Under the gate it claims
+the remnant atomically (claim under the mutation lock with an attempt token, so a
+concurrent retry racing the claim loses exactly one of the two), then verifies
+the operator attestation is present and well-formed, re-runs the safety checks
+(no live handle tagged with the remnant's `(generation, incarnationId)` pair
+exists, no supervisor or channel binding names the remnant's pinned target),
+re-checks the safety conditions immediately before the clearing write, and only
+then clears the remnant in one atomic sidecar write — recording the attestation
+(operator, statement, observedAt) on the original mutation receipt beside
+`remnantResolvedAt` (outcome becomes `committed` with `remnantResolvedAt`) — so
 the forced clearance is an explicit audited operator decision, never a silent
-drop. An attestation that fails validation or a safety check that still finds
-live state refuses without clearing, naming the blocking check.
-It then
-re-takes the mutation lock and clears the remnant in one atomic sidecar write
-— the same write records the remnant resolution on the original mutation
-receipt (outcome becomes `committed` with `remnantResolvedAt`) — and returns
-the live row. A replay of the original mutationId after resolution returns the
+drop, and a concurrent retry can neither start inside the check nor have its
+in-progress cleanup marker cleared. An attestation that fails validation or a
+safety check that still finds live state refuses without clearing, naming the
+blocking check, and releases the claim plus the gate. A replay of the original
+mutationId after resolution returns the
 resolved receipt, never the stale committed-with-teardown-failure. The retry
 is idempotent by remnantId: a retry naming an already-cleared remnant returns
 the already-cleared success arm, a receipt-returned no-op — never a second
@@ -1302,16 +1310,21 @@ documents and are cited, never restated):
   `hub.toml` mid-remove returns the live row — the arm names the staged entry
   the post-rename reconcile dropped plus the winning `hub.toml` fingerprint
   the receipt carries, so a replay returning it can never read as a live
-  commit) — a normal result-union response, never an AppWire error-envelope
+  commit) or the keyless-ambiguous arm `{outcome: "ambiguous", observedRow:
+  HostRow}` (returned only by a keyless `add` retry that observes its intended
+  row — the row may be the caller's committed mutation, a pre-existing
+  identical row, or another client's remove/re-add, so the response claims no
+  commit and carries no receipt semantics; §5) — a normal result-union response,
+  never an AppWire error-envelope
   throw (pre-commit failures throw typed error envelope codes; post-commit
   outcomes return through the union — the failure arm names a committed
   mutation whose teardown needs forward retry) — the `remnantId` is mandatory
   on the failure arm, `seam` names the failed rebind step, and the committed
   row is always present so the UI renders the row with a teardown-retry
-  affordance. The catalog carries all three arms field-for-field and the
+  affordance. The catalog carries all four arms field-for-field and the
   regenerated client carries each arm as its own interface through the
   generator mapping above; a shape missing `remnantId` on the failure arm
-  fails the protocol-shapes test.
+  fails the protocol-shapes test, as does a missing `ambiguous` arm.
 - `evener/host/status`: params `{name: string}`; response is the host's
   `HostRow` plus the deploy plan inputs: `controllerBuild: string`,
   `resolvedTargetPath?: string`, `restartFollows?: bool` (absent — never null
@@ -1388,6 +1401,23 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   safety checks in §6 run before the clearing write; any failure refuses
   without clearing, naming the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
+- Mutation `concurrent-edit` refusal: conflict class, discriminator
+  `concurrent-edit`, data `{stagedFingerprint: string, observedFingerprint:
+  string}`. It fires exactly when the sidecar commit's final check (§6) finds
+  the `hub.toml` fingerprint moved between the validation read and the final
+  check after bounded retries. The protocol-shapes test asserts the
+  code-plus-discriminator pair plus the data shape.
+- Mutation `tombstone-capacity` refusal: conflict class, discriminator
+  `tombstone-capacity`, data `{bound: string, blockingNames: string[]}`. It
+  fires exactly when a tombstone persist fits only by evicting a remnant-gated
+  tombstone (§15). The protocol-shapes test asserts the
+  code-plus-discriminator pair plus the data shape.
+- `evener/host/teardown-retry` `teardown-unknown-key` refusal: not-found class,
+  discriminator `teardown-unknown-key`, data `{remnantId: string}`. It fires
+  exactly when the named remnant id is unknown or purged (§6: unknown/purged ID
+  reads as not-found; a cleared-remnant marker still present returns the
+  `already-cleared` arm instead). The protocol-shapes test asserts the
+  code-plus-discriminator pair plus the data shape.
 - `evener/host/status` changed-entry refusal: conflict class, discriminator
   `changed-entry`, data `{name: string}`. It fires exactly when the named
   entry's on-disk content changed under the cached fingerprint (§4); the
@@ -1419,8 +1449,9 @@ swap compensates by restoring the prior sidecar bytes and reverting the
 runtime (both before the response), and the error carries which seam failed
 (registry / manager / source / admin controller / web view / persistence /
 decision-source validation). `evener/host/*` on an unknown host name: typed
-not-found. `changed-entry` and `teardown-unknown-key` ride the conflict class
-envelope with the `evenerErrorInfo` discriminator plus the data in §11; the
+not-found. `changed-entry` rides the conflict class
+envelope and `teardown-unknown-key` the not-found class, each with the
+`evenerErrorInfo` discriminator plus the data in §11; the
 protocol-shapes test asserts the code-plus-discriminator pair for each.
 
 ## 13. UI
@@ -1817,8 +1848,8 @@ silently over-cap registry), and all live consumers (registry, manager
 bindings, sources, manifest, host-admin controller fan-outs, web-config view)
 update atomically under that lock before the admitted call proceeds (a
 `list`/`status` read arriving while the reconcile holds the lock serves the
-file-filtered snapshot (§4 — names filtered against the current file bytes
-synchronously) lock-free instead of waiting — reads never fail busy for a
+file-filtered snapshot (§4 — the single-snapshot filter against the current file
+bytes) lock-free instead of waiting — reads never fail busy for a
 fingerprint reason). A stale snapshot or preflight facts read from the old
 configuration can never pass a generation check against the new one, and a
 reconcile never rebinds the registry, channel, or supervisor under a pinned
@@ -1953,7 +1984,10 @@ Registry tests (all bullets in this section ship with the registry PR):
 against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
 naming the failed seam and the remnant still open for a later retry;
-protocol-shape tests pin the `changed-entry` refusal arm plus the
+protocol-shape tests pin the `changed-entry` refusal arm, the `concurrent-edit`,
+`tombstone-capacity`, and `teardown-unknown-key` catalog entries with their envelope
+code-plus-discriminator pairs, the four-arm mutation-result union (including the
+`ambiguous` arm), plus the
 `teardown-recover` request/response shapes field-for-field;
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation

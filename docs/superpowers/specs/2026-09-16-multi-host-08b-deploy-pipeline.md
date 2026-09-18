@@ -73,10 +73,11 @@ this spec cites them and never restates them.
 `plan` mints the token. This is seam (a): what `plan` mints is the token plus its full
 binding list below.
 
-Mint runs gated. `plan` refreshes facts with no gate held, then runs the running-state
-probe under the try-acquired host gate for the probe window, then validates and mints
-under the gate. The gate hold covers the probe window plus validation
-plus the durable mint write only. `plan` releases the gate before returning. Mint under
+Mint runs gated. `plan` refreshes facts with no gate held, then try-acquires the
+host gate once and holds it through the running-state probe, validation, the durable
+mint, publication, and return. The gate hold covers the probe window plus validation
+plus the durable mint write plus the last-known-store publication (§6). `plan`
+releases the gate before returning. Mint under
 the gate replaces: the same atomic store write that persists the new token deletes the
 host's earlier unconsumed token rows.
 
@@ -133,12 +134,13 @@ and invalidates nothing) is a detected rollback. Only records whose own timestam
 postdate `now` invalidate — the mark rejects only timestamps captured after the
 rollback, never shortens a pre-rollback deadline: a token row minted after `now` reads
 `token-expired`; a facts entry captured after `now` reads stale. Token TTL is monotonic
-elapsed time, never a comparison of `expiresAt` against a later high-water timestamp: a
-pre-rollback token keeps exactly the real-time lifetime its persisted `expiresAt`
-granted, expiring only when elapsed time since mint passes the minted TTL (equivalently
-when wall-clock time again reaches `expiresAt`). While the rollback is active (`now <
-mark`), every `now - factsCapturedAt` age check substitutes the mark for `now`, and a
-post-rollback capture anchors at `max(now, mark)`. The mark never moves backward. A
+elapsed time, evaluated against `max(now, mark)`: every `expiresAt` comparison and every
+`now - factsCapturedAt` age check substitutes the mark for `now` while the rollback is
+active (`now < mark`), and a post-rollback capture anchors at `max(now, mark)`. A
+pre-rollback token therefore keeps exactly the real-time lifetime its persisted
+`expiresAt` granted — a token already expired before the rollback stays expired, never
+valid again — expiring only when elapsed time since mint passes the minted TTL
+(equivalently when wall-clock time again reaches `expiresAt`). The mark never moves backward. A
 rollback can only invalidate, never extend, a deadline. A forward jump past outstanding
 TTLs expires them through the existing `expiresAt` check. No special rule covers forward
 jumps.
@@ -159,15 +161,23 @@ spec §9 and never restated here. The wire shape is pinned field-for-field in §
 
 Dedup scope is (host, kind, client operation ID, pinned generation, pinned incarnation
 id), never the ID alone. A dedup lookup matches only records whose pinned pair equals
-the registry's current pair for the name. The scan ignores superseded-generation records
-entirely. Generation-first precedence: a same-key replay returns the existing record; an
+the registry's current pair for the name. Generation-first precedence: a same-key replay returns the existing record; an
 ID colliding with a current-generation record of a different host or kind, or with a
 current-generation `host-removed` record, is refused with `conflicting-operation-id`; an
-ID whose only matches are superseded-generation records opens fresh. Re-add starts its
+ID whose only current-generation matches are none but whose retained superseded-generation
+records exist for the same (host, kind) returns the newest retained superseded record
+when the request names no newer intended pair, and refuses `stale-entry` (pruned-generation
+value) when the request's intended pair is older than the registry's current pair —
+a lost-response retry after an intervening update never silently opens a fresh operation.
+A fresh operation on a superseded pair opens only when the request carries the intended
+(generation, incarnation id) pair explicitly selecting it (the `operations` filter pair
+in §10 names that selection contract). Re-add starts its
 new generation with a clean dedup slate. A `host-removed` record never matches a dedup
 lookup. History stays readable either way.
 
-Durability: every operation-store write is atomic (temp file plus rename plus fsync).
+Durability: every operation-store write is atomic (temp-file fsync plus rename plus
+parent-directory fsync — the temp file is fsynced before the rename and the containing
+directory fsynced after it, matching the sidecar protocol in the registry spec §6).
 Token consumption and record creation are one such write (§6 step 4). The store file and
 its temp files carry mode `0600`. Replacements preserve the mode. Startup refuses to
 load a store readable beyond its owner. A corrupt or schema-invalid store file at boot
@@ -176,7 +186,8 @@ replacement store serves, boot snapshots the safety-critical fences the
 quarantined file can no longer prove — per-host fencing quarantines, open
 `orphan-unverified` records with their persisted boundaries, and per-name
 ownership (generation high-water marks plus incarnation ids) — into a
-quarantine-custody file beside the store (same atomic temp-plus-rename-plus-fsync
+quarantine-custody file beside the store (same atomic temp-file-fsync plus rename
+plus parent-directory-fsync
 write, mode `0600`, never inside the replaceable store file). The custody file
 schema is `{quarantineEpoch: number, quarantinedFile: string,
 custodiedAt: string (RFC3339), fences: {host: string, quarantine: bool,
@@ -184,15 +195,22 @@ boundary: BoundaryEntry[]}[], ownership: {host: string, highWaterMark: number,
 incarnationId: string}[]}` — one fence entry per fenced host carrying the
 quarantined record's persisted boundary verbatim (element type in the
 crash-fencing spec §9), one ownership entry per name the corrupt file
-yielded. Every custody fence is resolvable: boot imports each fence entry as
-an `orphan-unverified` record in the replacement store (same id scope as
-§4 records, carrying the custodial boundary), so `orphan-resolve`
-(crash-fencing spec §§4–5) and the `operations` detail filter address it
-by record id like any other unverified record. When the corrupt file cannot
+yielded. Every custody entry is resolvable: boot imports each fence entry as
+an `orphan-unverified` record carrying the custodial boundary, and each
+ownership-only entry as an `orphan-unverified` record carrying an empty
+boundary (no boundary survived the corruption to verify, so the operator
+confirms the name idle out-of-band before resolving), in the replacement
+store under the same id scope as §4 records — so `orphan-resolve`
+(crash-fencing spec §§4–5) and the `operations` detail filter address every
+closed name by record id like any other unverified record, and no name stays
+permanently blocked for want of an id. When the corrupt file cannot
 yield a complete custody snapshot — unparseable fences, a boundary that fails
 schema validation, or ownership missing for a fenced name — boot fails startup
 rather than serving hosts past an unprovable fence. The replacement
-store opens at epoch + 1 with reset row IDs and `compactSeq` from zero, and
+store opens at epoch + 1 with its row-ID allocator starting above the maximum
+imported custody record id (the pre-quarantine high-water mark is preserved
+across the import, so no fresh operation reuses an imported record's id) and
+`compactSeq` from zero, and
 every name the custody file names stays closed — no new lifecycle or mutation
 call past admission — until the operator resolves its quarantined state
 explicitly through `orphan-resolve`, which verifies
@@ -219,8 +237,9 @@ records store-wide, at most 64 MiB of serialized store bytes, and at most 30 day
 of terminal-record age (same owner-knob family; defaults ship in the implementing
 PR). A write that would exceed a global bound first compacts oldest-terminal-first
 across hosts until the new record fits; removed-host history compacts first once
-its replay horizon expires (past the tombstone bound in §4 — the documented,
-owner-visible horizon of the lost-response retry contract — a removed host's
+its replay horizon expires (past the `tombstoneRetention` horizon — 7-day default —
+defined in the registry spec §15, the documented owner-visible horizon of the
+lost-response retry contract — a removed host's
 terminal records and tombstones compact before any live host's). Exceeding the cap compacts oldest-terminal-first in the same atomic
 write that lands the new terminal state. Compaction leaves a bounded store dedup
 tombstone per compacted record: the client operation ID with its (host, kind,
@@ -232,11 +251,12 @@ past the bound. A replay naming a tombstoned ID returns the full retained record
 pinned pair still equals the registry's current pair for the name. A tombstone pinned to
 a superseded pair never replays; the clean-slate re-add rule wins over the tombstone.
 Compaction never touches `host-removed` marks of retained records. Safe compaction
-of removed-host history: once a removed host's records sit past the tombstone bound
-in §4, its terminal records compact (leaving the bounded tombstones in §4, which
+of removed-host history: once a removed host's records sit past the `tombstoneRetention`
+horizon (registry spec §15) its terminal records compact (leaving the bounded tombstones
+in §4, which
 replay with `compacted: true` while their pinned pair still equals current) and its
-older tombstones drop oldest-first. Only past the
-tombstone bound — the documented, owner-visible horizon of the lost-response retry
+older tombstones drop oldest-first. Only past that
+horizon — the documented, owner-visible horizon of the lost-response retry
 contract — does a replay open fresh. Every compacting write advances the durable
 `compactSeq`, persisted in the store file. Pagination cursors pin it (§8, §10).
 
@@ -295,8 +315,9 @@ crash window can consume a token without leaving a recoverable record.
 Per-host gate: at most one deploy/restart per host at a time. The gate is shared with
 `Ensure`-triggered deploys and supervisor activity, so an auto-deploy and a user deploy
 cannot interleave. Acquisition is try-acquire. Nothing waits on a held gate. A new
-`deploy`/`restart`, a `plan` (which always try-acquires before validation and mint,
-after its ungated refresh and probe), or an `update`/`remove` that finds the gate held
+`deploy`/`restart`, a `plan` (which always try-acquires after its ungated facts
+refresh and before the running-state probe, holding the gate through the probe
+window plus validation and mint), or an `update`/`remove` that finds the gate held
 fails fast with the typed busy error naming the in-flight operation.
 
 Holder classes: when a deploy/restart operation holds the gate, the busy error names
@@ -349,12 +370,16 @@ attached and the refresh fails or times out, `plan` returns no token with reason
 `refresh-failed`: retryable diagnostics, never a Connect loop. A token is only ever
 minted from fresh facts.
 
-Second the running-state probe: `evener/host/running` through
+Second, `plan` try-acquires the host gate once (gate first per §5 — `plan` holds no mutation
+lock, so no order inversion is possible), failing fast with the typed busy error
+if held, and holds it through the running-state probe, validation, the durable
+mint, publication, and return. Then the running-state probe: `evener/host/running` through
 `sshManager.ChannelIfAttached(name)` over the live channel (never a dial, never
 preflight), deadline-bounded with an explicit owner-adjustable probe timeout. The
 probe's remote write half runs classified under the fencing epoch and gate (§10):
-`plan` try-acquires the host gate for the probe window and presents the worker epoch,
-failing fast with the typed busy error when held. On
+the probe call runs through the gate-aware probe primitive, which inherits the
+already-held gate and presents the worker epoch instead of try-acquiring the
+non-reentrant gate a second time. On
 timeout `plan` returns the no-token `probe-failed` refusal with nothing left held: a
 hung remote holds no gate past the probe window. The probe records the response's `buildRevision` as
 `runningVersion` and its `healthy` flag as `runningHealthy`, both as `HostPlan` fields,
@@ -367,24 +392,24 @@ with the discriminating `reason` field. The handshake version, ping liveness, an
 preflight on-disk facts feed the decision ladder but never substitute for the probe.
 None of them proves which build the live process runs.
 
-Then `plan` try-acquires the gate (gate first per §5 — `plan` holds no mutation
-lock, so no order inversion is possible) and fails fast with the typed busy error if held.
-Under the gate it re-checks attachment, the registry generation of the resolved entry,
+Still holding the gate, `plan` re-checks attachment, the registry generation of the resolved entry,
 and facts-freshness against the refreshed facts. It scans the operation store (local
 read, no network) for any operation on this host that reached a terminal state since
-the ungated reads started, identified by the state-transition sequence (§4): the worker
-records its pre-read sequence position before the gateless refresh and the gated probe, and any
+the ungated refresh started, identified by the state-transition sequence (§4): the worker
+records its pre-read sequence position before the gateless refresh, and any
 terminal operation with a higher transition sequence is a typed `stale-entry` re-plan
 refusal. A detach, mutation, facts advance, or completed operation landing between the
-ungated reads and acquisition is a typed refusal or a re-read, never a plan against the
+ungated refresh and acquisition is a typed refusal or a re-read, never a plan against the
 superseded entry.
 
 Every `plan` call publishes into the last-known store. This is seam (c), first half:
 `status` reads the last-known store inputs (running-state and refusal snapshots)
 without dialing, and `plan` publishes them. Every `plan` publishes under the gate before
-returning, except the pre-mint no-token refusals (`unattached`,
-`refresh-failed`, `probe-failed`, `remnant-open`, `handler-absent`), which
-publish pair-scoped gateless and never acquire the gate to do so. A refusal publishes its `{terminal, message}` as the pair's plan-time refusal; a
+returning, except the pre-acquisition no-token refusals (`unattached`,
+`refresh-failed`, `remnant-open`), which
+publish pair-scoped gateless and never acquire the gate to do so. The gated-probe
+refusals (`probe-failed`, `handler-absent`) publish under the probe-window gate
+before releasing it, matching the registry spec §10. A refusal publishes its `{terminal, message}` as the pair's plan-time refusal; a
 later success clears it. Every completed probe — success or authenticated failure —
 publishes the probed running revision and health plus the probed `processStartTime`
 when carried. The snapshots are keyed by the host's (generation, incarnation id) pair,
@@ -396,12 +421,14 @@ operation ID, dedup-first, with consume-and-create atomicity. Processing order i
 
 (1) Dedup first: if the client operation ID matches an existing durable operation
 record of the same host, kind, current host generation, and current incarnation id (a
-`host-removed` record never matches, and neither does a superseded-generation record),
+`host-removed` record never matches),
 return that record. No token validation, no consumption. A lost-response replay succeeds
 without a fresh token. A client operation ID colliding with a current-generation record
 of a different host or kind, or with a current-generation `host-removed` record, is
-refused with `conflicting-operation-id`. A colliding ID whose only matches are
-superseded-generation records opens fresh. Dedup-before-gate lets idempotent replays
+refused with `conflicting-operation-id`. A colliding ID whose only matches are retained
+superseded-generation records of the same (host, kind) returns the newest retained
+record, or refuses `stale-entry` when the request's intended pair is stale — per the
+dedup rule in §4, never a silent fresh operation. Dedup-before-gate lets idempotent replays
 succeed without acquiring contested gates or reviving fenced work. Guard-before-admission
 outranks dedup-first: dedup-first applies only post-admission among handler stages.
 
@@ -447,7 +474,12 @@ The operation holds its host's gate from record creation to terminal state. The 
 re-hashes the on-disk `hub.toml` fingerprint immediately before each irreversible step
 (before the push, and again before the planned restart when the token-bound plan says
 one follows) and aborts with typed `stale-entry` on any drift from the token-bound
-fingerprint. The gate alone does not pin the file against external hand edits.
+fingerprint. The gate alone does not pin the file against external hand edits: the
+final fingerprint read is a check, not an atomic compare-and-swap with external
+writers. An edit landing after the check but before the push/restart still drives
+the action; the post-operation refresh (§6) detects the drift and the next
+token validation refuses on the new fingerprint, so post-action drift converges
+explicitly instead of silently standing.
 
 Detached-during-deploy: if the channel is gone at the gated probe, or a
 revalidation under the same gate finds the channel dropped, `deploy` refuses with typed
@@ -480,7 +512,9 @@ runs the same terminal-operation scan as deploy step (3). It wraps the 04b resta
 the irreversible restart — after the scan, still holding the gate, before signaling
 or restarting — the worker re-reads the on-disk `hub.toml` fingerprint and compares
 it against the bound fingerprint; any drift aborts with typed `stale-entry` and no
-restart. No external edit landing after the under-gate check can drive a stale restart.
+restart. The read is a check, not an atomic compare-and-swap with external writers:
+an edit landing after it still drives the restart, and the post-operation refresh
+detects the drift explicitly per the deploy rule above.
 
 Restart drops the attached channel by construction, and no supervisor or `Ensure`
 reattach can cover the worker: both need the gate the operation holds through terminal
@@ -547,11 +581,14 @@ only. The UI renders progress through terminal state. Never a synchronous RPC.
 
 ## 7. Boot recovery of pipeline state
 
-The boot pass runs in this order, before the store serves any request: sidecar load
-first (defined in the registry spec §6), then local reaping (defined in the
-crash-fencing spec), then the interrupted transition, then the tombstone-derived
+The boot pass runs in this order, before the store serves any request: operation-store
+load plus the safety-critical local reap of its local orphan boundary first (defined in the
+crash-fencing spec §3), then sidecar load (defined in the registry spec §6), then the
+interrupted transition, then the tombstone-derived
 `host-removed` pass, then bidirectional generation-mirror reconciliation, then the
-cross-file intent reconciliation (§9). Boot performs no SSH. An unreachable host cannot
+cross-file intent reconciliation (§9). A corrupt sidecar is still a hard startup error,
+but only after the operation store's local reap has run: a valid operation store is
+never left unreaped because an unrelated sidecar failed validation. Boot performs no SSH. An unreachable host cannot
 block startup. Remote fencing lands lazily at the next operation's guard advance, after
 the store already serves `interrupted` records.
 
@@ -584,12 +621,14 @@ later record with an earlier `createdAt` can never move it before the cursor, be
 `createdAt` is not part of the order.
 
 Cursor envelope: the cursor is a versioned base64url JSON envelope `{v: 2, pos: [id],
-bounds: {[host]: [generation, incarnationId, compactSeq, presenceEpoch] | "absent"},
+compactSeq: number,
+bounds: {[host]: [generation, incarnationId, presenceEpoch] | "absent"},
 quarantineEpoch: number}`. It encodes the last row's durable sequence position
 (`pos`, the controller-assigned `id`, which never rolls back — never a bare
-offset), plus a snapshot and retention boundary per host (`bounds`), plus the
-quarantine epoch (`quarantineEpoch`, the §4 counter — the envelope's only
-epoch field). A cursor whose envelope version is not 2 is a typed `stale-entry` re-list
+offset), plus the global compaction position (`compactSeq`, carried once in the
+envelope — never per-host, never part of any per-host boundary comparison), plus
+a snapshot and retention boundary per host (`bounds`), plus the
+quarantine epoch (`quarantineEpoch`, the §4 counter). A cursor whose envelope version is not 2 is a typed `stale-entry` re-list
 refusal, never a best-effort decode. A continuation whose pinned epoch no longer equals
 the live `quarantineEpoch` is a typed `stale-entry` re-list refusal before any boundary
 comparison. Sort and resume are the monotonic `id`; no timestamp is part of the resume
@@ -598,9 +637,11 @@ position.
 Boundaries: a host-pinned response carries the effective `generation` and
 `incarnationId` actually listed. Host-pinned callers pass both values back with
 `cursor` for subsequent pages. The handler validates each host's `bounds`
-entry — its `[generation, incarnationId, compactSeq, presenceEpoch]` tuple, or
+entry — its `[generation, incarnationId, presenceEpoch]` tuple, or
 the `"absent"` marker — against the request's filters; a mismatch is a typed
-`stale-entry` re-list refusal, never a mixed page. An omitted filter on a later page reads as the
+`stale-entry` re-list refusal, never a mixed page. The global `compactSeq` is
+compared once against the envelope value, never per-host: an unrelated host's
+compaction never trips a per-host boundary mismatch. An omitted filter on a later page reads as the
 pinned-cursor window, never as a fresh unpinned query. A generation or presence
 advance between pages rejects the continuation: later pages never serve the
 pinned incarnation past a boundary change; a newer generation's records appear
@@ -608,7 +649,7 @@ only on a fresh unpinned read. A generation-pinned page requires `name`: a curso
 minted for one pair validated against an unfiltered query is a typed `stale-entry`
 re-list refusal. The map pins every host in the query at cursor creation, not just the
 hosts on the page: a host with no records on the page still contributes its current
-(generation, incarnation id, `compactSeq`, `presenceEpoch`) boundary, or its absent
+(generation, incarnation id, `presenceEpoch`) boundary, or its absent
 marker when the host holds no records at all. The absent marker encodes as the literal
 string `"absent"`. `presenceEpoch` is the per-host removal/presence counter defined in
 the registry spec §1 glossary (advanced on every add, remove, re-add, and
@@ -622,8 +663,8 @@ Refusals: a later page whose stored `bounds` entry no longer matches the host's
 current boundary is a typed `stale-entry` re-list refusal, never a mixed page.
 A compaction that removed rows at or before the cursor's `pos` since the cursor
 was minted surfaces a typed `cursor-invalidated` refusal naming the compacting
-`compactSeq` plus the affected host's `bounds` entry (`[generation,
-incarnationId, compactSeq, presenceEpoch]` as stored at mint, or `"absent"`);
+`compactSeq` (the envelope-global value) plus the affected host's `bounds` entry
+(`[generation, incarnationId, presenceEpoch]` as stored at mint, or `"absent"`);
 the client restarts from the first page. A host-pinned page names the single
 listed host's entry; an unfiltered cross-host page names the compacted host's
 entry. A first page whose
@@ -778,9 +819,16 @@ element type.
   probe inside the state dir with a uniquely named temp per probe, rename to a distinct
   probe target in the same dir, fsync the dir, then remove — which `plan`/`deploy`
   execute under the host's fencing epoch and gate (the write probe is a classified
-  mutating step, never a gateless bypass: the probe call try-acquires the host gate for
-  the probe window and presents the worker epoch, failing fast with the typed busy error
-  when held); a probe temp orphaned by a crash carries the probe-name prefix and
+  mutating step, never a gateless bypass: the probe wire call carries the caller's
+  fencing epoch in its params, the serving hub validates the presented epoch against
+  the host's current fencing epoch and refuses stale epochs without probing, and the
+  calling side issues the probe only while holding the host gate through the
+  gate-aware probe primitive in §6 — the probe never runs gateless and its epoch
+  never defaults). Params are therefore `{fencingEpoch: {bootId: string, opSeq:
+  number}}` on the `plan`/`deploy` probe path; the serving hub validates the presented
+  epoch before the write half runs. A direct empty-params call is refused with typed
+  `probe-failed` (no epoch presented), never served as an unauthenticated write; a
+  probe temp orphaned by a crash carries the probe-name prefix and
   boot prunes prefix-matching strays before serving. No probe temp survives the probe
   window past its remove except a crash orphan the boot prune owns. Anything else — session counts,
   load, peer reachability, external dependency status — never feeds `healthy`.
@@ -809,7 +857,7 @@ element type.
   for the controller-assigned record id (the busy payload's open/wait-able reference
   resolves through it directly); response `{operations: OperationRecord[],
   generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]:
-  {generation: number, incarnationId: string, compactSeq: number, presenceEpoch:
+  {generation: number, incarnationId: string, presenceEpoch:
   number} | "absent"}, nextCursor?: string}` — `generation`/`incarnationId` are
   present exactly on host-pinned pages (the single host named by the request) and
   absent on unfiltered cross-host pages, where `hostBoundaries` is authoritative
@@ -823,7 +871,11 @@ element type.
   `incarnationId` is the pinned incarnation the record ran against; `orphanBoundary`
   is present exactly on records whose `state` is `orphan-unverified` (absent on every
   other state per the absent-when-unknown rule) — its element type is defined in the
-  fencing spec §9; `compacted` is present as `true` exactly on tombstone replays
+  fencing spec §9; `orphanResolved?: true` is present exactly on records resolved
+  through `orphan-resolve` (absent on every other record including ordinary
+  boot-transitioned `interrupted` records, per the absent-when-unknown rule — the
+  marker is defined in the fencing spec §5 and cited here, never restated);
+  `compacted` is present as `true` exactly on tombstone replays
   (absent on live records). `ProgressEntry` is `{ts: string (RFC3339), message:
   string}`, bounded per record. `limit` defaults to 50 and caps at 200; responses
   never exceed the cap. An unfiltered call pages instead of returning the whole
@@ -869,8 +921,8 @@ This spec's paths emit:
   Token unconsumed, no record. Distinct from `plan`'s no-token `reason:
   "probe-failed"` union-arm value, which is never an envelope.
 - `cursor-invalidated` (conflict class). The mid-pagination compaction refusal. Data
-  names the compacting `compactSeq` plus the affected host's `bounds` entry as
-  stored at mint (`[generation, incarnationId, compactSeq, presenceEpoch]`, or
+  names the compacting `compactSeq` (envelope-global) plus the affected host's `bounds`
+  entry as stored at mint (`[generation, incarnationId, presenceEpoch]`, or
   `"absent"`). Distinct from `stale-entry`'s generation-mismatch re-list refusal.
 - `cursor-too-large` (conflict class). The over-cap first-page refusal. Data carries
   `{capBytes: 8192}`, never a compacting `compactSeq`.
@@ -885,7 +937,7 @@ Not emitted here, cited only: `concurrent-edit` belongs to the sidecar final che
 
 `remnant-open` (conflict class): emitted by `deploy`/`restart`/`Ensure`
 (§6 step 2) past the dedup check and before any probe or acquisition. The
-conflict class is pinned in the registry spec §12; the code-per-discriminator
+conflict class is pinned in the registry spec §11; the code-per-discriminator
 pair is pinned here. Data carries `{remnantId: string}` naming the blocking
 remnant, mirroring the `plan` no-token `remnant-open` arm's `remnantId`
 field-for-field.
@@ -909,9 +961,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   clock-rollback (a `now` behind the high-water mark by more than the 30-second
   tolerance drops only the records whose own timestamps postdate `now`; a pre-rollback
   token keeps its minted real-time lifetime and expires only on elapsed TTL, never by
-  comparison against the later mark; post-rollback captures anchor at `max(now,
+  comparison against the later mark — and a token already expired before the rollback
+  stays expired past it; post-rollback captures anchor at `max(now,
   mark)`; a within-tolerance step invalidates nothing; facts-age
-  checks run against `max(now, mark)` while the rollback is active), and
+  checks and `expiresAt` comparisons run against `max(now, mark)` while the rollback
+  is active), and
   supersede-between-validate-and-consume (a `plan` mint landing after step (2) but
   before step (4) is a `token-superseded` refusal with no record).
 - Generation-bound tokens: a token minted under generation N refuses after
@@ -973,7 +1027,10 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   `restart` and Ensure-triggered work refuse or re-resolve when a mutation lands
   between resolution and gate acquisition.
 - (Host, kind, generation, incarnation id)-scoped operation-ID dedup including the
-  interrupted-record path; the compacted-ID tombstone path (replay returns the
+  interrupted-record path; the superseded-generation path (a same-key replay whose
+  only matches are retained superseded-generation records returns the newest retained
+  record, or refuses `stale-entry` on a stale intended pair — never a silent fresh
+  operation); the compacted-ID tombstone path (replay returns the
   tombstoned terminal result, never a fresh operation); the clean-slate re-add path
   (operation-ID reuse after remove/re-add opens fresh); the conflicting-reuse
   refusals (same ID on a different host, deploy-versus-restart, and a
@@ -1009,12 +1066,13 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 - Pinned pagination: stable `id`-ascending order for both sort and resume across
   concurrent terminal writes (`createdAt` display-only); a mid-pagination
   generation or presence advance rejects the continuation (`stale-entry`
-  re-list); cursor carries the `v: 2` envelope `{v, pos, bounds, quarantineEpoch}`
-  per §8 (`pos` the last row's controller-assigned `id`; `bounds` one
-  `[generation, incarnationId, compactSeq, presenceEpoch]` tuple per host in the
-  query, or `"absent"`) with entry-mismatch (`stale-entry` re-list) and
-  post-cursor compaction (`cursor-invalidated` naming the compacting `compactSeq`
-  plus the affected host's stored `bounds` entry) both surfaced as refusals;
+  re-list); cursor carries the `v: 2` envelope `{v, pos, compactSeq, bounds,
+  quarantineEpoch}` per §8 (`pos` the last row's controller-assigned `id`;
+  `compactSeq` once globally; `bounds` one `[generation, incarnationId,
+  presenceEpoch]` tuple per host in the query, or `"absent"`) with entry-mismatch
+  (`stale-entry` re-list) and post-cursor compaction (`cursor-invalidated` naming
+  the envelope-global compacting `compactSeq` plus the affected host's stored
+  `bounds` entry) both surfaced as refusals;
   host-pinned pages carry the top-level pair while unfiltered cross-host pages
   omit it (`hostBoundaries` authoritative — the shapes test pins the absence);
   the cursor pins every host in the query at creation, including absent ones
