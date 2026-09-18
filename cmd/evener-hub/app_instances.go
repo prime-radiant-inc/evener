@@ -40,6 +40,13 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
+	// just before it takes auth.credMu. A race test uses it as a barrier: the
+	// test holds the credential lock, waits for this signal, and only then
+	// releases it, so the removal is provably parked at the lock with its
+	// pre-lock classification already made instead of the test sleeping and
+	// guessing it got there. Nil in production.
+	beforeCredentialLock func()
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
@@ -1107,14 +1114,28 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		// Conflict. Remove clears credentials before its reload; a rename
 		// cannot, because a failed reload restores the file and the
 		// credentials would already have moved.
-		if err := c.reg.Reload(); err != nil && moveErr == nil {
+		reloadErr := c.reg.Reload()
+		switch {
+		case reloadErr == nil:
+			return moveErr
+		case moveErr == nil:
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
 			// way: renamePersistedError is what the RPC handler reads to
 			// broadcast and to hand the client the discriminator.
-			return writeApplied(renamePersistedError{err})
+			return writeApplied(renamePersistedError{reloadErr})
+		default:
+			// Both halves failed, and the caller has to hear both: the move
+			// report says what credential was left behind, and the reload
+			// failure says the hub's own view may still list the old name
+			// (and refuse instance writes) until it loads again. The move
+			// report already carries the applied marker and the
+			// renamePersistedError discriminator (moveCredentials marks its
+			// own failure), so folding the reload error around it preserves
+			// both without a second writeApplied and without losing the
+			// move's message or wire class.
+			return fmt.Errorf("%w; the registry could not be reloaded either, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, reloadErr)
 		}
-		return moveErr
 	}
 	return nil
 }
@@ -1333,6 +1354,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// that had already passed its checks free to store a key after the
 	// cleanup, leaving a credential behind under a name the removal had just
 	// deleted.
+	if c.beforeCredentialLock != nil {
+		c.beforeCredentialLock()
+	}
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
 

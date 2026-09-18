@@ -1908,7 +1908,10 @@ func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) 
 
 	// The clear is held inside its seam, having already taken credMu
 	// exclusively, so the removal below classifies the row as the user's and
-	// then blocks on the credential lock the clear holds.
+	// then blocks on the credential lock the clear holds. The barrier below
+	// reports that the removal has made that pre-lock classification and is
+	// parked at the lock, so releasing the clear cannot race the
+	// classification the way a sleep would let it.
 	originalClear := f.ctl.auth.clearCredential
 	clearEntered := make(chan struct{})
 	releaseClear := make(chan struct{})
@@ -1925,11 +1928,18 @@ func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) 
 	}()
 	<-clearEntered
 
+	removeAtLock := make(chan struct{})
+	f.ctl.beforeCredentialLock = func() { close(removeAtLock) }
 	removeDone := make(chan error, 1)
 	go func() { removeDone <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai"}) }()
-	// Only so the removal has reached the credential lock: what the test
-	// asserts does not depend on the wait.
-	time.Sleep(100 * time.Millisecond)
+	// The removal is now past the classification that read the row as the
+	// user's; the clear's own reload runs inside credMu, so the removal's
+	// locked re-check is guaranteed to read the registry the clear produced.
+	select {
+	case <-removeAtLock:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remove never reached the credential lock")
+	}
 	close(releaseClear)
 
 	if err := <-clearDone; err != nil {
@@ -3654,12 +3664,17 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 	}
 }
 
-// What was left behind beats a failed reload: the rename is already on disk,
-// and the next refresh reloads anyway, so the caller has to hear the thing
-// only this call knows. moveCredentials reads the OAuth record right after
-// moving the key, which is the one point a test can reach between the move
-// and that reload, so the unreadable config is written from there.
-func TestInstances_EditRenameReportsTheMoveFailureOverAFailedReload(t *testing.T) {
+// Both halves of a rename can fail at once: the credential move leaves
+// something behind, and the reload that follows cannot read the config. The
+// caller has to hear both - what only this call knows (the leftover
+// credential) and what the hub's own view is left in (a registry that may
+// still list the old name and refuse instance writes) - and the error still
+// carries the applied marker the rename's persisted file earns it, so the
+// clients whose lists just went stale are announced. moveCredentials reads the
+// OAuth record right after moving the key, which is the one point a test can
+// reach between the move and that reload, so the unreadable config is written
+// from there.
+func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -3676,8 +3691,21 @@ func TestInstances_EditRenameReportsTheMoveFailureOverAFailedReload(t *testing.T
 	}
 
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
-	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
-		t.Fatalf("Edit(rename) = %v, want the refused move, not the reload error", err)
+	if err == nil {
+		t.Fatal("Edit(rename) = nil, want both failures reported")
+	}
+	if !strings.Contains(err.Error(), "stored key not copied") {
+		t.Fatalf("Edit(rename) = %v, want the leftover credential reported", err)
+	}
+	if !strings.Contains(err.Error(), "could not be reloaded") {
+		t.Fatalf("Edit(rename) = %v, want the failed reload reported too", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Edit(rename) = %v (%T), want the applied marker: the rename is on disk", err, err)
+	}
+	persisted, _ := instanceRenameError(err)
+	if !persisted {
+		t.Fatalf("Edit(rename) = %v, want the renamePersistedError discriminator for the handler", err)
 	}
 }
 
