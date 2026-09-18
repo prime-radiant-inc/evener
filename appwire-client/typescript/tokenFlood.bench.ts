@@ -253,12 +253,15 @@ function readStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
   for (let i = 0; i < n; i += 1) {
     now += 1;
     m = applyNotification(m, notification, now);
-    // The per-delta reader: touch the last character of the accumulated text.
-    // That single access is what forces V8's flatten; the fold-only cases
-    // never make it, which is exactly how they hid this cost.
-    const item = streamedItem(m, itemId);
-    const text = kind === "toolOutput" ? (item?.output ?? "") : pendingTextJoined(item?.pendingText ?? []);
-    if (text.length > 0) checksum += text.charCodeAt(text.length - 1);
+    // The per-delta reader: consume the WHOLE accumulated text, not just one
+    // code unit. A trailing-char access can be satisfied by descending a rope
+    // to its rightmost leaf without flattening, so it alone does not reliably
+    // exercise the full-text read a renderer does; summing every code unit
+    // forces the flatten on any rope implementation. It reads the same value
+    // `accumulatedText` reports, so the timed read and the `bytes` check below
+    // cannot drift (roborev on #1909).
+    const text = accumulatedText(streamedItem(m, itemId));
+    for (let c = 0; c < text.length; c += 1) checksum += text.charCodeAt(c);
     acc.observe(i);
   }
   const firstMs = acc.decileMs[0] ?? 0;
@@ -278,18 +281,14 @@ function readStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
 }
 
 // Sizes stop at 4,000: the read is super-linear, so the fold cases' 32,000
-// would take minutes per pass here (and vitest re-runs each bench callback for
-// statistics). The GROWTH CURVE is the finding and is already unmistakable at
-// these sizes - the fold cases above run to 32,000 precisely because they are
-// cheap; this one cannot.
+// would take minutes per pass here. The GROWTH CURVE is the finding and is
+// already unmistakable at these sizes - the fold cases above run to 32,000
+// precisely because they are cheap; this one cannot. One bench per size so
+// vitest's own hz/mean describes a single size rather than the sum of them all
+// (roborev on #1909); the console-logged decile lines are the primary signal.
 describe("token-flood: fold+READ after every delta (64 B deltas) - the half the fold cases omit", () => {
-  bench("fold-and-read late/early decile ratio", () => {
-    // One untimed pass at a small size: JIT warmup otherwise inflates the
-    // first decile, which would read as an artificially cheap start and
-    // understate the ratio this case exists to show.
-    readStringDeltas("toolOutput", 500);
-    readStringDeltas("agentMessage", 500);
-    for (const n of [1_000, 2_000, 4_000]) {
+  for (const n of [1_000, 2_000, 4_000]) {
+    bench(`fold-and-read n=${n} (64 B deltas)`, () => {
       const tool = readStringDeltas("toolOutput", n);
       const msg = readStringDeltas("agentMessage", n);
       console.log(
@@ -298,6 +297,6 @@ describe("token-flood: fold+READ after every delta (64 B deltas) - the half the 
           `| agentMessage late/early ${msg.ratio.toFixed(1)}x ` +
           `(total ${msg.totalMs.toFixed(0)}ms, first decile ${msg.firstMs.toFixed(2)}ms, last ${msg.lastMs.toFixed(2)}ms, ${msg.bytes} B, sum ${msg.checksum})`,
       );
-    }
-  });
+    });
+  }
 });
