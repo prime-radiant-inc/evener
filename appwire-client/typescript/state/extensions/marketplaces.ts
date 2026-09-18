@@ -136,6 +136,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchMarketplaces(),
+    revision: listRevision,
     // The notification names nothing, so every cached catalog may now
     // describe a marketplace another client has since added to, removed,
     // refreshed, renamed or re-sourced. All of them are retired, and the
@@ -144,12 +145,12 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     // re-request their own.
     onNotified: () =>
       store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) })),
-    // Every browse still on the wire is fenced with the list: reset and
-    // dispose both want a reply that started before them to land nothing -
-    // its catalogs included, which is what the generation below counts.
+    // Every browse still on the wire is fenced alongside the list revision:
+    // reset and dispose both want a reply that started before them to land
+    // nothing - its catalogs included, which is what the generation below
+    // counts.
     onFence: (set) => {
       generation += 1;
-      listRevision.fence();
       const fenced = browses.retireInFlight();
       // A fenced browse's catalog entry is "loading" - nothing else was going
       // to answer it - and left behind it reads as settled: browseMarketplace
@@ -165,11 +166,9 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       });
     },
     // A mutation issued before any fetchMarketplaces call touches none of
-    // these three fields, so listRevision.hasLive() is what carries its
-    // intent - a write issues the same live revision a read does (see
-    // listRevision.ts).
-    wantsList: (s) =>
-      s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading || listRevision.hasLive(),
+    // these three fields; the lifecycle ORs listRevision.hasLive() in for that
+    // case (see storeLifecycle.ts's revision option).
+    wantsList: (s) => s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading,
   });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {

@@ -15,6 +15,16 @@ test("pre-session builtins are exactly goal, model, reasoning-effort", () => {
   expect(spawnBuiltinCommands().map((c) => c.id)).toEqual(["goal", "model", "reasoning-effort"]);
 });
 
+test("pre-session builtins carry no unavailableReason", () => {
+  // spawnBuiltinCommands() maps raw buildCommands() output directly; only
+  // scopeCommand (commands.ts) attaches unavailableReason, and it is never
+  // applied here. Pinning this is what lets runSpawnBuiltinAfterStart skip an
+  // unavailableReason guard: there is no scope-resolved entry to carry one.
+  for (const command of spawnBuiltinCommands()) {
+    expect(command.unavailableReason).toBeUndefined();
+  }
+});
+
 describe("resolveSpawnModelItems", () => {
   test("maps provider/model ids with display labels", () => {
     const catalog = {

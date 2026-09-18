@@ -1,3 +1,4 @@
+import { markerText } from "@evener/appwire-client";
 import { useMemo, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
@@ -129,7 +130,7 @@ export function ImageAttachments({
             <Text
               style={{ color: colors.secondary, fontSize: 12, marginTop: 4 }}
               numberOfLines={1}
-            >{`[image ${image.marker}]`}</Text>
+            >{markerText(image.marker)}</Text>
           </View>
         ))}
       </ScrollView>
