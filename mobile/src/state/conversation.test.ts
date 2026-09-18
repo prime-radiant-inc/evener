@@ -208,7 +208,6 @@ class FakeConversationService implements LiveConversationService {
     conversation: MobileConversation;
     activity: ActivityView;
     olderCursor: string | null;
-    turnsPage?: ThreadTurnsListResponse;
   } | null = null;
   readProjectionBlock: Promise<ConversationReadProjection> | null = null;
   readProjectionCalls: { ref: string }[] = [];
@@ -4222,7 +4221,6 @@ describe("ConversationStore", () => {
         conversation: latest,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       service.olderItems = {
         items: [{ kind: "user", id: "old", text: "old" }],
@@ -4328,7 +4326,6 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().openProjected(service, sink, "ref-1");
 
@@ -4356,7 +4353,6 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: null,
-        turnsPage: turnsPage([wireTurn("t1", 500, 20), wireTurn("t2", 60, 40)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4389,7 +4385,6 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().openProjected(service, sink, "ref-1");
 
@@ -4415,7 +4410,6 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-2",
-        turnsPage: turnsPage([wireTurn("t1", 999, 111)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4445,7 +4439,6 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t-old", 500, 20)]),
       };
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -4477,7 +4470,6 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: null,
-        turnsPage: turnsPage([wireTurn("t-fresh", 20, 8)]),
       });
       await rehydratePromise;
 
@@ -4595,7 +4587,6 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().openProjected(service, sink, "ref-1");
 
@@ -4618,7 +4609,6 @@ describe("ConversationStore", () => {
         conversation: opened,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4657,7 +4647,6 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: null,
-        turnsPage: turnsPage([wireTurn("t2", 20, 8)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;
@@ -4716,7 +4705,6 @@ describe("ConversationStore", () => {
         conversation: fresh,
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "cursor-1",
-        turnsPage: turnsPage([wireTurn("t2", 60, 40)]),
       };
       await store.getState().rehydrate(service, sink);
       const conv = store.getState().conversation!;

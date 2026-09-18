@@ -309,6 +309,7 @@ export {
   notificationTargetsThread,
   prependOlderTurns,
   resolvePendingEscalation,
+  turnsMatch,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";

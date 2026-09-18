@@ -28,6 +28,7 @@ import {
   mergeOlderItemPage,
   notificationTargetsThread,
   sessionControls,
+  turnsMatch,
   WireError,
 } from "@evener/appwire-client";
 import type {
@@ -36,7 +37,6 @@ import type {
   ItemModel,
   MutationReceipt,
   ThreadItem,
-  TurnModel,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -770,19 +770,6 @@ function findFoldedItem(
     if (found) return found;
   }
   return undefined;
-}
-
-// Two turns are the same turn for a page/reread merge by the package's own
-// identity rule (mirrors mergeOlderItemPage's turnsMatch): matching ids, or
-// sharing an item's identity. thread/turns/list is itself item-paginated, so
-// a turn can split into fragments across a page boundary and carry a
-// different id per fragment — an id-only comparison would treat a fragment
-// as unrelated to its own turn's later window.
-function turnsShareIdentity(left: TurnModel, right: TurnModel): boolean {
-  if (left.id === right.id) return true;
-  return left.items.some((leftItem) =>
-    right.items.some((rightItem) => itemIdentityMatches(leftItem, rightItem)),
-  );
 }
 
 // Project a wire ThreadItem into a mobile timeline item for insertion from
@@ -1692,7 +1679,6 @@ export function createConversationStore() {
             conversation,
             activity,
             olderCursor,
-            turnsPage,
             hasEarlierItems,
             hasLaterItems,
           } = await service.readProjection(ref);
@@ -1941,7 +1927,7 @@ export function createConversationStore() {
           // capped value here would flip a partial sum's scope to "session".
           let mergedTurns = conversation.turns;
           let wireOlderCursor = conversation.olderCursor;
-          if (preserveTurnHistory && currentConvForMerge !== null && turnsPage) {
+          if (preserveTurnHistory && currentConvForMerge !== null) {
             // The fresh reread is authoritative for any turn its own window
             // covers — a fresh usage/status update must win over the
             // accumulated page's stale copy of the same turn (unlike
@@ -1949,14 +1935,14 @@ export function createConversationStore() {
             // conversation is rightly authoritative over the older page it
             // is folding in). Only page-only turns — accumulated turns the
             // fresh window does not cover — are folded in beside it, matched
-            // by the package's own identity rule (turnsShareIdentity), not
-            // an id-only filter — a turn split into fragments across a page
+            // by the package's own identity rule (turnsMatch), not an
+            // id-only filter — a turn split into fragments across a page
             // boundary shares no id with its own later fragment. Turn order
             // in the result doesn't matter (conversation.turns is summed,
             // never displayed in order), only which turns and usage values
             // survive.
             const pageOnlyTurns = currentConvForMerge.turns.filter(
-              (turn) => !conversation.turns.some((fresh) => turnsShareIdentity(turn, fresh)),
+              (turn) => !conversation.turns.some((fresh) => turnsMatch(turn, fresh)),
             );
             mergedTurns = [...conversation.turns, ...pageOnlyTurns];
             // D18 B3 round 6 (b): only carry the prior conversation's own

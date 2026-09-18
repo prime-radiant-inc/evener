@@ -88,7 +88,6 @@ export interface ConversationReadProjection {
   conversation: MobileConversation;
   activity: ActivityView;
   olderCursor: string | null;
-  turnsPage?: ThreadTurnsListResponse;
   hasEarlierItems?: boolean;
   hasLaterItems?: boolean;
 }
@@ -751,11 +750,6 @@ export function createConversationService(
         conversation,
         activity,
         olderCursor,
-        // The fresh read's own turns, wrapped in the wire shape
-        // mergeOlderItemPage expects — so a rehydrate can fold them against
-        // page-loaded history through the package's own identity-aware merge
-        // (turnsMatch/mergePageTurn) instead of a second, id-only one.
-        turnsPage: { data: thread.turns ?? [], nextCursor: olderCursor ?? undefined },
         hasEarlierItems:
           thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
         hasLaterItems:
