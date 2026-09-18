@@ -1,5 +1,5 @@
 import type { ActivityTree } from "@evener/appwire-client";
-import { ClientNotReadyError } from "@evener/appwire-client";
+import { ClientNotReadyError, panelLoadFailure } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
@@ -598,6 +598,64 @@ describe("activitySummaryStore", () => {
         detail: "Can't reach the hub right now.",
         sentence: "Couldn't load activity: Can't reach the hub right now.",
       },
+    });
+  });
+
+  // The ordinary (not hub-unreachable) rejection has no activity-specific
+  // encoding: it is the package's shared PanelLoadFailure verbatim. Pinning it
+  // to panelLoadFailure(...) here is what keeps the summary's report of a
+  // failure from drifting away from the tasks panel's.
+  test("an ordinary rejection renders the panel's shared failure shape", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    initActivitySummary();
+    const failures: string[] = [];
+    const err = new Error("broken pipe");
+
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      1,
+      () => Promise.reject(err),
+      (sentence) => failures.push(sentence),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const expected = panelLoadFailure("Couldn't load activity", err);
+    expect(failures).toEqual([expected.sentence]);
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
+      kind: "failed",
+      error: expected,
+    });
+  });
+
+  // A rejection carrying no text of its own leaves `detail` out entirely -
+  // sessionActionError drops the separator, so the toast shows no dangling
+  // colon. The summary must inherit that from the shared encoding.
+  test("an ordinary rejection with no text of its own omits the detail", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    initActivitySummary();
+    const failures: string[] = [];
+    const err = new Error("");
+
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      1,
+      () => Promise.reject(err),
+      (sentence) => failures.push(sentence),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const expected = panelLoadFailure("Couldn't load activity", err);
+    expect(expected).toEqual({ headline: "Couldn't load activity", sentence: "Couldn't load activity" });
+    expect(failures).toEqual([expected.sentence]);
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
+      kind: "failed",
+      error: expected,
     });
   });
 
