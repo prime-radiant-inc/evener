@@ -442,9 +442,11 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
   });
 
-  test("collectConfig drops an integer that does not parse to a finite number (never sends NaN)", () => {
+  test("collectConfig drops an integer that does not parse to a finite integer (never sends NaN or a fraction)", () => {
     const state = buildFormState(options, {});
     state.scalars.maxRounds = "12abc";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = "12.5";
     expect(collectConfig(options, state).maxRounds).toBeUndefined();
     state.scalars.maxRounds = " 12 ";
     expect(collectConfig(options, state).maxRounds).toBe(12);
