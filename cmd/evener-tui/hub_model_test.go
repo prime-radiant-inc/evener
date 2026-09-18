@@ -1298,8 +1298,9 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 
 	m.session.setInputValue("/dashboard")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/dashboard should not need an async command")
+	// Leaving the session also clears the terminal title; no async work.
+	if title, ok := windowTitleFromCmd(cmd); !ok || title != "" {
+		t.Fatalf("/dashboard issued an unexpected command: title=(%q, %v)", title, ok)
 	}
 	got := updated.(hubModel)
 	if got.mode != hubModeDashboard {
@@ -1309,8 +1310,10 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	got.mode = hubModeSession
 	got.session.setInputValue("/project")
 	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/project should not need an async command")
+	// Navigating to the project dashboard also clears the terminal title; no
+	// async work.
+	if title, ok := windowTitleFromCmd(cmd); !ok || title != "" {
+		t.Fatalf("/project issued an unexpected command: title=(%q, %v)", title, ok)
 	}
 	got = updated.(hubModel)
 	if got.mode != hubModeDashboard {

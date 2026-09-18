@@ -231,11 +231,15 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		// naming the session / refreshing the name after a compaction). Fold it
 		// onto the cached detail so the session header and the terminal title
 		// (hub_window_title.go, emitted by the Update wrapper) both follow the
-		// frame. An absent or blank name is not a name: leave the current one.
+		// frame, and onto the cached dashboard row so a later return to the
+		// dashboard does not show the old name. The name is untrusted wire text
+		// and is sanitized before it is stored or rendered. An absent, blank, or
+		// all-control name is not a name: leave the current one.
 		var params appwire.ThreadNameChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			if name := strings.TrimSpace(params.Name); name != "" {
+			if name := sanitizeDisplayName(params.Name); strings.TrimSpace(name) != "" {
 				m.detail.Title = name
+				m.updateDashboardRowTitle(params.Ref, name)
 			}
 		}
 	case appwire.NotifyThreadReasoningEffortChanged:
@@ -486,6 +490,36 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 			m.rows[i].model = model
 			return
 		}
+	}
+}
+
+// updateDashboardRowTitle keeps the dashboard's session-row title live after an
+// evener/thread/name/changed push, the same way updateDashboardRowModel keeps
+// the Model column live. The rows (and the cached tree they were built from)
+// are otherwise rebuilt only by a fresh tree fetch, so without this the
+// dashboard would show the old name until the next refresh.
+func (m *hubModel) updateDashboardRowTitle(ref, title string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || title == "" {
+		return
+	}
+	for i := range m.rows {
+		if m.rows[i].ref.String() == ref {
+			m.rows[i].title = title
+		}
+	}
+	updateTreeNodeTitles(m.tree.Live, ref, title)
+	for i := range m.tree.Projects {
+		updateTreeNodeTitles(m.tree.Projects[i].Sessions, ref, title)
+	}
+}
+
+func updateTreeNodeTitles(nodes []hubTreeNode, ref, title string) {
+	for i := range nodes {
+		if nodes[i].Ref == ref {
+			nodes[i].Title = title
+		}
+		updateTreeNodeTitles(nodes[i].Children, ref, title)
 	}
 }
 

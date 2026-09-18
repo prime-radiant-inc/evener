@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,7 +58,7 @@ func enterWindowTitleSession(t *testing.T, title string) hubModel {
 // Entering a session must title the terminal with the session's display name.
 func TestUpdateSetsWindowTitleOnSessionEntry(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
-	updated, cmd := m.Update(hubSessionMsg{
+	_, cmd := m.Update(hubSessionMsg{
 		detail: hubSessionDetail{
 			Ref:       "local:th_1",
 			SessionID: "sess_1",
@@ -66,10 +67,6 @@ func TestUpdateSetsWindowTitleOnSessionEntry(t *testing.T) {
 		},
 		ref: "local:th_1",
 	})
-	hm := updated.(hubModel)
-	if got := hm.windowTitle; got != "Fix the flaky test" {
-		t.Fatalf("recorded window title = %q, want %q", got, "Fix the flaky test")
-	}
 	title, ok := windowTitleFromCmd(cmd)
 	if !ok {
 		t.Fatal("session entry returned no tea.SetWindowTitle command")
@@ -120,9 +117,6 @@ func TestUpdateClearsWindowTitleOnDashboardReturn(t *testing.T) {
 	if hm.mode != hubModeDashboard {
 		t.Fatalf("mode = %v, want hubModeDashboard after ctrl+o", hm.mode)
 	}
-	if got := hm.windowTitle; got != "" {
-		t.Fatalf("recorded window title = %q, want empty", got)
-	}
 	title, ok := windowTitleFromCmd(cmd)
 	if !ok {
 		t.Fatal("dashboard return returned no tea.SetWindowTitle command")
@@ -145,11 +139,10 @@ func TestWindowTitleFallsBackThroughSessionIdentity(t *testing.T) {
 		t.Fatalf("SetWindowTitle = (%q, %v), want (\"01SESS\", true)", title, ok)
 	}
 
-	updated2, cmd2 := hm.Update(hubSessionMsg{
+	_, cmd2 := hm.Update(hubSessionMsg{
 		detail: hubSessionDetail{Ref: "local:th_2", SessionID: "", State: appwire.ThreadStatusIdle},
 		ref:    "local:th_2",
 	})
-	_ = updated2
 	if title, ok := windowTitleFromCmd(cmd2); !ok || title != "local:th_2" {
 		t.Fatalf("SetWindowTitle = (%q, %v), want (\"local:th_2\", true)", title, ok)
 	}
@@ -159,11 +152,7 @@ func TestWindowTitleFallsBackThroughSessionIdentity(t *testing.T) {
 // re-emit the OSC escape: Update runs on every keypress and streaming frame.
 func TestWindowTitleNotReemittedWhenUnchanged(t *testing.T) {
 	m := enterWindowTitleSession(t, "Stable name")
-	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	hm := updated.(hubModel)
-	if hm.windowTitle != "Stable name" {
-		t.Fatalf("recorded window title = %q, want %q", hm.windowTitle, "Stable name")
-	}
+	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if _, ok := windowTitleFromCmd(cmd); ok {
 		t.Fatal("an unchanged title re-emitted tea.SetWindowTitle")
 	}
@@ -175,5 +164,89 @@ func TestWindowTitleEmptyOutsideSessionView(t *testing.T) {
 	_, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if _, ok := windowTitleFromCmd(cmd); ok {
 		t.Fatal("dashboard update emitted a tea.SetWindowTitle command")
+	}
+}
+
+// A name carrying terminal control characters must not reach the OSC title:
+// BEL or ESC would close the escape string early and inject sequences into the
+// user's terminal (OSC 52 clipboard writes, cursor/keyboard-mode changes).
+func TestWindowTitleSanitizesControlSequences(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	_, cmd := m.Update(hubSessionMsg{
+		detail: hubSessionDetail{
+			Ref:       "local:th_1",
+			SessionID: "sess_1",
+			Title:     "evil\x1b]52;c;clip\x07name\x07",
+			State:     appwire.ThreadStatusIdle,
+		},
+		ref: "local:th_1",
+	})
+	title, ok := windowTitleFromCmd(cmd)
+	if !ok {
+		t.Fatal("session entry returned no tea.SetWindowTitle command")
+	}
+	const want = "evil]52;c;clipname"
+	if title != want {
+		t.Fatalf("SetWindowTitle = %q, want %q", title, want)
+	}
+	for _, r := range title {
+		if r < 0x20 || r == 0x7f {
+			t.Fatalf("SetWindowTitle %q still carries control rune %#U", title, r)
+		}
+	}
+}
+
+// The sanitizer strips C0 controls and DEL, preserves printable text including
+// non-ASCII, and caps length so a hostile preview cannot flood the title bar.
+func TestTerminalTitleStripsControlsAndCapsLength(t *testing.T) {
+	if got := terminalTitle("a\tb\x1bc\x07d\x7fe"); got != "abcde" {
+		t.Fatalf("terminalTitle = %q, want %q", got, "abcde")
+	}
+	if got := terminalTitle("café ☕"); got != "café ☕" {
+		t.Fatalf("terminalTitle dropped printable runes: %q", got)
+	}
+	long := strings.Repeat("x", maxWindowTitleRunes+50)
+	if got := terminalTitle(long); len([]rune(got)) != maxWindowTitleRunes {
+		t.Fatalf("terminalTitle length = %d, want %d", len([]rune(got)), maxWindowTitleRunes)
+	}
+}
+
+// The name is sanitized where detail.Title is derived from the wire, so the
+// session header and dashboard row render safe text too, not just the title.
+func TestHubDetailFromThreadSanitizesDisplayName(t *testing.T) {
+	detail := hubDetailFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "sess_1",
+		Name:      "a\x07b\x1bc",
+	})
+	if detail.Title != "abc" {
+		t.Fatalf("detail.Title = %q, want %q", detail.Title, "abc")
+	}
+}
+
+// A rename push must also refresh the cached dashboard row and tree node, or a
+// return to the dashboard shows the old name until the next tree fetch.
+func TestThreadNameChangedUpdatesCachedDashboardTitle(t *testing.T) {
+	m := enterWindowTitleSession(t, "Old name")
+	ref, err := appwire.ParseRef("local:th_1")
+	if err != nil {
+		t.Fatalf("parse ref: %v", err)
+	}
+	m.rows = []hubRow{{kind: hubRowSession, ref: ref, title: "Old name"}}
+	m.tree.Live = []hubTreeNode{{Ref: "local:th_1", SessionID: "sess_1", Title: "Old name"}}
+
+	message := appwire.NotificationMessage(appwire.NotifyThreadNameChanged, appwire.ThreadNameChangedParams{
+		ThreadID: "sess_1",
+		Ref:      "local:th_1",
+		Name:     "New\x07 name",
+		Source:   "user",
+	})
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *message.Notification})
+	hm := updated.(hubModel)
+	if hm.rows[0].title != "New name" {
+		t.Fatalf("row title = %q, want %q", hm.rows[0].title, "New name")
+	}
+	if hm.tree.Live[0].Title != "New name" {
+		t.Fatalf("tree node title = %q, want %q", hm.tree.Live[0].Title, "New name")
 	}
 }

@@ -93,10 +93,6 @@ type hubModel struct {
 	rows     []hubRow
 	selected int
 
-	// windowTitle is the last terminal window title the model set, so Update
-	// does not re-emit it while the view stays put (hub_window_title.go).
-	windowTitle string
-
 	dashboardFilter        textinput.Model
 	dashboardFilterActive  bool
 	dashboardRecentOpen    map[string]bool
@@ -359,7 +355,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// tea.Batch leaves cmd untouched when the title does not move (compactCmds
 	// returns the single non-nil command), so this adds a SetWindowTitle only
-	// on the updates that actually move the title.
+	// on the updates that actually move the title. windowTitleCmd does not
+	// mutate hm, so evaluating it beside hm in the return is well defined.
 	return hm, tea.Batch(cmd, hm.windowTitleCmd(m))
 }
 
