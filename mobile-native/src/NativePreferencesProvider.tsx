@@ -20,6 +20,7 @@ import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
 	draftUnreadableAfterDiscard,
+	localDraftIsUnreadable,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
@@ -35,6 +36,13 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
+	/** A locally stored keybindings draft is present but unreadable, checked
+	 * independently of `snapshot` (which stays null until a ready client
+	 * publishes a model - see bindNativePreferences). A cold offline start
+	 * never reaches that point, so this is what lets the "Discard unreadable
+	 * draft" action render before any hub has answered. Superseded by
+	 * `snapshot.keybindings.draftUnreadable` the moment a model publishes. */
+	offlineDraftUnreadable: boolean;
 	/** Clears an unreadable keybindings draft record with no live model
 	 * required - the store-free path discardStoredKeybindingDraft documents
 	 * for a host with no connection to build one from (offline, or the
@@ -97,6 +105,18 @@ export function NativePreferencesProvider({
 		snapshot: NativePreferencesSnapshot;
 		config: TranscriptDisplayConfigV1 | null;
 	} | null>(null);
+	const [offlineDraftUnreadable, setOfflineDraftUnreadable] = useState(false);
+	useEffect(() => {
+		// Runs independently of connection state (see the field's own comment
+		// on Preferences.offlineDraftUnreadable): a cold offline start never
+		// fires bindNativePreferences' `ready` callback, so this is the only
+		// place the local record gets inspected before a model exists.
+		setOfflineDraftUnreadable(
+			hubId
+				? localDraftIsUnreadable(nativeKeybindingDrafts(hubId, backend).load(), isReadableKeybindingDraft)
+				: false,
+		);
+	}, [hubId]);
 	useEffect(() => {
 		if (!client || !hubId) return;
 		let unsubscribe = () => {};
@@ -147,6 +167,11 @@ export function NativePreferencesProvider({
 		// (draftUnreadableAfterDiscard re-checks storage.load() to tell them
 		// apart) - only the first makes the notice wrong to keep showing.
 		const draftUnreadable = draftUnreadableAfterDiscard(outcome, isReadableKeybindingDraft(storage.load()));
+		// Kept in sync regardless of whether `bound` exists: the cold-offline
+		// signal below (offlineDraftUnreadable) is what the screen falls back
+		// to before any model has published a snapshot, and a discard can
+		// happen in exactly that state.
+		setOfflineDraftUnreadable(draftUnreadable);
 		setBound((previous) =>
 			previous?.hubId === hubId
 				? {
@@ -173,6 +198,7 @@ export function NativePreferencesProvider({
 				snapshot: selected?.snapshot ?? null,
 				config: selected?.config ?? null,
 				connected: !!client && state === "ready" && selected?.client === client,
+				offlineDraftUnreadable,
 				discardUnreadableKeybindingsDraft,
 			}}
 		>

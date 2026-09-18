@@ -71,6 +71,19 @@ export function draftUnreadableAfterDiscard(
 	return outcome === "refused" && !currentIsReadable;
 }
 
+/** Whether a locally stored draft record is present but unreadable - what
+ * the store-free discard action needs to know about BEFORE any live model
+ * has connected. A cold offline start never reaches bindNativePreferences'
+ * `ready` callback (no connection, so no model), so the live domain's own
+ * draftUnreadable is never computed and the "Discard unreadable draft"
+ * action would otherwise be unreachable until the hub answers. */
+export function localDraftIsUnreadable(
+	loaded: unknown,
+	isReadable: (value: unknown) => boolean,
+): boolean {
+	return loaded !== null && loaded !== undefined && !isReadable(loaded);
+}
+
 export function nativeKeybindingDrafts(
 	hubId: string,
 	backend: NativeKeybindingDraftBackend,

@@ -89,6 +89,14 @@ export function KeybindingPreferencesScreen({
 		};
 	}, []);
 	const domain = preferences.snapshot?.keybindings;
+	// A cold offline start never reaches bindNativePreferences' `ready`
+	// callback, so `domain` stays undefined until a model publishes -
+	// offlineDraftUnreadable is checked independently of it (see
+	// NativePreferencesProvider), so the recovery action can still render.
+	// The live domain's own value takes over the moment a model exists.
+	const draftUnreadable = domain
+		? domain.draftUnreadable
+		: preferences.offlineDraftUnreadable;
 	const rules = domain?.draft?.rules ?? domain?.confirmed?.rules ?? [];
 	const preview = useMemo(() => keybindingPreview(rules), [rules]);
 	const editor = route.params.editor;
@@ -174,7 +182,7 @@ export function KeybindingPreferencesScreen({
 							phone. Check the hub before making another change.
 						</Copy>
 					)}
-					{domain?.draftUnreadable && (
+					{draftUnreadable && (
 						<View style={{ gap: 12 }}>
 							<Copy>
 								A saved draft on this phone could not be read. Discard it to
@@ -183,8 +191,8 @@ export function KeybindingPreferencesScreen({
 							<Action
 								disabled={
 									model && preferences.connected
-										? !!domain.loading || !!domain.saving || !!domain.writeUncertain
-										: !!domain.saving || !!domain.writeUncertain
+										? !!domain?.loading || !!domain?.saving || !!domain?.writeUncertain
+										: !!domain?.saving || !!domain?.writeUncertain
 								}
 								onPress={() => {
 									if (model && preferences.connected) {

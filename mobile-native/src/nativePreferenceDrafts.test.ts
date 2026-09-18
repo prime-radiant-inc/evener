@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	draftUnreadableAfterDiscard,
+	localDraftIsUnreadable,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
@@ -167,6 +168,24 @@ describe("draftUnreadableAfterDiscard", () => {
 
 	it("keeps the notice when a refusal's replacement is still unreadable", () => {
 		expect(draftUnreadableAfterDiscard("refused", false)).toBe(true);
+	});
+});
+
+describe("localDraftIsUnreadable", () => {
+	const isReadable = (value: unknown) =>
+		typeof value === "object" && value !== null && "id" in value;
+
+	it("is false when nothing is stored", () => {
+		expect(localDraftIsUnreadable(null, isReadable)).toBe(false);
+		expect(localDraftIsUnreadable(undefined, isReadable)).toBe(false);
+	});
+
+	it("is false when the stored record decodes as valid", () => {
+		expect(localDraftIsUnreadable({ id: "d1" }, isReadable)).toBe(false);
+	});
+
+	it("is true when a record is present but does not decode", () => {
+		expect(localDraftIsUnreadable("{not json", isReadable)).toBe(true);
 	});
 });
 
