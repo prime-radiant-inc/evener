@@ -605,13 +605,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * fresh counter when it settles, so its queue entry remembers the epoch it
    * was created under. */
   let writeEpoch = 0;
+  /** Releases the tail held by the oldest still-unreleased write. reset()
+   * calls it so writes queued behind an abandoned request drain through their
+   * dead-generation fence even when that request never settles. */
+  let releaseHeadTail: (() => void) | null = null;
 
   /** Serializes one write behind the previous write's full settlement (success
    * OR failure): a failed write must not block the queue, and the next write
    * composes against whatever state the failure left. A write that finds the
    * queue idle starts now, preserving the synchronous dispatch each write path
-   * had before the queue was shared. */
-  function enqueueWrite<T>(run: () => Promise<T>): Promise<T> {
+   * had before the queue was shared; `run` receives whether it had to wait. */
+  function enqueueWrite<T>(run: (waited: boolean) => Promise<T>): Promise<T> {
     const epoch = writeEpoch;
     const idle = pendingWrites === 0;
     // Count this write BEFORE dispatching so a reentrant enqueue from run()'s
@@ -624,7 +628,19 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     writeQueue = new Promise<void>((resolve) => {
       releaseTail = resolve;
     });
-    const queued = idle ? run() : previous.then(run, run);
+    const ownTail = releaseTail;
+    const start = (waited: boolean): Promise<T> => {
+      // This write now heads the drain: anything queued behind it waits on its
+      // tail, which reset() may have to release on the write's behalf.
+      releaseHeadTail = ownTail;
+      return run(waited);
+    };
+    const queued = idle
+      ? start(false)
+      : previous.then(
+          () => start(true),
+          () => start(true),
+        );
     const settle = () => {
       // A reset() since this write began already zeroed the counter, so this
       // settlement must not drive a fresh epoch's counter negative. Its tail
@@ -632,6 +648,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // entry and must still wake (it fails its own dead-generation fence) so
       // it drains instead of hanging forever.
       if (epoch === writeEpoch) pendingWrites -= 1;
+      if (releaseHeadTail === ownTail) releaseHeadTail = null;
       releaseTail();
     };
     queued.then(settle, settle);
@@ -1184,7 +1201,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // Chain behind the previous write's SETTLEMENT, exactly as patchOverrides
     // does: a failed write must not block the queue, and the next write
     // composes against whatever state the failure left.
-    return enqueueWrite(() => runQueuedSave(callGeneration, revision, checked, checkpoint));
+    return enqueueWrite((waited) => runQueuedSave(callGeneration, revision, checked, checkpoint, waited));
   }
 
   /** The queued half of saveDraft: the request and its post-reply sequence,
@@ -1195,6 +1212,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     revision: number,
     checked: KeybindingsRule[],
     checkpoint: KeybindingDraftCheckpoint,
+    waited: boolean,
   ): Promise<KeybindingsOverrides> {
     const state = getState();
     if (!fence.liveHub(callGeneration)) {
@@ -1222,11 +1240,18 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       state.writeUncertain ||
       state.hubSupport !== "supported" ||
       !state.loaded ||
+      // A save that had to WAIT behind another write dispatches at a point
+      // where a refresh started meanwhile may be about to land an
+      // authoritative revision: refuse rather than race it, exactly as
+      // patchOverrides does. A save that dispatched immediately keeps the
+      // native contract that a checkpointed save may race an in-flight read;
+      // the stale guard protects that outcome.
+      (waited && state.hubLoading) ||
       state.loadError !== null
     ) {
-      // The hub is no longer writable. This is the same unavailable refusal
-      // assertEditable gives, NOT a draft conflict. The draft's own durable
-      // uncertainty is left untouched: nothing left the device, so a
+      // The hub is not writable for this save. This is the same unavailable
+      // refusal assertEditable gives, NOT a draft conflict. The draft's own
+      // durable uncertainty is left untouched: nothing left the device, so a
       // checkpoint this save wrote is settled, but an outcome that is already
       // unknown is not silently cleared.
       if (!state.writeUncertain) {
@@ -1355,6 +1380,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       writeQueue = Promise.resolve();
       pendingWrites = 0;
       writeEpoch += 1;
+      // Wake the writes queued behind an abandoned request now: they fail
+      // their own dead-generation fence and drain, instead of waiting forever
+      // for a request that may never settle.
+      const releaseHead = releaseHeadTail;
+      releaseHeadTail = null;
+      releaseHead?.();
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).

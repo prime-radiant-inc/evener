@@ -771,6 +771,54 @@ describe("the two write paths serialize through one queue", () => {
     // than hanging forever.
     await expect(b).rejects.toThrow();
   });
+
+  test("reset drains a write queued behind a request that never settles", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    // The first request is deliberately never settled.
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const second = store.getState().patchOverrides([applied]);
+
+    store.reset();
+    // reset() must release the abandoned head tail itself: the queued write
+    // drains through its dead-generation fence, without waiting on a request
+    // that will never answer.
+    await expect(second).rejects.toThrow();
+    // Silence the deliberately-unsettled first write (it stays pending).
+    void first;
+  });
+
+  test("a save queued behind a write does not dispatch while a refresh is in flight", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const save = store.getState().saveDraft(proposed);
+
+    // A refresh starts while the save waits in the queue and stays pending.
+    const heldGet = deferred<KeybindingsOverrides>();
+    client.on(getMethod, () => heldGet.promise);
+    const read = store.getState().refreshOverrides();
+    expect(store.getState().hubLoading).toBe(true);
+
+    // The preceding write settles WITHOUT changing the revision.
+    settlements[0]!.resolve(payload(3, [applied]));
+    await expect(first).resolves.toBeDefined();
+
+    // The queued save must refuse rather than race the pending authoritative
+    // GET with a stale expectedRevision: no second PATCH fires.
+    await expect(save).rejects.toThrow();
+    expect(callsTo(client, patchMethod)).toBe(1);
+
+    heldGet.resolve(payload(3, [applied]));
+    await read;
+  });
 });
 
 describe("payload rules shared by both apps", () => {
