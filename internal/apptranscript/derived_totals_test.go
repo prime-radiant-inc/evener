@@ -189,6 +189,59 @@ func TestDerivedTotalsFromFileMemoizesByFileIdentity(t *testing.T) {
 	}
 }
 
+// One file-identity gate backs all three derived scans. The first read of each
+// scans once, a repeat read is served from its memo, and a grown file
+// invalidates all three. This is the invariant the single memoizeScan helper
+// exists to keep: three copies of the gate could drift apart, and the
+// differential fuzz that pins the figures together does not see the gate.
+func TestDerivedScansShareOneFileIdentityGate(t *testing.T) {
+	entries := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("one"), Usage: llm.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}},
+		{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "shell", IsError: true}},
+		}}},
+	}
+	path := writeDerivedTotalsTranscript(t, entries)
+	cache := NewTurnCache()
+
+	var usageScans, failureScans, derivedScans int64
+	restore := InstallReadObserverForTesting(func(stats ReadStats) {
+		usageScans += stats.usageScans
+		failureScans += stats.failureScans
+		derivedScans += stats.derivedScans
+	})
+	t.Cleanup(restore)
+
+	readAll := func() {
+		requireUsageTotalFromFile(t, cache, path, testMaxLineBytes, 0)
+		requireFailedToolCalls(t, cache, path, 0)
+		requireDerivedTotalsFromFile(t, cache, path, testMaxLineBytes, 0)
+	}
+	readAll()
+	if usageScans != 1 || failureScans != 1 || derivedScans != 1 {
+		t.Fatalf("first read scans = usage:%d failures:%d derived:%d, want 1 each", usageScans, failureScans, derivedScans)
+	}
+	readAll()
+	if usageScans != 1 || failureScans != 1 || derivedScans != 1 {
+		t.Fatalf("repeat read scans = usage:%d failures:%d derived:%d, want all served from memo", usageScans, failureScans, derivedScans)
+	}
+
+	grown := writeDerivedTotalsTranscript(t, append(entries, schema.Turn{
+		Kind: schema.TurnAssistant, Message: llm.Assistant("two"), Usage: llm.Usage{InputTokens: 200, OutputTokens: 20, TotalTokens: 220},
+	}))
+	data, err := os.ReadFile(grown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readAll()
+	if usageScans != 2 || failureScans != 2 || derivedScans != 2 {
+		t.Fatalf("post-growth scans = usage:%d failures:%d derived:%d, want 2 each", usageScans, failureScans, derivedScans)
+	}
+}
+
 // A missing or legacy transcript is unknown, not a fabricated zero.
 func TestDerivedTotalsFromFilePropagatesErrors(t *testing.T) {
 	missing := filepathJoinDerivedTotals(t, "absent.transcript.jsonl")
