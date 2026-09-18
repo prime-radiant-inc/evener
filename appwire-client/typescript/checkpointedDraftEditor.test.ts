@@ -107,7 +107,15 @@ describe("persistCheckpointedDraft", () => {
     const store = fieldsStore(initialFields());
 
     expect(() =>
-      persistCheckpointedDraft(repo, { value: "a" }, store.getState, store.setState, vi.fn(), "save failed", "review again"),
+      persistCheckpointedDraft(
+        repo,
+        { value: "a" },
+        store.getState,
+        store.setState,
+        vi.fn(),
+        "save failed",
+        "review again",
+      ),
     ).toThrow("save failed");
 
     expect(store.getState()).toMatchObject({ storageUnavailable: true, draftError: "save failed" });
