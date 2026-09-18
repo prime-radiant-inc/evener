@@ -5,7 +5,7 @@ import type {
 	KeybindingsOverrides,
 	KeybindingsRule,
 } from "@evener/appwire-client";
-import { memoryKeybindingDraftStorage } from "@evener/appwire-client/testing/keybindingDraftStorage";
+import { memoryDraftStorage } from "@evener/appwire-client/testing/draftStorage";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -16,7 +16,7 @@ const rules: KeybindingsRule[] = [
 ];
 
 function fixture() {
-	const drafts = memoryKeybindingDraftStorage();
+	const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
 	const storage = drafts.storage;
 	const requests: { method: string; params: unknown }[] = [];
 	const listeners = new Set<(value: AnyNotification) => void>();
