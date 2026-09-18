@@ -305,7 +305,7 @@ describe("parseDraftBytes", () => {
 	it("returns a tagged UnparseableDraftBytes marker for bytes it cannot parse, never a bare string", () => {
 		const value = parseDraftBytes("{not json");
 		expect(isUnparseableDraftBytes(value)).toBe(true);
-		expect(value).toEqual({ kind: "unparseable", raw: "{not json" });
+		expect((value as { raw: string }).raw).toBe("{not json");
 	});
 
 	it("returns a tagged StoredNullRecord marker for a stored JSON null, never the absent-record sentinel", () => {
@@ -320,6 +320,15 @@ describe("parseDraftBytes", () => {
 		const value = parseDraftBytes('"null"');
 		expect(value).toBe("null");
 		expect(isStoredNullRecord(value)).toBe(false);
+	});
+
+	it("never mistakes a real checkpoint carrying an overloaded kind field for the stored-null sentinel", () => {
+		// A future checkpoint shape could legitimately have its own `kind`
+		// field; the marker predicates must not fire on that field alone, or a
+		// valid, present record reads as no draft (isStoredNullRecord) or an
+		// unreadable one (isUnparseableDraftBytes) instead of itself.
+		expect(isStoredNullRecord({ kind: "storedNull", id: "d1", value: "a" })).toBe(false);
+		expect(isUnparseableDraftBytes({ kind: "unparseable", raw: "irrelevant", id: "d1" })).toBe(false);
 	});
 });
 
