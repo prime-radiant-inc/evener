@@ -535,12 +535,16 @@ export function ToolRow({
   // There is only a summary line to disclose when there is summary TEXT. A
   // summary-less intent-bearing row (a delegate, subagentModule owns its
   // presentation) has nothing for the intent button to open: it stays
-  // single-level - the intent button controls the body directly and the body
-  // trigger rides the intent line - so no empty summary region is ever
-  // mounted, however the caller's summaryOpen prop defaults (#1253). The
-  // delegate card depends on the body trigger, not the summary region, so
-  // this keeps the card reachable without the stray line.
+  // single-level - one body control and one chevron - so no empty summary
+  // region is ever mounted, however the caller's summaryOpen prop defaults
+  // (#1253). The delegate card depends on the body trigger, not the summary
+  // region, so this keeps the card reachable without the stray line.
   const summaryToggle = twoLevel && summaryTextPresent;
+  // On such a summary-less two-level row the intent button would be a second
+  // control for the very same body disclosure (and a second chevron beside
+  // it). It is suppressed: the .bodyTrigger is the row's one semantic body
+  // control, and its chevron the one visible chevron (#1253 review).
+  const intentControlSuppressed = twoLevel && !summaryToggle;
   // `status` is typed ReactNode, so it admits values that render nothing and
   // carry no accessible name - null, undefined, false (the common
   // `condition && <Node/>` idiom) - alongside a real status node. Only a
@@ -898,9 +902,9 @@ export function ToolRow({
 
   // Intent button attributes differ between two-level and legacy modes.
   // In two-level mode with a summary line the intent button controls the
-  // summary disclosure; otherwise (legacy, or a summary-less intent-bearing
-  // row that stays single-level, #1253) it controls the body disclosure
-  // directly.
+  // summary disclosure; in legacy mode it controls the body disclosure
+  // directly. (A summary-less two-level row renders no intent button at all -
+  // its .bodyTrigger is the single control - so these never describe it.)
   const triggerExpanded = summaryToggle ? summaryOpen : expanded;
   const triggerControls = summaryToggle ? (summaryOpen ? summaryRegionId : undefined) : disclosureBodyId;
   const triggerOnClick = summaryToggle ? () => onToggleSummary?.() : () => onToggle?.();
@@ -916,16 +920,20 @@ export function ToolRow({
     >
       {hasIntent && showIntentTrailing ? (
         <>
-          <button
-            type="button"
-            className={`${CLASS.trigger} ${CLASS.intentOverlayTrigger}`}
-            data-testid="tool-row-trigger"
-            aria-expanded={triggerExpanded}
-            aria-controls={triggerControls}
-            aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
-            aria-describedby={hasStatus ? statusId : undefined}
-            onClick={triggerOnClick}
-          />
+          {/* A summary-less row keeps only its .bodyTrigger control (rendered
+              below) - no second intent disclosure, no second chevron. */}
+          {!intentControlSuppressed && (
+            <button
+              type="button"
+              className={`${CLASS.trigger} ${CLASS.intentOverlayTrigger}`}
+              data-testid="tool-row-trigger"
+              aria-expanded={triggerExpanded}
+              aria-controls={triggerControls}
+              aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
+              aria-describedby={hasStatus ? statusId : undefined}
+              onClick={triggerOnClick}
+            />
+          )}
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
             {iconNode}
             {failureNode}
@@ -935,7 +943,16 @@ export function ToolRow({
             </span>
           </span>
           {intentLineTrailing}
-          {chevron}
+          {!intentControlSuppressed && chevron}
+        </>
+      ) : hasIntent && intentControlSuppressed ? (
+        <>
+          {iconNode}
+          {failureNode}
+          {statusNode}
+          <span className={CLASS.intent} data-testid="tool-row-intent">
+            {statedIntent}
+          </span>
         </>
       ) : hasIntent ? (
         <button

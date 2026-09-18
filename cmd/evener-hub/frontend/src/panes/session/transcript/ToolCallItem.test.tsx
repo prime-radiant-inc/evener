@@ -1374,9 +1374,13 @@ test("delegate tool rows use a single top-level disclosure trigger owned by Tool
     />,
   );
   // The disclosure trigger is a real button[aria-expanded] (ToolRow),
-  // not a native <details>/<summary> - exactly one per tool call.
-  const triggers = container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]');
+  // not a native <details>/<summary> - exactly one per tool call. A
+  // summary-less delegate row has no summary line to disclose, so its one
+  // top-level control is the body trigger; a second intent trigger would be a
+  // duplicate control and chevron for the same body (#1253 review).
+  const triggers = container.querySelectorAll('[data-testid="tool-row-body-trigger"][aria-expanded]');
   expect(triggers).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]')).toHaveLength(0);
 });
 
 test("a live, unsettled delegate call renders a running/working status dot (never unknown)", () => {
@@ -1737,6 +1741,37 @@ test.each(["tools", "activity", "full"] as const)(
     expect(screen.queryByTestId("tool-row-summary")).toBeNull();
     expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
     expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+// The delegate row's ONE control is its body trigger: clicking it mounts and
+// unmounts the card (there is no second intent trigger to divide the role).
+test.each(["activity", "full"] as const)(
+  "the delegate row's single body control mounts and unmounts the card at the %s level",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    renderWithConfig(
+      config,
+      item({
+        id: `delegate_single_control_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+    const control = screen.getByTestId("tool-row-body-trigger");
+    // The delegate descriptor auto-expands, so the card starts open.
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
   },
 );
 
