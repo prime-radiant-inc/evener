@@ -114,6 +114,21 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 			}
 			return m, nil
 		}
+		if isInstanceRenamePersisted(msg.Err) {
+			// A rename that stood in the config but could not carry the instance's
+			// OAuth record comes back carrying the hub's own discriminator for it.
+			// providers.toml already names the new instance, so this is not a
+			// failure to report: surface the hub's message (it names the credential
+			// left behind) as a warning and re-read the listing, so the panel
+			// follows the instance to its new name rather than keeping the old,
+			// now-nonexistent one.
+			m.err = nil
+			m.addInstanceRenameWarningNotice(msg.Err)
+			if m.credentialsPanel != nil && m.client != nil {
+				return m, launchconfig.CmdInstanceList(m.client)
+			}
+			return m, nil
+		}
 		m.err = msg.Err
 		return m, nil
 	}
@@ -134,6 +149,14 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 // evenerErrorInfo string, never the code: siblings share the code.
 func isInstanceRemovePersisted(err error) bool {
 	return wireErrorHasInfo(err, string(appwire.ErrorInstanceRemovePersisted))
+}
+
+// isInstanceRenamePersisted reports whether err is the hub's discriminator for a
+// provider-instance rename that stood but could not carry the instance's OAuth
+// record (appwire.ErrorInstanceRenamePersisted). Like removal's discriminator it
+// is the evenerErrorInfo string, never the code: siblings share the code.
+func isInstanceRenamePersisted(err error) bool {
+	return wireErrorHasInfo(err, string(appwire.ErrorInstanceRenamePersisted))
 }
 
 func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMsg) (tea.Model, tea.Cmd) {

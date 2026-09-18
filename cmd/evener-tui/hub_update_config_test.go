@@ -187,3 +187,68 @@ func TestHandleInstanceMutateResultRemovalPersistedWarnsAndReconciles(t *testing
 		}
 	}
 }
+
+// TestIsInstanceRenamePersisted pins the rename discriminator the same way
+// TestIsInstanceRemovePersisted pins removal's: Data is an ErrorData in-process
+// and a decoded map over the socket, the code is never the discriminator, and
+// the sibling remove discriminator is not this one.
+func TestIsInstanceRenamePersisted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"plain", errors.New("nope"), false},
+		{"errorData", appwire.WireError{Code: appwire.CodeInternalError, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorInstanceRenamePersisted}}, true},
+		{"map", appwire.WireError{Code: appwire.CodeInternalError, Data: map[string]any{"evenerErrorInfo": string(appwire.ErrorInstanceRenamePersisted)}}, true},
+		{"removeInfo", appwire.WireError{Code: appwire.CodeInternalError, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorInstanceRemovePersisted}}, false},
+		{"otherInfo", appwire.WireError{Code: appwire.CodeInternalError, Data: appwire.ErrorData{EvenerErrorInfo: "somethingElse"}}, false},
+		{"otherType", appwire.WireError{Code: appwire.CodeInternalError, Data: "string-data"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isInstanceRenamePersisted(tc.err); got != tc.want {
+				t.Fatalf("isInstanceRenamePersisted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleInstanceMutateResultRenamePersistedWarnsAndReconciles: a rename
+// that stood in providers.toml but could not carry the instance's OAuth record
+// carries appwire.ErrorInstanceRenamePersisted, so the handler reports the
+// hub's message as a warning notice and re-reads the listing - which is what
+// lets the panel follow the instance to its new name - instead of showing a
+// save failure for a rename that landed.
+func TestHandleInstanceMutateResultRenamePersistedWarnsAndReconciles(t *testing.T) {
+	persisted := appwire.InstanceRenamePersisted("renamed work to work-2, but a credential the rename set aside is still on disk: /state/auth/work.json.removing-1 (delete refused)")
+
+	got, cmd := hubModel{}.handleInstanceMutateResult(launchconfig.InstanceMutateResultMsg{Err: persisted})
+	after := got.(hubModel)
+	if after.err != nil {
+		t.Fatalf("model err = %v, want nil: the rename stood", after.err)
+	}
+	if len(after.notices) != 1 {
+		t.Fatalf("notices = %d, want one warning notice", len(after.notices))
+	}
+	if notice := after.notices[0]; notice.State != "warning" || !strings.Contains(notice.Reason, "still on disk") {
+		t.Fatalf("notice = %+v, want a warning carrying the hub's message", notice)
+	}
+	if cmd != nil {
+		t.Fatal("no client: a rename warning should not issue a refresh")
+	}
+
+	// With a panel and a client the listing is re-read, so the panel follows the
+	// instance to the new name instead of keeping the old, now-nonexistent one.
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.credentialsPanel = newCredentialsPanelForTest()
+	got, cmd = m.handleInstanceMutateResult(launchconfig.InstanceMutateResultMsg{Err: persisted})
+	after = got.(hubModel)
+	if after.err != nil || cmd == nil {
+		t.Fatalf("with a client: err=%v cmd=%v, want a listing refresh", after.err, cmd)
+	}
+	if msg, ok := cmd().(launchconfig.InstanceListResultMsg); !ok {
+		t.Fatalf("cmd msg = %T, want InstanceListResultMsg", msg)
+	}
+}

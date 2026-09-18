@@ -228,3 +228,23 @@ func (m *hubModel) addInstanceRemovalWarningNotice(err error) {
 		State:      "warning",
 	})
 }
+
+// addInstanceRenameWarningNotice reports a provider-instance rename that stood
+// in the config but could not carry the instance's OAuth record
+// (appwire.ErrorInstanceRenamePersisted). providers.toml already names the new
+// instance, so the notice is a warning about a standing condition the user has
+// to act on rather than a failure to retry; the notice panel is the TUI's
+// surface for one. What was left behind varies - a copy of the OAuth record
+// still on disk - so the hub's message is the whole of what the notice says
+// about it.
+func (m *hubModel) addInstanceRenameWarningNotice(err error) {
+	m.addNotice(noticePanel{
+		Title:      "Provider instance renamed",
+		Category:   "instance",
+		Summary:    "The instance was renamed in the config, but the rename could not finish.",
+		Source:     m.sourceLabelForNotice(),
+		Reason:     err.Error(),
+		NextAction: "Do what the reason names to finish cleaning up.",
+		State:      "warning",
+	})
+}

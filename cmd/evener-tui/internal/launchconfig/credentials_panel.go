@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // CredentialsActionMsg carries a credential operation for a specific instance.
@@ -262,7 +263,11 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, func() tea.Msg { return InstanceSetDefaultMsg{Name: name} }
 		case "x":
 			cur := p.selectedInstance()
-			if cur == nil {
+			if cur == nil || environmentBackedEntry(*cur) {
+				// An instance the environment supplies is not the user's to
+				// remove: the hub refuses it and the reload would derive the row
+				// again. The footer does not advertise the action for such a row
+				// either, so this is the belt to that suspenders.
 				return p, nil
 			}
 			name := cur.Name
@@ -514,20 +519,54 @@ func (p CredentialsPanel) View() string {
 	if p.formOpen {
 		footer = tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("enter", "next/submit"), tuiprim.KbdHint("esc", "cancel"))
 	} else {
-		footer = tuiprim.ActionBarForWidth(width,
-			tuiprim.KbdHint("enter", "set credential"),
-			tuiprim.KbdHint("f", "credential from file"),
-			tuiprim.KbdHint("t", "test credentials"),
-			tuiprim.KbdHint("o", "OAuth"),
-			tuiprim.KbdHint("c", "clear"),
-			tuiprim.KbdHint("n", "new"),
-			tuiprim.KbdHint("e", "edit"),
-			tuiprim.KbdHint("x", "remove"),
-			tuiprim.KbdHint("*", "default"),
-			tuiprim.KbdHint("esc", "close"),
-		)
+		footer = tuiprim.ActionBarForWidth(width, p.listFooterHints()...)
 	}
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Instances", Width: width, Body: body, Footer: footer})
+}
+
+// listFooterHints is the action bar's hint list for the list view. An
+// environment-backed instance is not the user's to remove - the hub refuses it
+// and the reload derives the row again - so the panel does not advertise the
+// action for one (the web and mobile panes hide it too), and the key handler
+// refuses it as well (updateList).
+func (p CredentialsPanel) listFooterHints() []string {
+	hints := []string{
+		tuiprim.KbdHint("enter", "set credential"),
+		tuiprim.KbdHint("f", "credential from file"),
+		tuiprim.KbdHint("t", "test credentials"),
+		tuiprim.KbdHint("o", "OAuth"),
+		tuiprim.KbdHint("c", "clear"),
+		tuiprim.KbdHint("n", "new"),
+		tuiprim.KbdHint("e", "edit"),
+	}
+	if cur := p.selectedInstance(); cur == nil || !environmentBackedEntry(*cur) {
+		hints = append(hints, tuiprim.KbdHint("x", "remove"))
+	}
+	hints = append(hints, tuiprim.KbdHint("*", "default"), tuiprim.KbdHint("esc", "close"))
+	return hints
+}
+
+// environmentBackedEntry mirrors cmd/evener-hub/app_instances.go's
+// environmentBacked over the wire entry: an instance that owes its existence to
+// the host's environment rather than a credential the user added through the UI.
+// The hub refuses to remove such an instance - the reload derives it again - so
+// the panel must not offer Remove for it. The wire entry carries every fact the
+// hub's predicate reads: Implicit, Auth (the oauth-openai-codex exemption),
+// CredentialRequired (false is exactly keylessScheme: auth none or
+// optional-bearer, which the hub's entryFor computes from the same scheme) and
+// ActiveSource (the registry's CredentialSource, where "store" and "oauth" are
+// the user's own credentials).
+func environmentBackedEntry(inst appwire.InstanceEntry) bool {
+	if !inst.Implicit {
+		return false
+	}
+	if inst.Auth == registry.AuthOAuthOpenAICodex {
+		return false
+	}
+	if !inst.CredentialRequired {
+		return true
+	}
+	return inst.ActiveSource != "store" && inst.ActiveSource != "oauth"
 }
 
 func cloneCredentialTestPending(current map[string]bool) map[string]bool {

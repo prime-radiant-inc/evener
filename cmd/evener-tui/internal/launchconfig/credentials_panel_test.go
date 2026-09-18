@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // --- old tests kept for regression ---
@@ -844,4 +845,77 @@ func flattenPanelText(view string) string {
 		return r
 	}, plain)
 	return strings.Join(strings.Fields(plain), " ")
+}
+
+// TestEnvironmentBackedEntryMirrorsTheHubPredicate: the panel's Remove gate must
+// match cmd/evener-hub/app_instances.go's environmentBacked, which the hub uses
+// to refuse those removals. Each case is one branch of that predicate read off
+// the wire entry.
+func TestEnvironmentBackedEntryMirrorsTheHubPredicate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		inst appwire.InstanceEntry
+		want bool
+	}{
+		{"authoredEntry", appwire.InstanceEntry{Name: "work", Auth: "bearer", CredentialRequired: true, ActiveSource: "store"}, false},
+		{"implicitStoredKey", appwire.InstanceEntry{Name: "work", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "store"}, false},
+		{"implicitOAuth", appwire.InstanceEntry{Name: "work", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "oauth"}, false},
+		{"implicitEnvKey", appwire.InstanceEntry{Name: "anthropic", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "env:ANTHROPIC_API_KEY"}, true},
+		{"implicitAdc", appwire.InstanceEntry{Name: "vertex", Auth: "gcp-adc", Implicit: true, CredentialRequired: true, ActiveSource: "adc"}, true},
+		{"implicitNoSource", appwire.InstanceEntry{Name: "kimi", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "none"}, true},
+		{"keylessLocal", appwire.InstanceEntry{Name: "llama", Auth: "none", Implicit: true, CredentialRequired: false, ActiveSource: "none"}, true},
+		{"keylessOptionalBearer", appwire.InstanceEntry{Name: "gw", Auth: "optional-bearer", Implicit: true, CredentialRequired: false, ActiveSource: "none"}, true},
+		{"codexImplicitNoSource", appwire.InstanceEntry{Name: "openai-codex", Auth: registry.AuthOAuthOpenAICodex, Implicit: true, CredentialRequired: true, ActiveSource: "none"}, false},
+		{"codexImplicitOAuth", appwire.InstanceEntry{Name: "openai-codex", Auth: registry.AuthOAuthOpenAICodex, Implicit: true, CredentialRequired: true, ActiveSource: "oauth"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := environmentBackedEntry(tc.inst); got != tc.want {
+				t.Fatalf("environmentBackedEntry(%+v) = %v, want %v", tc.inst, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCredentialsPanelEnvironmentBackedInstancesOfferNoRemove: the hub refuses
+// to remove an instance the host's environment supplies (it is re-derived by the
+// reload), and the web and mobile panes hide the action. The panel must do the
+// same: no "x remove" hint while such a row is selected, and the key produces no
+// InstanceRemoveMsg. A row holding the user's own credential keeps the action.
+func TestCredentialsPanelEnvironmentBackedInstancesOfferNoRemove(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		// A curated provider that exists only because the environment supplies
+		// its API-key variable: implicit, not keyless, no stored credential.
+		{Name: "anthropic", ProviderID: "anthropic", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "env:ANTHROPIC_API_KEY", EndpointFingerprint: "fp-env"},
+		// The user's own stored key: implicit too, but the credential is a file
+		// under the name, so deleting it takes the instance with it.
+		{Name: "work", ProviderID: "anthropic", Auth: "bearer", Implicit: true, CredentialRequired: true, ActiveSource: "store", EndpointFingerprint: "fp-work"},
+	}}})
+	p := updated.(CredentialsPanel)
+	// Rows are grouped by provider and sorted by name: anthropic (env) first.
+	if got := p.selectedInstance(); got == nil || got.Name != "anthropic" {
+		t.Fatalf("selected instance = %v, want anthropic first", got)
+	}
+	if hints := strings.Join(p.listFooterHints(), " "); strings.Contains(hints, "remove") {
+		t.Fatalf("the panel advertises remove for an environment-backed instance: %q", hints)
+	}
+	if _, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}); cmd != nil {
+		t.Fatalf("x on an environment-backed instance produced %T, want no removal", cmd())
+	}
+
+	// The stored-key row IS the user's to remove, so the action is offered and
+	// sent with the listed row's fingerprint.
+	onWork, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	pw := onWork.(CredentialsPanel)
+	if hints := strings.Join(pw.listFooterHints(), " "); !strings.Contains(hints, "remove") {
+		t.Fatalf("the panel hides remove for a stored-key instance it can remove: %q", hints)
+	}
+	_, cmd := onWork.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("x on a stored-key instance should produce a removal")
+	}
+	msg, ok := cmd().(InstanceRemoveMsg)
+	if !ok || msg.Name != "work" || msg.EndpointFingerprint != "fp-work" {
+		t.Fatalf("x on work = %#v, want InstanceRemoveMsg for work with its fingerprint", cmd())
+	}
 }

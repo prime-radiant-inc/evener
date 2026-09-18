@@ -2113,10 +2113,20 @@ func highestAsideStamp(entries []os.DirEntry, name string) (int64, bool) {
 // there was one.
 func stepFreeAsideName(recordPath string, configBacked bool, want, highest int64, have bool) (string, int64, asideSearch, error) {
 	stamp := want
+	if have && highest >= maxAsideStamp {
+		// A copy already filed at the maximum leaves no stamp above it to step
+		// to. Falling back to the requested stamp - necessarily at or below the
+		// maximum - would file this copy at or before the one already there, and
+		// recovery restores the newest copy, so the older credential would win.
+		// The maximum is exhausted: refuse rather than hand back a lower stamp.
+		// (setAsideOAuthFile's own seed guard refuses the same successor, and the
+		// loop below refuses a step past the maximum.)
+		return "", stamp, asideSearchExhausted, nil
+	}
 	// One past the highest is all digits for any non-negative stamp; the comparison
 	// also refuses a maxAsideStamp successor, which would wrap to a negative tail no
 	// copy can carry.
-	if have && highest < maxAsideStamp && highest+1 > stamp {
+	if have && highest+1 > stamp {
 		stamp = highest + 1
 	}
 	marker := oauthAsideMarkerFor(configBacked)

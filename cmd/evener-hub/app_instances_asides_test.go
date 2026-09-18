@@ -2348,6 +2348,36 @@ func TestInstances_SetAsideOAuthFileRefusesToStepPastTheMaximumStamp(t *testing.
 	}
 }
 
+// TestFreeAsideNameRefusesToAllocateBelowAMaximumStamp: a copy already filed at
+// maxAsideStamp is the greatest stamp an aside name can carry, so the search
+// cannot step past it. It must refuse rather than fall back to the requested
+// stamp, which is lower - recovery restores the newest copy of a name, so a
+// lower stamp would make the older credential win. The refusal is the same
+// asideSearchExhausted setAsideOAuthFile already reports for a stamp it cannot
+// step past.
+func TestFreeAsideNameRefusesToAllocateBelowAMaximumStamp(t *testing.T) {
+	dir := t.TempDir()
+	taken := filepath.Join(dir, "work.json"+oauthAsideMarker+strconv.FormatInt(maxAsideStamp, 10))
+	if err := os.WriteFile(taken, []byte("a copy at the maximum stamp\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", taken, err)
+	}
+
+	got, ok := freeAsideName(dir, "work", false, 100)
+	if ok {
+		t.Fatalf("freeAsideName = (%q, true), want a refusal: the maximum is exhausted and 100 is lower", got)
+	}
+	if got != "" {
+		t.Fatalf("freeAsideName = %q, want no path on a refusal", got)
+	}
+	if _, _, reason, _ := findFreeAsideName(dir, "work", false, 100); reason != asideSearchExhausted {
+		t.Fatalf("findFreeAsideName reason = %v, want asideSearchExhausted", reason)
+	}
+	// The copy that made the stamp maximum is left untouched by the refusal.
+	if b, rerr := os.ReadFile(taken); rerr != nil || string(b) != "a copy at the maximum stamp\n" {
+		t.Fatalf("the copy = %q (%v), want it left untouched", b, rerr)
+	}
+}
+
 // TestRestoreUncommittedOAuthAsidesReportsNothingOnAFreshInstallWithoutAConfig:
 // the default configuration has no providers.toml, and the pass used to report
 // the missing config unconditionally - so every fresh install printed a
