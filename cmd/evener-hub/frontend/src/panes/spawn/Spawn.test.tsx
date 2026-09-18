@@ -5503,10 +5503,7 @@ test("clicking a spawn menu option commits it without ever blurring the prompt",
 
   await typeSlashQuery(user, fake, "/re");
   // index 0 is the built-in /reasoning-effort, 1 /review.
-  const target = slashOptions()[1];
-  expect(target).toBeTruthy();
-  if (!target) throw new Error("expected a second slash option");
-  await user.click(target);
+  await user.click(slashOptions()[1] as HTMLElement);
 
   expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
   // The option's onMouseDown preventDefault keeps focus in the field, so the
