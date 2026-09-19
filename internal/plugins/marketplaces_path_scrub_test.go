@@ -268,7 +268,7 @@ func TestRemoveMarketplace_LookupMissTouchesNothingOnDisk(t *testing.T) {
 	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
 	marketplaceRemoveAll = func(p string) error {
 		removed = append(removed, p)
-		return origRemove(p)
+		return nil
 	}
 
 	for _, name := range []string{"", "..", "../x", "does-not-exist"} {
