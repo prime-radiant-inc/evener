@@ -34,10 +34,11 @@ type MarketplaceListResultMsg struct {
 // InstanceMutateResultMsg) while a passive list-load error stays local to the
 // panel.
 type MarketplaceMutateResultMsg struct {
-	List   appwire.MarketplaceListResponse
-	Err    error
-	Action string
-	Name   string
+	List           appwire.MarketplaceListResponse
+	Err            error
+	ListGeneration uint64
+	Action         string
+	Name           string
 }
 
 // MarketplaceBrowseResultMsg carries the result of a evener/marketplace/browse
@@ -137,29 +138,48 @@ func cmdMarketplaceList(client *appwire.Client, generation uint64) tea.Cmd {
 }
 
 func CmdMarketplaceAdd(client *appwire.Client, params appwire.MarketplaceAddParams) tea.Cmd {
+	return CmdMarketplaceAddWithGeneration(client, params, 0)
+}
+
+// CmdMarketplaceAddWithGeneration tags a mutation with the list generation
+// current when the hub issued it, so a late snapshot cannot replace newer
+// reconciled state.
+func CmdMarketplaceAddWithGeneration(client *appwire.Client, params appwire.MarketplaceAddParams, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceAdd(ctx, params)
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "add"}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, ListGeneration: generation, Action: "add"}
 	}
 }
 
 func CmdMarketplaceRemove(client *appwire.Client, name string) tea.Cmd {
+	return CmdMarketplaceRemoveWithGeneration(client, name, 0)
+}
+
+// CmdMarketplaceRemoveWithGeneration tags a mutation with the list
+// generation current when the hub issued it.
+func CmdMarketplaceRemoveWithGeneration(client *appwire.Client, name string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRemove(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "remove", Name: name}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, ListGeneration: generation, Action: "remove", Name: name}
 	}
 }
 
 func CmdMarketplaceRefresh(client *appwire.Client, name string) tea.Cmd {
+	return CmdMarketplaceRefreshWithGeneration(client, name, 0)
+}
+
+// CmdMarketplaceRefreshWithGeneration tags a mutation with the list
+// generation current when the hub issued it.
+func CmdMarketplaceRefreshWithGeneration(client *appwire.Client, name string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRefresh(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "refresh", Name: name}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, ListGeneration: generation, Action: "refresh", Name: name}
 	}
 }
 

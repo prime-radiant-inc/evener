@@ -832,6 +832,7 @@ func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
+	m.marketplaceListGeneration = 7
 	_, cmd = m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{
 		Params: appwire.MarketplaceAddParams{Name: "mp1"},
 	})
@@ -839,7 +840,7 @@ func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 		t.Fatal("cmd should not be nil with client")
 	}
 	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
-	if !ok || result.Err != nil || params.Name != "mp1" {
+	if !ok || result.Err != nil || result.ListGeneration != 7 || params.Name != "mp1" {
 		t.Fatalf("marketplace add result = %#v, params = %#v", result, params)
 	}
 }
@@ -861,12 +862,13 @@ func TestCovHandleMarketplaceRemove(t *testing.T) {
 	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
+	m.marketplaceListGeneration = 7
 	_, cmd = m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
 	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
-	if !ok || result.Err != nil || params.Name != "mp1" {
+	if !ok || result.Err != nil || result.ListGeneration != 7 || params.Name != "mp1" {
 		t.Fatalf("marketplace remove result = %#v, params = %#v", result, params)
 	}
 }
@@ -888,12 +890,13 @@ func TestCovHandleMarketplaceRefresh(t *testing.T) {
 	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
+	m.marketplaceListGeneration = 7
 	_, cmd = m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
 	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
-	if !ok || result.Err != nil || params.Name != "mp1" {
+	if !ok || result.Err != nil || result.ListGeneration != 7 || params.Name != "mp1" {
 		t.Fatalf("marketplace refresh result = %#v, params = %#v", result, params)
 	}
 }

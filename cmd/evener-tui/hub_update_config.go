@@ -534,6 +534,9 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 }
 
 func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
+	if msg.ListGeneration < m.marketplaceListGeneration {
+		return m, nil
+	}
 	if msg.Err != nil {
 		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
 			switch state, applied := classifyMarketplaceCloneRemains(msg.Err); state {
@@ -607,7 +610,7 @@ func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrow
 
 func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubmitMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params)
+		return m, launchconfig.CmdMarketplaceAddWithGeneration(m.client, msg.Params, m.marketplaceListGeneration)
 	}
 	return m, nil
 }
@@ -618,14 +621,14 @@ func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg)
 	}
 	if m.client != nil {
 		m.marketplaceRemovePending = msg.Name
-		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name)
+		return m, launchconfig.CmdMarketplaceRemoveWithGeneration(m.client, msg.Name, m.marketplaceListGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRefresh(msg launchconfig.MarketplaceRefreshMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name)
+		return m, launchconfig.CmdMarketplaceRefreshWithGeneration(m.client, msg.Name, m.marketplaceListGeneration)
 	}
 	return m, nil
 }
