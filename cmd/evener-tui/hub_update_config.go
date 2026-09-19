@@ -514,12 +514,17 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
-	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
+	if msg.ListGeneration != m.marketplaceListGeneration {
 		return m, nil
 	}
-	if msg.Err == nil && m.marketplaceReconcilePending {
-		m.marketplaceRemovePending = ""
-		m.marketplaceReconcilePending = false
+	if msg.Err == nil {
+		if m.marketplaceReconcilePending {
+			m.marketplaceRemovePending = ""
+			m.marketplaceReconcilePending = false
+		}
+		// A successful list is authoritative. Advance the floor so any older
+		// request that completes later cannot restore stale rows.
+		m.marketplaceListGeneration++
 	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(msg)
@@ -538,6 +543,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
 				m.marketplaceRemovePending = ""
 				m.marketplaceReconcilePending = false
+				m.marketplaceListGeneration++
 				if m.pluginsPanel != nil {
 					updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: applied})
 					panel := updated.(launchconfig.PluginsPanel)
@@ -548,9 +554,9 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			case marketplaceCloneRemainsUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
 				m.marketplaceReconcilePending = true
-				m.marketplaceReconcileGeneration++
 				if m.client != nil {
-					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+					generation := m.nextMarketplaceListGeneration()
+					return m, launchconfig.CmdMarketplaceListWithGeneration(m.client, generation)
 				}
 				return m, nil
 			}
@@ -567,6 +573,9 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
 	}
+	// Mutation responses include the server's current list, so they invalidate
+	// every passive list request issued before the mutation completed.
+	m.marketplaceListGeneration++
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
 		panel := updated.(launchconfig.PluginsPanel)
@@ -574,6 +583,11 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m *hubModel) nextMarketplaceListGeneration() uint64 {
+	m.marketplaceListGeneration++
+	return m.marketplaceListGeneration
 }
 
 func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrowseResultMsg) (tea.Model, tea.Cmd) {

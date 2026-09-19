@@ -346,7 +346,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 // reality when the Installed list is current, and an auto-upgrade daemon pass
 // or another client's mutation can change either at any time).
 func (m *hubModel) refreshPluginsPanel() tea.Cmd {
-	cmds := []tea.Cmd{launchconfig.CmdMarketplaceList(m.client), launchconfig.CmdPluginList(m.client)}
+	generation := m.nextMarketplaceListGeneration()
+	cmds := []tea.Cmd{launchconfig.CmdMarketplaceListWithGeneration(m.client, generation), launchconfig.CmdPluginList(m.client)}
 	if name := m.pluginsPanel.BrowseMarketplace(); name != "" {
 		cmds = append(cmds, launchconfig.CmdMarketplaceBrowse(m.client, name))
 	}

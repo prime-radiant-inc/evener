@@ -56,8 +56,9 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	removed := appwire.MarketplaceEntry{Name: "removed"}
 	kept := appwire.MarketplaceEntry{Name: "kept"}
 	m := hubModel{
-		pluginsPanel:             marketplacePanelWithEntries(t, removed, kept),
-		marketplaceRemovePending: removed.Name,
+		pluginsPanel:              marketplacePanelWithEntries(t, removed, kept),
+		marketplaceRemovePending:  removed.Name,
+		marketplaceListGeneration: 1,
 	}
 	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
 		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
@@ -90,6 +91,22 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	remove := cmd().(launchconfig.MarketplaceRemoveMsg)
 	if remove.Name != kept.Name {
 		t.Fatalf("panel selected marketplace after applied snapshot = %q, want %q", remove.Name, kept.Name)
+	}
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:           appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed}},
+		ListGeneration: 1,
+	})
+	afterStale := got.(hubModel)
+	if afterStale.marketplaceRemovePending != "" || afterStale.marketplaceReconcilePending {
+		t.Fatalf("stale list after applied snapshot changed pending state = %q/%v", afterStale.marketplaceRemovePending, afterStale.marketplaceReconcilePending)
+	}
+	updated, cmd = afterStale.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale list after applied snapshot should preserve the surviving marketplace")
+	}
+	remove = cmd().(launchconfig.MarketplaceRemoveMsg)
+	if remove.Name != kept.Name {
+		t.Fatalf("stale list after applied snapshot changed selected marketplace to %q, want %q", remove.Name, kept.Name)
 	}
 }
 
@@ -131,7 +148,7 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	}
 
 	list := cmd().(launchconfig.MarketplaceListResultMsg)
-	if list.Err != nil || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
+	if list.Err != nil || list.ListGeneration != after.marketplaceListGeneration || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
 		t.Fatalf("reconcile result = %+v, want confirmed list", list)
 	}
 	got, _ = after.handleMarketplaceListResult(list)
@@ -139,16 +156,29 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
 		t.Fatalf("after reconciliation pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
 	}
+	got, _ = reconciled.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:           appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{stale}},
+		ListGeneration: list.ListGeneration,
+	})
+	afterStale := got.(hubModel)
+	updated, cmd = afterStale.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("old reconciliation reply should preserve the confirmed marketplace")
+	}
+	remove = cmd().(launchconfig.MarketplaceRemoveMsg)
+	if remove.Name != confirmed.Name {
+		t.Fatalf("old reconciliation reply changed selected marketplace to %q, want %q", remove.Name, confirmed.Name)
+	}
 }
 
 func TestMarketplaceListResultDoesNotSettleUnrelatedReconciliation(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept"}
 	removed := appwire.MarketplaceEntry{Name: "removed"}
 	m := hubModel{
-		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
-		marketplaceRemovePending:       removed.Name,
-		marketplaceReconcilePending:    true,
-		marketplaceReconcileGeneration: 1,
+		pluginsPanel:                marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:    removed.Name,
+		marketplaceReconcilePending: true,
+		marketplaceListGeneration:   1,
 	}
 
 	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
@@ -165,6 +195,66 @@ func TestMarketplaceListResultDoesNotSettleUnrelatedReconciliation(t *testing.T)
 	remove := cmd().(launchconfig.MarketplaceRemoveMsg)
 	if remove.Name != kept.Name {
 		t.Fatalf("stale list changed selected marketplace to %q, want %q", remove.Name, kept.Name)
+	}
+}
+
+func TestMarketplaceReconciliationFailureRecoversOnLaterPanelRefresh(t *testing.T) {
+	stale := appwire.MarketplaceEntry{Name: "removed"}
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	listCalls := 0
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			listCalls++
+			if listCalls == 1 {
+				return appwire.MarketplaceListResponse{}, errors.New("temporary list failure")
+			}
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginList, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			return appwire.PluginListResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                   client,
+		pluginsPanel:             marketplacePanelWithEntries(t, stale),
+		marketplaceRemovePending: stale.Name,
+	}
+	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo:    appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		AppliedUnavailable: true,
+	})
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: stale.Name})
+	after := got.(hubModel)
+	first := cmd().(launchconfig.MarketplaceListResultMsg)
+	if first.Err == nil || first.ListGeneration != after.marketplaceListGeneration {
+		t.Fatalf("failed reconciliation result = %+v, model generation = %d", first, after.marketplaceListGeneration)
+	}
+	got, _ = after.handleMarketplaceListResult(first)
+	after = got.(hubModel)
+	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("after failed reconciliation pending state = %q/%v, want fenced", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+
+	batch := after.refreshPluginsPanel()().(tea.BatchMsg)
+	var recovery launchconfig.MarketplaceListResultMsg
+	for _, command := range batch {
+		if result, ok := command().(launchconfig.MarketplaceListResultMsg); ok {
+			recovery = result
+		}
+	}
+	if recovery.Err != nil || recovery.ListGeneration != after.marketplaceListGeneration {
+		t.Fatalf("recovery result = %+v, model generation = %d", recovery, after.marketplaceListGeneration)
+	}
+	got, _ = after.handleMarketplaceListResult(recovery)
+	recovered := got.(hubModel)
+	if recovered.marketplaceRemovePending != "" || recovered.marketplaceReconcilePending {
+		t.Fatalf("after later successful refresh pending state = %q/%v, want cleared", recovered.marketplaceRemovePending, recovered.marketplaceReconcilePending)
+	}
+	if listCalls != 2 {
+		t.Fatalf("marketplace list calls = %d, want failed reconciliation plus one recovery", listCalls)
 	}
 }
 
