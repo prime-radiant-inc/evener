@@ -2953,4 +2953,36 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
     expect(saveButton().disabled).toBe(true);
   });
+
+  // A superseded save whose connection is torn down before its answer must not
+  // report a failed save: the write may have landed, and the follow-up read is
+  // only a confirmation (it throws when no client is connected).
+  test("a superseded save does not report a failed save when the connection is gone", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    // A read starts after the write and supersedes its answer; the connection
+    // is then torn down before the edit's response arrives.
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+    void credentialsStore.getState().fetch();
+    act(() => connectionStore.setState({ client: null, state: "idle" }));
+
+    await act(async () => {
+      finish({ instances: [before], availableProviders: [OPENAI] });
+    });
+
+    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(screen.queryByText(/no client connected/)).toBeNull();
+  });
 });

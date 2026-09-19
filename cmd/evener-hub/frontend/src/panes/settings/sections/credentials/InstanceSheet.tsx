@@ -703,7 +703,13 @@ export function InstanceSheet({
         // the connection's serial worker), so the listing sampled right now is
         // still the PRE-save one. Settle a read that started after the write
         // before comparing the listing against the mutation's own captured row.
-        await credentialsStore.getState().fetch();
+        // The read is non-fatal: a confirmation read that cannot run must not be
+        // reported as a failed save - the store's own scheduled refetch lands
+        // the state.
+        await credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
         listedInstances = credentialsStore.getState().instances;
       }
       // Except when the store's own list holds this save's rename: the same
