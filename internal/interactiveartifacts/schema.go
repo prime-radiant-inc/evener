@@ -2,6 +2,8 @@ package interactiveartifacts
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -11,9 +13,18 @@ import (
 	validator "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
-// ViewerResource identifies the immutable v1 viewer. The viewer implementation
-// must supply its bundled bytes; this package grants no arbitrary URL fetching.
-var ViewerResource = mcp.Resource{URI: "ui://evener-artifacts/viewer-v1.html", Name: "Artifact viewer v1", MIMEType: "text/html;profile=mcp-app"}
+const (
+	ViewerResourceURI      = "ui://evener-artifacts/viewer-v1.html"
+	ViewerResourceMIMEType = "text/html;profile=mcp-app"
+	viewerResourceName     = "Artifact viewer v1"
+)
+
+// ViewerResource returns the fixed v1 viewer identity. The viewer
+// implementation must supply its bundled bytes; this package grants no
+// arbitrary URL fetching.
+func ViewerResource() mcp.Resource {
+	return mcp.Resource{URI: ViewerResourceURI, Name: viewerResourceName, MIMEType: ViewerResourceMIMEType}
+}
 
 func forbids(names ...string) *jsonschema.Schema {
 	schemas := make([]*jsonschema.Schema, 0, len(names))
@@ -184,7 +195,7 @@ func Tools() ([]*mcp.Tool, error) {
 		}
 		ui := map[string]any{"visibility": []string{visibility}}
 		if name == "artifact_open" {
-			ui["resourceUri"] = ViewerResource.URI
+			ui["resourceUri"] = ViewerResourceURI
 		}
 		tools = append(tools, &mcp.Tool{Name: name, InputSchema: input, OutputSchema: output, Meta: mcp.Meta{"ui": ui}})
 	}
@@ -361,10 +372,25 @@ func schemaInstance(value any) any {
 }
 
 func validateResultFields(tool string, result map[string]any) error {
+	if tool == "artifact_open" {
+		launch := result["launch"].(map[string]any)
+		if result["artifactId"] != launch["artifactId"] {
+			return errors.New("artifact result launch identity does not match metadata")
+		}
+	}
 	if tool == "artifact_read" || tool == "artifact_get_view" {
 		if source, ok := result["source"].(map[string]any); ok {
 			if html, ok := source["html"].(string); ok && len(html) > MaxSourceBytes {
 				return errors.New("artifact result source exceeds byte limit")
+			}
+			digest, err := hex.DecodeString(source["sourceSha256"].(string))
+			if err != nil || len(digest) != sha256.Size {
+				return errors.New("artifact result source hash is invalid")
+			}
+			start, hasStart := resultSourceLine(source, "startLine")
+			end, hasEnd := resultSourceLine(source, "endLine")
+			if hasStart && hasEnd && start > end {
+				return errors.New("artifact result source line range is invalid")
 			}
 		}
 		if state, ok := result["state"]; ok {
@@ -384,4 +410,13 @@ func validateResultFields(tool string, result map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func resultSourceLine(source map[string]any, name string) (int64, bool) {
+	number, present := source[name].(json.Number)
+	if !present {
+		return 0, false
+	}
+	value, _, _ := exactSafeInteger(string(number))
+	return value, true
 }

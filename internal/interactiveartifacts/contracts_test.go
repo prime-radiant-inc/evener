@@ -118,8 +118,32 @@ func TestToolVisibilityAndResourceAssociation(t *testing.T) {
 			t.Fatalf("%s lacks typed output contract", tool.Name)
 		}
 	}
-	if ViewerResource.URI != "ui://evener-artifacts/viewer-v1.html" || ViewerResource.MIMEType != "text/html;profile=mcp-app" {
+	viewer := ViewerResource()
+	if viewer.URI != "ui://evener-artifacts/viewer-v1.html" || viewer.MIMEType != "text/html;profile=mcp-app" {
 		t.Fatal("wrong resource contract")
+	}
+}
+
+func TestViewerResourceReturnsIndependentIdentity(t *testing.T) {
+	viewer := ViewerResource()
+	viewer.URI = "ui://attacker.invalid/replaced.html"
+	viewer.MIMEType = "text/plain"
+
+	fresh := ViewerResource()
+	if fresh.URI != "ui://evener-artifacts/viewer-v1.html" || fresh.MIMEType != "text/html;profile=mcp-app" {
+		t.Fatal("caller mutation changed the fixed viewer resource")
+	}
+	tools, err := Tools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Name == "artifact_open" {
+			ui := tool.Meta["ui"].(map[string]any)
+			if ui["resourceUri"] != fresh.URI {
+				t.Fatal("caller mutation changed the tool catalog resource")
+			}
+		}
 	}
 }
 
@@ -305,6 +329,8 @@ func stateJSONWithSize(size int) string {
 	return prefix + strings.Repeat("a", size-len(prefix)-len(suffix)) + suffix
 }
 
+const validSourceSHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestResultSemanticFieldLimits(t *testing.T) {
 	metadata := artifactMetadataJSON("A")
 	for _, tool := range []string{"artifact_read", "artifact_get_view"} {
@@ -312,9 +338,9 @@ func TestResultSemanticFieldLimits(t *testing.T) {
 			name, body string
 			valid      bool
 		}{
-			{"empty source excerpt", `{"html":"","sourceSha256":"hash"}`, true},
-			{"source at limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes) + `","sourceSha256":"hash"}`, true},
-			{"source over limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes+1) + `","sourceSha256":"hash"}`, false},
+			{"empty source excerpt", `{"html":"","sourceSha256":"` + validSourceSHA256 + `"}`, true},
+			{"source at limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes) + `","sourceSha256":"` + validSourceSHA256 + `"}`, true},
+			{"source over limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes+1) + `","sourceSha256":"` + validSourceSHA256 + `"}`, false},
 		} {
 			t.Run(tool+"/"+tt.name, func(t *testing.T) {
 				raw := strings.TrimSuffix(metadata, "}") + `,"source":` + tt.body + `}`
@@ -348,6 +374,46 @@ func TestResultSemanticFieldLimits(t *testing.T) {
 				t.Fatalf("valid=%v error=%v", tt.valid, err)
 			}
 		})
+	}
+}
+
+func TestOpenResultRequiresConsistentArtifactIdentity(t *testing.T) {
+	metadata := artifactMetadataJSON("A")
+	for _, tt := range []struct {
+		launchID string
+		valid    bool
+	}{{"A", true}, {"B", false}} {
+		raw := strings.TrimSuffix(metadata, "}") + `,"launch":{"artifactId":"` + tt.launchID + `"}}`
+		err := ValidateResult("artifact_open", []byte(raw))
+		if (err == nil) != tt.valid {
+			t.Fatalf("launch=%q valid=%v error=%v", tt.launchID, tt.valid, err)
+		}
+	}
+}
+
+func TestResultSourceBodyInvariants(t *testing.T) {
+	metadata := artifactMetadataJSON("A")
+	for _, tool := range []string{"artifact_read", "artifact_get_view"} {
+		for _, tt := range []struct {
+			name, source string
+			valid        bool
+		}{
+			{"whole source", `{"html":"not the hash preimage","sourceSha256":"` + validSourceSHA256 + `"}`, true},
+			{"valid excerpt", `{"html":"excerpt","sourceSha256":"` + strings.ToUpper(validSourceSHA256) + `","startLine":2,"endLine":4}`, true},
+			{"empty hash", `{"html":"H","sourceSha256":""}`, false},
+			{"short hash", `{"html":"H","sourceSha256":"abcd"}`, false},
+			{"long hash", `{"html":"H","sourceSha256":"` + strings.Repeat("a", 66) + `"}`, false},
+			{"nonhex hash", `{"html":"H","sourceSha256":"` + strings.Repeat("g", 64) + `"}`, false},
+			{"reversed excerpt", `{"html":"excerpt","sourceSha256":"` + validSourceSHA256 + `","startLine":4,"endLine":2}`, false},
+		} {
+			t.Run(tool+"/"+tt.name, func(t *testing.T) {
+				raw := strings.TrimSuffix(metadata, "}") + `,"source":` + tt.source + `}`
+				err := ValidateResult(tool, []byte(raw))
+				if (err == nil) != tt.valid {
+					t.Fatalf("valid=%v error=%v", tt.valid, err)
+				}
+			})
+		}
 	}
 }
 
@@ -400,10 +466,10 @@ func TestEveryResultVariantHasExecutableShape(t *testing.T) {
 		valid bool
 	}{
 		"artifact_publish":           {{`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":1}`, true}, {`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1}`, false}},
-		"artifact_read":              {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"hash"},"state":{"n":1.0},"diagnostics":[{"sourceRevision":1,"message":"m","kind":"validation"}]}`, true}, {strings.TrimSuffix(metadata, "}") + `,"private":true}`, false}},
+		"artifact_read":              {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"` + validSourceSHA256 + `"},"state":{"n":1.0},"diagnostics":[{"sourceRevision":1,"message":"m","kind":"validation"}]}`, true}, {strings.TrimSuffix(metadata, "}") + `,"private":true}`, false}},
 		"artifact_list":              {{`{"artifacts":[` + metadata + `],"nextCursor":"opaque"}`, true}, {`{"nextCursor":"opaque"}`, false}},
 		"artifact_open":              {{strings.TrimSuffix(metadata, "}") + `,"launch":{"artifactId":"A"}}`, true}, {metadata, false}},
-		"artifact_get_view":          {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"hash"},"state":{"n":1e0}}`, true}, {strings.TrimSuffix(metadata, "}") + `,"state":[]}`, false}},
+		"artifact_get_view":          {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"` + validSourceSHA256 + `"},"state":{"n":1e0}}`, true}, {strings.TrimSuffix(metadata, "}") + `,"state":[]}`, false}},
 		"artifact_save_state":        {{`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":2}`, true}, {`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":2,"state":{}}`, false}},
 		"artifact_report_diagnostic": {{`{"status":"acknowledged"}`, true}, {`{"status":"committed"}`, false}},
 	}
