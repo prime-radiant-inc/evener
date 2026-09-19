@@ -1040,11 +1040,23 @@ func captureHubStderr(t *testing.T, fn func()) string {
 		_ = readEnd.Close()
 	})
 	os.Stderr = writeEnd
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		data, readErr := io.ReadAll(readEnd)
+		readDone <- readResult{data: data, err: readErr}
+	}()
 	fn()
 	_ = writeEnd.Close()
 	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
-	return string(data)
+	result := <-readDone
+	if result.err != nil {
+		t.Fatalf("read captured Hub stderr: %v", result.err)
+	}
+	return string(result.data)
 }
 
 // TestResumeAfterConfirmedRetirementRecordsLifecycle requires that a resume
