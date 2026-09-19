@@ -1193,6 +1193,35 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 }
 
+// instanceRenameError is what the Edit handler returns to the client. A rename
+// that stood but could not carry the instance's credentials carries
+// ErrorInstanceRenamePersisted, so the client reports the standing rename and
+// steers to the new name - the old name is gone and re-issuing the rename can
+// only fail on a missing instance - instead of a failed save. Every other
+// failure is returned unchanged. The bool says whether the rename stood, which
+// is also what the handler broadcasts on.
+func instanceRenameError(err error) (bool, error) {
+	if _, persisted := errors.AsType[renamePersistedError](err); persisted {
+		return true, appwire.InstanceRenamePersisted(err.Error())
+	}
+	return false, err
+}
+
+// instanceRemoveError is what the Remove handler returns to the client. A
+// removal whose credential deletion applied before a later step failed carries
+// ErrorInstanceRemoveApplied, so the client reconciles the standing removal -
+// closing the confirmation, re-reading the listing, and dropping what it
+// retained for the name - instead of presenting a failed remove whose retry
+// targets an instance that is already gone. Every other failure is returned
+// unchanged. The bool says whether the removal stood, which is also what the
+// handler broadcasts on.
+func instanceRemoveError(err error) (bool, error) {
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		return true, appwire.InstanceRemoveApplied(err.Error())
+	}
+	return false, err
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1247,11 +1276,37 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
 			var list appwire.InstanceListResponse
 			err := instancesController.edit(params, &list)
-			return list, err
+			if err == nil {
+				return list, nil
+			}
+			// A rename that persisted before it failed is a write that stands,
+			// so it is announced (writeApplied, which instanceWrite broadcasts
+			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
+			// so the client that asked reports the standing rename rather than
+			// a failed save.
+			persisted, wireErr := instanceRenameError(err)
+			if persisted {
+				return list, writeApplied(wireErr)
+			}
+			return list, wireErr
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Remove(params) }))
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			// A removal whose credential deletion applied before it failed is a
+			// write that stands, so it is announced (writeApplied, which
+			// instanceWrite broadcasts on) and the error goes back carrying
+			// ErrorInstanceRemoveApplied, so the client that asked reconciles the
+			// standing removal rather than a failed remove it would retry.
+			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
+			if applied {
+				return appwire.InstanceListResponse{}, writeApplied(wireErr)
+			}
+			if wireErr != nil {
+				return appwire.InstanceListResponse{}, wireErr
+			}
+			return instancesController.List(), nil
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetDefault(params) }))

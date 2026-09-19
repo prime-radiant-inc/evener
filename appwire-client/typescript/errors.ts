@@ -44,6 +44,54 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+// ErrorInstanceRenamePersisted is the hub's discriminator for a provider-instance
+// rename that APPLIED before its credential move or reload failed
+// (appwire.ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message
+// names the credential left behind, and clients steer to the new name rather than
+// report a failed save. The binding test (errors.test.ts) reads the Go constant,
+// so a hub-side rename breaks there instead of silently leaving the standing
+// rename read as a plain failure.
+export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
+
+// isInstanceRenamePersisted reports whether a rejection is the hub reporting a
+// provider-instance rename that APPLIED before its credential move or reload
+// failed (ErrorInstanceRenamePersisted above). The discriminator is that
+// string, never the code - siblings share the code - so this is the one
+// definition every client matches against.
+export function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
+// ErrorInstanceRemoveApplied is the hub's discriminator for a provider-instance
+// removal that APPLIED before a later step failed
+// (appwire.ErrorInstanceRemoveApplied, appwire/errors.go): the instance's
+// credential deletion (or its config entry) reached the store, so the removal
+// stands and the hub's message names what was left behind. Clients close the
+// confirmation, re-read the listing, and drop any state retained for the name
+// rather than report a failed remove whose retry targets a missing instance.
+// The binding test (errors.test.ts) reads the Go constant, so a hub-side rename
+// breaks there instead of silently leaving the standing removal read as a plain
+// failure.
+export const ErrorInstanceRemoveApplied = "instanceRemoveApplied";
+
+// isInstanceRemoveApplied reports whether a rejection is the hub reporting a
+// provider-instance removal that APPLIED before a later step failed
+// (ErrorInstanceRemoveApplied above). The discriminator is that string, never
+// the code - siblings share the code - so this is the one definition every
+// client matches against.
+export function isInstanceRemoveApplied(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemoveApplied;
+}
+
+// ErrorEndpointConflict is the hub's discriminant for a refusal of an asserted
+// destination (appwire.ErrorEndpointConflict, appwire/errors.go): the name no
+// longer resolves to the endpoint the client showed the user. It shares
+// CodeConflict with genuine conflicts (a name collision, an expired flow), so
+// matching the code would read a create collision as a moved endpoint; this
+// string is the one definition every credential flow matches against. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorEndpointConflict = "endpointConflict";
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/
