@@ -29,11 +29,12 @@ const worktreeGitTimeoutMS = 300_000
 // The map is empty in production, so the wrappers below preserve the normal
 // direct calls without ambient state or behavior changes.
 type worktreeTestSeams struct {
-	useControlPolicy func(*execenv.LocalExecutionEnvironment, string) error
-	enterWorktree    func(string, bool) error
-	writeSidecar     func(string, string, worktree.Sidecar) error
-	deleteSidecar    func(string, string) error
-	updateSidecar    func(string, string, func(*worktree.Sidecar)) error
+	useControlPolicy    func(*execenv.LocalExecutionEnvironment, string) error
+	enterWorktree       func(string, bool) error
+	writeSidecar        func(string, string, worktree.Sidecar) error
+	deleteSidecar       func(string, string) error
+	updateSidecar       func(string, string, func(*worktree.Sidecar)) error
+	releaseChildRuntime func(*Session) error
 }
 
 var worktreeSeams sync.Map // map[*Session]worktreeTestSeams
@@ -72,6 +73,15 @@ func (s *Session) updateWorktreeSidecar(dir, name string, mutate func(*worktree.
 		return hook(dir, name, mutate)
 	}
 	return worktree.UpdateSidecar(dir, name, mutate)
+}
+
+// releaseChildRuntimeForUnlock releases a resident child non-terminally for the
+// unlock op, through the test seam when one is installed.
+func (s *Session) releaseChildRuntimeForUnlock(ctx context.Context, child *Session) error {
+	if hook := s.testWorktreeSeams().releaseChildRuntime; hook != nil {
+		return hook(child)
+	}
+	return child.releaseChildRuntimeForRetirement(ctx)
 }
 
 // worktreeState is the snapshot worktreeGuard.state() returns (spec §7): the
@@ -282,10 +292,22 @@ type worktreeGuard struct {
 	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
 	// like remove).
 	disposeOp func(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error)
+	// unlockOp runs the unlock operation (issue #481): release a direct
+	// worktree-isolated delegate's evener:dlg: lock WITHOUT retiring the
+	// delegate, so the parent can switch in and recover uncommitted work from a
+	// delegate it can no longer revive. It refuses while any work in the
+	// delegate's subtree is running, and touches neither resumability nor the
+	// worktree.
+	unlockOp func(ctx context.Context, id string) (WorktreeUnlockResult, error)
 	// disposeOnly reports whether this session is served the dispose-only
 	// manage_worktree surface (delegate-lane disposal spec §P1 "Availability"):
-	// a worktree-isolated coordinator that may only dispose its own delegates'
-	// lanes. When true the handler refuses every operation except dispose. The
+	// a worktree-isolated coordinator that may only act on its own delegates'
+	// lanes — dispose (retire) and unlock (release the lock without retiring,
+	// issue #481). Denying unlock while allowing the strictly more destructive
+	// dispose would let that coordinator destroy an unreachable child's
+	// uncommitted work but not recover it, and no other session can act on the
+	// lane (stableWorktreeSnapshotForOwner admits only direct children). When
+	// true the handler refuses every operation except dispose and unlock. The
 	// registry can add or remove only whole tools, not individual operations, so
 	// the dispose-only schema variant is paired with this in-handler gate.
 	disposeOnly func() bool
@@ -362,12 +384,12 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// Dispose-only surface (spec §P1 "Availability"): a worktree-isolated
 			// coordinator gets the dispose-only schema variant, but the registry can
 			// only add or remove whole tools — so the handler enforces the same
-			// restriction, refusing every op except dispose with the isolation
-			// rationale (a session inside a lane that could create/switch/remove
-			// worktrees would be able to force-remove sibling lanes the parent
-			// created; see rootOnlyWorktreeTools).
-			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
-				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+			// restriction, refusing every op except dispose and unlock with the
+			// isolation rationale (a session inside a lane that could
+			// create/switch/remove worktrees would be able to force-remove sibling
+			// lanes the parent created; see rootOnlyWorktreeTools).
+			if operation != "dispose" && operation != "unlock" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
+				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose or unlock your own delegates' lanes (operations=dispose, unlock); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
 			}
 			// Admit the WHOLE operation on the close fence, here, at the one
 			// entry every operation passes through (worktreeGuard is wired only
@@ -585,6 +607,19 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				return map[string]any{
 					"status":  status,
+					"id":      res.DelegateID,
+					"path":    res.LanePath,
+					"branch":  res.Branch,
+					"message": res.Message,
+				}, nil
+			case "unlock":
+				id, _ := args["id"].(string)
+				res, err := deps.worktreeGuard.unlockOp(ctx, id)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"status":  "unlocked",
 					"id":      res.DelegateID,
 					"path":    res.LanePath,
 					"branch":  res.Branch,

@@ -1440,15 +1440,16 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 }
 
 // trySetDisposeGate arms the dispose gate on a quiescent retained child, but only
-// after re-verifying under sub.mu that no run or drive turn is live. It returns
-// false (gate NOT set) when the child is running or driving — a drive/resume that
-// raced the dispose op wins, and the caller must refuse the dispose. On success
+// after re-verifying under sub.mu that no run, drive turn, or finalizer is live.
+// It returns false (gate NOT set) when the child is running, driving, or
+// finalizing — a drive/resume/finalize that raced the dispose op wins, and the
+// caller must refuse the dispose. On success
 // the child is frozen: driveSubagentNotificationTurn and the retained delegate_send
 // path refuse until clearDisposeGate reverses it.
 func (a *subagent) trySetDisposeGate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.running || a.driving {
+	if a.running || a.driving || a.finalizing {
 		return false
 	}
 	a.disposeGated = true
@@ -1713,6 +1714,19 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 
 func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
+}
+
+// finalizingSnapshot reports whether the child is draining and handing off its
+// final state. A lane unlock must treat this as live work (issue #481 review):
+// the controller can report a delegate idle while its finalizer is still
+// running, so releasing the lane then would free it under an in-flight run.
+func (a *subagent) finalizingSnapshot() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.finalizing
 }
 
 func (a *subagent) fatalRunGatedSnapshot() bool {

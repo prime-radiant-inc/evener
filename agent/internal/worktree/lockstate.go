@@ -85,6 +85,12 @@ const (
 	// EvDisposeChanged: close-time disposal of a changed delegate lane
 	// (§9 lifecycle step 4, table row "disposal, changed lane").
 	EvDisposeChanged
+	// EvUnlockDelegate: the owning parent explicitly releases its direct
+	// worktree-isolated delegate's evener:dlg: occupancy lock WITHOUT retiring
+	// the delegate (issue #481). The lane's resumability and worktree are left
+	// untouched; only the lock is released, so the parent can switch in and
+	// recover work from a delegate it can no longer revive.
+	EvUnlockDelegate
 	// EvPruneCandidate: `prune` evaluating a candidate managed worktree
 	// (§5 prune sweep 1, table row "prune candidate").
 	EvPruneCandidate
@@ -190,6 +196,8 @@ func (e LockEvent) String() string {
 		return "EvDisposeUnchanged"
 	case EvDisposeChanged:
 		return "EvDisposeChanged"
+	case EvUnlockDelegate:
+		return "EvUnlockDelegate"
 	case EvPruneCandidate:
 		return "EvPruneCandidate"
 	default:
@@ -241,10 +249,10 @@ func (a LockAction) String() string {
 //     parent cannot `switch` into an isolated delegate's worktree at all while
 //     the delegate exists").
 //   - Delegate lifecycle events (EvDelegateRevive, EvDisposeUnchanged,
-//     EvDisposeChanged): the owner is the evener:dlg: marker, so OwnDelegate is
-//     the "own marker" column (§9 step 4; §5 table note "the dlg lock is the
-//     disposer's"). A plain session marker (OwnSession) on such a tree is not
-//     the reviver's/disposer's own → treated as Foreign.
+//     EvDisposeChanged, EvUnlockDelegate): the owner is the evener:dlg: marker,
+//     so OwnDelegate is the "own marker" column (§9 step 4; §5 table note "the
+//     dlg lock is the disposer's"). A plain session marker (OwnSession) on such
+//     a tree is not the reviver's/disposer's own → treated as Foreign.
 //   - Create events (EvCreate, EvDelegateCreate): the tree does not exist yet,
 //     so every locked state is unreachable ("—") and refuses.
 //   - EvPruneCandidate: owner-independent — any lock skips.
@@ -468,6 +476,22 @@ func Decide(ev LockEvent, st LockState) LockAction {
 			return ActRefuse // "—": not the disposer's dlg marker
 		case Foreign:
 			return ActRefuse // "—"
+		default:
+			return ActRefuse
+		}
+
+	case EvUnlockDelegate:
+		// Row "release a delegate lane's lock (unlock, issue #481)": the only
+		// releasable state is the delegate's own evener:dlg: marker
+		// (OwnDelegate — ClassifyReason is called with the delegate id so a
+		// marker for any other delegate is Foreign). An unlocked lane has no
+		// marker to release, a session marker is not the delegate's, and a
+		// foreign lock is not ours to touch: every other state fails safe to
+		// ActRefuse rather than driving `git worktree unlock` on a lane whose
+		// owner we did not establish.
+		switch st {
+		case OwnDelegate:
+			return ActUnlock // release the delegate marker, keep the lane
 		default:
 			return ActRefuse
 		}

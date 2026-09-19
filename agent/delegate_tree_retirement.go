@@ -263,6 +263,24 @@ func (c *delegateTreeController) retirementNonBlockingEvidence() []RetirementBlo
 	return blockers
 }
 
+// releaseDelegateRuntimePointer clears the controller's process-local runtime
+// pointer for one delegate whose resident runtime was just released outside the
+// retirement flow (issue #481 unlock). Without it a released *Session stays as
+// the delegate's live runtime and a later delegate_send's fresh restore collides
+// with it in AttachRuntime. It changes only the exact pointer after its owner
+// reports release; it never closes resumability or appends durable events.
+func (c *delegateTreeController) releaseDelegateRuntimePointer(delegateID string, released *Session) {
+	if c == nil || delegateID == "" || released == nil {
+		return
+	}
+	c.mu.Lock()
+	if live := c.live[delegateID]; live != nil && live.binding == nil && live.runtime == released {
+		live.runtime = nil
+		c.evidenceVersion++
+	}
+	c.mu.Unlock()
+}
+
 // releaseRetiredRuntimes changes only exact process pointers after their owner
 // reports release. It never closes resumability or appends durable events.
 func (c *delegateTreeController) releaseRetiredRuntimes(exact map[string]*Session) error {

@@ -599,6 +599,7 @@ a bug — report it.
 | delegate revival (`delegate_send` on a kept lane) | lock (`evener:dlg:`) | adopt | refuse revival |
 | disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
 | disposal, changed lane | keep | unlock, keep | — |
+| release a delegate lane's lock (`unlock`, issue #481) | — (nothing to release) | unlock, keep the lane | — (not the delegate's own marker) |
 | `prune` candidate | eligible (other conditions apply) | skip | skip |
 | hard crash | — | lock stays (stale, diagnosable) | — |
 
@@ -1170,8 +1171,9 @@ ever added, it and `isolation` must be mutually exclusive.)
    its shell if it is curious. (Refined by the delegate-lane disposal work: a
    child that is itself a **worktree-isolated coordinator** — one carrying a
    delegation allowance so it can fan out its own isolated sub-delegates — is
-   instead given a **dispose-only** `manage_worktree` variant, exposing only the
-   `dispose` operation so it can retire its sub-delegates' lanes; it still
+   instead given a **dispose/unlock** `manage_worktree` variant, exposing only the
+   `dispose` and `unlock` operations so it can retire or release its sub-delegates'
+   lanes (unlock, issue #481, leaves resumability and the worktree intact); it still
    cannot create/switch/remove, including its own lane, which its parent owns.)
 3. **Per-job reporting:** every terminal job result from an isolated delegate
    carries the worktree path, branch, commits-ahead-of-base count, and dirty
@@ -1276,10 +1278,15 @@ running. Because the delegate holds its lock for its entire lifetime, the
 parent cannot `switch` into an isolated delegate's worktree at all while the
 delegate exists (§4 step 2 refuses on the foreign lock) — inspection of a
 lane happens read-only from outside (shell `git -C <path> log/diff/status`
-from the main root, or the per-job report). After close-time disposal keeps a
-changed lane, it is unlocked and `switch`-able like any managed worktree —
-until the lane's delegate is revived by `delegate_send`, which re-takes the
-`evener:dlg:` lock (§7) and refuses if someone has switched in meanwhile.
+from the main root, or the per-job report). A parent that must recover work
+from a delegate it can no longer revive releases the lane's own marker with
+`unlock` (issue #481): a non-destructive release that leaves resumability and
+the worktree intact, clears the same live-work ladder as dispose, and refuses
+while the delegate still has running or outstanding work. After close-time
+disposal keeps a changed lane, it is unlocked and `switch`-able like any
+managed worktree — until the lane's delegate is revived by `delegate_send`,
+which re-takes the `evener:dlg:` lock (§7) and refuses if someone has switched
+in meanwhile.
 
 ## 10. Testing
 

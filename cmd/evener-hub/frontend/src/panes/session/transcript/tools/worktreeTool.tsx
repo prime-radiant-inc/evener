@@ -3,20 +3,20 @@
 // fell through to toolRenderers.ts's DEFAULT_DESCRIPTOR, whose summary is
 // `item.toolName`. The whole transcript row read `manage_worktree`.
 //
-// That is worse for this tool than for most. manage_worktree carries seven
-// operations (create/list/switch/exit/remove/prune/dispose) plus `force` and
-// `force_dirty`, and the Go docs describe force_dirty as overriding "the
-// refusal to discard uncommitted changes" — so a read-only listing and a
+// That is worse for this tool than for most. manage_worktree carries nine
+// operations (create/list/switch/adopt/exit/remove/prune/dispose/unlock) plus
+// `force` and `force_dirty`, and the Go docs describe force_dirty as overriding
+// "the refusal to discard uncommitted changes" — so a read-only listing and a
 // removal that throws away someone's work rendered as the same single word,
 // distinguishable only by expanding the row. The row has to lead with the
 // consequential step.
 //
 // Ground truth, verified against agent/session_tools_worktree.go: every
 // operation returns a map with a `status` string, and the statuses are
-// created/listed/switched/unchanged/exited/removed/pruned/already_disposed.
-// Because Exec returns a plain map (not a tool.StateResult), the registry's
-// toolValueToString json.MarshalIndents it, so item.output here is real
-// parseable JSON — same situation web_fetch is in, and unlike the
+// created/listed/switched/unchanged/exited/removed/pruned/already_disposed/
+// unlocked. Because Exec returns a plain map (not a tool.StateResult), the
+// registry's toolValueToString json.MarshalIndents it, so item.output here is
+// real parseable JSON — same situation web_fetch is in, and unlike the
 // human-formatted text most tools in this directory return.
 //
 // The settled result is preferred over the arguments wherever it disagrees:
@@ -99,6 +99,12 @@ function worktreeSummary(item: { argumentsJSON?: string; output?: string }): str
       // however the call was flagged.
       if (status === "already_disposed") return `Already disposed ${id}`;
       return `Disposed ${id}${dirty}`;
+    }
+    case "unlock": {
+      // A non-destructive lane hand-off: name the delegate whose lock was
+      // released. Prefer the settled result's id over the argument when present.
+      const id = (result ? str(result, "id") : undefined) ?? str(args, "id") ?? "";
+      return `Released lane for ${id}`;
     }
     default:
       // A future operation this build has never heard of still says which one

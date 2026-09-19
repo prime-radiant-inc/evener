@@ -118,33 +118,17 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 
 	if laneDirPresent {
 		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			laneMain := resolveLaneMainRoot(local, lanePath)
-			if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
+			if laneMain, conflict := delegateLaneProvenanceConflict(local, lanePath, originalRoot); conflict {
 				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
 			}
 		}
 	}
 	alreadyDisposedHalfRemoved := alreadyDisposed && !laneDirPresent
-	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
-	}
-	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s is the target of an armed or pending watch send; clear the watch before disposing", id)
-	}
-
-	childID := state.descriptor.ChildSessionID
-	sub := s.subagents.get(childID)
-	if sub != nil && sub.sess != nil {
-		outstanding, outstandingErr := sub.sess.treeHasOutstandingWork()
-		if outstandingErr != nil {
-			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s subtree check: %w", id, outstandingErr)
-		}
-		if outstanding {
-			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has outstanding work in its delegate subtree; wait for it to finish", id)
-		}
-	}
-	if shells := s.liveShellsUnderTree(lanePath); len(shells) > 0 {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s has live background shell(s) rooted in its lane: %s", id, strings.Join(shells, ", "))
+	// The shared quiescence ladder (delegateLaneLiveWork) — dispose and unlock
+	// both must clear it before touching a delegate's lane.
+	sub, liveErr := s.delegateLaneLiveWork("dispose", id, state, lanePath)
+	if liveErr != nil {
+		return WorktreeDisposeResult{}, liveErr
 	}
 
 	gateArmed := false
@@ -199,6 +183,56 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	}
 	gateConsumed = true
 	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sub, laneDirPresent, st, forceDirty, alreadyDisposed)
+}
+
+// delegateLaneProvenanceConflict reports whether lanePath resolves to a main
+// root other than originalRoot, and the resolved root when it does. dispose,
+// unlock, and the send-path re-lock share it so all three run git against a
+// lane only after proving where the lane actually lives.
+func delegateLaneProvenanceConflict(local *execenv.LocalExecutionEnvironment, lanePath, originalRoot string) (string, bool) {
+	if local == nil {
+		return "", false
+	}
+	laneMain := resolveLaneMainRoot(local, lanePath)
+	if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
+		return laneMain, true
+	}
+	return "", false
+}
+
+// delegateLaneLiveWork is the shared quiescence ladder both dispose and unlock
+// must clear before they touch a delegate's isolation lane. Before it existed,
+// unlock checked only the running/open predicates and claimed to mirror dispose
+// while omitting the subtree-work and armed-watch gates dispose applies, so a
+// lane with outstanding managed work or a pending watch send could be released.
+//
+// It returns the child's subagent handle (nil when the child session is already
+// gone) and nil when the lane is quiescent, or a refusal naming op — "dispose"
+// or "unlock" — and the live work that blocks it. The returned handle is what
+// the caller arms the dispose gate on, so a caller that unlocks a live lane
+// must fence the child before releasing the lock.
+func (s *Session) delegateLaneLiveWork(op, id string, state stableDelegateWorktreeSnapshot, lanePath string) (*subagent, error) {
+	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
+		return nil, fmt.Errorf("manage_worktree %s: %s still has running or unfinished work; wait for it to finish", op, id)
+	}
+	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
+		return nil, fmt.Errorf("manage_worktree %s: %s is the target of an armed or pending watch send; clear the watch first", op, id)
+	}
+	childID := state.descriptor.ChildSessionID
+	sub := s.subagents.get(childID)
+	if sub != nil && sub.sess != nil {
+		outstanding, err := sub.sess.treeHasOutstandingWork()
+		if err != nil {
+			return nil, fmt.Errorf("manage_worktree %s: %s subtree check: %w", op, id, err)
+		}
+		if outstanding {
+			return nil, fmt.Errorf("manage_worktree %s: %s still has outstanding work in its delegate subtree; wait for it to finish", op, id)
+		}
+	}
+	if shells := s.liveShellsUnderTree(lanePath); len(shells) > 0 {
+		return nil, fmt.Errorf("manage_worktree %s: %s has live background shell(s) rooted in its lane: %s", op, id, strings.Join(shells, ", "))
+	}
+	return sub, nil
 }
 
 func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
@@ -355,11 +389,13 @@ func disposeAlreadyDisposedGone(id, lanePath string, scErr error) WorktreeDispos
 // at the sidecar's OriginalRoot (spec §P1: the main repo root, resolved from the
 // sidecar rather than by walking up from the possibly-gone lane), mirroring
 // delegate revival's control-env dance. It fails closed when the session env is
-// not local or the control sandbox policy cannot be satisfied.
+// not local or the control sandbox policy cannot be satisfied. The unlock op
+// (issue #481) shares it: both act on a delegate's lane through the main repo
+// root its sidecar records, not by walking up from the lane.
 func (s *Session) delegateDisposeControlEnv(originalRoot string) (execenv.ExecutionEnvironment, error) {
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		return nil, errors.New("dispose requires a local execution environment")
+		return nil, errors.New("working on a delegate's lane requires a local execution environment")
 	}
 	controlEnv := local.WithWorkingDirectory(originalRoot)
 	if err := controlEnv.SandboxReRootError(); err != nil {

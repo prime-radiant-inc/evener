@@ -76,16 +76,36 @@ type delegateTreeController struct {
 	watchDeliveries     map[uint64]*delegateWatchReceipt
 	reclamations        map[uint64]*delegateRuntimeReclamationClaim
 	reclaiming          map[string]uint64
-	stop                *delegateStopState
-	stopDriver          *delegateStopDriver
-	evidenceVersion     uint64
-	retirementClaim     *RetirementClaim
-	closing             bool
-	reconcileOrder      []delegateLease
-	runStarts           map[delegateLease]delegatestore.RunTrigger
-	owedAdmission       bool
-	emitUpdate          func(delegateUpdatePlan)
-	attentionOpen       delegateAttentionWriterOpener
+	// laneHandoffs fences an in-flight manage_worktree unlock of a delegate's
+	// isolation lane (issue #481). It is set under mu by worktreeUnlock for the
+	// whole read-classify-release critical section and read by ReserveStart, so a
+	// concurrent delegate_send — resident OR cold, since the fence is keyed on
+	// the delegate id rather than on a resident subagent — is refused rather
+	// than racing the lock release and starting work in a lane the unlock is
+	// about to free. Cleared on every unlock exit.
+	laneHandoffs map[string]struct{}
+	// laneRestores marks a delegate whose cold attention restore has committed
+	// but not yet installed its child (issue #481 review). idleDelegateRestoreCommit
+	// sets it under mu and restoreColdDelegateAttentionRuntime clears it when the
+	// window ends; beginLaneHandoff refuses while it is set, so a lane unlock
+	// cannot slip into the commit->install gap the single point-in-time fence
+	// check left open.
+	// laneRestores counts the cold attention restores of a delegate that have
+	// committed but not yet installed their child (issue #481 review).
+	// idleDelegateRestoreCommit increments it under mu and endLaneRestore
+	// decrements it, so the fence outlives the longest concurrent window;
+	// beginLaneHandoff refuses while the count is positive.
+	laneRestores    map[string]int
+	stop            *delegateStopState
+	stopDriver      *delegateStopDriver
+	evidenceVersion uint64
+	retirementClaim *RetirementClaim
+	closing         bool
+	reconcileOrder  []delegateLease
+	runStarts       map[delegateLease]delegatestore.RunTrigger
+	owedAdmission   bool
+	emitUpdate      func(delegateUpdatePlan)
+	attentionOpen   delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -293,6 +313,8 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
+		laneHandoffs:        make(map[string]struct{}),
+		laneRestores:        make(map[string]int),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,
@@ -691,6 +713,29 @@ func (c *delegateTreeController) stableDelegateOwnedBySessionLocked(owner *Sessi
 		return parentID == "" && owner.id == c.rootSessionID && aggregate.Descriptor.OwnerSessionID == c.rootSessionID
 	}
 	return parentID == owner.owningDelegateID
+}
+
+// delegateHasResidentDescendants reports whether any STRICT descendant of
+// delegateID still has a resident runtime. A lane unlock releases only the
+// direct runtime, and the non-terminal release deliberately keeps nested
+// subagents, so a resident descendant would stay bound to its own lane and a
+// later restore could collide with the released parent (issue #481 review).
+// Callers must hold no controller lock.
+func (c *delegateTreeController) delegateHasResidentDescendants(delegateID string) bool {
+	if c == nil || delegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id := range c.subtreeMembersLocked(delegateID) {
+		if id == delegateID {
+			continue
+		}
+		if live := c.live[id]; live != nil && live.runtime != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // hasWakePendingDelegateFor reports whether owner has any direct delegate in a
