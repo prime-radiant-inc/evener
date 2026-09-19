@@ -838,6 +838,7 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 | `originClientId` | `string` | yes |  |
 
 
@@ -865,6 +866,7 @@ _(no fields)_
 | `hasStoredOAuth` | `bool` |  |  |
 | `envVar` | `string` | yes |  |
 | `shadowedEnvVar` | `string` | yes |  |
+| `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |

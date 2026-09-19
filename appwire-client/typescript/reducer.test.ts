@@ -158,6 +158,22 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
 
+function fragmentTurn(id: string, itemIds: string[], overrides: Partial<Turn> = {}): Turn {
+  return {
+    id,
+    status: "completed",
+    itemsView: "fragment",
+    items: itemIds.map((itemId) => ({
+      id: itemId,
+      turnId: id,
+      type: "agentMessage",
+      text: `${id}-${itemId}`,
+      status: "completed",
+    })),
+    ...overrides,
+  };
+}
+
 test("evener/goal/updated replaces and explicitly clears model.goal", () => {
   const initial = testHydrate({
     evener: { goal: { objective: "old objective", status: "active", iterations: 3 } },
@@ -2532,6 +2548,69 @@ test("a full turn settle that omits image fields keeps the item's images", () =>
   );
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
   expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
+test("mergeOlderItemPage coalesces every transitively overlapping fragment", () => {
+  const model = testHydrate({
+    turns: [
+      fragmentTurn("fresh-x", ["x"]),
+      fragmentTurn("fresh-w", ["w"]),
+      fragmentTurn("fresh-zw", ["z", "w"]),
+      fragmentTurn("fresh-yz", ["y", "z"]),
+      fragmentTurn("fresh-xy", ["x", "y"]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      fragmentTurn("old-xp", ["x", "p"]),
+      fragmentTurn("old-y", ["y"]),
+      fragmentTurn("old-z", ["z"]),
+      fragmentTurn("old-w", ["w"]),
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]?.items.map((item) => item.id)).toEqual(["x", "p", "y", "z", "w"]);
+  expect(new Set(result.turns[0]?.items.map((item) => item.id))).toHaveLength(5);
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage coalesces overlapping fresh fragments without an older match", () => {
+  const model = testHydrate({
+    turns: [
+      fragmentTurn("fresh-a", ["x"]),
+      fragmentTurn("fresh-b", ["y"]),
+      fragmentTurn("fresh-c", ["x"], { usage: { inputTokens: 2 } }),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [fragmentTurn("old-z", ["z"])],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["old-z", "fresh-c", "fresh-b"]);
+  expect(result.turns[1]?.items.map((item) => item.id)).toEqual(["x"]);
+  expect(result.turns[1]?.usage).toEqual({ inputTokens: 2 });
+});
+
+test("mergeOlderItemPage applies fresh fields after coalescing a fragment chain", () => {
+  const model = testHydrate({
+    turns: [
+      fragmentTurn("fresh-x", ["x"], { usage: { inputTokens: 2 } }),
+      fragmentTurn("fresh-xy", ["x", "y"], { usage: { inputTokens: 3 } }),
+      fragmentTurn("fresh-y", ["y"], { usage: { inputTokens: 4 } }),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [fragmentTurn("old-x", ["x"], { usage: { inputTokens: 1 } }), fragmentTurn("old-y", ["y"])],
+  });
+
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]).toMatchObject({ id: "fresh-y", usage: { inputTokens: 4 } });
+  expect(result.turns[0]?.items.map((item) => item.id).sort()).toEqual(["x", "y"]);
 });
 
 test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {

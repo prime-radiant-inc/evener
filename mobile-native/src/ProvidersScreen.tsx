@@ -18,6 +18,7 @@ import {
   activeSourceLabel,
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
+  fromEnvironment,
   ENDPOINT_CHANGED_TEST_MESSAGE,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -31,6 +32,7 @@ import {
   isStaleListingRefusal,
   staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
+import { appliedInstanceWrite } from "./appliedInstanceWrite";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { useConnectionDisplay } from "./connectionDisplay";
@@ -40,13 +42,27 @@ import { useProviderSurface } from "./providerSurface";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import {
+  Action,
+  Copy,
+  ErrorMessage,
+  WarningMessage,
+  styles,
+  useColors,
+} from "./ui";
 
-// What a credential save says when the hub refuses the destination it was
-// asserted against: the name moved since the row was read, so nothing honest
-// was saved and the user re-enters against the destination now on screen.
-const ENDPOINT_CHANGED_SAVE_MESSAGE =
-  "This connection changed to a different endpoint, so the change was not saved. Check its destination and try again.";
+// The warnings shown for the two refusals the generic "could not be confirmed"
+// line would misreport: a provider-instance write the hub APPLIED before a
+// later step failed, and the hub's refusal of an asserted destination. They are
+// this client's own wording: the rejection's text came from the hub and can
+// echo submitted credentials, so it must never reach the screen (the same rule
+// the catch's generic error keeps).
+const APPLIED_REMOVAL_WARNING =
+  "The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
+const APPLIED_RENAME_WARNING =
+  "The instance was renamed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
+const ENDPOINT_CHANGED_WARNING =
+  "This instance changed to a different endpoint since the form was opened. The provider list was refreshed; review its destination and try again.";
 
 // What clearing a credential or removing an instance says when the hub cannot
 // fingerprint the destination: no key is being sent, so it does not reuse the
@@ -174,12 +190,12 @@ function Providers({
   } | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionWarning, setActionWarning] = useState<string | null>(null);
   const instance = core.instances.find((item) => item.name === selected);
   const loadError =
     core.error === null
       ? null
       : sessionActionError("Could not load providers", core.error);
-
   useEffect(() => {
     if (editingCredential && !instance?.authModes?.includes(editingCredential)) {
       setEditingCredential(null);
@@ -238,6 +254,7 @@ function Providers({
   ) {
     const version = editorVersion.current;
     setActionError(null);
+    setActionWarning(null);
     try {
       const applied = await action();
       if (version !== editorVersion.current) return;
@@ -265,10 +282,36 @@ function Providers({
         surface.refresh();
         return;
       }
+      const applied = appliedInstanceWrite(err);
+      if (applied !== null) {
+        // The write stands - the removal deleted the instance's credential (or
+        // its config entry), or the rename is in providers.toml - so reporting
+        // the generic failure would send the user to retry an operation whose
+        // target is already gone. Close the editor and its selection the way a
+        // completed write does, re-read the provider list instead of waiting
+        // for the passive evener/auth/updated notification, and warn with our
+        // own sentence rather than the rejection's text.
+        close();
+        setActionWarning(
+          applied === "remove"
+            ? APPLIED_REMOVAL_WARNING
+            : APPLIED_RENAME_WARNING,
+        );
+        surface.refresh();
+        return;
+      }
       // Only an operation that asserted a destination can be refused for a
       // changed one; a generic conflict (a duplicate name) is not that.
       if (endpointAsserted && isEndpointConflict(err)) {
-        setActionError(ENDPOINT_CHANGED_SAVE_MESSAGE);
+        // The hub refused an asserted endpoint: the instance moved since the
+        // row this action was confirmed against was listed, so nothing was
+        // written and a retry carrying the same fingerprint would be refused
+        // identically. Clear the editor and its selection like a completed
+        // write, re-read the provider list so the next attempt asserts the
+        // destination now on screen, and warn in our own words - the
+        // rejection's text can echo submitted values and is never shown.
+        close();
+        setActionWarning(ENDPOINT_CHANGED_WARNING);
         surface.refresh();
         return;
       }
@@ -352,6 +395,7 @@ function Providers({
               Add provider instance
             </Action>
             <ErrorMessage message={loadError} />
+            <WarningMessage message={actionWarning} />
             {core.diagnostics.map((message) => (
               <Copy key={message}>{message}</Copy>
             ))}
@@ -444,6 +488,17 @@ function Providers({
                     setConfiguration(null);
                     setSelected(name);
                   }}
+                  onEndpointConflict={(name) => {
+                    // The hub refused the endpoint the save asserted: the name
+                    // moved since this editor was seeded, and nothing was
+                    // written. Clear the editor like a completed save, re-read
+                    // the provider list so a retry asserts the destination now
+                    // on screen, and warn in this client's own words.
+                    setConfiguration(null);
+                    setSelected(name);
+                    setActionWarning(ENDPOINT_CHANGED_WARNING);
+                    surface.refresh();
+                  }}
                   onCancel={() => {
                     if (configuration === "create") close();
                     else setConfiguration(null);
@@ -464,7 +519,7 @@ function Providers({
                     {instance.isDefault && (
                       <Copy>Default provider instance</Copy>
                     )}
-                    {instance.implicit && <Copy muted>From environment</Copy>}
+                    {fromEnvironment(instance) && <Copy muted>From environment</Copy>}
                     <Copy>{activeSourceLabel(instance)}</Copy>
                     {credentialLayers(instance)
                       .filter((layer) => !layer.effective)
@@ -477,6 +532,7 @@ function Providers({
                       <Copy key={message}>{message}</Copy>
                     ))}
                     <ErrorMessage message={actionError} />
+                    <WarningMessage message={actionWarning} />
                     {surface.busy && (
                       <ActivityIndicator accessibilityLabel="Updating provider" />
                     )}
@@ -658,7 +714,7 @@ function Providers({
                             Clear credentials
                           </Action>
                         )}
-                        {!instance.implicit && (
+                        {!fromEnvironment(instance) && (
                           <Action
                             disabled={surface.busy || core.writesRefused || stale}
                             onPress={() => {

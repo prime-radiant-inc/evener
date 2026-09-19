@@ -65,6 +65,18 @@ const HELP: Record<string, { label: string; keyUrl: string; billing: string }> =
     keyUrl: "https://platform.openai.com/api-keys",
     billing: "ChatGPT subscriptions do not include API billing. API usage is billed separately.",
   },
+  // Codex is the other way into OpenAI: a subscription account added by
+  // signing in, not a key. It gets a card of its own because the platform
+  // key above cannot reach it - `api_key_env` is empty for this provider and
+  // its transport reads only the OAuth record (registry spec §5.1) - so a
+  // user whose access is a ChatGPT/Codex subscription has nothing to paste.
+  // keyUrl is here for completeness only: it renders on the API-key help
+  // link, which this provider's auth modes never offer.
+  "openai-codex": {
+    label: "OpenAI Codex",
+    keyUrl: "https://developers.openai.com/codex",
+    billing: "Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key.",
+  },
   google: {
     label: "Gemini",
     keyUrl: "https://aistudio.google.com/apikey",
@@ -785,11 +797,13 @@ function SelectedConnection({
             Credential saved for {name}. {row && activeSourceLabel(row)}
           </p>
         )}
-        {help && modes.includes("apiKey") && (
+        {help && (
           <>
-            <a href={help.keyUrl} target="_blank" rel="noreferrer">
-              Get an API key
-            </a>
+            {modes.includes("apiKey") && (
+              <a href={help.keyUrl} target="_blank" rel="noreferrer">
+                Get an API key
+              </a>
+            )}
             <p>{help.billing}</p>
           </>
         )}

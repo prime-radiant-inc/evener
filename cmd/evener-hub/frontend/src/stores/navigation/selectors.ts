@@ -190,7 +190,6 @@ export function selectRailModel(
       ...(value as unknown as RailSession),
       ...context,
       row_id: entity.key,
-      age: relativeAge(typeof value.updated_at === "string" ? value.updated_at : undefined),
       children: frozenChildren,
     }) as unknown as RailSession;
     normalizedSessionCache.set(

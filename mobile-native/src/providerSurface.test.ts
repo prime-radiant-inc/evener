@@ -4,7 +4,7 @@ import type {
   AnyNotification,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
@@ -377,7 +377,9 @@ it("drops a probe whose asserted endpoint the hub refused, not reporting a failu
   await store.getState().fetch();
   io.request = async (method: string) => {
     if (method === "evener/auth/test")
-      throw new WireError("conflict", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("conflict", -32013, {
+        evenerErrorInfo: ErrorEndpointConflict,
+      });
     return listing(["reanchored"]);
   };
   const { result } = renderHook(() => useProviderSurface(store));

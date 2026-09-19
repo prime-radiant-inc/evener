@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -19,6 +20,14 @@ type recoveryAuthority struct {
 	ExitConfirmed bool   `json:"exit_confirmed"`
 	Group         string `json:"group"`
 	SessionID     string `json:"session_id"`
+	// Owner* carry the process identity the force stop signaled, so a later
+	// Resume can prove the old owner's exit through the process controller
+	// even after every rendezvous marker is gone. Zero values mean no proof
+	// was recorded (records from before this field) and the Resume refusal
+	// stands.
+	OwnerPID       int       `json:"owner_pid,omitempty"`
+	OwnerStateDir  string    `json:"owner_state_dir,omitempty"`
+	OwnerStartedAt time.Time `json:"owner_started_at,omitzero"`
 }
 
 type recoveryRecord struct {

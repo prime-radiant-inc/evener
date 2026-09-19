@@ -7,7 +7,13 @@
 // so the list stays one-target-per-row on desktop and touch alike. Pure
 // presentational: the section owns selection.
 import type { InstanceEntry } from "@evener/appwire-client";
-import { credentialLayers, keylessByDesign, styleInfoText, unconfiguredLabel } from "@evener/appwire-client";
+import {
+  credentialLayers,
+  fromEnvironment,
+  keylessByDesign,
+  styleInfoText,
+  unconfiguredLabel,
+} from "@evener/appwire-client";
 import { Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceRow.module.css";
@@ -45,7 +51,7 @@ export function InstanceRow({ instance, onSelect }: InstanceRowProps) {
             <StatusDot state={credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             <span className={CLASS.name}>{instance.name}</span>
             {instance.isDefault && <Chip>★ default</Chip>}
-            {instance.implicit && <Chip>from environment</Chip>}
+            {fromEnvironment(instance) && <Chip>from environment</Chip>}
           </div>
           <div className={CLASS.meta}>{meta}</div>
         </div>

@@ -6,10 +6,23 @@
 // reaches is mocked here and nowhere else.
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
+import type { ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { InstanceListResponse } from "@evener/appwire-client";
+import {
+	ErrorEndpointConflict,
+	ErrorInstanceRemoveApplied,
+	WireError,
+	type ProviderDescriptor,
+	type InstanceListResponse,
+} from "@evener/appwire-client";
+import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
-import { render, renderedText, scriptedClient } from "./renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	scriptedClient,
+} from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -32,6 +45,7 @@ const rows: InstanceListResponse = {
 			activeSource: "store",
 			hasStoredOAuth: false,
 			credentialRequired: true,
+				endpointFingerprint: "fp-work",
 		},
 	],
 	availableProviders: [],
@@ -144,4 +158,268 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	expect(text).not.toContain("work");
 	expect(text).toContain("Connect to");
 	expect(text).toContain("to manage providers.");
+});
+/** Presses the one rendered control whose accessibility label matches. */
+function press(tree: ReactTestRenderer, matches: (label: string) => boolean) {
+	const target = tree.root.find(
+		(node) =>
+			typeof node.props.accessibilityLabel === "string" &&
+			matches(node.props.accessibilityLabel),
+	);
+	act(() => {
+		target.props.onPress();
+	});
+}
+
+/** Drives the screen to a selected instance's removal confirmation. */
+async function openRemoveConfirmation(tree: ReactTestRenderer) {
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Remove instance");
+	const request = alertRequests.at(-1);
+	const confirm = request?.buttons?.find((button) => button.style === "destructive");
+	if (!confirm?.onPress) throw new Error("the remove confirmation was not opened");
+	act(() => {
+		confirm.onPress?.();
+	});
+	await act(async () => {});
+	await act(async () => {});
+}
+
+// The hub's applied-removal discriminator is a standing write, not a failure:
+// the screen must clear the editor it belonged to, re-read the provider list
+// instead of waiting for the passive evener/auth/updated notification, and
+// warn. The warning never repeats the hub's response text (it can echo
+// submitted credentials), so it is this client's own wording.
+it("reconciles an applied removal and warns instead of reporting a failure", async () => {
+	alertRequests.length = 0;
+	const emptied: InstanceListResponse = {
+		instances: [],
+		availableProviders: [],
+	};
+	const hub = scriptedClient(rows, {
+		"evener/instance/remove": [
+			new WireError("the hub left work's stored key behind", -32603, {
+				evenerErrorInfo: ErrorInstanceRemoveApplied,
+			}),
+		],
+		"evener/instance/list": [rows, emptied],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await openRemoveConfirmation(tree);
+
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/remove",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("The instance was removed on the hub");
+	expect(text).not.toContain("The operation could not be confirmed");
+	// Secret-safety: the hub's own text can echo submitted credentials, so the
+	// warning above must never carry it.
+	expect(text).not.toContain("the hub left work's stored key behind");
+	// The editor and its selection are gone, like a completed removal.
+	expect(text).not.toContain("Remove instance");
+	expect(text).not.toContain("Test credentials");
+});
+
+// An ordinary refusal keeps today's behavior: the generic error line and no
+// refresh, so the reconciliation stays scoped to the discriminator.
+it("keeps the generic failure path for an ordinary removal refusal", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows, {
+		"evener/instance/remove": [
+			new WireError("removal refused: work is still referenced by a launch config", -32013, {
+				evenerErrorInfo: "conflict",
+			}),
+		],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await openRemoveConfirmation(tree);
+
+	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove"]);
+	const text = renderedText(tree);
+	expect(text).toContain("The operation could not be confirmed");
+	expect(text).not.toContain("work no longer resolves");
+	// The editor stays open on the instance the refusal names.
+	expect(text).toContain("Remove instance");
+});
+
+// The editor was opened on one row of the listing, so its save asserts that
+// row's endpoint; the hub's refusal of the assertion is its own class, not a
+// generic save failure: the editor clears, the provider list is re-read, and
+// the screen says in its own words what changed (never the hub's text, which
+// can echo submitted values).
+it("asserts the row's endpoint on an edit and reconciles the conflict", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows, {
+		"evener/instance/edit": [
+			new WireError(
+				"work no longer resolves to the endpoint this form was opened on",
+				-32013,
+				{ evenerErrorInfo: ErrorEndpointConflict },
+			),
+		],
+		"evener/instance/list": [rows, rows],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit instance");
+	await act(async () => {});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	const edit = hub.requests.find(
+		(request) => request.method === "evener/instance/edit",
+	);
+	expect(edit?.params).toMatchObject({
+		name: "work",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/edit",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("changed to a different endpoint");
+	expect(text).not.toContain("work no longer resolves");
+	// The editor cleared like a completed save; the instance's detail remains.
+	expect(text).not.toContain("Save instance");
+	expect(text).toContain("Edit instance");
+});
+
+// A removal asserts the row's endpoint too. The hub's refusal of that
+// assertion is the same class as the editor's - not the generic "could not be
+// confirmed" failure, whose advice to refresh by hand is the only way out of a
+// retry that re-sends the same stale fingerprint. The removal's refusal
+// clears the selection like a completed removal, re-reads the provider list so
+// the next attempt asserts the destination now on screen, and warns in this
+// client's own words.
+it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows, {
+		"evener/instance/remove": [
+			new WireError(
+				"work no longer resolves to the endpoint this form was opened on",
+				-32013,
+				{ evenerErrorInfo: ErrorEndpointConflict },
+			),
+		],
+		"evener/instance/list": [rows, rows],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await openRemoveConfirmation(tree);
+
+	const removal = hub.requests.find(
+		(request) => request.method === "evener/instance/remove",
+	);
+	expect(removal?.params).toMatchObject({
+		name: "work",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/remove",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("changed to a different endpoint");
+	expect(text).not.toContain("The operation could not be confirmed");
+	// Secret-safety: the hub's text can echo submitted values and never renders.
+	expect(text).not.toContain("work no longer resolves");
+	// Cleared like a completed removal: the detail and its actions are gone.
+	expect(text).not.toContain("Remove instance");
+	expect(text).not.toContain("Test credentials");
+});
+
+// Finding 1: a create collision is a genuine hub conflict (evenerErrorInfo
+// "conflict"), not an asserted-destination refusal. Create takes no endpoint
+// assertion, so it can never carry the endpoint discriminant; the editor must
+// keep the form the user typed and show its own generic line, never the
+// moved-endpoint warning that clears the editor.
+it("keeps the create form for a name-collision conflict", async () => {
+	const collision = new WireError('instance "work" already exists', -32013, { evenerErrorInfo: "conflict" });
+	const create = vi.fn(async () => {
+		throw collision;
+	});
+	const onEndpointConflict = vi.fn();
+	const tree = render(
+		<ProviderEditor
+			providers={[{ id: "anthropic", name: "Anthropic" } as ProviderDescriptor]}
+			onCreate={create}
+			onEdit={vi.fn(async () => true)}
+			disabled={false}
+			onSaved={() => {}}
+			onEndpointConflict={onEndpointConflict}
+			onCancel={() => {}}
+		/>,
+	);
+	await act(async () => {});
+	press(tree, (label) => label === "Choose base provider");
+	act(() => {});
+	press(tree, (label) => label === "Anthropic");
+	act(() => {});
+	const nameInput = tree.root.find((node) => node.props.accessibilityLabel === "Instance name");
+	act(() => {
+		nameInput.props.onChangeText("work");
+	});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	expect(create).toHaveBeenCalledTimes(1);
+	expect(onEndpointConflict).not.toHaveBeenCalled();
+	const text = renderedText(tree);
+	expect(text).toContain("Save could not be confirmed");
+	expect(text).not.toContain("changed to a different endpoint");
+	// The form survives for the correction.
+	expect(text).toContain("Save instance");
 });
