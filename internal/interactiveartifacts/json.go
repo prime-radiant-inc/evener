@@ -167,6 +167,9 @@ func validateNumbers(value any) error {
 // Authentication identity belongs in ReceiptKey, never in this digest. Defaults
 // are not applied: absence, null and raw numeric spelling remain significant.
 func Fingerprint(namespace string, data []byte) (string, error) {
+	if !utf8.ValidString(namespace) {
+		return "", errors.New("namespace is not UTF-8")
+	}
 	value, err := ParseJSON(data, MaxRequestBytes)
 	if err != nil {
 		return "", err
