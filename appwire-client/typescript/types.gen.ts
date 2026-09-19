@@ -385,14 +385,16 @@ export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
   /**
-   * OriginClientId is the echoed OriginClientId of the auth mutation that
-   * caused this broadcast - the identity of the client whose change it
-   * announces, so that client can recognize its own echo by id instead of
-   * by provider plus timing. Optional: a mutation from a client that sends
-   * none (an older build, the TUI) leaves the broadcast without an id, and
-   * a consumer matching a broadcast against its own mutation then falls
-   * back to provider-plus-timing correlation. Absent for a
-   * provider-instance broadcast, which echoes no auth mutation.
+   * OriginClientId is the echoed OriginClientId of the mutation that caused
+   * this broadcast - an auth write or a provider-instance CRUD change - the
+   * identity of the client whose change it announces, so that client can
+   * recognize its own echo by id instead of by provider plus timing.
+   * Optional: a mutation from a client that sends none (an older build, the
+   * TUI) leaves the broadcast without an id. A consumer matching a broadcast
+   * against its own mutation then falls back to provider-plus-timing
+   * correlation for a provider-bearing auth echo only; an id-less
+   * provider-instance broadcast names no provider to correlate on and is
+   * treated as a foreign change.
    */
   originClientId?: string;
 }
@@ -994,6 +996,14 @@ export interface InstanceCreateParams {
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this create triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface InstanceEditParams {
@@ -1010,6 +1020,14 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this edit triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface InstanceEntry {
@@ -1105,6 +1123,14 @@ export interface InstanceModelEntry {
 
 export interface InstanceRefreshModelsParams {
   name: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this refresh triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface InstanceRemoveParams {
@@ -1117,16 +1143,40 @@ export interface InstanceRemoveParams {
    * have its replacement instance removed. Empty asserts nothing.
    */
   expectedEndpointFingerprint?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this removal triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface InstanceSetDefaultParams {
   name: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this change triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface InstanceSetModelDisabledParams {
   name: string;
   model: string;
   disabled: boolean;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this toggle triggers, so the originator
+   * recognizes its own echo by id instead of refetching as if another client
+   * changed the list. Optional: empty (an older build, the TUI) leaves the
+   * broadcast without an id.
+   */
+  originClientId?: string;
 }
 
 export interface ItemLifecycleParams {
@@ -2486,9 +2536,10 @@ export interface ThreadCapabilities {
    */
   changeVisionModel: boolean;
   /**
-   * Queue advertises support for turn/queue (kata 111a). True when a turn
-   * is currently in flight and the session can accept enqueued user
-   * messages for processing after the active turn completes.
+   * Queue advertises harness support for turn/queue (kata 111a, #1375): true
+   * when the daemon wires a queue seam and the thread is not closed, not when
+   * a turn happens to be in flight. The client applies the status, so
+   * turn/queue is still meaningful only mid-turn.
    */
   queue: boolean;
   /**
@@ -2873,14 +2924,14 @@ export interface ThreadStatusChangedParams {
   /**
    * Capabilities carries the action set that goes WITH the status being
    * announced (see EvenerThread.Capabilities), for the same reason the failure
-   * count rides along above: it is otherwise snapshot-only, and three of its
-   * entries — Send, Steer, Queue — are defined by whether a turn is in
-   * flight. A client that read the thread while it was idle therefore holds
-   * steer=false/queue=false for the whole turn that follows, and renders a
-   * session it KNOWS is active with no Steer, no Stop and a dead Send until
-   * the page is reloaded (kata 06t8). A status transition is exactly when
-   * those flip, so the set refreshes there and nowhere else — no polling, no
-   * re-read of the transcript.
+   * count rides along above: it is otherwise snapshot-only, and Send is the
+   * entry defined by whether a turn is in flight (Steer, Interrupt and Queue
+   * advertise harness support and do not move with the status, #1363/#1375).
+   * A client that read the thread while it was idle therefore holds send=true
+   * for the whole turn that follows, and renders a session it KNOWS is active
+   * with a Send it must not offer until the page is reloaded (kata 06t8). A
+   * status transition is exactly when Send flips, so the set refreshes there
+   * and nowhere else — no polling, no re-read of the transcript.
    *
    * ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
    * threads may omit capabilities their source does not advertise. A client

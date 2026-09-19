@@ -1,5 +1,6 @@
 import type {
   MutationAttachmentRef,
+  MutationCommit as PackageMutationCommit,
   MutationIntent as PackageMutationIntent,
   MutationOptimisticRecord as PackageMutationOptimisticRecord,
   MutationOutboxRecord as PackageMutationOutboxRecord,
@@ -22,6 +23,7 @@ export type MutationRecord = PackageMutationRecord<MutationAttachment>;
 export type MutationOutboxRecord = PackageMutationOutboxRecord<MutationAttachment>;
 export type MutationOptimisticRecord = PackageMutationOptimisticRecord<MutationAttachment>;
 export type MutationRecoveryRecord = PackageMutationRecoveryRecord<MutationAttachment>;
+export type MutationCommit = PackageMutationCommit<MutationAttachment>;
 
 // The class itself is the package's (state/mutation/outbox.ts): discovery over
 // a storage port, with every host-shaped capability an option. This module is

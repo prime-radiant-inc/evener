@@ -416,6 +416,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         status={delegateStatus}
         expandable
         expanded={expanded}
+        // A delegate row renders no summary text (subagentModule owns its
+        // presentation), so ToolRow must know there is nothing for the intent
+        // button to disclose and keep the row single-level even at verbosity
+        // levels that default the summary line open (#1253).
+        hasSummaryText={hasSummaryText}
         // toggleDisclosure writes an explicit store entry against this
         // session-scoped item key, so the user's own choice wins over
         // autoDefault (the fallback) from here on and survives a remount.

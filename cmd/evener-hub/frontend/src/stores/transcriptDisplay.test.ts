@@ -290,6 +290,86 @@ describe("effective transcript display state", () => {
     expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
   });
 
+  test("resolves a post-apply PATCH failure by adopting the applied value without an error", async () => {
+    // The hub already published the new revision before a follow-up durable
+    // step failed (hubcore.TranscriptDisplayPostApplyError): the write
+    // applied, so the caller must reconcile from it rather than treat the
+    // write as rejected - unlike the narrow-conflict case above, whose write
+    // never landed.
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const applied = preset("activity");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: confirmed },
+      mobile: { revision: 0, config: shippedMobileConfig },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      throw new WireError("marketplace patch applied then a follow-up step failed", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "desktop",
+        applied: { revision: 2, config: applied },
+      });
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    const result = await transcriptDisplayStore.getState().patchHubDefault("desktop", applied);
+    expect(result).toEqual({ revision: 2, config: applied });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: applied });
+    expect(transcriptDisplayStore.getState().hubError).toBeNull();
+    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
+  });
+
+  test("ignores a stale post-apply reconciliation once a newer patch has committed", async () => {
+    // A delayed post-apply response from a replaced PATCH must never
+    // overwrite a newer PATCH's already-committed hub state - the same
+    // fence the success path checks before mutating hub[layout].
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const staleApplied = preset("activity");
+    const newestCanonical = preset("full");
+    const responses: Array<{
+      resolve(value: TranscriptDisplayPatchResponse): void;
+      reject(error: unknown): void;
+    }> = [];
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: toWireConfig(confirmed) },
+      mobile: { revision: 1, config: toWireConfig(shippedMobileConfig) },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      let resolve!: (value: TranscriptDisplayPatchResponse) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<TranscriptDisplayPatchResponse>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      responses.push({ resolve, reject });
+      return promise;
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    const stale = transcriptDisplayStore.getState().patchHubDefault("desktop", staleApplied);
+    const newest = transcriptDisplayStore.getState().patchHubDefault("desktop", newestCanonical);
+    await expect.poll(() => responses).toHaveLength(2);
+    // The second PATCH settles first and commits normally.
+    responses[1]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(newestCanonical) });
+    await newest;
+    // The first PATCH's post-apply error arrives late, after the second has
+    // already been acknowledged.
+    responses[0]?.reject(
+      new WireError("marketplace patch applied then a follow-up step failed", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "desktop",
+        applied: { revision: 1000, config: staleApplied },
+      }),
+    );
+    await stale;
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: newestCanonical });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+  });
+
   test("rejects every malformed PATCH success without changing hub state or clearing the draft", async () => {
     const client = new FakeClient("ready");
     const confirmed = preset("tools");

@@ -50,10 +50,11 @@ test("all paragraphs empty yields an empty array (the whole thought is empty)", 
 
 // --- joinedReasoningParagraphs over LIVE chunk views -------------------------
 // The reducer accumulates reasoning deltas into brand-carrying chunk views
-// (protocol/reducer.ts's appendChunk/appendReasoningDelta), so a streaming
-// think block hands this function view arrays, not plain ones. These pin the
-// contract the O(1) rerouting relies on: joining live views must return text
-// IDENTICAL to joining the same chunks as plain arrays, in every summary slot.
+// (chunkview.ts's appendChunk, folded by reducer.ts's appendReasoningDelta), so
+// a streaming think block hands this function view arrays, not plain ones.
+// These pin the contract the O(1) rerouting relies on: joining live views must
+// return text IDENTICAL to joining the same chunks as plain arrays, in every
+// summary slot.
 
 // Folds a reasoning item up through `counts.length` summary indices, each fed
 // its own list of deltas, exactly the way the live wire would (item/started

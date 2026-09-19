@@ -1129,15 +1129,15 @@ func (s *Server) envelopeAskPending() bool {
 // stampCapabilitiesOnStatusChange rides the action set that goes with the
 // announced status along on every thread/status/changed (kata 06t8).
 //
-// The set is otherwise snapshot-only, refreshed by thread/read — and Send
-// and Queue are defined by whether a turn is in flight (appCapabilities;
-// Steer is harness support alone and the client applies the status). So a
-// client that hydrated while the session was idle, or while it was a cold
-// exited session the hub answered from the past index, holds queue=false
-// (and, from the past index, steer=false) for the whole turn its own send
-// starts: the composer knows the turn is live (it has the status change and
-// turn/started) and still renders no Steer, no Stop and a disabled Send until
-// a reload.
+// The set is otherwise snapshot-only, refreshed by thread/read — and Send is
+// the one flag defined by whether a turn is in flight (appCapabilities; Steer,
+// Interrupt and Queue are harness support alone and the client applies the
+// status). So a client that hydrated while the session was idle, or while it
+// was a cold exited session the hub answered from the past index, holds
+// send=true (and, from the past index, steer/interrupt/queue=false) for the
+// whole turn its own send starts: the composer knows the turn is live (it has
+// the status change and turn/started) and still renders a live Send until a
+// reload.
 // Every capability change is a status transition, so this refreshes them
 // exactly when they can have moved and never polls — the same shape
 // stampFailureCountOnStatusChange already uses for the failure count.
@@ -2811,7 +2811,11 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	status := appStatus(state, processing, strings.TrimSpace(s.appReservedTurnID) != "")
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
-	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
+	// steerAvailable reads the retry-safe callback because that is the seam
+	// handleAppTurnSteer dispatches through; the legacy SetSteerFunc pair is
+	// wired alongside it and read nowhere else, so counting it advertised a
+	// steer the RPC would answer Unavailable ("steer not available").
+	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
 		Send: !active && !closed,
@@ -2824,26 +2828,31 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// left an idle client unable to tell a harness that cannot steer from
 		// one that can, so a parked queue had no affordance to run it (#1363).
 		Steer: steerAvailable && !closed,
-		// Interrupt answers "is there work to stop", which is the same `active`
-		// Send is the complement of -- deliberately NOT the ambient cancelFunc.
+		// Interrupt answers "can this harness stop a turn", not "is a turn
+		// running to stop right now": clients apply the status themselves (the
+		// web's showStop is busy && interrupt, the SDK's `stop` requires an
+		// active status), the same uniform rule Steer and Queue follow (#1375).
+		// It reads the retry-safe handler because that is the seam
+		// handleAppTurnInterrupt dispatches through: a server whose only
+		// interrupt wiring is the ambient cancel answers the RPC with
+		// Unavailable, so advertising Stop would offer a control that can only
+		// fail. It is deliberately NOT the ambient cancelFunc.
 		//
-		// That field is armed and cleared once per turn by the session loop, on
-		// a different goroutine and a different clock from the reservation the
-		// status reads, and cmd/evener/serve.go's drain path published processing
-		// before arming it. Reading it here let this set say steer=true
-		// interrupt=false: a turn is running and cannot be stopped. The set is
-		// PUSHED on thread/status/changed and a client keeps it until the status
-		// changes again, so a frame stamped inside that window takes Stop away
-		// for the whole turn that follows (kata 5gdv).
-		//
-		// interruptWired keeps the honesty the cancelFunc read also carried: a
-		// harness that never arms a cancel does not advertise Stop. It is
-		// sticky where cancelFunc is per-turn, which is the whole difference.
+		// That field is also per-turn -- armed and cleared once per turn by the
+		// session loop, on a different goroutine and a different clock from the
+		// reservation the status reads, and cmd/evener/serve.go's drain path
+		// published processing before arming it. Reading it here let this set
+		// say steer=true interrupt=false: a turn is running and cannot be
+		// stopped. The set is PUSHED on thread/status/changed and a client keeps
+		// it until the status changes again, so a frame stamped inside that
+		// window takes Stop away for the whole turn that follows (kata 5gdv).
+		// The startup-installed handler has no such window: it is durable from
+		// before the first turn, which is also why a fresh idle daemon
+		// advertises Stop instead of understating itself until its first turn.
 		// Whether a cancel is armed at the instant the request arrives stays the
-		// business of the typed interrupt handler. InterruptClientMutation has
-		// its own
-		// quiescence precondition (kata vewa).
-		Interrupt:         s.interruptWired && active && !closed,
+		// business of the typed interrupt handler; InterruptClientMutation has
+		// its own quiescence precondition (kata vewa).
+		Interrupt:         s.retrySafeTurns.Interrupt != nil && !closed,
 		Compact:           s.compactFunc != nil && !closed,
 		Clear:             clearAvailable,
 		ForkFromTurn:      false,
@@ -2851,9 +2860,17 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		ChangeModel:       s.modelFunc != nil && !closed,
 		ChangeVisionModel: s.visionModelFunc != nil && !closed,
 		Rename:            s.nameFunc != nil && !closed,
-		// Queue keeps the "active turn" gate: only meaningful while a turn is
-		// in flight or reserved by turn/start (kata 111a).
-		Queue: s.queueFunc != nil && active && !closed,
+		// Queue answers "can this harness queue work", not "is a turn running
+		// to queue behind": the client applies the status (turn/queue is
+		// meaningful only mid-turn), the uniform rule Steer and Interrupt
+		// follow (#1375). It was the "active turn" gate of kata 111a.
+		//
+		// Queue reads the retry-safe callback for the same reason steerAvailable
+		// does: handleAppTurnQueue dispatches through retrySafeTurns.Queue, and
+		// the legacy SetQueueFunc pair is wired alongside it and read nowhere
+		// else. Counting the legacy pair advertised a queue the RPC would answer
+		// Unavailable ("queue not available").
+		Queue: s.retrySafeTurns.Queue != nil && !closed,
 		// Goal is available whenever the engine is wired and the session is
 		// open. It is intentionally NOT gated on !active: a goal may be set
 		// mid-turn (it arms for the next continuation), unlike Send.

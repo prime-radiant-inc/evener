@@ -34,3 +34,30 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
   if (!model) return NO_ACTIVE_TURN;
   return controlsFor(model).reason[control];
 }
+
+// The local recovery fence. A LOCAL session carrying a restart-blocking
+// obligation (a Stop in flight, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) admits no session action at all while the
+// obligation stands: the hub's recovery admission refuses turn/start,
+// turn/steer, turn/queue and every other fenced mutation for exactly that
+// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
+// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// a Stop drains - a live read relays the daemon's active status with
+// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
+// store arms the obligation on that very hydration. An offered press in that
+// window could only mint durable intent that parks until the explicit Resume
+// action clears the fence. Composer.tsx's availabilityFor and QueueStrip's
+// press handlers derive from this one predicate (the composer module cannot
+// lend QueueStrip its copy: Composer imports QueueStrip); each call site adds
+// the shape its own surface needs.
+export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
+  return ref.startsWith("local:") && restartObligated;
+}
+
+// The same fence as a press reads it: the obligation as the store holds it
+// NOW, not as the subscribing render saw it (this module's own render-vs-press
+// rule - a Stop can arm the fence between the render that offered a control
+// and the press that follows).
+export function pressLocalRecoveryFenced(ref: string): boolean {
+  return isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref));
+}

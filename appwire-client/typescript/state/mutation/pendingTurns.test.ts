@@ -2,8 +2,8 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
 import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
-import type { ClientIdentity, MutationOptimisticRecord, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
-import { threadModel } from "./testing";
+import type { ClientIdentity, MutationOptimisticRecord } from "./records";
+import { outboxRecord, recoveryRecord, threadModel } from "./testing";
 
 // A fake ClientIdentity's isOwnMutationRecord half, over a fixed id rather
 // than createClientIdentity's own storage/random-source machinery - that
@@ -18,22 +18,6 @@ const UNATTRIBUTED_ONLY_IDENTITY: Pick<ClientIdentity, "isOwnMutationRecord"> = 
   isOwnMutationRecord: (record) => record.originClientId === undefined,
 };
 
-function outboxRecord(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
-  return {
-    version: 1,
-    clientMutationId: "cmid-1",
-    targetRef: "ref-a",
-    method: "turn/start",
-    payload: {},
-    attachments: [],
-    optimisticDisplay: null,
-    intentSequence: 0,
-    createdAt: 0,
-    state: "submitting",
-    ...overrides,
-  };
-}
-
 function optimisticRecord(overrides: Partial<MutationOptimisticRecord> = {}): MutationOptimisticRecord {
   return {
     version: 1,
@@ -46,14 +30,6 @@ function optimisticRecord(overrides: Partial<MutationOptimisticRecord> = {}): Mu
     intentSequence: 0,
     createdAt: 0,
     state: "accepted",
-    ...overrides,
-  };
-}
-
-function recoveryRecord(overrides: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
-  return {
-    ...outboxRecord(),
-    recoveryKind: "rejected",
     ...overrides,
   };
 }

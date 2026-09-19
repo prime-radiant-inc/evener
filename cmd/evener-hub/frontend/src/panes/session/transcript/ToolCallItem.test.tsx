@@ -1374,9 +1374,13 @@ test("delegate tool rows use a single top-level disclosure trigger owned by Tool
     />,
   );
   // The disclosure trigger is a real button[aria-expanded] (ToolRow),
-  // not a native <details>/<summary> - exactly one per tool call.
-  const triggers = container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]');
+  // not a native <details>/<summary> - exactly one per tool call. A
+  // summary-less delegate row has no summary line to disclose, so its one
+  // top-level control is the body trigger; a second intent trigger would be a
+  // duplicate control and chevron for the same body (#1253 review).
+  const triggers = container.querySelectorAll('[data-testid="tool-row-body-trigger"][aria-expanded]');
   expect(triggers).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]')).toHaveLength(0);
 });
 
 test("a live, unsettled delegate call renders a running/working status dot (never unknown)", () => {
@@ -1693,6 +1697,148 @@ test.each(["chat", "intent"] as const)(
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Delegating the flaky suite");
   },
 );
+
+// --- #1253: the same summary-less delegate row stays single-level at every
+//     level whose content vector defaults the summary line open (tools and up),
+//     whether its intent is stated or derived from the prompt/task fallback.
+test.each(["tools", "activity", "full"] as const)(
+  "a delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_summaryless_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    // A delegate row renders no summary text, so no summary-open region (empty
+    // or otherwise) may be mounted at any verbosity level.
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    // The body trigger rides the intent line instead.
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+test.each(["tools", "activity", "full"] as const)(
+  "a prompt-fallback delegate row at the %s level renders no empty summary line",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_promptonly_${level}`,
+        toolName: "delegate",
+        // No description: the intent is derived from the prompt fallback, so
+        // the raw statedIntent is absent while the row still has an intent.
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Run the flaky suite");
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+// The delegate row's ONE control is its body trigger: clicking it mounts and
+// unmounts the card (there is no second intent trigger to divide the role).
+test.each(["activity", "full"] as const)(
+  "the delegate row's single body control mounts and unmounts the card at the %s level",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    renderWithConfig(
+      config,
+      item({
+        id: `delegate_single_control_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+    const control = screen.getByTestId("tool-row-body-trigger");
+    // The delegate descriptor auto-expands, so the card starts open.
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  },
+);
+
+// --- #1253 review: the subscriber-delegate row's sole body control carries
+//     the visible intent's accessible name and the status association the
+//     suppressed intent trigger used to provide.
+test("a summary-less delegate row names its sole body control from the intent and describes its status", () => {
+  seedCurrentDelegate("ref_current", "dlg_named", "running");
+  render(
+    <ToolCallItem
+      item={item({
+        id: "delegate_named_control",
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+        output: JSON.stringify({ delegate_id: "dlg_named", status: "running", transcript_ref: "local:sess_child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_current"
+      live={false}
+    />,
+  );
+
+  // One control, named from the visible intent rather than the blanked summary
+  // (which would reduce it to the bare "Tool call" fallback).
+  const control = screen.getByTestId("tool-row-body-trigger");
+  expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+  expect(screen.getByRole("button", { name: "Delegating the flaky suite" })).toBe(control);
+  // The status the suppressed intent trigger used to describe stays associated
+  // with that one control.
+  const status = screen.getByTestId("tool-row-status");
+  expect(control.getAttribute("aria-describedby")).toBe(status.id);
+});
+
+// --- #1253 review: a collapsed two-level row names its intent and body
+//     controls DISTINCTLY. The intent fallback on the body trigger belongs only
+//     to the summary-less row whose intent control is suppressed; a row that
+//     still has an intent disclosure must not hand the body trigger the same
+//     accessible name, or a screen reader sees two adjacent, identically named
+//     buttons that do different things.
+test("a collapsed two-level row keeps distinct accessible names for its intent and body controls", () => {
+  registerToolRenderer({ match: "tci_two_level_names", summary: () => "Ran the suite", body: () => <div>body</div> });
+  const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  renderWithConfig(
+    chatConfig,
+    item({ id: "two_level_names", toolName: "tci_two_level_names", description: "Running the test suite" }),
+  );
+
+  // Chat level: the summary line is collapsed, so no body trigger is in flow.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+
+  // Reach the state where the body is expanded while the summary is hidden:
+  // open the summary, expand the body, then collapse the summary again. The
+  // body trigger now rides the intent line beside the intent disclosure.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+
+  const intentTrigger = screen.getByTestId("tool-row-trigger");
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  // The intent disclosure is content-named from the intent; exactly one button
+  // carries that name.
+  expect(intentTrigger.getAttribute("aria-label")).toBeNull();
+  expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
+  // The body trigger keeps the bare fallback rather than duplicating it.
+  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+});
 
 // --- entity cards on ids in non-content summary fields ---------------------
 //

@@ -46,8 +46,11 @@ turn — detach it or stop it first. A `job_watch` timer is not a background job
 ending your turn with a timer armed is how you wait for it.
 
 Evener's quiet watchdog reports a running delegate once per continuous quiet
-stretch without steering or stopping it. Treat that as supervision evidence,
-not proof of a hang. Admission-time `max_retained_terminal` reclamation removes
+window, repeating once per further window while the delegate stays silent and
+running, without steering or stopping it. Fresh activity resets the baseline,
+so a delegate that keeps making progress never fires. Treat a report as
+supervision evidence, not proof of a hang. Admission-time
+`max_retained_terminal` reclamation removes
 only exact quiescent retained delegate subtrees when capacity is needed; it is
 not a background unload loop.
 

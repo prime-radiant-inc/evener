@@ -78,6 +78,9 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+// chunkViewBackingForTests is deliberately absent here; the white-box test hook
+// is published through the non-shipped testing/reducerHooks.ts instead.
+export { pendingTextJoined } from "./chunkview";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
@@ -130,6 +133,8 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
+export { canonicalJson } from "./draftCheckpointPort";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -216,7 +221,13 @@ export type {
   KeybindingsStoreState,
   KeybindingsSupport,
 } from "./keybindingsStore";
-export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
+export {
+  createKeybindingsStore,
+  discardStoredKeybindingDraft,
+  fromWireOverrides,
+  isReadableKeybindingDraft,
+  keybindingsSupport,
+} from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,
@@ -290,20 +301,19 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
-// chunkViewBackingForTests is deliberately absent: it reports the reducer's
-// internal chunk storage so a test can assert the view never copies it, which
-// is a test hook rather than protocol API. It belongs with the package's test
-// support, not the entry point.
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  foldWarningParams,
+  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  itemIdentityMatches,
   joinedReasoningParagraphs,
+  joinWarningParts,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,
-  pendingTextJoined,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";

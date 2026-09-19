@@ -193,30 +193,66 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
   );
 }
 
-// SettleAfterReadStorage arms a one-shot barrier: after the Nth listOutbox
-// read following arming completes, it awaits a caller-supplied real storage
-// write before returning the rows the read already took. That places a
-// concurrent commit exactly between two persistence reads without a sleep or a
-// widened deadline.
-class SettleAfterReadStorage extends MutationOutboxIndexedDB {
-  #reads = 0;
-  #settleAfterRead: number | undefined;
+// SettleAfterRetryLookup arms a one-shot barrier on the RETRY FLOW'S OWN reads
+// instead of a global listOutbox count (issue #1723): the retry's
+// post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
+// still-blocked record - the retry's last storage touch before handleRetry's
+// own reads) arms the barrier, and the second TARGET-scoped listOutbox read
+// CREATED after that arm fires it. The first such read is the retry's own
+// projection refresh (inside retryBlockedPendingTurn), the second is
+// handleRetry's refresh, and handleRetry's decision read follows that refresh
+// directly, so the concurrent commit lands between handleRetry's refresh and
+// its decision read - the window where a settle from another tab is the benign
+// no-op the flow owes, not a "still cannot be checked" error for a row the
+// retry had already made moot.
+//
+// Reads are counted at CREATION, not completion. A background refresh whose
+// read was created before the arm (handleReady's notify-driven projection
+// refresh) cannot consume a slot however late its rows land, and global
+// discovery scans carry no target and never count. Persistence reads added or
+// removed anywhere before the retry's own final lookup no longer shift the
+// target at all; the only shape this depends on is handleRetry's own
+// back-to-back refresh-then-decision reads, which is the very behavior the
+// test exists to pin.
+class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
+  #blockedLookups = 0;
+  #armed = false;
+  #listReadsSinceArm = 0;
   #onSettle: (() => Promise<void>) | undefined;
-  settleAfterRead(readIndex: number, fn: () => Promise<void>): void {
-    this.#reads = 0;
-    this.#settleAfterRead = readIndex;
+
+  settleOnRetryRefresh(fn: () => Promise<void>): void {
     this.#onSettle = fn;
   }
-  override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
-    const rows = await super.listOutbox(targetRef);
-    this.#reads += 1;
-    if (this.#settleAfterRead === this.#reads) {
-      const fn = this.#onSettle;
-      this.#settleAfterRead = undefined;
-      this.#onSettle = undefined;
-      await fn?.();
+
+  override async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
+    const record = await super.getOutbox(clientMutationId);
+    // retryBlockedMutation reads a still-blocked record exactly twice when it
+    // proceeds: the extant-state recheck ahead of handleReady, and the final
+    // lookup after its reconciliation. The second read is the boundary between
+    // the retry's machinery and handleRetry's own reads.
+    if (this.#onSettle && record?.state === "blockedUnknown") {
+      this.#blockedLookups += 1;
+      if (this.#blockedLookups === 2) {
+        this.#armed = true;
+        this.#listReadsSinceArm = 0;
+      }
     }
-    return rows;
+    return record;
+  }
+
+  override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
+    // Counted at entry, before the rows are read: the settle commits ahead of
+    // handleRetry's refresh rows, so the refresh publishes the reopened state
+    // and the decision read that follows it sees that too.
+    if (this.#onSettle && this.#armed && targetRef !== undefined) {
+      this.#listReadsSinceArm += 1;
+      if (this.#listReadsSinceArm === 2) {
+        const fn = this.#onSettle;
+        this.#onSettle = undefined;
+        await fn?.();
+      }
+    }
+    return await super.listOutbox(targetRef);
   }
 }
 
@@ -520,7 +556,7 @@ describe("durable recovery rows", () => {
   // made moot. The decision must be made on the post-refresh state.
   test("a settle landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
     const ref = "ref_a";
-    const storage = new SettleAfterReadStorage();
+    const storage = new SettleAfterRetryLookup();
     setMutationStorageForTests(storage);
     const fake = connectFakeClient();
     await hydrate(fake, ref);
@@ -539,9 +575,11 @@ describe("durable recovery rows", () => {
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox(ref))[0];
     if (!original) throw new Error("missing seeded blocked mutation");
-    // The read the retry flow takes immediately before its decision is its 9th
-    // persistence read; the other tab reopens the record right after it.
-    storage.settleAfterRead(9, async () => {
+    // The other tab reopens the record between handleRetry's projection
+    // refresh and its decision read (the barrier class above arms on the
+    // retry flow's own reads, so persistence-read shifts elsewhere in the flow
+    // cannot misplace the settle - issue #1723).
+    storage.settleOnRetryRefresh(async () => {
       await otherTab.restoreProvenAbsent(ref, new Set());
     });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
@@ -1175,6 +1213,97 @@ describe("press-time controls", () => {
   });
 });
 
+// The local recovery fence is a press-time control too: the hub's recovery
+// admission refuses turn/promoteQueuedAsSteer, turn/drainAsSteer and
+// turn/cancelQueued for as long as the obligation stands (the same
+// sessionActionRecoveryError list turn/start sits in), so a press on a fenced
+// session could only mint durable intent that parks until the explicit Resume
+// action clears the fence. The obligation here is armed by the real hydration
+// (resumeRequired:true), not a hand-set store field, and the fence's refusal is
+// said out loud (kata 2f41) rather than leaving an enabled control that
+// silently parks.
+describe("recovery-fenced press gates", () => {
+  const QUEUED = { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] };
+
+  async function hydrateFenced(fake: FakeClient, ref: string): Promise<void> {
+    await hydrate(fake, ref, {
+      evener: { ref, capabilities: CAPABILITIES, resumeRequired: true, queue: QUEUED, activeTurnId: "turn_1" },
+    });
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  }
+
+  async function outboxFor(ref: string): Promise<MutationOutboxRecord[]> {
+    const storage = new MutationOutboxIndexedDB();
+    const rows = await storage.listOutbox(ref);
+    storage.close();
+    return rows;
+  }
+
+  test("steer-now is refused while the fence stands and mints no intent", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-promote";
+    await hydrateFenced(fake, ref);
+    applied(fake, "turn/promoteQueuedAsSteer");
+    renderStrip(defaultProps({ ref }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  test("steer queue now is refused while the fence stands and churns no busy state", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-drain";
+    await hydrateFenced(fake, ref);
+    applied(fake, "turn/drainAsSteer");
+    const onDrainBusyChange = vi.fn();
+    renderStrip(defaultProps({ ref, onDrainBusyChange }));
+    fireEvent.click(await screen.findByRole("button", { name: /steer queue now/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+    expect(onDrainBusyChange).not.toHaveBeenCalled();
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  test("remove from queue is refused while the fence stands and mints no intent", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-cancel";
+    await hydrateFenced(fake, ref);
+    renderStrip(defaultProps({ ref }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+
+  // The queue is frozen while the fence stands, so an edit refuses as a
+  // whole: restoring the text without the cancel half would leave the row and
+  // the composer carrying the same message.
+  test("edit is refused while the fence stands without restoring to the composer", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-edit";
+    await hydrateFenced(fake, ref);
+    const onRestoreToComposer = vi.fn();
+    renderStrip(defaultProps({ ref, onRestoreToComposer }));
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    await waitFor(() =>
+      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
+    );
+    expect(onRestoreToComposer).not.toHaveBeenCalled();
+    expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
+    expect(await outboxFor(ref)).toEqual([]);
+  });
+});
+
 describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
     const fake = connectFakeClient();
@@ -1611,9 +1740,8 @@ describe("optimistic pending queue rows", () => {
     renderStrip(defaultProps());
 
     await act(async () => {
-      await submitWithPendingTracking(
-        { ref: "ref_a", method: "queue", text: "not yet confirmed", onFailure: () => {} },
-        () => threadsStore.getState().queue("ref_a", "not yet confirmed"),
+      await submitWithPendingTracking({ ref: "ref_a", text: "not yet confirmed", onFailure: () => {} }, () =>
+        threadsStore.getState().queue("ref_a", "not yet confirmed"),
       );
     });
 
@@ -1646,7 +1774,7 @@ describe("optimistic pending queue rows", () => {
 
     await act(async () => {
       await submitWithPendingTracking(
-        { ref: "ref_a", method: "queue", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
+        { ref: "ref_a", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
         () => threadsStore.getState().queue("ref_a", "", undefined, [" pkg:probe ", "pkg:probe"]),
       );
     });

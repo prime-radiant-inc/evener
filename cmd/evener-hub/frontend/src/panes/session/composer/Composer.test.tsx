@@ -91,12 +91,11 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
 };
 
 // What a real daemon publishes for an IDLE thread, read off
-// server/appwire_runtime.go's appCapabilities: `active` is false there, and
-// Queue is gated on it, so an idle thread advertises queue:false; Steer is
-// harness support and stays true (the composer applies the status itself).
-// Clear and ForkFromTurn are hardcoded false. This is the set the client is
-// actually holding in the window kata 8c65 describes, and it is not
-// FULL_CAPABILITIES.
+// server/appwire_runtime.go's appCapabilities: Send is !active, and Steer,
+// Interrupt and Queue advertise harness support (#1363, #1375) and stay true
+// at idle (the composer applies the status itself). Clear and ForkFromTurn are
+// hardcoded false. This is the set the client is actually holding in the
+// window kata 8c65 describes, and it is not FULL_CAPABILITIES.
 const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -107,7 +106,7 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   shutdown: true,
   changeModel: true,
   changeVisionModel: true,
-  queue: false,
+  queue: true,
   goal: true,
   sharedNotes: true,
   rename: true,
@@ -117,8 +116,14 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
 // (cmd/evener-hub/app_threadread.go's pastThreadCapabilities): send stays true
 // because turn/start alone carries the auto-resume retry loop that wakes the
 // session (app_rpc.go's resumeTurnStartThread), while steer, interrupt and
-// queue are false because they gate on an active turn a cold thread has none
-// of. This is what the client holds for a "notLoaded" status.
+// queue are false because the hub cannot carry them out for a thread with no
+// daemon - it resumes on send alone. This is what the client holds for a
+// "notLoaded" status.
+//
+// The false queue bit here is the HUB's stub, not a daemon's answer: the
+// submit router reads it as authoritative only for a live snapshot status
+// (sendQueueAvailability.ts's pending-send tier), so the auto-resume window
+// still queues the second message rather than disabling the composer.
 const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: false,
@@ -452,7 +457,10 @@ function currentWorkEvener({ task = false, goal = false }: { task?: boolean; goa
 test("while ask_pending is open, the message textbox is hidden and the dock is not the composer's surface", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
-    evener: currentWorkEvener({ task: true, goal: true }),
+    // askPending is the wire's own source for a pending ask (deriveAskQuestions.ts);
+    // a thread whose turns carry a completed, unanswered ask_user call must also
+    // carry the flag the hub's own stampAskPendingOnStatusChange would stamp.
+    evener: { ...currentWorkEvener({ task: true, goal: true }), askPending: true },
   });
 
   // The answering surface moved to the transcript's trailing row (Session.tsx
@@ -1355,7 +1363,14 @@ test("the timing caption is absent when busy but the source advertises no queue 
 test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    // askPending: see the comment on the other pendingAskTurns() call site above.
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+      askPending: true,
+    },
     ...pendingAskTurns(),
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
@@ -1519,8 +1534,9 @@ test("a second message composed before the first turn's status frame arrives que
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
   await user.type(textarea(), "second message");
-  // Still composable: an idle queue:false means "no turn to queue behind", and
-  // must never be read as "this session takes no input".
+  // Still composable: an idle snapshot on a queue-capable harness carries
+  // queue:true (#1375), so the second message routes to turn/queue rather than
+  // bouncing as a second turn/start.
   await waitFor(() => expect(submitButton().disabled).toBe(false));
   await user.click(submitButton());
 
@@ -3475,6 +3491,84 @@ test("a fenced closed local session that advertises send renders a disabled Send
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// Regression for the RoboRev Medium on PR 1393 (b6e0269): the recovery fence
+// carved ACTIVE snapshots out, but an active session CAN carry it. A live read
+// during a Stop relays the daemon's still-active status while the hub overlays
+// resumeRequired beside it (cmd/evener-hub's applyThreadResumeRequirement on
+// the relayed thread/read), and the store arms its restart-blocking obligation
+// on exactly that hydration - while the hub's recovery admission
+// (sessionActionRecoveryError, keyed on the resume locks and never on the
+// projected status) refuses turn/start and turn/queue for as long as the model
+// still reads active. The availability table answers queue-mode for that
+// snapshot, so the offered press could only mint durable intent that parks
+// until the explicit Resume action clears the fence.
+test("an active fenced local session renders a disabled Send and enqueues nothing", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced";
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      // The stop-window shape: a live turn advertising every capability,
+      // held beside the obligation the hydrate arms on resumeRequired.
+      capabilities: FULL_CAPABILITIES,
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "one more thing");
+  expect(submitButton().disabled).toBe(true);
+  // The chord reaches the form by the same route the button does; it refuses too.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  // Nothing parks in the durable outbox either: a fenced press mints no intent.
+  const storage = new MutationOutboxIndexedDB();
+  const parked = await storage.listOutbox(ref);
+  storage.close();
+  expect(parked).toEqual([]);
+});
+
+// The Steer surface of the same fence: turn/steer sits in the same hub
+// admission list, so the control must not offer a press that could only mint
+// parked intent. The button itself says why (kata 2f41), and the press-time
+// gate re-reads the obligation live - a Stop can arm the fence between the
+// render and the press, and Shift+Enter reaches the handler with no button on
+// screen at all.
+test("an active fenced local session renders a disabled Steer and parks nothing", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-steer";
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(steerButton().disabled).toBe(true);
+  // The keyboard chord still reaches the press handler; the fence refuses it.
+  await user.click(textarea());
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+  await flushPendingTurnsProjectionForTests();
+  expect(getToasts().map((t) => t.text)).toContain("Steer isn't available until this session is resumed");
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+  const storage = new MutationOutboxIndexedDB();
+  const parked = await storage.listOutbox(ref);
+  storage.close();
+  expect(parked).toEqual([]);
+});
+
 // --- interrupt ---------------------------------------------------------------
 
 test("clicking Stop calls turn/interrupt", async () => {
@@ -5107,41 +5201,39 @@ test("a message carrying an attachment is never read as a command invocation, ev
 // Queue, Steer and Drain refuse a staged selection on a target that never
 // advertised the capability rather than deferring to the store-side throw
 // ("skill selections are not supported on this target"), which surfaced as a
-// generic "<verb> failed".
+// generic "<verb> failed". The mount is an unfenced ACTIVE session: since the
+// recovery fence began covering active snapshots too (it refuses the press
+// before any verb-specific gate - see the active-fenced tests above), a fenced
+// mount can no longer reach this gate at all, so the gate's ordering is pinned
+// here on the path that still routes.
 test.each([
   { label: "Queue", queue: { revision: 0 }, control: "submit" as const, method: "turn/queue" },
   { label: "Steer", queue: { revision: 0 }, control: "steer" as const, method: "turn/steer" },
   { label: "Drain", queue: { revision: 0, depth: 1 }, control: "steer" as const, method: "turn/drainAsSteer" },
-])(
-  "a staged skill on $label hears the capability refusal on a recovery-fenced session",
-  async ({ label, queue, control, method }) => {
-    const user = userEvent.setup();
-    const ref = `local:skill-gate-${label.toLowerCase()}`;
-    // A selection is staged only as a complete chip in the document - main's
-    // parser never reconstructs a hidden name that the text does not spell -
-    // so the reference has to be present for the gate below to see a skill.
-    writeComposerDraft(ref, { text: "skillful action /pkg:probe", skillNames: ["pkg:probe"] });
-    const fake = await mountComposer(ref, {
-      status: { type: "active" },
-      evener: {
-        ref,
-        capabilities: { ...FULL_CAPABILITIES, skillInput: false },
-        queue,
-        activeTurnId: "turn_1",
-        resumeRequired: true,
-        mutationStateAuthoritative: false,
-      },
-    });
-    // The recovery fence does not defer the gate for any verb.
-    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
-    expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+])("a staged skill on $label hears the capability refusal", async ({ label, queue, control, method }) => {
+  const user = userEvent.setup();
+  const ref = `local:skill-gate-${label.toLowerCase()}`;
+  // A selection is staged only as a complete chip in the document - main's
+  // parser never reconstructs a hidden name that the text does not spell -
+  // so the reference has to be present for the gate below to see a skill.
+  writeComposerDraft(ref, { text: "skillful action /pkg:probe", skillNames: ["pkg:probe"] });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: false },
+      queue,
+      activeTurnId: "turn_1",
+      mutationStateAuthoritative: false,
+    },
+  });
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 
-    await user.click(control === "submit" ? submitButton() : steerButton());
+  await user.click(control === "submit" ? submitButton() : steerButton());
 
-    expect(getToasts().map((toast) => toast.text)).toContain(
-      "Skill selections aren't supported on this session yet; your draft is kept",
-    );
-    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
-    expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
-  },
-);
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "Skill selections aren't supported on this session yet; your draft is kept",
+  );
+  expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+});

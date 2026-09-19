@@ -50,9 +50,10 @@ type hubSessionCapabilities struct {
 	Shutdown          bool
 	ChangeModel       bool
 	ChangeVisionModel bool
-	// Queue advertises support for turn/queue (kata 111a). True when a turn
-	// is in flight and the source can accept an enqueued user message for
-	// processing after the active turn completes.
+	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// when the source wires a queue seam and the thread is not closed, not when
+	// a turn happens to be in flight. The composer applies the status, so
+	// turn/queue is still offered only while the session is running.
 	Queue bool
 	// SharedNotes advertises support for the shared-notes verbs
 	// (notes/human/set, urls/remove). True for a live evener session whose

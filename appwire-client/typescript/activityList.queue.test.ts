@@ -236,7 +236,7 @@ test.each([
 
 test("a queued page that succeeds clears the error left by an earlier failed page", async () => {
   const current = activityTree([delegateEntry("first", "page-1", 1), delegateEntry("second", "page-2", 1)]);
-  const page = activityTree([delegateEntry("second", undefined, 2)], 2);
+  const page = activityTree([delegateEntry("second", undefined, 2)]);
   const boundary = boundaryClient();
   const list = new ActivityList(boundary.client, "local:session", "session", current);
   list.start();

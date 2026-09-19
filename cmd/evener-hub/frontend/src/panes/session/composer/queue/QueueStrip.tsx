@@ -12,7 +12,7 @@ import type { InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
-import { controlsFor, pressRefusal } from "../../../../stores/liveControls";
+import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import {
@@ -121,6 +121,12 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 }
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
+
+// The recovery-fenced reading of the same refusal: the hub rejects every queue
+// action (turn/promoteQueuedAsSteer, turn/drainAsSteer, turn/cancelQueued) for
+// a fenced session until the explicit Resume clears it, so the press names
+// that path rather than a generic unavailability.
+const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
 
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -233,6 +239,14 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
+    // The recovery fence, re-read live at the press (the same render-vs-press
+    // rule as pressRefusal below): the hub refuses turn/promoteQueuedAsSteer
+    // for the obligation's whole window, so an offered press could only mint
+    // durable intent that parks until the explicit Resume action clears it.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     // Judged on the store's live controls at the press, not the render's
     // (stores/liveControls.ts): the turn can have ended in between.
     const refusal = pressRefusal(sessionRef, "drain");
@@ -257,6 +271,14 @@ export function QueueStrip({
   }
 
   async function handleCancel(index: number, entryId: string): Promise<void> {
+    // The recovery fence, re-read live at the press: the hub refuses
+    // turn/cancelQueued for the obligation's whole window, so an offered press
+    // could only mint durable intent that parks until the explicit Resume
+    // action clears it.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
@@ -273,6 +295,14 @@ export function QueueStrip({
     fullText: string,
     skillNames?: readonly string[],
   ): Promise<void> {
+    // The recovery fence, re-read live at the press. An edit refuses as a
+    // whole: restoring the text without the cancelQueued half would leave the
+    // row and the composer carrying the same message, and the cancel alone
+    // could only park.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       // FIRST - loser-safe: the user's text is safely in the composer
@@ -295,6 +325,15 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    // The recovery fence, re-read live at the press: the hub refuses
+    // turn/drainAsSteer for the obligation's whole window, so an offered press
+    // could only mint durable intent that parks until the explicit Resume
+    // action clears it. Ahead of the busy report so a refusal never churns
+    // the shared busy state.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     const refusal = pressRefusal(sessionRef, "drain");
     if (refusal !== undefined) {
       toasts.push("error", refusal);
@@ -319,7 +358,6 @@ export function QueueStrip({
       await submitWithPendingTracking(
         {
           ref: sessionRef,
-          method: "drain",
           recoveryId: activeRecoveryId,
           text,
           attachments,

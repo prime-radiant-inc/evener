@@ -34,11 +34,12 @@ const CLASS = {
 };
 
 /**
- * `chunks` only ever grows by appending (see protocol/reducer.ts's
- * item/agentMessage/delta and item/reasoning/summaryTextDelta: both spread
- * the previous array plus one new entry, never replacing or reordering an
- * existing one) - so "how many chunks have been rendered" is fully captured
- * by a single count, tracked in a ref rather than by diffing content. A
+ * `chunks` only ever grows by appending (see chunkview.ts's appendChunk, which
+ * item/agentMessage/delta and item/reasoning/summaryTextDelta both fold
+ * through: the append-only view extends a shared backing by one entry, never
+ * replacing or reordering an existing one) - so "how many chunks have been
+ * rendered" is fully captured by a single count, tracked in a ref rather than
+ * by diffing content. A
  * chunks array that is the same length as (or shorter than - defensive)
  * what's already rendered is treated as nothing-new, regardless of whether
  * it's the SAME array reference or a fresh one with identical content.
