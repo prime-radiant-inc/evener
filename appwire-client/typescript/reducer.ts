@@ -1061,7 +1061,32 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
   });
 }
 
-function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
+function freshCoverageMatches(turn: TurnModel, context: ToolItemMergeContext): Map<ItemModel, ItemModel[]> {
+  const matches = new Map<ItemModel, ItemModel[]>();
+  for (const item of turn.items) {
+    const provenance = context.provenance.get(item);
+    const sources: Record<ToolItemSource, ItemModel[]> = { older: [], fresh: [] };
+    for (const source of ["older", "fresh"] as const) {
+      const membership = provenance?.[source];
+      const stack = membership === undefined ? [] : [membership];
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (current === undefined) continue;
+        if ("item" in current) sources[source].push(current.item);
+        else stack.push(current.right, current.left);
+      }
+    }
+    // The merge membership retains aliases that the final item identity has replaced.
+    for (const older of sources.older) matches.set(older, sources.fresh);
+  }
+  return matches;
+}
+
+function olderTurnAddsCoverage(
+  older: TurnModel,
+  matches: TurnModel[],
+  itemMatches: Map<ItemModel, ItemModel[]>,
+): boolean {
   if (
     turnCoverageFields.some((field) => older[field] !== undefined && matches.every((turn) => turn[field] === undefined))
   ) {
@@ -1071,7 +1096,7 @@ function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean 
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
     const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
-    return olderItemAddsCoverage(olderItem, matchingItems);
+    return olderItemAddsCoverage(olderItem, [...matchingItems, ...(itemMatches.get(olderItem) ?? [])]);
   });
 }
 
@@ -1095,7 +1120,7 @@ function olderTurnContributes(merged: TurnModel, fresh: TurnModel): boolean {
 function mergeTurnHistoryWithContext(
   older: TurnModel[],
   newer: TurnModel[],
-  context?: ToolItemMergeContext,
+  context: ToolItemMergeContext,
 ): TurnHistoryMergeResult {
   const groups = coalesceTurnFragments(older, newer, context);
   let olderContributed = false;
@@ -1104,6 +1129,7 @@ function mergeTurnHistoryWithContext(
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
+    const itemMatches = freshCoverageMatches(group.turn, context);
     for (const olderIndex of group.olderIndexes) {
       const turn = older[olderIndex];
       if (turn === undefined) continue;
@@ -1116,7 +1142,7 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns)) olderCoverage = true;
+      if (olderTurnAddsCoverage(turn, freshTurns, itemMatches)) olderCoverage = true;
     }
 
     if (group.olderIndexes.length === 0) continue;

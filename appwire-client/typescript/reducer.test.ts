@@ -3506,6 +3506,73 @@ test("mergeTurnHistory treats collectively supplied item fields as covered", () 
   expect(merged.transcriptOverlap).toBe(true);
 });
 
+test.each([
+  { freshOutput: "fresh output", olderAlias: false, olderCoverage: false },
+  { freshOutput: undefined, olderAlias: false, olderCoverage: true },
+  { freshOutput: "fresh output", olderAlias: true, olderCoverage: false },
+  { freshOutput: undefined, olderAlias: true, olderCoverage: true },
+])(
+  "mergeTurnHistory checks coverage across item aliases: $olderCoverage / $olderAlias",
+  ({ freshOutput, olderAlias, olderCoverage }) => {
+    const olderItem: ItemModel = {
+      id: "item-a",
+      turnId: "older-turn",
+      type: "agentMessage",
+      text: "older text",
+      output: "older output",
+      status: "completed",
+      position: { entry: 1, item: 0 },
+    };
+    const newer: TurnModel[] = [
+      {
+        id: "fresh-turn-a",
+        status: "completed",
+        items: [{ ...olderItem, turnId: "fresh-turn-a", transcriptKey: "key-k", output: undefined }],
+      },
+      {
+        id: "fresh-turn-b",
+        status: "completed",
+        items: [
+          {
+            ...olderItem,
+            id: "item-b",
+            turnId: "fresh-turn-b",
+            transcriptKey: "key-k",
+            text: "fresh text",
+            output: freshOutput,
+          },
+          {
+            id: "unrelated-item",
+            turnId: "fresh-turn-b",
+            type: "agentMessage",
+            text: "unrelated text",
+            output: "unrelated output",
+            status: "completed",
+            position: { entry: 2, item: 0 },
+          },
+        ],
+      },
+    ];
+
+    const olderItems = olderAlias ? [olderItem, { ...olderItem, id: "item-b", transcriptKey: "key-k" }] : [olderItem];
+    const merged = mergeTurnHistory([{ id: "older-turn", status: "completed", items: olderItems }], newer);
+
+    expect(merged.olderCoverage).toBe(olderCoverage);
+    expect(merged.transcriptOverlap).toBe(true);
+    if (olderCoverage) {
+      expect(merged.turns).toHaveLength(1);
+      expect(merged.turns[0]?.items.find((item) => item.id === "item-b")?.output).toBe("older output");
+      expect(merged.turns[0]?.items.find((item) => item.id === "unrelated-item")?.output).toBe("unrelated output");
+    } else {
+      expect(merged.turns).toBe(newer);
+    }
+    expect(olderItem.id).toBe("item-a");
+    expect(olderItem.transcriptKey).toBeUndefined();
+    expect(newer[0]?.items[0]?.id).toBe("item-a");
+    expect(newer[1]?.items[0]?.id).toBe("item-b");
+  },
+);
+
 function orderedHistoryTurn(id: string, entry?: number): TurnModel {
   return {
     id,
