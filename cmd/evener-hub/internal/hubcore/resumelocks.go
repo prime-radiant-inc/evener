@@ -784,18 +784,23 @@ func (r *ResumeLocks) ResolvedSessionID(sessionID string) string {
 	return ""
 }
 
-// RecoverySettled reports whether sessionID is still a settled session: it is
-// neither stopping nor awaiting an explicit resume. A completed recovery
-// redirect (RecordResolvedSession) names the session a resume settled on, and
-// is written once and never cleared. Once that named session ends it is no
-// longer a settled target, so a consumer that would branch it falls back to the
-// alias rather than resolving into the ended session's recovery fence — which
-// nothing would ever clear short of a hub restart.
-func (r *ResumeLocks) RecoverySettled(sessionID string) bool {
+// RecoveryEnded reports whether sessionID has durably ended: a committed
+// recovery obligation is recorded for it and it awaits an explicit resume
+// (ResumeRequired, set by PersistForceStop and Finish(true)). A completed
+// recovery redirect (RecordResolvedSession) names the session a resume settled
+// on, and is written once and never cleared; once that named session has ended
+// the redirect stops being a live route, so a consumer that would branch it
+// falls back to the alias rather than resolving into the ended session's
+// recovery fence — which nothing would ever clear short of a hub restart.
+//
+// A temporary Stopping fence is deliberately NOT evidence of ending: a force
+// stop that is refused gives it back with Finish(false) and leaves the session
+// running, so the redirect is still the right route. While merely stopping, the
+// target stays in the fork's fence set and the fork is refused through it.
+func (r *ResumeLocks) RecoveryEnded(sessionID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.recovery[sessionID]
-	return !state.ResumeRequired && state.Stopping == 0
+	return r.recovery[sessionID].ResumeRequired
 }
 
 // RecoverySequence is captured once when a transport is established. A

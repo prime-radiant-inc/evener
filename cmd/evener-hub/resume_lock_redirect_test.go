@@ -45,13 +45,24 @@ func TestForkRedirectStopsAtARedirectWhoseTargetEnded(t *testing.T) {
 			wantSelf: true,
 		},
 		{
-			name: "target stopping",
-			// A session under a held force-stop fence has ended too: it is
-			// stopping, which is the same fence hubForkIdentityFenced reads.
+			// A temporary stop fence is not evidence the target ended: the
+			// redirect still resolves, and the target's own fence refuses the
+			// fork, so the older alias is never branched underneath a running
+			// daemon.
+			name: "target under a held stop fence",
 			end: func(t *testing.T, l *hubcore.ResumeLocks, _, targetID string) {
 				l.BeginForceStop([]string{targetID})
 			},
-			wantSelf: true,
+		},
+		{
+			// A refused force stop gives the fence back and leaves the target
+			// running, so the redirect is still the right route.
+			name: "target's stop fence is given back",
+			end: func(t *testing.T, l *hubcore.ResumeLocks, _, targetID string) {
+				finish := l.BeginForceStop([]string{targetID})
+				finish.Reject()
+				finish.Finish(false)
+			},
 		},
 		{
 			name: "pending recovery target is still followed",
@@ -91,10 +102,20 @@ func TestHubForkRetiresARedirectWhoseTargetEnded(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		endTarget  bool
+		stopTarget bool
+		refuseStop bool
 		wantTarget bool
 	}{
 		{name: "target still settled", wantTarget: true},
 		{name: "target awaits an explicit resume", endTarget: true},
+		// A temporary stop fence leaves the redirect in force, so the fork is
+		// still refused through the target's own fence rather than branching
+		// the older alias while the target's daemon may still be running.
+		{name: "target under a held stop fence", stopTarget: true},
+		// The failed force stop gives its fence back and leaves the target
+		// running, so the redirect is still the right route and the fork
+		// branches the target rather than falling back to the alias.
+		{name: "target's stop fence was refused", refuseStop: true, wantTarget: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
@@ -109,6 +130,15 @@ func TestHubForkRetiresARedirectWhoseTargetEnded(t *testing.T) {
 			if tc.endTarget {
 				endRedirectTarget(t, locks, targetID)
 			}
+			if tc.stopTarget {
+				finish := locks.BeginForceStop([]string{targetID})
+				t.Cleanup(func() { finish.Finish(false) })
+			}
+			if tc.refuseStop {
+				finish := locks.BeginForceStop([]string{targetID})
+				finish.Reject()
+				finish.Finish(false)
+			}
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: t.TempDir(),
 				Roster: hubcore.NewRosterWithEntries(), ResumeLocks: locks,
@@ -116,6 +146,12 @@ func TestHubForkRetiresARedirectWhoseTargetEnded(t *testing.T) {
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
 				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
 			})
+			if tc.stopTarget {
+				if !isSessionRecoveryAdmissionError(err) {
+					t.Fatalf("fork under a held stop fence error=%v, want the recovery refusal", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("fork through a redirect whose target ended: %v", err)
 			}
