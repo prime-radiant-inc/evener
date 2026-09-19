@@ -114,6 +114,10 @@ func ValidateState(data []byte) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	return canonicalState(value)
+}
+
+func canonicalState(value any) (json.RawMessage, error) {
 	if _, ok := value.(map[string]any); !ok {
 		return nil, errors.New("state must be a JSON object")
 	}

@@ -1,0 +1,337 @@
+{
+  "status": "PASS",
+  "os": "Darwin 25.5.0 arm64",
+  "browser": "153.0.8010.36",
+  "hostURL": "http://localhost:63627",
+  "proxyURL": "http://artifact-sandbox.localhost:63628/sandbox.html",
+  "proxyPolicy": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; worker-src 'none'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'",
+  "hostEvidence": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"schema\":\"evener.artifact-proposal/v1\",\"proposalId\":\"scratch\",\"text\":\"unapproved\",\"data\":{\"selected\":1}}"
+          }
+        ]
+      }
+    ],
+    "denials": [],
+    "acceptedInputs": 0,
+    "initialized": {
+      "appVersion": {
+        "name": "Bundled scratch viewer",
+        "version": "1"
+      },
+      "appCapabilities": {}
+    }
+  },
+  "sdkEvidence": {
+    "accepted": 0,
+    "rejected": 0,
+    "reasons": [],
+    "reports": [],
+    "revoked": false,
+    "connected": true,
+    "host": {
+      "serverTools": {},
+      "message": {
+        "text": {}
+      }
+    },
+    "messageRejected": {
+      "isError": true
+    },
+    "denials": [
+      {
+        "method": "ui/request-display-mode",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/update-model-context",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/open-link",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/download-file",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/templates/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/read",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "prompts/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "sampling/createMessage",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "tools/call",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      }
+    ],
+    "finished": true
+  },
+  "isolation": {
+    "accepted": 1,
+    "rejected": 8,
+    "reasons": [
+      {
+        "nonce": "b30d6cc3-25a3-4dd1-ba18-663006d6d90f",
+        "generation": 1
+      },
+      {
+        "nonce": "d4b823d6-6f74-4770-bf80-cb428af5945a",
+        "generation": 2
+      },
+      {
+        "nonce": "d4b823d6-6f74-4770-bf80-cb428af5945a",
+        "generation": 2
+      },
+      {
+        "nonce": "52dc0c43-15f0-41a2-9a0b-d62705583d53",
+        "generation": 3,
+        "phase": "loading"
+      },
+      {
+        "nonce": "52dc0c43-15f0-41a2-9a0b-d62705583d53",
+        "generation": 3,
+        "phase": "loading"
+      }
+    ],
+    "reports": [
+      {
+        "parentAccess": false,
+        "storage": false,
+        "cookie": false,
+        "eval": false,
+        "popup": false,
+        "fetch": false,
+        "remoteScript": false,
+        "remoteImage": false,
+        "remoteStyle": false,
+        "worker": false,
+        "violations": [
+          "script-src",
+          "script-src",
+          "worker-src",
+          "worker-src",
+          "connect-src",
+          "connect-src",
+          "script-src-elem",
+          "script-src-elem",
+          "style-src-elem",
+          "style-src-elem",
+          "img-src",
+          "img-src"
+        ]
+      },
+      {
+        "second": true
+      },
+      {
+        "third": true
+      }
+    ],
+    "revoked": true,
+    "connected": true,
+    "host": {
+      "serverTools": {},
+      "message": {
+        "text": {}
+      }
+    },
+    "messageRejected": {
+      "isError": true
+    },
+    "denials": [
+      {
+        "method": "ui/request-display-mode",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/update-model-context",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/open-link",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "ui/download-file",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/templates/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "resources/read",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "prompts/list",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "sampling/createMessage",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      },
+      {
+        "method": "tools/call",
+        "code": -32601,
+        "message": "MCP error -32601: MCP error -32601: Not available to artifact views"
+      }
+    ],
+    "finished": true,
+    "navigationRevocationHeld": true,
+    "navigationBeforeLoad": {
+      "authorityBeforeRevocation": {
+        "live": true,
+        "connected": true,
+        "generation": 3
+      },
+      "attemptPhases": [
+        "loading",
+        "loading"
+      ],
+      "acceptedCheckpoints": 1
+    }
+  },
+  "serverRequests": [
+    {
+      "host": "localhost:63627",
+      "path": "/",
+      "cookie": "qualification-auth=synthetic-nonsecret",
+      "authorization": null
+    },
+    {
+      "host": "localhost:63627",
+      "path": "/host.js",
+      "cookie": "qualification-auth=synthetic-nonsecret",
+      "authorization": null
+    },
+    {
+      "host": "localhost:63627",
+      "path": "/viewer.html",
+      "cookie": "qualification-auth=synthetic-nonsecret",
+      "authorization": null
+    },
+    {
+      "host": "localhost:63627",
+      "path": "/favicon.ico",
+      "cookie": "qualification-auth=synthetic-nonsecret",
+      "authorization": null
+    },
+    {
+      "host": "artifact-sandbox.localhost:63628",
+      "path": "/sandbox.html",
+      "cookie": null,
+      "authorization": null
+    }
+  ],
+  "network": [
+    {
+      "url": "http://localhost:63627/",
+      "type": "document"
+    },
+    {
+      "url": "http://localhost:63627/host.js",
+      "type": "script"
+    },
+    {
+      "url": "http://localhost:63627/viewer.html",
+      "type": "fetch"
+    },
+    {
+      "url": "http://artifact-sandbox.localhost:63628/sandbox.html",
+      "type": "document"
+    }
+  ],
+  "consoleErrors": [
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Blocked opening 'http://localhost:63627/probe/popup' in a new window because the request was made in a sandboxed frame whose 'allow-popups' permission is not set.",
+    "Blocked form submission to 'http://localhost:63627/probe/form?' because the form's frame is sandboxed and the 'allow-forms' permission is not set.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Fetch API cannot load http://localhost:63627/probe/fetch. Refused to connect because it violates the document's Content Security Policy.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'self' 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Blocked opening 'http://localhost:63627/probe/popup' in a new window because the request was made in a sandboxed frame whose 'allow-popups' permission is not set.",
+    "Blocked form submission to 'http://localhost:63627/probe/form?' because the form's frame is sandboxed and the 'allow-forms' permission is not set.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Fetch API cannot load http://localhost:63627/probe/fetch. Refused to connect because it violates the document's Content Security Policy.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'self' 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Creating a worker from 'blob:null/b67f6733-9969-4100-ad12-c1213ed81150' violates the following Content Security Policy directive: \"worker-src 'none'\". The action has been blocked.",
+    "Blocked opening 'http://localhost:63627/probe/popup' in a new window because the request was made in a sandboxed frame whose 'allow-popups' permission is not set.",
+    "Blocked form submission to 'http://localhost:63627/probe/form?' because the form's frame is sandboxed and the 'allow-forms' permission is not set.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Connecting to 'http://localhost:63627/probe/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "Fetch API cannot load http://localhost:63627/probe/fetch. Refused to connect because it violates the document's Content Security Policy.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'self' 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the script 'http://localhost:63627/probe/script' violates the following Content Security Policy directive: \"script-src 'unsafe-inline'\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the stylesheet 'http://localhost:63627/probe/style' violates the following Content Security Policy directive: \"style-src 'unsafe-inline'\". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked.",
+    "Loading the image 'http://localhost:63627/probe/image' violates the following Content Security Policy directive: \"img-src data: blob:\". The action has been blocked."
+  ],
+  "limits": [
+    "Synthetic scratch payload only; supplied fixtures unavailable.",
+    "No WebKit/Firefox, TLS or remote Hub qualification.",
+    "No production AppWire/outbox, durable receipt or full A15-A18 acceptance.",
+    "about:blank navigation proves generation revocation, not a no-egress claim.",
+    "Viewer/proxy generation teardown needs host-owned implementation; upstream proxy alone lacks it."
+  ]
+}

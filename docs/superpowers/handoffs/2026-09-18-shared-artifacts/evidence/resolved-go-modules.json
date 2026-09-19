@@ -1,0 +1,18 @@
+[
+  {
+    "Path": "github.com/modelcontextprotocol/go-sdk",
+    "Version": "v1.6.1",
+    "Time": "2026-05-22T11:30:38Z",
+    "GoVersion": "1.25.0",
+    "Sum": "h1:0zOSupjKUxPKSocPT1Wtago+mUHU2/uZ4xSOY0FGReU=",
+    "GoModSum": "h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ="
+  },
+  {
+    "Path": "modernc.org/sqlite",
+    "Version": "v1.50.1",
+    "Time": "2026-05-10T19:56:01Z",
+    "GoVersion": "1.25.0",
+    "Sum": "h1:l+cQvn0sd0zJJtfygGHuQJ5AjlrwXmWPw4KP3ZMwr9w=",
+    "GoModSum": "h1:tcNzv5p84E0skkmJn038y+hWJbLQXQqEnQfeh5r2JLM="
+  }
+]

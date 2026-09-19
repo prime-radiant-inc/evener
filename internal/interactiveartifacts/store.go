@@ -17,6 +17,9 @@ import (
 	_ "modernc.org/sqlite" // SQLite is the durable artifact domain store.
 )
 
+// StoreSchemaVersion identifies the durable database schema used by service readiness.
+const StoreSchemaVersion = 2
+
 // storeHooks expose narrow fault boundaries to package process qualification.
 // beforeAdmission runs before mu; commit hooks run while the writer owns mu.
 // They are fixed when opening the store and must not call back into it.
@@ -72,19 +75,19 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 	if options.QuotaBytes < 0 || options.ReaderConnections < 1 || options.ReaderConnections > 32 {
 		return nil, errors.New("invalid artifact store options")
 	}
-	absolute, err := filepath.Abs(path)
+	directoryPath, name := filepath.Split(path)
+	root, err := PrepareStoreDirectory(directoryPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
-		return nil, err
-	}
-	if err := requirePrivatePath(filepath.Dir(absolute), true); err != nil {
-		return nil, err
-	}
+	absolute := filepath.Join(root, name)
 	file, err := os.OpenFile(absolute, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err == nil {
-		if err := file.Close(); err != nil {
+		info, statErr := file.Stat()
+		if statErr == nil {
+			statErr = requirePrivateInfo(info, false)
+		}
+		if err := errors.Join(statErr, file.Close()); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrExist) {
@@ -118,17 +121,6 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 	return s, nil
 }
 
-func requirePrivatePath(path string, directory bool) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() != directory || (!directory && !info.Mode().IsRegular()) || info.Mode().Perm()&0077 != 0 {
-		return errors.New("artifact store path must be private and nonsymlink")
-	}
-	return nil
-}
-
 func randomID() string {
 	var bytes [16]byte
 	_, _ = rand.Read(bytes[:])
@@ -145,7 +137,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 1 {
+	if version != 0 && version != StoreSchemaVersion {
 		return fmt.Errorf("unsupported artifact schema version %d", version)
 	}
 	if version == 0 {
@@ -156,7 +148,10 @@ func (s *Store) initialize(ctx context.Context) error {
 		if tables != 0 {
 			return errors.New("unversioned artifact database has existing tables")
 		}
-		if _, err := tx.ExecContext(ctx, storeSchema); err != nil {
+		if _, err := tx.ExecContext(ctx, storeSchema+storeQuotaSchema); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", StoreSchemaVersion)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO store_identity(service_id) VALUES(?)", randomID()); err != nil {
@@ -178,7 +173,7 @@ const storeSchema = `
  CREATE TABLE artifact_mutations(realm_id TEXT NOT NULL,principal_id TEXT NOT NULL,operation TEXT NOT NULL,mutation_id TEXT NOT NULL,request_fingerprint TEXT NOT NULL,namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id),artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),outcome_code TEXT NOT NULL,result_json BLOB,committed_at TEXT NOT NULL,PRIMARY KEY(realm_id,principal_id,operation,mutation_id));
  CREATE TABLE artifact_diagnostics(id INTEGER PRIMARY KEY,artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),revision INTEGER NOT NULL,message TEXT NOT NULL,kind TEXT NOT NULL,reported_at INTEGER NOT NULL);
  CREATE INDEX diagnostics_by_artifact ON artifact_diagnostics(artifact_id,revision,id);
- PRAGMA user_version=1;
+ 
 `
 
 func (s *Store) Close() error {
@@ -284,9 +279,8 @@ func (s *Store) checkNamespace(ctx context.Context, scope Scope) error {
 func (s *Store) RevokeGrant(ctx context.Context, hash [32]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	// Invoked revocation takes effect at the writer fence even if its caller
+	// stopped waiting. Cancellation must not preserve already-received authority.
 	delete(s.grants, hash)
-	return nil
+	return ctx.Err()
 }

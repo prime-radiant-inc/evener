@@ -119,6 +119,7 @@ func TestStoreProcessCrashRecovery(t *testing.T) {
 				requireNoError(t, s.Close())
 				killAtBarrier(t, crashRequest{Path: path, Stage: stage, Operation: operation, Raw: raw})
 				s = openTestStore(t, path, StoreOptions{Clock: fixedClock})
+				assertUsage(t, s)
 				if s.ServiceID() != identity {
 					t.Fatal("crash lost service identity")
 				}
@@ -163,6 +164,7 @@ func TestStoreProcessCrashRecovery(t *testing.T) {
 				}
 				var artifactCount int
 				requireNoError(t, s.db.QueryRowContext(ctx, "SELECT count(*) FROM artifacts").Scan(&artifactCount))
+				assertUsage(t, s)
 				if artifactCount != 1 {
 					t.Fatalf("created %d artifacts", artifactCount)
 				}

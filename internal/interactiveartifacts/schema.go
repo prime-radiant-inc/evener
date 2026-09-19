@@ -87,7 +87,7 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 			return nil, err
 		}
 		schema.If = &jsonschema.Schema{AnyOf: []*jsonschema.Schema{{Required: []string{"sourceStartLine"}}, {Required: []string{"sourceEndLine"}}}}
-		schema.Then = &jsonschema.Schema{Required: []string{"include"}, Properties: map[string]*jsonschema.Schema{"include": {Contains: &jsonschema.Schema{Const: new(any("source"))}}}}
+		schema.Then = &jsonschema.Schema{Required: []string{"include"}, Properties: map[string]*jsonschema.Schema{"include": {Type: "array", Contains: &jsonschema.Schema{Const: new(any("source"))}}}}
 	case "artifact_list":
 		schema, err = infer[ListRequest]()
 		if err != nil {
@@ -107,13 +107,29 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 		return nil, errors.New("unknown artifact tool")
 	}
 	if err == nil {
-		for _, name := range []string{"artifactId", "mutationId"} {
-			if property, ok := schema.Properties[name]; ok {
-				property.MinLength = new(1)
-			}
-		}
+		applyIdentityConstraints(schema)
 	}
 	return schema, err
+}
+
+func applyIdentityConstraints(root *jsonschema.Schema) {
+	var walk func(*jsonschema.Schema)
+	walk = func(schema *jsonschema.Schema) {
+		if schema == nil {
+			return
+		}
+		for name, property := range schema.Properties {
+			if name == "artifactId" || name == "mutationId" {
+				property.MinLength = new(1)
+			}
+			walk(property)
+		}
+		walk(schema.Items)
+		for _, branch := range schema.OneOf {
+			walk(branch)
+		}
+	}
+	walk(root)
 }
 
 func outputSchema[T any]() (*jsonschema.Schema, error) {
@@ -130,7 +146,9 @@ func outputSchema[T any]() (*jsonschema.Schema, error) {
 	domain.Then = &jsonschema.Schema{Required: []string{"sourceRevision", "stateVersion"}, Properties: map[string]*jsonschema.Schema{"retryable": {Const: new(any(false))}}}
 	domain.Else = forbids("sourceRevision", "stateVersion")
 	domain.AllOf = []*jsonschema.Schema{{If: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Const: new(any("BUSY"))}}}, Then: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"retryable": {Const: new(any(true))}}}}}
-	return &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{success, rejected}}, nil
+	schema := &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{success, rejected}}
+	applyIdentityConstraints(schema)
+	return schema, nil
 }
 
 // Tools returns a fresh public MCP catalog so projection and SDK registration
@@ -327,6 +345,9 @@ func ValidateResult(tool string, data []byte) error {
 			if err := validateSchema(candidate.OutputSchema.(*jsonschema.Schema), value); err != nil {
 				return errors.New("invalid artifact result")
 			}
+			if err := validateResultFields(tool, value.(map[string]any)); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
@@ -398,6 +419,32 @@ func validateMutationFields(tool string, value any) error {
 		}
 		if _, err := ValidateState(raw); err != nil {
 			return &DomainError{Code: InvalidState}
+		}
+	}
+	return nil
+}
+
+func validateResultFields(tool string, result map[string]any) error {
+	if tool == "artifact_read" || tool == "artifact_get_view" {
+		if source, ok := result["source"].(map[string]any); ok {
+			if html, ok := source["html"].(string); ok && len(html) > MaxSourceBytes {
+				return errors.New("artifact result source exceeds byte limit")
+			}
+		}
+		if state, ok := result["state"]; ok {
+			if _, err := canonicalState(state); err != nil {
+				return errors.New("artifact result state is invalid")
+			}
+		}
+	}
+	if tool == "artifact_read" {
+		if diagnostics, ok := result["diagnostics"].([]any); ok {
+			for _, item := range diagnostics {
+				diagnostic := item.(map[string]any)
+				if len(diagnostic["message"].(string)) > 4096 {
+					return errors.New("artifact result diagnostic exceeds byte limit")
+				}
+			}
 		}
 	}
 	return nil
