@@ -138,28 +138,27 @@ poll_gone() {
 `
 
 // TestStopCommandReapsALateFork is the reason run_bounded uses a process group:
-// a parent that ignores TERM and forks a child after cleanup has begun puts that
-// child behind any PID snapshot, but the child is still inside the command's
-// process group, so one group KILL reaches it. The job is launched under job
-// control to lead its own group, exactly as run_bounded launches it.
+// a parent that forks a child after cleanup has begun puts that child behind any
+// PID snapshot, but the child is still inside the command's process group, so
+// one group KILL reaches it. The parent forks only when cleanup TERMs it, so the
+// fork is ordered after cleanup began -- not at a fixed delay that could land
+// before the snapshot or after the grace. The job is launched under job control
+// to lead its own group, exactly as run_bounded launches it.
 func TestStopCommandReapsALateFork(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
 `+pollGoneSnippet+`
-export EVENER_STOP_TREE_GRACE_SECONDS=1
+export EVENER_STOP_TREE_GRACE_SECONDS=2
 dir=$(mktemp -d)
 cat > "$dir/child.sh" <<'CHILD'
 trap "" TERM
 exec sleep 60
 CHILD
 cat > "$dir/parent.sh" <<'PARENT'
-trap "" TERM
+trap 'bash "$DIR/child.sh" & echo $! > "$LATE"; exit 0' TERM
 : > "$READY"
-sleep 0.2
-bash "$DIR/child.sh" &
-echo $! > "$LATE"
-wait
+while :; do sleep 0.05; done
 PARENT
 set -m
 DIR="$dir" READY="$dir/ready" LATE="$dir/late" bash "$dir/parent.sh" &
