@@ -698,6 +698,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			s.attentionMu.Unlock()
 		}
 
+		s.closeManagedBinding()
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -871,6 +872,7 @@ func (s *Session) discardRestoredCandidate() {
 			scratch = retainChildScratch
 		}
 		releaseOwnedChildEnvironment(env, scratch)
+		s.closeManagedBinding()
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -1980,6 +1982,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
+		if round == 0 {
+			if err := s.reconcileManagedInvocations(ctx); err != nil {
+				return "", progressed, err
+			}
+		}
+		if err := s.checkManagedHistory(); err != nil {
+			return "", progressed, err
+		}
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
 		// admitted once it has started. A record this input already made can

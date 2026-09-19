@@ -188,6 +188,12 @@ func (tc *ToolCallData) Parse() error {
 
 // ToolResultData describes the result of a tool call, linked back to it by ToolCallID.
 type ToolResultData struct {
+	// ManagedModelText preserves the original projection for durable recovery.
+	// Providers consume Content; this metadata never bypasses its output limit.
+	ManagedModelText    string     `json:"managed_model_text,omitempty"`
+	MCPResult           *MCPResult `json:"mcp_result,omitempty"`
+	ManagedInvocationID string     `json:"managed_invocation_id,omitempty"`
+
 	ToolCallID string `json:"tool_call_id"`
 	Name       string `json:"name,omitempty"`
 	Content    any    `json:"content"`

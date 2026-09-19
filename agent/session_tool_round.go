@@ -141,7 +141,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 					return abortErr
 				}
-				results[batch[0]] = s.execTool(ctx, calls[batch[0]], finishReason)
+				results[batch[0]] = s.execTool(s.managedCallContext(ctx, batch[0]), calls[batch[0]], finishReason)
 			default:
 				var wg sync.WaitGroup
 				var panicValue any
@@ -162,7 +162,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 						if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 							panic(abortErr)
 						}
-						results[i] = s.execTool(ctx, calls[i], finishReason)
+						results[i] = s.execTool(s.managedCallContext(ctx, i), calls[i], finishReason)
 					}()
 				}
 				wg.Wait()
@@ -192,7 +192,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 					}
 					return results, abortErr
 				}
-				results[i] = s.execTool(ctx, call, finishReason)
+				results[i] = s.execTool(s.managedCallContext(ctx, i), call, finishReason)
 			}
 		}
 		if err := flushReadBatch(readBatch); err != nil {
@@ -209,7 +209,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 				}
 				return results, abortErr
 			}
-			results[i] = s.execTool(ctx, calls[i], finishReason)
+			results[i] = s.execTool(s.managedCallContext(ctx, i), calls[i], finishReason)
 		}
 	}
 
@@ -247,15 +247,18 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
-				ToolCallID:     r.CallID,
-				Name:           r.ToolName,
-				Content:        r.Output,
-				IsError:        r.IsError,
-				PrevalOnly:     r.PrevalOnly,
-				DurationMS:     r.DurationMS,
-				ToolState:      r.ToolState,
-				ImageData:      r.ImageData,
-				ImageMediaType: r.ImageMediaType,
+				MCPResult:           r.MCPResult,
+				ManagedModelText:    r.ManagedModelText,
+				ManagedInvocationID: r.ManagedInvocationID,
+				ToolCallID:          r.CallID,
+				Name:                r.ToolName,
+				Content:             r.Output,
+				IsError:             r.IsError,
+				PrevalOnly:          r.PrevalOnly,
+				DurationMS:          r.DurationMS,
+				ToolState:           r.ToolState,
+				ImageData:           r.ImageData,
+				ImageMediaType:      r.ImageMediaType,
 			},
 		})
 	}

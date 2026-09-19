@@ -810,6 +810,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.Project = parentCfg.Project
+	subCfg.ManagedRuntime = parentCfg.ManagedRuntime
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 	subCfg.LLMSleep = parentCfg.LLMSleep
@@ -880,6 +881,8 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.delegationAllowance = frozen.DelegationAllowance
 	}
 	subCfg.spawn.parentSessionID = s.id
+	subCfg.managedParent = s.managedBinding
+	subCfg.managedParentTools = s.reg.Names()
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1

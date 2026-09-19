@@ -34,6 +34,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
+	ManagedRuntime     ManagedRuntimeProvider `json:"-"`
+	managedParent      ManagedBinding
+	managedParentTools []string
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately

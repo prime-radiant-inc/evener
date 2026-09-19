@@ -239,6 +239,10 @@ func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 // the truncated output sent to the model, the full untruncated output, timing,
 // and any image or state side-channel data.
 type ExecResult struct {
+	ManagedModelText    string
+	MCPResult           *llm.MCPResult
+	ManagedInvocationID string
+
 	ToolName string
 	CallID   string
 
@@ -311,6 +315,13 @@ type StateResult struct {
 
 // TextResult is returned by executors that need different text for the model
 // and for the full TOOL_CALL_END event payload.
+// ManagedResult keeps host metadata out of model error and success text.
+type ManagedResult struct {
+	Output       string
+	Host         *llm.MCPResult
+	InvocationID string
+}
+
 type TextResult struct {
 	Output     string
 	FullOutput string
@@ -384,6 +395,10 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// ValidateRaw and ExecRaw form a strict application-owned tool boundary.
+	// Validation runs before decoding; execution receives the original bytes.
+	ValidateRaw func(json.RawMessage) error
+	ExecRaw     func(context.Context, execenv.ExecutionEnvironment, json.RawMessage) (any, error)
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
@@ -461,7 +476,7 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
 	}
-	if t.Exec == nil {
+	if t.Exec == nil && t.ExecRaw == nil {
 		return fmt.Errorf("tool %s missing executor", t.Definition.Name)
 	}
 	if t.Limit.MaxChars == 0 {
@@ -661,6 +676,18 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		callID = "call_" + shortHash(call.Arguments)
 	}
 
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	r.mu.RUnlock()
+	if ok && t.ValidateRaw != nil {
+		if err := ValidateRawArguments(call.Arguments); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+		if err := t.ValidateRaw(call.Arguments); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+	}
+
 	// A signature that has already failed the same way twice is refused here,
 	// before the tool is even looked up, and is deliberately not recorded:
 	// recording the refusal's own body would replace the stored hash and
@@ -688,9 +715,6 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		r.breaker.clearFailures(key)
 	}
 
-	r.mu.RLock()
-	t, ok := r.tools[name]
-	r.mu.RUnlock()
 	if !ok {
 		msg := "unknown tool: " + name
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
@@ -702,7 +726,11 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(call.Arguments))
+		if t.ValidateRaw != nil {
+			dec.UseNumber()
+		}
+		if err := dec.Decode(&args); err != nil {
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
 			return truncateResult(name, callID, msg, true, t.Limit)
 		}
@@ -734,11 +762,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 	}
 
-	if err := t.Schema.Validate(args); err != nil {
-		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
-		return truncateResult(name, callID, msg, true, t.Limit)
-	}
+	if t.ValidateRaw == nil {
+		if err := t.Schema.Validate(args); err != nil {
+			msg := fmt.Sprintf("tool args schema validation failed: %v", err)
+			return truncateResult(name, callID, msg, true, t.Limit)
+		}
 
+	}
 	r.mu.RLock()
 	mws := r.middleware
 	r.mu.RUnlock()
@@ -757,7 +787,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// carries a stale intent would otherwise inherit it when this call
 	// omits intent.
 	ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
-	v, err := t.Exec(ctx, env, args)
+	var v any
+	var err error
+	if t.ExecRaw != nil {
+		v, err = t.ExecRaw(ctx, env, call.Arguments)
+	} else {
+		v, err = t.Exec(ctx, env, args)
+	}
 	res := dispatchedResult(name, callID, t.Limit, v, err)
 	if judged {
 		// Recorded on the untruncated body, before any nudge is appended, so
@@ -788,6 +824,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 // the side-channel result shapes. It is the single point every dispatched
 // call funnels through, so the breaker sees every executed result exactly once.
 func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, err error) ExecResult {
+	if managed, ok := v.(ManagedResult); ok {
+		return ShapeManagedResult(name, callID, lim, managed, err)
+	}
+
 	if err != nil {
 		full := ""
 		if v != nil {
@@ -853,6 +893,16 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 
 	full := toolValueToString(v)
 	return truncateResult(name, callID, full, false, lim)
+}
+
+// ShapeManagedResult applies the ordinary output policy without dispatching.
+// Trusted recovery uses the same shaping while bypassing hooks and the breaker.
+func ShapeManagedResult(name, callID string, lim schema.ToolOutputLimit, managed ManagedResult, err error) ExecResult {
+	isError := err != nil || managed.Host != nil && managed.Host.IsError
+	res := truncateResult(name, callID, managed.Output, isError, lim)
+	res.MCPResult, res.ManagedInvocationID, res.Err = managed.Host, managed.InvocationID, err
+	res.ManagedModelText = managed.Output
+	return res
 }
 
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {

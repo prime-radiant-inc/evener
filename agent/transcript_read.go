@@ -160,6 +160,10 @@ func retainedFrom(entries []transcript.Entry) int {
 // history can shift it per insertion at or before that position, exactly as
 // history_repair.go shifts the in-flight boundary.
 func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
+	return resumeManagedHistoryIndexed(entries, nil)
+}
+
+func resumeManagedHistoryIndexed(entries []transcript.Entry, reserved func(schema.Turn, int) bool) ([]schema.Turn, []int) {
 	compactionIdx := retainedFrom(entries)
 
 	var turns []schema.Turn
@@ -177,7 +181,7 @@ func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
 		}
 	}
 
-	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
+	repaired, _, insertedAt := repairOrphanedToolResultsReserved(turns, reserved)
 	return repaired, insertedAt
 }
 

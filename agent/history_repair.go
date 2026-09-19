@@ -31,6 +31,10 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 // in-flight-turn boundary can shift it per insertion at or before the
 // boundary.
 func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int, []int) {
+	return repairOrphanedToolResultsReserved(history, nil)
+}
+
+func repairOrphanedToolResultsReserved(history []schema.Turn, reserved func(schema.Turn, int) bool) ([]schema.Turn, int, []int) {
 	if len(history) == 0 {
 		return history, 0, nil
 	}
@@ -68,7 +72,12 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 		case schema.TurnAssistant:
 			flushPending()
 			out = append(out, turn)
-			pending = assistantToolCalls(turn.Message)
+			pending = nil
+			for index, call := range assistantToolCalls(turn.Message) {
+				if reserved == nil || !reserved(turn, index) {
+					pending = append(pending, call)
+				}
+			}
 		case schema.TurnTool, schema.TurnToolResults:
 			out = append(out, turn)
 			for _, part := range turn.Message.Content {
@@ -98,7 +107,7 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 	// would reject the transcript. The re-scan is a full pass, so it is gated out of
 	// production builds.
 	if invariant.Enabled {
-		_, again := repairOrphanedToolResults(out)
+		_, again, _ := repairOrphanedToolResultsReserved(out, reserved)
 		invariant.Hold(again == 0, "repairOrphanedToolResults left %d orphaned tool call(s) after repair", again)
 	}
 	return out, repairs, insertedAt
@@ -153,7 +162,7 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 		hook()
 	}
 	s.mu.Lock()
-	repaired, repairs, insertedAt := repairOrphanedToolResultsIndexed(s.history)
+	repaired, repairs, insertedAt := repairOrphanedToolResultsReserved(s.history, managedReservations(s.managedJournal.pending()))
 	if repairs > 0 {
 		s.history = repaired
 		// A synthetic turn spliced at or before the N4 boundary shifts every

@@ -714,7 +714,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			}
 		}
 		if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
-			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
+			update := applyUpdatedToolInput
+			if registered := s.reg.Get(call.Name); registered != nil && registered.ValidateRaw != nil {
+				update = applyUpdatedManagedToolInput
+			}
+			if err := update(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
 				return tool.ExecResult{
 					ToolName:   call.Name,
@@ -820,6 +824,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.execToolCheckpoint("after_execute")
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
+		if res.ManagedInvocationID != "" {
+			return res
+		}
 		return skippedToolResult(call, err)
 	}
 
@@ -834,6 +841,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
+		if res.ManagedInvocationID != "" {
+			return res
+		}
 		return skippedToolResult(call, err)
 	}
 	outputRef := s.retainToolArtifact(&res)
@@ -937,6 +947,31 @@ func toolStartDescription(args map[string]any) string {
 	return ""
 }
 
+// applyUpdatedManagedToolInput changes only accepted hook fields, retaining
+// untouched JSON values and number spellings for the strict validator.
+func applyUpdatedManagedToolInput(call *llm.ToolCallData, updated map[string]any) error {
+	values := map[string]json.RawMessage{}
+	if err := json.Unmarshal(call.Arguments, &values); err != nil {
+		return err
+	}
+	if values == nil {
+		return errors.New("managed input must be an object")
+	}
+	for key, value := range updated {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		values[key] = encoded
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	call.Arguments = raw
+	return nil
+}
+
 func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {
 	if call == nil || len(updated) == 0 {
 		return nil
@@ -996,15 +1031,18 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
-				ToolCallID:     res.CallID,
-				Name:           res.ToolName,
-				Content:        res.Output,
-				IsError:        res.IsError,
-				PrevalOnly:     res.PrevalOnly,
-				DurationMS:     res.DurationMS,
-				ToolState:      res.ToolState,
-				ImageData:      res.ImageData,
-				ImageMediaType: res.ImageMediaType,
+				MCPResult:           res.MCPResult,
+				ManagedModelText:    res.ManagedModelText,
+				ManagedInvocationID: res.ManagedInvocationID,
+				ToolCallID:          res.CallID,
+				Name:                res.ToolName,
+				Content:             res.Output,
+				IsError:             res.IsError,
+				PrevalOnly:          res.PrevalOnly,
+				DurationMS:          res.DurationMS,
+				ToolState:           res.ToolState,
+				ImageData:           res.ImageData,
+				ImageMediaType:      res.ImageMediaType,
 			},
 		})
 	}
@@ -1055,6 +1093,12 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
 		if len(commits) != 0 {
 			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits, skillState)
+		} else if hasManagedResults(persisted) {
+			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+			liveTurn.SkillState = skillState
+			persistedTurn := liveTurn
+			persistedTurn.Message = persisted
+			_, persistErr = s.appendManagedTurn(liveTurn, persistedTurn)
 		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
@@ -1070,6 +1114,12 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		}
 		if persistErr != nil {
 			return
+		}
+		if hasManagedResults(persisted) {
+			persistErr = s.settleManagedTranscript()
+			if persistErr != nil {
+				return
+			}
 		}
 		persistErr = s.flushPendingDelegateDeliveries()
 		if persistErr != nil {

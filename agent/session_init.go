@@ -414,6 +414,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// environment at restore time.
 	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
+	defer func() {
+		if s != nil && s.managedBinding != nil && !s.managedInitializationComplete {
+			s.closeManagedBinding()
+		}
+	}()
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
 	if err != nil {
 		return nil, err
@@ -560,6 +565,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// a local exec env sweeps foreign lane residue laneSweepDelay after it opens.
 	// The method itself no-ops for subagent sessions and non-local envs.
 	s.armLaneResidueSweepTimer()
+	s.managedInitializationComplete = true
 	initComplete = true
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
@@ -636,6 +642,10 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
+	ManagedRuntime     ManagedRuntimeProvider
+	managedParent      ManagedBinding
+	managedParentTools []string
+
 	// LifetimeContext owns this restored session tree exactly as
 	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
 	// their own, and nil is the library/test shape that roots at Background.
@@ -768,6 +778,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
+	cfg.ManagedRuntime = restoreCfg.ManagedRuntime
+	cfg.managedParent = restoreCfg.managedParent
+	cfg.managedParentTools = restoreCfg.managedParentTools
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
@@ -823,6 +836,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, fmt.Errorf("load client mutation state: %w", err)
 	}
 
+	var managedJournal *managedJournal
+	if cfg.StateDir != "" {
+		managedJournal, err = openManagedJournal(filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".managed.json"), meta.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Validate and reserve the existing transcript before initialization can
 	// mutate any session artifacts. Missing transcripts are created later;
 	// every other open or parse error fails the resume closed.
@@ -888,7 +908,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
+		resumeHistory, repairInsertions = resumeManagedHistoryIndexed(transcriptEntries, managedReservations(managedJournal.pending()))
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1014,6 +1034,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cancelFunc:                  sessCancel,
 		clientMutations:             clientMutations,
 		restoredClientMutationTurns: restoredClientMutationTurns,
+		managedJournal:              managedJournal,
 		restoredClientMutationItems: restoredClientMutationItems,
 		artifactStore:               store,
 		ownsArtifactStore:           ownsArtifactStore,
@@ -1231,6 +1252,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		disposeUnadoptedScratch(reenteredEnv)
 	}()
 
+	defer func() {
+		if s != nil && s.managedBinding != nil && !s.managedInitializationComplete {
+			s.closeManagedBinding()
+		}
+	}()
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
 		return nil, err
@@ -1336,6 +1362,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		transcriptEntries = refreshed.Entries
 		restoredTranscriptHeader = refreshed.Header
 		return nil
+	}
+	if len(s.managedJournal.pending()) > 0 {
+		if err := s.reconcileManagedInvocations(context.Background()); err != nil {
+			return nil, err
+		}
+		if err := refreshFromDisk("managed invocation recovery"); err != nil {
+			return nil, err
+		}
 	}
 	s.delegateDeliveryMu.Lock()
 	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
@@ -1480,6 +1514,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
+	s.managedInitializationComplete = true
 	restoreComplete = true
 	closeDelegateStoreOnError = false
 	return s, nil
@@ -1617,6 +1652,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
+	if err := s.initManagedCatalog(); err != nil {
+		return nil, err
+	}
 	effectiveAllowedToolNames := ensureRecoveryReader(s.cfg.spawn.allowedToolNames, reg)
 	if len(effectiveAllowedToolNames) > 0 {
 		allowed := make(map[string]bool, len(effectiveAllowedToolNames))
@@ -1663,6 +1701,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 
+	s.bindManagedRuntime()
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 

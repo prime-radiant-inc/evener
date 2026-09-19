@@ -102,6 +102,15 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
+	managedInitializationComplete bool
+	managedMu                     sync.Mutex
+	managedTools                  map[string]ManagedTool
+	managedBinding                ManagedBinding
+	managedBindingErr             error
+	managedCloseOnce              sync.Once
+	managedJournal                *managedJournal
+	managedAnchor                 managedOccurrenceAnchor
+
 	id  string
 	cfg SessionConfig
 	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
@@ -2318,6 +2327,15 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+	}
+	if s.hasManagedCalls(t.Message) && s.hasTranscriptWriter() {
+		seq, err := s.appendManagedTurn(t, t)
+		if err == nil || errors.Is(err, transcript.ErrRetainedUnsynced) {
+			s.mu.Lock()
+			s.managedAnchor = managedOccurrenceAnchor{AttemptGroupID: t.AttemptGroupID, AssistantSeq: seq, Calls: assistantToolCalls(t.Message)}
+			s.mu.Unlock()
+		}
+		return err
 	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,

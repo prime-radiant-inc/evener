@@ -62,6 +62,13 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		return res
 	}
 
+	if t.ValidateRaw != nil {
+		if err := t.ValidateRaw(res.Call.Arguments); err != nil {
+			res.PrevalErr, res.Err, res.RawArgumentsRejected = err.Error(), err, true
+		}
+		return res
+	}
+
 	args := map[string]any{}
 	var pendingJSONChanges []repair.Change
 	if len(res.Call.Arguments) > 0 { // raw len, mirroring ExecuteCall (no TrimSpace)
