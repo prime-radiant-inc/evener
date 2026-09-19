@@ -196,6 +196,42 @@ export class MutationOutboxIndexedDB {
     });
   }
 
+  // The Retry click's capture, §4's stop barrier on the release path: the row
+  // AND the ref's stop epoch read in ONE readonly transaction, so the release
+  // can compare against a snapshot no cross-tab Stop can slip inside. The
+  // caller REQUESTS this read in the click's own synchronous prefix - the
+  // enqueue barrier's own rule - because the ref is unknown until the row is
+  // read: the capture rides the very read that tells the click which ref it
+  // is retrying on, making it the click's first storage observation. Both
+  // requests issue synchronously, before either is awaited: the pair is the
+  // transaction's whole workload from creation, a readonly transaction reads
+  // one consistent snapshot for both stores, and no continuation can ever
+  // issue a request on a transaction that auto-committed underneath a held
+  // event delivery (the retry-lookup seams the note-draft tests hold).
+  async getOutboxWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+    return this.#read([OUTBOX_STORE, SEQUENCE_STORE], async (transaction) => {
+      // The sequences row is keyed by the ref, which only the row read
+      // carries - but the pair must issue together, so the epoch side reads
+      // the whole (small, one-row-per-ref) store and picks the row's ref out of
+      // the result. It issues first so the pair cannot leave one request's
+      // promise unconsumed: the row read is the request a caller's abort seam
+      // can strike mid-creation, and both promises always meet Promise.all.
+      const sequencesRequest = requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
+      const recordRequest = requestResult<MutationOutboxRecord | undefined>(
+        transaction.objectStore(OUTBOX_STORE).get(clientMutationId),
+      );
+      const [record, sequences] = await Promise.all([recordRequest, sequencesRequest]);
+      // A missing row has no ref to fence; the caller's absent-row refusal
+      // never reaches the comparison.
+      const stopEpoch = record
+        ? (sequences.find((sequence) => sequence.targetRef === record.targetRef)?.stopEpoch ?? 0)
+        : 0;
+      return { record, stopEpoch };
+    });
+  }
+
   // Stop's durable write: the ref's cancelable rows turn "canceled" in the
   // same readwrite transaction that enqueues the turn/interrupt record, so
   // the user's click is the cancel moment and both land or neither does.
@@ -295,12 +331,23 @@ export class MutationOutboxIndexedDB {
 
   // The one release of a canceled row: an explicit user Retry. Background
   // reconciliation and reopen paths never reach this — it transitions only
-  // canceled -> submitting and refuses every other state.
-  async releaseCanceled(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "releaseCanceled", async (transaction) => {
+  // canceled -> submitting and refuses every other state. The optional
+  // barrier is the Retry click's stop-epoch capture (getOutboxWithStopEpoch,
+  // the release twin of enqueueIntent's): a Stop whose cancel transaction
+  // committed between the capture and this release bumped the epoch past the
+  // capture, and its cancel scan skipped the row (already canceled) - this
+  // write is the only thing left that could resurrect it, so it refuses and
+  // the row stays canceled for the newer Stop. A capture taken after the
+  // newest Stop compares equal and releases: that Retry is §4's deliberate
+  // post-Stop send. A caller passing no barrier at all is unchanged.
+  async releaseCanceled(clientMutationId: string, barrier?: MutationStopBarrier): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "releaseCanceled", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "canceled") return false;
+      if (barrier !== undefined && (await this.#stopEpochOf(transaction, record.targetRef)) > barrier.stopEpoch) {
+        return false;
+      }
       await requestResult(store.put({ ...record, state: "submitting" }));
       return true;
     });

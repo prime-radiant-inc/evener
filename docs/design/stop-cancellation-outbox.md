@@ -146,6 +146,27 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   boundary test in §9 item 10 pins the residual's shape so nothing can claim
   it closed without amending this section first.
 
+  **The release fence** (added 2026-09-19, the fresh review's Retry-path
+  finding): the explicit Retry that releases a canceled row is the one other
+  deliberate send, and its release is the one transition that can resurrect
+  a row a newer Stop claimed — the Stop's cancel scan skips a row already
+  `canceled`, so nothing but the release can bring it back. The Retry click
+  therefore captures the ref's stop epoch the same way an enqueue does, and
+  the capture rides the click's own first storage observation: the ref is
+  unknown before the row is read, so the capture cannot precede that read —
+  it joins it, the row and the epoch read in ONE transaction requested in the
+  click's synchronous prefix (`getOutboxWithStopEpoch`). The release's own
+  write transaction compares the stored epoch against that capture and
+  refuses when it advanced, leaving the row canceled: a newer Stop outranks
+  an earlier Retry, the same commit-order rule the enqueue barrier carries.
+  The "deliberate post-Stop send" exemption is therefore bounded for Retry
+  exactly as for enqueue — a Stop whose durable write commits before the
+  capture read's transaction can exist is invisible to it (the capture reads
+  the post-Stop epoch, the comparison passes equal, the release proceeds),
+  indistinguishable in the database from the Retry §9 item 7 protects, which
+  must send. Recovery resends stay barrier-free: they carry no user click to
+  timestamp.
+
 The honest boundary: a row already `attempted` (dispatcher flipped it in a
 transaction before transport, `mutationDispatcher.ts:113`) may be in flight to the
 daemon. Cancellation cannot unsend it. The dispatcher's existing pre-transport
@@ -172,7 +193,9 @@ barrier compares against — so the scan and the fence commit as one durable fac
 
 - **Release:** only an explicit user Retry transitions `canceled` to `submitting`
   (new transition in `retryBlockedMutation`, replacing the current delete-from-set
-  release at `threads.ts:1001`). "Cleared only on explicit retry" per RoboRev's
+  release at `threads.ts:1001`), fenced by §4's release barrier: the Retry's
+  click-time capture refuses the release when a newer Stop's epoch bump
+  intervened. "Cleared only on explicit retry" per RoboRev's
   High 1.
 - **Removal:** `canceled` rows are deleted when the thread is cleared or deleted
   (existing `clearThread`/deletion paths), and on explicit Retry. No TTL, no GC
@@ -255,6 +278,12 @@ and the BroadcastChannel (payload unchanged; correctness never depends on it).
   threadId). The phone's Stop/UX flows do not call the combined write yet —
   adopting it there is a follow-up, so nothing native issues a Stop's durable
   write today.
+  The Retry release fence (2026-09-19) changed no port signature:
+  `releaseCanceled` is a web-store method the `MutationOutboxStorage` port has
+  never declared — native has no canceled row to release while nothing native
+  issues a Stop's durable write — so the comparison rides the web store's own
+  release method, and the eventual native adoption of the canceled lifecycle
+  takes the release with the same click-time capture.
 
 ## 9. Test plan
 
@@ -292,6 +321,14 @@ Real store, real flows, no mocks of the mechanism under test:
     a Stop committed before the capture read's transaction can exist refreshes
     the baseline invisibly, and the row commits `submitting` exactly like a
     deliberate post-Stop send, §4's bounded boundary.
+11. The Retry release's own barrier (added 2026-09-19, the fresh review's
+    Retry-path finding): a second connection commits a Stop between the
+    Retry's click-time capture and its release — the release refuses, the row
+    stays `canceled`, and it never dispatches; the capture is requested in
+    the click's synchronous prefix, so a Stop committed during a cold
+    connection's setup is fenced too; and a Retry pressed after the newest
+    Stop (a fresh capture) still releases and dispatches, item 7's deliberate
+    post-Stop send.
 
 ## 10. Open questions for Jesse
 

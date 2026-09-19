@@ -390,16 +390,18 @@ test("a background save whose blocked row settles elsewhere mid-retry ends in th
   const blockedStatus = result.current?.error;
   expect(blockedStatus).toBeTruthy();
   // Another connection settles the row after the retry's initial lookup reads
-  // it as blocked and before its final lookup re-reads it.
-  const getOutbox = storage.getOutbox.bind(storage);
+  // it as blocked and before its final lookup re-reads it. The initial lookup
+  // is the retry's click-time capture read (getOutboxWithStopEpoch), so that
+  // is the call the seam wraps; the final re-read is still getOutbox.
+  const initialLookup = storage.getOutboxWithStopEpoch.bind(storage);
   let settledMidRetry = false;
-  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
-    const record = await getOutbox(clientMutationId);
-    if (!settledMidRetry && record?.state === "blockedUnknown") {
+  const spy = vi.spyOn(storage, "getOutboxWithStopEpoch").mockImplementation(async (clientMutationId) => {
+    const capture = await initialLookup(clientMutationId);
+    if (!settledMidRetry && capture.record?.state === "blockedUnknown") {
       settledMidRetry = true;
       await storage.settleApplied(clientMutationId);
     }
-    return record;
+    return capture;
   });
   onTestFinished(() => spy.mockRestore());
   let saving: Promise<void> | undefined;
@@ -439,16 +441,18 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
   });
   expect(result.current?.submitted?.state).toBe("blockedUnknown");
   // Another connection reconciles the row back to submitting after the
-  // retry's initial lookup and before its final one.
-  const getOutbox = storage.getOutbox.bind(storage);
+  // retry's initial lookup and before its final one. The initial lookup is
+  // the retry's click-time capture read (getOutboxWithStopEpoch), so that is
+  // the call the seam wraps; the final re-read is still getOutbox.
+  const initialLookup = storage.getOutboxWithStopEpoch.bind(storage);
   let restoredMidRetry = false;
-  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
-    const record = await getOutbox(clientMutationId);
-    if (!restoredMidRetry && record?.state === "blockedUnknown") {
+  const spy = vi.spyOn(storage, "getOutboxWithStopEpoch").mockImplementation(async (clientMutationId) => {
+    const capture = await initialLookup(clientMutationId);
+    if (!restoredMidRetry && capture.record?.state === "blockedUnknown") {
       restoredMidRetry = true;
       await storage.restoreProvenAbsent(ref, new Set());
     }
-    return record;
+    return capture;
   });
   onTestFinished(() => spy.mockRestore());
   let saving: Promise<void> | undefined;
@@ -503,16 +507,19 @@ test("a background save whose blocked row is accepted elsewhere mid-retry stays 
   expect(result.current?.submitted?.state).toBe("blockedUnknown");
   // Another dispatcher's receipt accepts the note with projectionState
   // "pending" after the retry's initial lookup and before its final one:
-  // settleReceipt moves the row from the outbox to the optimistic store.
-  const getOutbox = storage.getOutbox.bind(storage);
+  // settleReceipt moves the row from the outbox to the optimistic store. The
+  // initial lookup is the retry's click-time capture read
+  // (getOutboxWithStopEpoch), so that is the call the seam wraps; the final
+  // re-read is still getOutbox.
+  const initialLookup = storage.getOutboxWithStopEpoch.bind(storage);
   let acceptedMidRetry = false;
-  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
-    const record = await getOutbox(clientMutationId);
-    if (!acceptedMidRetry && record?.state === "blockedUnknown") {
+  const spy = vi.spyOn(storage, "getOutboxWithStopEpoch").mockImplementation(async (clientMutationId) => {
+    const capture = await initialLookup(clientMutationId);
+    if (!acceptedMidRetry && capture.record?.state === "blockedUnknown") {
       acceptedMidRetry = true;
       await storage.settleReceipt(clientMutationId, "pending");
     }
-    return record;
+    return capture;
   });
   onTestFinished(() => spy.mockRestore());
   let saving: Promise<void> | undefined;

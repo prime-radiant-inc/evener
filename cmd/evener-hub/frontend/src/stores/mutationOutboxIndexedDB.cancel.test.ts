@@ -221,6 +221,57 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  // §4's stop barrier on the release, the Retry half: the release of a
+  // canceled row is the one transition that can resurrect a row a newer Stop
+  // claimed — the Stop's own cancel scan skips a row already canceled — so it
+  // carries the same click-time capture the enqueue compares. The release
+  // reads the ref's stop epoch inside its own write transaction and refuses
+  // when the stored epoch advanced past the capture: a newer Stop outranks an
+  // earlier Retry, and the row stays canceled for it.
+  test("a release whose capture predates another tab's Stop refuses and leaves the row canceled", async () => {
+    const ids = idSequence();
+    const retrier = store({ createMutationId: ids });
+    const canceled = await retrier.enqueueIntent(intent("canceled by the first stop"));
+    await retrier.cancelUnattempted(TARGET);
+    // The Retry click's capture: the row and the epoch in one read.
+    const { record, stopEpoch } = await retrier.getOutboxWithStopEpoch(canceled.clientMutationId);
+    expect(record?.state).toBe("canceled");
+    expect(stopEpoch).toBe(1);
+
+    // The second tab's Stop: its scan skips the canceled row, and its bump is
+    // the one trace the release must catch.
+    const stopper = store({ createMutationId: ids });
+    const interrupt = await stopper.enqueueInterruptAndCancel(interruptIntent());
+    stopper.close();
+
+    expect(await retrier.releaseCanceled(canceled.clientMutationId, { stopEpoch })).toBe(false);
+    expect((await retrier.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    // The row the Retry tried to release is not the queue's head: the Stop's
+    // own interrupt is, and dispatching it must not carry the canceled row.
+    expect(await retrier.nextDispatchable(TARGET)).toMatchObject({ clientMutationId: interrupt.clientMutationId });
+
+    // A capture taken after the newer Stop — the deliberate post-Stop Retry,
+    // §9 item 7's protected send — compares equal and releases.
+    expect(
+      await retrier.releaseCanceled(canceled.clientMutationId, { stopEpoch: await retrier.readStopEpoch(TARGET) }),
+    ).toBe(true);
+    expect((await retrier.getOutbox(canceled.clientMutationId))?.state).toBe("submitting");
+    retrier.close();
+  });
+
+  // A host that never captured passes no barrier, and the release is
+  // unchanged for it: the fence is opt-in exactly like enqueueIntent's.
+  test("a release without a barrier still releases a canceled row", async () => {
+    const storage = store();
+    const canceled = await storage.enqueueIntent(intent("canceled before the barrierless release"));
+    await storage.cancelUnattempted(TARGET);
+    await storage.cancelUnattempted(TARGET);
+
+    expect(await storage.releaseCanceled(canceled.clientMutationId)).toBe(true);
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("submitting");
+    storage.close();
+  });
+
   // The epoch rides the sequence row, so every allocation that writes that
   // row back must preserve it - and a reload (a fresh connection) reads the
   // same count both stop paths bump.

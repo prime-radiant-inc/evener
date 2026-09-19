@@ -229,9 +229,10 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
   override async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
     const record = await super.getOutbox(clientMutationId);
     // retryBlockedMutation reads a still-blocked record exactly twice when it
-    // proceeds: the extant-state recheck ahead of handleReady, and the final
-    // lookup after its reconciliation. The second read is the boundary between
-    // the retry's machinery and handleRetry's own reads.
+    // proceeds: the click-time capture read ahead of every check (counted in
+    // the getOutboxWithStopEpoch override below), and the final lookup after
+    // its reconciliation. The second read is the boundary between the retry's
+    // machinery and handleRetry's own reads.
     if (this.#onSettle && record?.state === "blockedUnknown") {
       this.#blockedLookups += 1;
       if (this.#blockedLookups === 2) {
@@ -240,6 +241,23 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
       }
     }
     return record;
+  }
+
+  override async getOutboxWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+    const capture = await super.getOutboxWithStopEpoch(clientMutationId);
+    // The retry's first read of a still-blocked record is the click-time
+    // capture (§4's release barrier), so it takes the first blocked-lookup
+    // slot; the final getOutbox lookup stays the second, where the arm lands.
+    if (this.#onSettle && capture.record?.state === "blockedUnknown") {
+      this.#blockedLookups += 1;
+      if (this.#blockedLookups === 2) {
+        this.#armed = true;
+        this.#listReadsSinceArm = 0;
+      }
+    }
+    return capture;
   }
 
   override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {

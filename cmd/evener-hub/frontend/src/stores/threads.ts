@@ -1142,8 +1142,23 @@ export async function retryBlockedMutation(
   mode: "user" | "backgroundNote" = "user",
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
+  // §4's stop barrier on the release path, the click-time capture: REQUESTED
+  // here, inside the click's own synchronous prefix, before `await
+  // runtime.start` and every other wait in the retry chain — the enqueue
+  // barrier's own rule. The ref is unknown until the row is read, so the
+  // capture rides that read: one readonly transaction carries the row AND the
+  // ref's stop epoch, making it the click's first storage observation (on a
+  // cold connection the request itself issues the open). A Stop whose cancel
+  // transaction commits after that snapshot bumps the epoch past the capture,
+  // and the release below refuses — a newer Stop outranks an earlier Retry,
+  // the same commit-order comparison the enqueue barrier carries. A Stop
+  // committed before the capture read's transaction can exist is the bounded
+  // residual §4 states for the enqueue, and for the same reason: the
+  // deliberate post-Stop Retry §9 item 7 protects is indistinguishable from
+  // it in the database.
+  const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const record = await runtime.storage.getOutbox(clientMutationId);
+  const { record, stopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -1189,8 +1204,11 @@ export async function retryBlockedMutation(
     // The release is durable before any dispatch. A canceled row provably
     // never reached the daemon, so it needs no reconciliation to prove
     // absence — release, then let the same fenced resync-and-dispatch tail
-    // every user retry uses carry it out.
-    if (!(await runtime.storage.releaseCanceled(clientMutationId))) return false;
+    // every user retry uses carry it out. The barrier is the click-time
+    // capture above: a Stop that landed between the capture and this release
+    // outranks the Retry, and the refused release leaves the row canceled
+    // for it — the release returning false is this press's refusal.
+    if (!(await runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }))) return false;
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
