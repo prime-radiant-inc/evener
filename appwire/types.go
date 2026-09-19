@@ -3596,6 +3596,23 @@ type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
 
+// MarketplaceUnregisteredCloneRemainsData is the WireError.Data payload for
+// ErrorMarketplaceUnregisteredCloneRemains: the removal APPLIED (Applied
+// carries the updated marketplace list, with the target already gone) but
+// removing its clone from disk failed. Clients should reconcile from Applied
+// instead of treating the removal as rejected - the same rule
+// KeybindingsPostRenameData carries for keybindings. Re-listing to build
+// Applied is itself a fresh read that can fail on its own account, unrelated
+// to the removal that already landed; when it does, AppliedUnavailable is
+// true and Applied is the zero value - a client must not read that as "every
+// marketplace gone" and must not retry the removal as a fresh attempt either,
+// since it already applied.
+type MarketplaceUnregisteredCloneRemainsData struct {
+	EvenerErrorInfo    ErrorInfo               `json:"evenerErrorInfo"`
+	Applied            MarketplaceListResponse `json:"applied"`
+	AppliedUnavailable bool                    `json:"appliedUnavailable,omitempty"`
+}
+
 // MarketplaceAddParams is the params for evener/marketplace/add. Name is
 // optional; when empty, the marketplace manifest's own name is used.
 type MarketplaceAddParams struct {
