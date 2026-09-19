@@ -582,6 +582,14 @@ func (s *WebServer) cleanupProjectDeletion(
 
 func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) error {
 	sessionsDir := filepath.Join(stateDir, "sessions")
+	// Tombstone first, under the metadata writers' lock: an in-flight
+	// out-of-process autosave holding or waiting on that lock would otherwise
+	// recreate the meta after the sweep. The tombstone makes every later write
+	// refuse. The sweep still removes the meta itself, so a removal failure
+	// leaves the metadata in place for a resume.
+	if err := schema.TombstoneSessionMeta(stateDir, sessionID); err != nil {
+		return err
+	}
 	if err := removeFlatProjectSessionArtifacts(sessionsDir, sessionID); err != nil {
 		return err
 	}
@@ -683,8 +691,11 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 	// through the old inode while a new writer locks a fresh one, defeating the
 	// serialization and resurrecting a deleted session.
 	metaLockName := sessionID + ".meta.json.lock"
+	// The tombstone must outlive the sweep: it is what stops a writer from
+	// recreating the meta after deletion.
+	tombstoneName := sessionID + schema.SessionMetaTombstoneSuffix
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == apiLogName || entry.Name() == metaLockName || !strings.HasPrefix(entry.Name(), prefix) {
+		if entry.IsDir() || entry.Name() == apiLogName || entry.Name() == metaLockName || entry.Name() == tombstoneName || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		if err := removeProjectSessionFile(filepath.Join(sessionsDir, entry.Name())); err != nil && !os.IsNotExist(err) {

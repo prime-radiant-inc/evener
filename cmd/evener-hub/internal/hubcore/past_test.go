@@ -181,7 +181,9 @@ func fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe(t *testing.T) {
 	probeEvictGen := idx.evictGen
 	idx.mu.RUnlock()
 
-	idx.evict(id) // another Find confirmed the disk no longer holds it
+	if !idx.evict(id, probeRebuildGen, probeEvictGen) { // another Find confirmed the disk no longer holds it
+		t.Fatal("evict declined despite current generations")
+	}
 
 	// The in-flight probe's entry (read before the eviction) must not be folded.
 	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base}}, probeRebuildGen, probeEvictGen) {
@@ -278,8 +280,7 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe(t *t
 	<-paused // the scan saw the session and is paused before its swap
 
 	var once sync.Once
-	prevMiss := pastAfterFindCacheMiss
-	pastAfterFindCacheMiss = func() {
+	idx.afterFindCacheMiss = func() {
 		once.Do(func() {
 			// Delete the session, then publish the Rebuild's stale scan so the
 			// index holds it before Find probes.
@@ -290,7 +291,7 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe(t *t
 			<-done
 		})
 	}
-	defer func() { pastAfterFindCacheMiss = prevMiss }()
+	defer func() { idx.afterFindCacheMiss = nil }()
 
 	if got, ok := idx.Find(id); ok {
 		t.Fatalf("Find returned a session deleted before the Rebuild swap: %+v", got)
@@ -408,9 +409,12 @@ func fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe(t *testing.T
 	idx := NewPastIndex("")
 	idx.mu.RLock()
 	before := idx.evictGen
+	rebuildGen := idx.rebuildGen
 	idx.mu.RUnlock()
 
-	idx.evict(id) // the id is not indexed; a cache-miss Find reaches here
+	if !idx.evict(id, rebuildGen, before) { // the id is not indexed; a cache-miss Find reaches here
+		t.Fatal("evict declined despite current generations")
+	}
 
 	idx.mu.RLock()
 	after := idx.evictGen
@@ -420,6 +424,27 @@ func fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe(t *testing.T
 	}
 	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id}}, 0, before) {
 		t.Fatal("foldOne accepted an in-flight probe that predates the eviction")
+	}
+}
+
+// fuzzScenarioPastIndex_EvictDeclinesWhenGenerationsChanged pins Medium 2's
+// TOCTOU: eviction must re-validate the generations the probe observed inside
+// evict, so a Rebuild swap or another eviction between Find's check and the call
+// cannot delete a row the probe never saw.
+func fuzzScenarioPastIndex_EvictDeclinesWhenGenerationsChanged(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{{ID: id}})
+	idx.mu.RLock()
+	rebuildGen := idx.rebuildGen
+	evictGen := idx.evictGen
+	idx.mu.RUnlock()
+
+	if !idx.evict(id, rebuildGen, evictGen) {
+		t.Fatal("evict declined with the current generations")
+	}
+	if idx.evict(id, rebuildGen, evictGen) {
+		t.Fatal("evict proceeded with generations a later eviction had superseded")
 	}
 }
 

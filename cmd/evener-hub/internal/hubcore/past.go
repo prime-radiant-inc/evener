@@ -106,6 +106,10 @@ type PastIndex struct {
 	// foldOne folds the row. Instance-scoped test seam for interleaving a
 	// concurrent writer that indexes a newer row first; nil in production.
 	afterFindProbe func()
+	// afterFindCacheMiss, when non-nil, runs in Find after its top-level
+	// findCached miss and before the first probe. Instance-scoped test seam for
+	// interleaving a Rebuild swap in that window; nil in production.
+	afterFindCacheMiss func()
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -1128,11 +1132,6 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 // miss rather than a stale probe.
 const pastFindProbeAttempts = 3
 
-// pastAfterFindCacheMiss, when non-nil, runs in Find after its top-level
-// findCached miss and before the first probe. Test-only seam for interleaving a
-// Rebuild swap in that window; nil in production.
-var pastAfterFindCacheMiss func()
-
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1144,8 +1143,8 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	if pastAfterFindCacheMiss != nil {
-		pastAfterFindCacheMiss()
+	if i.afterFindCacheMiss != nil {
+		i.afterFindCacheMiss()
 	}
 	for range pastFindProbeAttempts {
 		i.mu.RLock()
@@ -1159,18 +1158,13 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 				// proof of deletion; never evict a valid cached row for it.
 				return PastEntry{}, false
 			}
-			// Evict only if the index did not change during the probe: a Rebuild
-			// swap or concurrent fold may have re-indexed a newer row (a session
-			// deleted and recreated), which evicting would drop. Re-probe instead.
-			i.mu.RLock()
-			unchanged := i.rebuildGen == probeRebuildGen && i.evictGen == probeEvictGen
-			i.mu.RUnlock()
-			if !unchanged {
+			// Evict only if the index still matches the generations this probe
+			// observed; a Rebuild swap or another eviction may have published a
+			// row the probe never saw (a session deleted and recreated), which
+			// deleting would drop. Re-probe instead.
+			if !i.evict(sessionID, probeRebuildGen, probeEvictGen) {
 				continue
 			}
-			// Authoritative absence with a stable index: drop any row a Rebuild
-			// published from a scan that predated the deletion.
-			i.evict(sessionID)
 			return PastEntry{}, false
 		}
 		if i.afterFindProbe != nil {
@@ -1194,19 +1188,23 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	return PastEntry{}, false
 }
 
-// evict removes an id the disk no longer holds. A Rebuild can publish a scan
-// that predates a deletion (it presented the session before it was removed), and
-// Find's post-swap re-probe is what discovers the session is gone; evicting here
-// stops a later cached Find from returning the deleted row before the next tick.
-func (i *PastIndex) evict(id string) {
+// evict removes an id the disk no longer holds, but only while the index still
+// matches the generations the caller's probe observed: a Rebuild swap or another
+// eviction between the check and this call means the row may be one the probe
+// never saw, so it declines and the caller re-probes. Returns whether it acted.
+func (i *PastIndex) evict(id string, expectedRebuildGen, expectedEvictGen uint64) bool {
 	i.mu.Lock()
-	// Bump first and unconditionally: a cache-miss Find reaches eviction with the
-	// row absent from byID, yet its invalidation must still fence in-flight probes
-	// for this id, so the guard cannot depend on membership.
+	if i.rebuildGen != expectedRebuildGen || i.evictGen != expectedEvictGen {
+		i.mu.Unlock()
+		return false
+	}
+	// Bump unconditionally, even when the row is absent: a cache-miss Find
+	// reaches eviction with the row absent from byID, yet its invalidation must
+	// still fence in-flight probes for this id.
 	i.evictGen++
 	if _, ok := i.byID[id]; !ok {
 		i.mu.Unlock()
-		return
+		return true
 	}
 	delete(i.byID, id)
 	fresh := make([]PastEntry, 0, len(i.all))
@@ -1221,6 +1219,7 @@ func (i *PastIndex) evict(id string) {
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
 	i.publishAndSignal(all, gen)
+	return true
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {

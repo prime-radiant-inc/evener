@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -201,7 +202,8 @@ func TestRemoveFlatProjectSessionArtifactsPreservesMetaLock(t *testing.T) {
 	}
 	metaFile := filepath.Join(dir, sessionID+".meta.json")
 	lockFile := filepath.Join(dir, sessionID+".meta.json.lock")
-	for _, path := range []string{metaFile, lockFile} {
+	tombstoneFile := filepath.Join(dir, sessionID+schema.SessionMetaTombstoneSuffix)
+	for _, path := range []string{metaFile, lockFile, tombstoneFile} {
 		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -214,6 +216,9 @@ func TestRemoveFlatProjectSessionArtifactsPreservesMetaLock(t *testing.T) {
 	}
 	if _, err := os.Stat(lockFile); os.IsNotExist(err) {
 		t.Fatal("the cross-process meta lock file must be preserved")
+	}
+	if _, err := os.Stat(tombstoneFile); os.IsNotExist(err) {
+		t.Fatal("the deletion tombstone must be preserved")
 	}
 }
 

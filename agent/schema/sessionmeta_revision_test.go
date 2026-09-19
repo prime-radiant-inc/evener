@@ -2,12 +2,34 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// TestTombstoneSessionMetaBlocksWriters pins the deletion protocol: after
+// TombstoneSessionMeta, a writer (including an out-of-process autosave) must
+// refuse to recreate the meta, so a deletion cannot be undone by an in-flight
+// save. The meta itself is left for the caller's sweep.
+func TestTombstoneSessionMetaBlocksWriters(t *testing.T) {
+	dir := t.TempDir()
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := TombstoneSessionMeta(dir, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "resurrected"}); !errors.Is(err, ErrSessionDeleted) {
+		t.Fatalf("save over a tombstone = %v, want ErrSessionDeleted", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sessions", id+SessionMetaTombstoneSuffix)); err != nil {
+		t.Fatalf("tombstone not written: %v", err)
+	}
+}
 
 // TestSessionMetaRevisionInitializesAndIncrements pins the invariant hubcore's
 // metaNewer depends on: the first save of a session sets Revision to 1, and every

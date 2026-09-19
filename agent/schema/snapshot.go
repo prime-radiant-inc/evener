@@ -303,6 +303,40 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
+// SessionMetaTombstoneSuffix names the marker DeleteSessionMeta leaves beside a
+// removed session so a writer that acquires the meta lock afterwards refuses to
+// recreate it. It is deliberately not a *.meta.json suffix, so the directory
+// scanners ignore it.
+const SessionMetaTombstoneSuffix = ".meta.json.deleted"
+
+// ErrSessionDeleted reports a write attempted against a session that has been
+// deleted (tombstoned). Callers should treat it as a benign no-op: the session
+// no longer exists.
+var ErrSessionDeleted = errors.New("session meta deleted")
+
+// TombstoneSessionMeta writes a session's deletion marker while holding the same
+// in-process and cross-process locks every writer takes. A writer that acquires
+// the lock afterwards observes the tombstone and refuses to recreate the meta, so
+// an in-flight out-of-process autosave cannot resurrect a session the hub is
+// deleting. It does not remove the meta itself: the caller's artifact sweep owns
+// that, so a failed sweep still leaves the metadata for a resume. The tombstone
+// must be left in place by the caller.
+func TombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return withSessionMetaCrossProcessLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
+			return fmt.Errorf("write session tombstone: %w", err)
+		}
+		return nil
+	})
+}
+
 // SessionsDirListable reports whether dir's sessions subdirectory can be
 // listed — the same gate ListSessionMetas applies before reading any metas
 // (a missing directory counts as listable: the list is simply empty). A
@@ -427,6 +461,14 @@ func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() erro
 // Revision, and writes atomically. It assumes the caller holds both locks, so
 // the read-modify-write cannot interleave with another writer.
 func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	// A deleted session's tombstone is written under this same lock; refuse to
+	// recreate the metadata so an in-flight out-of-process autosave cannot
+	// resurrect a session the hub just deleted.
+	if exists, err := afero.Exists(fs, filepath.Join(dir, sessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
+		return err
+	} else if exists {
+		return ErrSessionDeleted
+	}
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
