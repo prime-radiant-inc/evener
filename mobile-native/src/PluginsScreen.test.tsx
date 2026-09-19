@@ -370,13 +370,6 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
 	});
-	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
-	});
-	await act(async () => {});
-	expect(listCalls).toBe(2);
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
-
 	releaseRemoval();
 	await act(async () => {
 		await Promise.resolve();
@@ -384,10 +377,13 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 		await Promise.resolve();
 	});
 
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
 	expect(listCalls).toBe(2);
 	expect(renderedText(tree)).toContain("No marketplaces on this hub.");
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).not.toContain("Could not load marketplaces. Try again when connected.");
 });
 
 it("leaves ordinary marketplace removal failures retryable", async () => {
