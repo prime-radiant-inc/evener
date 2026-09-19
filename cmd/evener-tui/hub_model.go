@@ -346,11 +346,18 @@ func (m hubModel) Init() tea.Cmd {
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.updateImpl(msg)
-	if hm, ok := next.(hubModel); ok && hm.mode == hubModeSession {
-		hm.syncSessionViewport()
-		return hm, cmd
+	hm, ok := next.(hubModel)
+	if !ok {
+		return next, cmd
 	}
-	return next, cmd
+	if hm.mode == hubModeSession {
+		hm.syncSessionViewport()
+	}
+	// tea.Batch leaves cmd untouched when the title does not move (compactCmds
+	// returns the single non-nil command), so this adds a SetWindowTitle only
+	// on the updates that actually move the title. windowTitleCmd does not
+	// mutate hm, so evaluating it beside hm in the return is well defined.
+	return hm, tea.Batch(cmd, hm.windowTitleCmd(m))
 }
 
 func (m hubModel) View() string {

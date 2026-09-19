@@ -1172,9 +1172,10 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
 // (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename) are true; the turn-in-flight controls (steer,
-// interrupt, queue) are false because a cold exited session has no active turn
-// for them to act on.
+// (send, fork, goal, rename) are true; steer, interrupt and queue are false
+// because the hub cannot carry them out for a thread with no daemon — it
+// resumes on send alone, so a cold set advertising them would promise a turn
+// action nothing is there to take.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
