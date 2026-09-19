@@ -41,10 +41,8 @@ type service struct {
 type callerKey struct{}
 
 func startService(root string, options StoreOptions) (_ *service, resultErr error) {
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return nil, err
-	}
-	if err := requirePrivatePath(root, true); err != nil {
+	root, err := PrepareStoreDirectory(root)
+	if err != nil {
 		return nil, err
 	}
 	lock, err := acquireServiceLock(filepath.Join(root, "owner.lock"))
@@ -75,7 +73,7 @@ func startService(root string, options StoreOptions) (_ *service, resultErr erro
 		}
 	}()
 	s := &service{store: store, lock: lock, admission: newAdmission()}
-	s.ready = Readiness{ServiceID: store.ServiceID(), ServiceRunID: randomID(), Endpoint: "http://" + listener.Addr().String() + "/mcp", SchemaVersion: 1, ContractVersion: 1, CatalogVersion: 1, CoreVersion: "2025-11-25", ApplicationVersion: "2026-01-26"}
+	s.ready = Readiness{ServiceID: store.ServiceID(), ServiceRunID: randomID(), Endpoint: "http://" + listener.Addr().String() + "/mcp", SchemaVersion: StoreSchemaVersion, ContractVersion: 1, CatalogVersion: 1, CoreVersion: "2025-11-25", ApplicationVersion: "2026-01-26"}
 	sdk := mcp.NewServer(&mcp.Implementation{Name: "evener-artifacts", Version: "1"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}, Resources: &mcp.ResourceCapabilities{}}})
 	catalog, err := Tools()
 	if err != nil {

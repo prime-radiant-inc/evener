@@ -13,7 +13,11 @@ func acquireServiceLock(path string) (*os.File, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), "artifact-owner")
-	if err := requirePrivatePath(path, false); err != nil {
+	info, err := f.Stat()
+	if err == nil {
+		err = requirePrivateInfo(info, false)
+	}
+	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}

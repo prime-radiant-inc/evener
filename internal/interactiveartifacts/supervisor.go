@@ -237,7 +237,7 @@ func (s *Supervisor) start() (_ *ownedService, resultErr error) {
 	if err := controlRequest(bootCtx, child.client, controlBootstrap, bootstrapParams{Root: s.root}, &child.ready); err != nil {
 		return nil, err
 	}
-	if child.ready.ServiceID == "" || child.ready.ServiceRunID == "" || child.ready.SchemaVersion != 1 || child.ready.ContractVersion != 1 || child.ready.CatalogVersion != 1 || child.ready.CoreVersion != "2025-11-25" || child.ready.ApplicationVersion != "2026-01-26" {
+	if !compatible(child.ready) {
 		return nil, errors.New("artifact service contract mismatch")
 	}
 	if s.options.Policy == nil {
@@ -259,6 +259,9 @@ func (s *Supervisor) start() (_ *ownedService, resultErr error) {
 		}
 	}
 	return child, nil
+}
+func compatible(ready Readiness) bool {
+	return ready.ServiceID != "" && ready.ServiceRunID != "" && ready.SchemaVersion == StoreSchemaVersion && ready.ContractVersion == 1 && ready.CatalogVersion == 1 && ready.CoreVersion == "2025-11-25" && ready.ApplicationVersion == "2026-01-26"
 }
 func controlRequest(ctx context.Context, client *appwire.Client, method string, params, out any) error {
 	var result controlResult
