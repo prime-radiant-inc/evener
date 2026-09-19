@@ -322,6 +322,33 @@ describe("ConversationService", () => {
       });
     });
 
+    it.each(["open", "readProjection"] as const)(
+      "does not carry a committed thread id across a ref change for %s",
+      async (readMethod) => {
+        const client = new FakeAppwireClient();
+        const threadA = makeThread({ id: "thread-a", evener: { ...makeThread().evener, ref: "ref-a" } });
+        const threadB = makeThread({ id: "thread-b", evener: { ...makeThread().evener, ref: "ref-b" } });
+        client.on("thread/read", (params) =>
+          makeReadResponse(
+            (params as { ref: string }).ref === "ref-a" ? threadA : threadB,
+          ),
+        );
+        const expectedThreadIds: (string | undefined)[] = [];
+        const service = createConversationService(client, {
+          onReadStart: (_ref, expectedThreadId) => {
+            expectedThreadIds.push(expectedThreadId);
+            return undefined;
+          },
+        });
+
+        await service.open("ref-a");
+        if (readMethod === "open") await service.open("ref-b");
+        else await service.readProjection("ref-b");
+
+        expect(expectedThreadIds).toEqual([undefined, undefined]);
+      },
+    );
+
     it("stores olderCursor from read response", async () => {
       const { service } = setup({ olderCursor: "cursor-abc" });
       await service.open("ref-1");
