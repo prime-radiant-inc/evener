@@ -223,6 +223,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
+  decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,

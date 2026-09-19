@@ -16,22 +16,22 @@ import type {
  * that identical primitive, so a bare-string sentinel here would make the
  * two indistinguishable - exactly the collision that let a present, invalid
  * transcript checkpoint (the string case) read as no draft at all (the null
- * case). Namespaced (never the bare "storedNull" a future checkpoint field
- * could plausibly reuse) and checked by exact shape, not the tag alone: a
- * real checkpoint always carries its own substantive fields, so requiring
- * this to be the record's ONLY key rules out a checkpoint that happens to
- * also carry a same-named field of its own. */
-const STORED_NULL_KIND = "evener.nativePreferenceDrafts.storedNull";
+ * case). Branded with a symbol rather than checked by string-tagged shape:
+ * JSON.parse can never produce a symbol-keyed property, so no legitimately
+ * stored (successfully parsed) value can ever satisfy this predicate by
+ * coincidence. A shape/string tag does not have that guarantee: stored bytes
+ * that happen to be the JSON text of a previously-seen marker would parse
+ * right back into something indistinguishable from it. */
+const STORED_NULL_BRAND: unique symbol = Symbol("evener.nativePreferenceDrafts.storedNull");
 export interface StoredNullRecord {
-	readonly kind: typeof STORED_NULL_KIND;
+	readonly [STORED_NULL_BRAND]: true;
 }
-export const STORED_NULL_RECORD: StoredNullRecord = { kind: STORED_NULL_KIND };
+export const STORED_NULL_RECORD: StoredNullRecord = { [STORED_NULL_BRAND]: true };
 export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
 	return (
 		typeof value === "object" &&
 		value !== null &&
-		Object.keys(value).length === 1 &&
-		(value as { kind?: unknown }).kind === STORED_NULL_KIND
+		(value as { [STORED_NULL_BRAND]?: unknown })[STORED_NULL_BRAND] === true
 	);
 }
 
@@ -40,18 +40,17 @@ export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
  * coincidentally equal a legitimately decoded value (a checkpoint field, or
  * STORED_NULL_RECORD's own would-be sentinel), which is the same class of
  * collision StoredNullRecord exists to close - see its own comment on the
- * namespaced tag and exact-shape check. */
-const UNPARSEABLE_KIND = "evener.nativePreferenceDrafts.unparseable";
+ * symbol brand. */
+const UNPARSEABLE_BRAND: unique symbol = Symbol("evener.nativePreferenceDrafts.unparseable");
 export interface UnparseableDraftBytes {
-	readonly kind: typeof UNPARSEABLE_KIND;
+	readonly [UNPARSEABLE_BRAND]: true;
 	readonly raw: string;
 }
 export function isUnparseableDraftBytes(value: unknown): value is UnparseableDraftBytes {
 	return (
 		typeof value === "object" &&
 		value !== null &&
-		Object.keys(value).length === 2 &&
-		(value as { kind?: unknown }).kind === UNPARSEABLE_KIND &&
+		(value as { [UNPARSEABLE_BRAND]?: unknown })[UNPARSEABLE_BRAND] === true &&
 		typeof (value as { raw?: unknown }).raw === "string"
 	);
 }
@@ -66,7 +65,7 @@ export function parseDraftBytes(raw: string): unknown {
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		return { kind: UNPARSEABLE_KIND, raw } satisfies UnparseableDraftBytes;
+		return { [UNPARSEABLE_BRAND]: true, raw } satisfies UnparseableDraftBytes;
 	}
 	return parsed === null ? STORED_NULL_RECORD : parsed;
 }
@@ -128,6 +127,52 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 	): boolean;
 }
 
+/** The raw string-keyed storage a backend's own get/set/deleteIf/replaceIf
+ * run on - Storage.getItemSync et al. in production and a Map-backed fake in
+ * tests. */
+export interface RawStringStorage {
+	getItemSync(key: string): string | null;
+	setItemSync(key: string, value: string): void;
+	removeItemSync(key: string): void;
+}
+
+/** One native keybinding backend over any raw string storage. Keeping parsing
+ * and identity comparison here lets tests exercise the same code production
+ * uses, including malformed bytes, stored JSON null, and key-order changes. */
+export function rawStringDraftBackend(storage: RawStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+	function matches(key: string, value: unknown): boolean {
+		return matchesStoredBytes(storage.getItemSync(key), value);
+	}
+	return {
+		createId,
+		get(key: string): unknown {
+			const value = storage.getItemSync(key);
+			return value === null ? null : parseDraftBytes(value);
+		},
+		set(key: string, value: unknown) {
+			storage.setItemSync(key, JSON.stringify(value));
+		},
+		insertIfAbsent(key: string, value: unknown): boolean {
+			if (storage.getItemSync(key) !== null) return false;
+			storage.setItemSync(key, JSON.stringify(value));
+			return true;
+		},
+		delete(key: string) {
+			storage.removeItemSync(key);
+		},
+		deleteIf(key: string, value: unknown): boolean {
+			if (!matches(key, value)) return false;
+			storage.removeItemSync(key);
+			return true;
+		},
+		replaceIf(key: string, expected: unknown, next: unknown): boolean {
+			if (!matches(key, expected)) return false;
+			storage.setItemSync(key, JSON.stringify(next));
+			return true;
+		},
+	};
+}
+
 /** What a draft read named, once decoded: no record, a record this build can
  * read, or a record present but unreadable. Absent and unreadable used to be
  * told apart by a single boolean (readable or not), which cannot distinguish
@@ -143,23 +188,31 @@ export function classifyDraftRead(
 	return isReadable(loaded) ? "readable" : "unreadable";
 }
 
+/** Reads a draft port ONCE and reports both its classification and the raw
+ * value load() returned, so a caller that also needs to decode a readable
+ * record never re-reads the port outside this same guard. Every DraftPort
+ * method may throw a genuine storage failure; that says nothing about what
+ * is stored, so `value` is undefined for that outcome. */
+export function readDraftOutcomeWithValue(
+	storage: Pick<KeybindingDraftStorage, "load">,
+	isReadable: (value: unknown) => boolean,
+): { outcome: DraftReadOutcome | "storageUnavailable"; value: unknown } {
+	try {
+		const value = storage.load();
+		return { outcome: classifyDraftRead(value, isReadable), value };
+	} catch {
+		return { outcome: "storageUnavailable", value: undefined };
+	}
+}
+
 /** Reads a draft port and classifies the outcome the way a cold-offline probe
- * or a store-free discard's re-read must: every DraftPort method may throw (a
- * genuine storage failure, not a record this build cannot decode - see
- * UnreadableDraftError for the live-store equivalent), and a throw here says
- * nothing about what is actually stored. Coming back as its own outcome,
- * rather than escaping the caller's effect or event handler uncaught, is what
- * lets the caller degrade to a storage-unavailable state instead of
- * crashing. */
+ * or a store-free discard's re-read must. The value-returning helper owns the
+ * try/catch so callers that need both pieces cannot accidentally read twice. */
 export function readDraftOutcome(
 	storage: Pick<KeybindingDraftStorage, "load">,
 	isReadable: (value: unknown) => boolean,
 ): DraftReadOutcome | "storageUnavailable" {
-	try {
-		return classifyDraftRead(storage.load(), isReadable);
-	} catch {
-		return "storageUnavailable";
-	}
+	return readDraftOutcomeWithValue(storage, isReadable).outcome;
 }
 
 export function nativeKeybindingDrafts(
