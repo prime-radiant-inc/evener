@@ -163,6 +163,113 @@ test("same raw ref stays isolated by hub across dispatch and restart", async () 
 	await restarted.stop();
 });
 
+test("a ready target dispatches while another target remains unresolved", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const firstClient = new FakeClient("closed");
+	const secondClient = new FakeClient("closed");
+	runtime.registerTarget("hub-a", "ref-a", firstClient);
+	runtime.registerTarget("hub-b", "ref-b", secondClient);
+	await runtime.start();
+
+	let releaseFirst!: () => void;
+	const firstStarted = new Promise<void>((resolve) => {
+		firstClient.on("turn/start", (params) => {
+			resolve();
+			return new Promise((resolveResponse) => {
+				releaseFirst = () => resolveResponse(appliedReceipt(params));
+			});
+		});
+	});
+	const secondDelivered = new Promise<void>((resolve) => {
+		secondClient.on("turn/start", (params) => {
+			resolve();
+			return appliedReceipt(params);
+		});
+	});
+	await runtime.submit({ ...request("send"), hubId: "hub-a", targetRef: "ref-a" });
+	await runtime.submit({ ...request("send"), hubId: "hub-b", targetRef: "ref-b" });
+
+	firstClient.emitStateChange("ready");
+	await firstStarted;
+	secondClient.emitStateChange("ready");
+	await secondDelivered;
+	expect(secondClient.calls).toHaveLength(1);
+
+	releaseFirst();
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+		expect(await runtime.storage.getOutbox("mutation-2")).toBeUndefined();
+	});
+	await runtime.stop();
+});
+
+test("an interval retries a ready transport failure with the same mutation id", async () => {
+	let nextId = 0;
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+		setInterval: (callback) => {
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+	const client = new FakeClient("closed");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	const attempts: string[] = [];
+	let firstAttempt!: () => void;
+	let retryAttempt!: () => void;
+	const firstAttemptStarted = new Promise<void>((resolve) => {
+		firstAttempt = resolve;
+	});
+	const retryAttemptStarted = new Promise<void>((resolve) => {
+		retryAttempt = resolve;
+	});
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		attempts.push(clientMutationId);
+		if (attempts.length === 1) {
+			firstAttempt();
+			return Promise.reject(new Error("transport timeout")) as never;
+		}
+		retryAttempt();
+		return appliedReceipt(params);
+	});
+
+	await runtime.start();
+	expect(intervals).toHaveLength(1);
+	await runtime.submit(request("send"));
+	client.emitStateChange("ready");
+	await firstAttemptStarted;
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+			state: "submitting",
+			attempted: true,
+		});
+	});
+
+	await vi.waitFor(() => {
+		intervals[0]?.();
+		expect(attempts).toHaveLength(2);
+	});
+	await retryAttemptStarted;
+	expect(attempts).toEqual(["mutation-1", "mutation-1"]);
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
+
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+	await runtime.start();
+	expect(intervals).toHaveLength(2);
+	await runtime.stop();
+	expect(cleared).toEqual([1, 2]);
+});
+
 test("submit resolves at the durable enqueue boundary", async () => {
 	let release!: (value: unknown) => void;
 	const pendingResponse = new Promise<unknown>((resolve) => {

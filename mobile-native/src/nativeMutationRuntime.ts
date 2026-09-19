@@ -10,6 +10,7 @@ import {
 	MutationOutbox,
 	type MutationAttachmentRef,
 	type MutationIntent,
+	type MutationOutboxOptions,
 	type MutationOutboxStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
@@ -27,6 +28,8 @@ export interface NativeMutationRuntimeOptions {
 	createMutationId?: () => string;
 	now?: () => number;
 	getOwnClientId?: () => string | undefined;
+	setInterval?: MutationOutboxOptions["setInterval"];
+	clearInterval?: MutationOutboxOptions["clearInterval"];
 }
 
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef>;
@@ -100,10 +103,17 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		this.#dispatcher = new MutationDispatcher(this.storage, {
 			getClient: (targetRef) => this.#getClient(targetRef),
 		});
-		this.#outbox = new MutationOutbox(this.storage, {
+		const outboxOptions: MutationOutboxOptions = {
 			getClient: (targetRef) => this.#getClient(targetRef),
-			onDiscover: (targetRefs) => this.#dispatcher.dispatchTargets(targetRefs),
-		});
+			onDiscover: (targetRefs) => {
+				void this.#dispatcher.dispatchTargets(targetRefs).catch(() => undefined);
+			},
+		};
+		if (options.setInterval && options.clearInterval) {
+			outboxOptions.setInterval = options.setInterval;
+			outboxOptions.clearInterval = options.clearInterval;
+		}
+		this.#outbox = new MutationOutbox(this.storage, outboxOptions);
 	}
 
 	async start(): Promise<void> {
@@ -156,7 +166,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
-	return new NativeMutationRuntime(database as unknown as MutationOutboxDatabase);
+	return new NativeMutationRuntime(database as unknown as MutationOutboxDatabase, {
+		setInterval: (callback, milliseconds) =>
+			globalThis.setInterval(callback, milliseconds) as unknown as number,
+		clearInterval: (intervalId) =>
+			globalThis.clearInterval(intervalId as unknown as ReturnType<typeof globalThis.setInterval>),
+	});
 }
 
 let sharedNativeMutationRuntime: NativeMutationRuntime | undefined;
