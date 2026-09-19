@@ -364,7 +364,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
 	if err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
-		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
+		// Nothing committed and nothing signaled, so this refusal canceled
+		// nothing: like every other such refusal it stays admission-neutral —
+		// an unrejected Finish would mint an epoch and sequence advance for a
+		// record that never landed.
+		return refuseStop(appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err)))
 	}
 	if exited {
 		if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
