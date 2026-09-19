@@ -14,11 +14,16 @@ import (
 // ownership/mode semantics apply. This does not isolate malicious same-UID/root
 // actors or account for access grants outside those semantics (such as ACLs).
 func PrepareStoreDirectory(path string) (string, error) {
+	canonical, _, err := prepareStoreDirectory(path)
+	return canonical, err
+}
+
+func prepareStoreDirectory(path string) (string, []string, error) {
 	absolute := path
 	if !filepath.IsAbs(absolute) {
 		working, err := os.Getwd()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		absolute = working + string(filepath.Separator) + path
 	}
@@ -28,33 +33,34 @@ func PrepareStoreDirectory(path string) (string, error) {
 	}
 	// An ancestor alias may be trusted, but the private leaf itself is not an alias.
 	if info, err := os.Lstat(absolute); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("artifact private directory must not be a symlink")
+		return "", nil, errors.New("artifact private directory must not be a symlink")
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
+		return "", nil, err
 	}
-	canonical, err := trustedDirectory(absolute, true, 0)
+	created := make([]string, 0, 1)
+	canonical, err := trustedDirectory(absolute, true, 0, &created)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	directory, err := os.Open(canonical)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	info, statErr := directory.Stat()
 	closeErr := directory.Close()
 	if err := errors.Join(statErr, closeErr); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := requirePrivateInfo(info, true); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return canonical, nil
+	return canonical, created, nil
 }
 
 // Every alias is checked at its original parent before resolving its target.
 // The target is traversed by the same checks, preventing a protected alias from
 // hiding a replaceable ancestor. Only verified directories can receive mkdir.
-func trustedDirectory(absolute string, create bool, links int) (string, error) {
+func trustedDirectory(absolute string, create bool, links int, created *[]string) (string, error) {
 	current := string(filepath.Separator)
 	info, err := os.Lstat(current)
 	if err != nil {
@@ -70,7 +76,9 @@ func trustedDirectory(absolute string, create bool, links int) (string, error) {
 		next := filepath.Join(current, component)
 		child, err := os.Lstat(next)
 		if errors.Is(err, os.ErrNotExist) && create {
-			if err := os.Mkdir(next, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+			if err := os.Mkdir(next, 0700); err == nil {
+				*created = append(*created, next)
+			} else if !errors.Is(err, os.ErrExist) {
 				return "", err
 			}
 			child, err = os.Lstat(next)
@@ -95,7 +103,7 @@ func trustedDirectory(absolute string, create bool, links int) (string, error) {
 			if !filepath.IsAbs(target) {
 				target = current + string(filepath.Separator) + target
 			}
-			current, err = trustedDirectory(target, false, links)
+			current, err = trustedDirectory(target, false, links, created)
 			if err != nil {
 				return "", err
 			}

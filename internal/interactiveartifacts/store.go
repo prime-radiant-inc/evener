@@ -23,7 +23,10 @@ const StoreSchemaVersion = 2
 // storeHooks expose narrow fault boundaries to package process qualification.
 // beforeAdmission runs before mu; commit hooks run while the writer owns mu.
 // They are fixed when opening the store and must not call back into it.
-type storeHooks struct{ beforeAdmission, beforeCommit, afterCommit func() }
+type storeHooks struct {
+	beforeAdmission, beforeCommit, afterCommit func()
+	afterNamespaceCommit                       func(tombstone bool)
+}
 
 // StoreOptions bounds persistent content and reader connections. Clock must be
 // safe for concurrent calls. A zero quota uses 256 MiB of logical row content.
@@ -249,6 +252,9 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 				delete(s.grants, hash)
 			}
 		}
+	}
+	if s.hooks.afterNamespaceCommit != nil {
+		s.hooks.afterNamespaceCommit(tombstone)
 	}
 	return nil
 }
