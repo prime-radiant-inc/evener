@@ -264,7 +264,10 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 			if (!this.#isCurrentRead(lease)) return "stale";
 			for (const record of records) {
 				if (record.state !== "submitting" || !record.attempted) continue;
-				await this.storage.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+				const blocked = await this.storage.markUnknown(record.clientMutationId, "blockedUnknown", {
+					onlyAttempted: true,
+				});
+				if (blocked) this.#notifyStorageChange([lease.targetKey]);
 				if (!this.#isCurrentRead(lease)) return "stale";
 			}
 		}
