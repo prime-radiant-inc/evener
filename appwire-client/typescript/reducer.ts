@@ -420,14 +420,25 @@ type ToolResultField =
   | "raw";
 type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
-function collectToolCandidates(items: ItemModel[]): Map<string, ToolCandidates> {
+function collectToolCandidates(
+  normalizedTurns: TurnModel[],
+  sourceTurns: readonly TurnModel[],
+): Map<string, ToolCandidates> {
+  const sourceItems = sourceTurns.flatMap((turn) => orderedItems(turn.items));
   const candidates = new Map<string, ToolCandidates>();
-  for (const item of items) {
-    if (!item.callId) continue;
-    const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
-    if (isToolResultId(item.id)) entry.results.push(item);
-    else if (isToolCallId(item.id)) entry.calls.push(item);
-    candidates.set(item.callId, entry);
+  const seen = new Set<ItemModel>();
+  for (const turn of normalizedTurns) {
+    for (const item of turn.items) {
+      for (const sourceItem of sourceItems) {
+        if (seen.has(sourceItem) || !itemIdentityMatches(item, sourceItem)) continue;
+        seen.add(sourceItem);
+        if (!sourceItem.callId) continue;
+        const entry = candidates.get(sourceItem.callId) ?? { calls: [], results: [] };
+        if (isToolResultId(sourceItem.id)) entry.results.push(sourceItem);
+        else if (isToolCallId(sourceItem.id)) entry.calls.push(sourceItem);
+        candidates.set(sourceItem.callId, entry);
+      }
+    }
   }
   return candidates;
 }
@@ -453,8 +464,8 @@ function mergeToolCallsByCallId(turns: TurnModel[], sources?: ToolItemSources): 
       if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
     }
   }
-  const freshCandidates = collectToolCandidates((sources?.fresh ?? turns).flatMap((turn) => turn.items));
-  const olderCandidates = collectToolCandidates(sources?.older?.flatMap((turn) => turn.items) ?? []);
+  const freshCandidates = collectToolCandidates(turns, sources?.fresh ?? turns);
+  const olderCandidates = collectToolCandidates(turns, sources?.older ?? []);
   const resultCallIds = new Set(
     [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
       candidates.results.length > 0 ? [callId] : [],

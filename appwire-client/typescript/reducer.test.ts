@@ -2944,6 +2944,110 @@ test("mergeOlderItemPage combines duplicate fresh result fragments without older
   expect(item).toMatchObject({ output: "fresh output", error: "fresh error", raw: { source: "older" } });
 });
 
+test("mergeOlderItemPage keeps normalized same-source result traversal for older fragments", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("turn-order-old", "item_tool_1_0", "call-order-old", { position: { entry: 1, item: 0 } }),
+      toolWireTurn("turn-order-old", "item_tool_result_3_0", "call-order-old", {
+        position: { entry: 1, item: 2 },
+        output: "later",
+      }),
+      toolWireTurn("turn-order-old", "item_tool_result_2_0", "call-order-old", {
+        position: { entry: 1, item: 1 },
+        output: "earlier",
+      }),
+    ],
+  });
+
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "later" });
+});
+
+test("mergeOlderItemPage keeps normalized fresh-only result traversal on an empty page", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_1_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 0 },
+    }),
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_result_3_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 2 },
+      output: "later",
+    }),
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_result_2_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 1 },
+      output: "earlier",
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, { data: [] });
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "later" });
+});
+
+test("mergeOlderItemPage keeps normalized fresh traversal when an older bridge joins fragments", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("fresh-call", {
+      id: "item_tool_1_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 0 },
+    }),
+    toolModelTurn("fresh-late", {
+      id: "item_tool_result_3_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 2 },
+      output: "later",
+    }),
+    toolModelTurn("fresh-early", {
+      id: "item_tool_result_2_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 1 },
+      output: "earlier",
+    }),
+  ];
+
+  const bridge = {
+    id: "old-bridge",
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items: [
+      {
+        id: "item_tool_1_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 0 },
+      },
+      {
+        id: "item_tool_result_3_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 2 },
+        output: "older late",
+      },
+      {
+        id: "item_tool_result_2_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 1 },
+        output: "older early",
+      },
+    ],
+  };
+
+  const merged = mergeOlderItemPage(model, { data: [bridge] });
+  expect(merged.turns.flatMap((turn) => turn.items).find((item) => item.callId === "call-order-bridge")).toMatchObject({
+    id: "item_tool_1_0",
+    output: "later",
+  });
+});
+
 test("mergeOlderItemPage coalesces every transitively overlapping fragment", () => {
   const model = testHydrate({
     turns: [
