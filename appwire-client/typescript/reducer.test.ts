@@ -6,7 +6,7 @@ import basicTurnFixture from "./fixtures/basic-turn.jsonl?raw";
 import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
-import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -216,19 +216,20 @@ function toolWireTurn(turnId: string, itemId: string, callId: string, overrides:
   };
 }
 
-function toolModelTurn(turnId: string, item: Partial<ThreadItem> & Pick<ThreadItem, "id" | "callId">): TurnModel {
+function toolModelTurn(turnId: string, item: Partial<ItemModel> & Pick<ItemModel, "id" | "callId">): TurnModel {
+  const { id, callId, ...overrides } = item;
   return {
     id: turnId,
     status: "completed",
     items: [
       {
-        id: item.id,
+        ...overrides,
+        id,
         turnId,
-        type: "commandExecution",
-        text: "",
-        toolName: "shell",
-        callId: item.callId,
-        ...item,
+        type: overrides.type ?? "commandExecution",
+        text: overrides.text ?? "",
+        toolName: overrides.toolName ?? "shell",
+        callId,
       },
     ],
   };
@@ -2753,6 +2754,67 @@ test("mergeOlderItemPage keeps the last same-source result in traversal order", 
   const items = merged.turns.flatMap((turn) => turn.items).filter((item) => item.callId === "call_F");
   expect(items).toHaveLength(1);
   expect(items[0]).toMatchObject({ output: "last result", completedAt: new Date(30).toISOString() });
+});
+
+test("mergeTurnHistory keeps a fresh completed call ahead of an older partial result", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-public-A", {
+        id: "item_tool_result_0_0",
+        callId: "call-public-A",
+        output: "older output",
+        completedAt: new Date(10).toISOString(),
+      }),
+    ],
+    [
+      toolModelTurn("turn-public-A", {
+        id: "item_tool_1_0",
+        callId: "call-public-A",
+        output: "fresh output",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh output",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeTurnHistory keeps a fresh result ahead of an older call", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-public-B", {
+        id: "item_tool_1_0",
+        callId: "call-public-B",
+        status: "inProgress",
+        startedAt: new Date(10).toISOString(),
+      }),
+    ],
+    [
+      toolModelTurn("turn-public-B", {
+        id: "item_tool_result_2_0",
+        callId: "call-public-B",
+        output: "fresh result",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+    startedAt: new Date(10).toISOString(),
+  });
 });
 
 test("mergeTurnHistory keeps older fallback fields and fragments while fresh fields win", () => {
