@@ -1686,7 +1686,15 @@ describe("ConversationStore", () => {
     // under a new wire id — and it says nothing about images, so the ones
     // already known stay with it (mergeItemImages, the hub's own rule: an
     // absent or empty input-images list is not a removal signal).
-    it("replaces the same transcriptKey across wire IDs, images and all", async () => {
+    //
+    // The surviving row MUST be the one folded from conv.turns (the model
+    // item, which retains the image) and re-keyed to the new wire id — not the
+    // pre-existing companion row still sitting under the old id. The two
+    // sources carry deliberately different images so the assertion can tell
+    // them apart: a regression that leaves the stale row in place, or that
+    // rebuilds the row from the raw wire item instead of the folded model item
+    // (findFoldedItem/itemAttachments), fails here.
+    it("replaces the same transcriptKey across wire IDs, folding images onto the new id", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
@@ -1701,7 +1709,7 @@ describe("ConversationStore", () => {
                 type: "userMessage",
                 transcriptKey: "stable-message",
                 text: "old",
-                images: [{ src: "https://hub.test/image" }],
+                images: [{ src: "https://hub.test/folded" }],
               },
             ],
           },
@@ -1717,7 +1725,7 @@ describe("ConversationStore", () => {
             kind: "attachments",
             id: "wire-old:attachments",
             sourceTranscriptKey: "stable-message",
-            items: [{ id: "image", src: "https://hub.test/image" }],
+            items: [{ id: "image", src: "https://hub.test/stale" }],
           },
         ],
       });
@@ -1743,12 +1751,14 @@ describe("ConversationStore", () => {
       expect(
         items.find((item) => item.transcriptKey === "stable-message")?.id,
       ).toBe("wire-new");
-      // One attachment row, carried onto the replacement rather than orphaned
-      // on the old wire id.
+      // One attachment row, re-keyed to the replacement and carrying the
+      // image the fold retained ("folded"), never the stale row's image.
       const attachments = items.filter((item) => item.kind === "attachments");
       expect(attachments).toHaveLength(1);
       expect(attachments[0]).toMatchObject({
-        items: [{ src: "https://hub.test/image" }],
+        id: "wire-new:attachments",
+        sourceTranscriptKey: "stable-message",
+        items: [{ id: "wire-new:0", src: "https://hub.test/folded" }],
       });
     });
   });
