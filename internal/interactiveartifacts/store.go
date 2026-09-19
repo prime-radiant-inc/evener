@@ -75,19 +75,19 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 	if options.QuotaBytes < 0 || options.ReaderConnections < 1 || options.ReaderConnections > 32 {
 		return nil, errors.New("invalid artifact store options")
 	}
-	absolute, err := filepath.Abs(path)
+	directoryPath, name := filepath.Split(path)
+	root, err := PrepareStoreDirectory(directoryPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
-		return nil, err
-	}
-	if err := requirePrivatePath(filepath.Dir(absolute), true); err != nil {
-		return nil, err
-	}
+	absolute := filepath.Join(root, name)
 	file, err := os.OpenFile(absolute, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err == nil {
-		if err := file.Close(); err != nil {
+		info, statErr := file.Stat()
+		if statErr == nil {
+			statErr = requirePrivateInfo(info, false)
+		}
+		if err := errors.Join(statErr, file.Close()); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrExist) {
@@ -119,17 +119,6 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 		return nil, err
 	}
 	return s, nil
-}
-
-func requirePrivatePath(path string, directory bool) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() != directory || (!directory && !info.Mode().IsRegular()) || info.Mode().Perm()&0077 != 0 {
-		return errors.New("artifact store path must be private and nonsymlink")
-	}
-	return nil
 }
 
 func randomID() string {
