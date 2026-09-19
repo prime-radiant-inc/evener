@@ -96,7 +96,7 @@ function mount(io: { request: (method: string, params: unknown) => Promise<unkno
     route: { params: { hubId: "hub-1" } },
   } as unknown as ComponentProps<typeof ProvidersScreen>;
   const tree = render(<ProvidersScreen {...props} />);
-  return { tree, scripted };
+  return { tree, scripted, props };
 }
 
 function pressables(tree: ReactTestRenderer) {
@@ -306,6 +306,52 @@ it("clears the credential editor when another instance is selected", async () =>
     ),
   ).toBeUndefined();
   expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
+});
+
+it("keeps a stale save callback from writing after a flap and preserves the draft until cancel", async () => {
+  const listing = rows(
+    row("alpha", {
+      baseUrl: "https://alpha.example",
+      endpointFingerprint: "fp-alpha",
+      authModes: ["apiKey"],
+      hasStoredFile: false,
+    }),
+  );
+  const { tree, scripted, props } = mount({ request: async () => listing });
+  await act(async () => {});
+  pressRow(tree, "alpha");
+  pressLabel(tree, "Set key");
+  const input = tree.root
+    .findAll((node) => String(node.type) === "TextInput")
+    .find((node) => node.props.accessibilityLabel === "API key");
+  if (!input) throw new Error("no API key input");
+  act(() => input.props.onChangeText("fixture-key"));
+  const save = pressables(tree).find(
+    (node) => node.props.accessibilityLabel === "Save key",
+  );
+  if (!save) throw new Error("no Save key action");
+  const staleSave = save.props.onPress;
+
+  harness.connection = { ...harness.connection, state: "reconnecting" };
+  await act(async () => {
+    tree.update(<ProvidersScreen {...props} />);
+  });
+  act(() => staleSave());
+  await act(async () => {});
+
+  expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
+  const retainedInput = tree.root
+    .findAll((node) => String(node.type) === "TextInput")
+    .find((node) => node.props.accessibilityLabel === "API key");
+  expect(retainedInput?.props.value).toBe("fixture-key");
+  const cancel = tree.root.findByProps({ accessibilityLabel: "Cancel" });
+  expect(cancel.props.disabled).toBe(false);
+  act(() => cancel.props.onPress());
+  expect(
+    tree.root.findAll(
+      (node) => node.props.accessibilityLabel === "API key",
+    ),
+  ).toHaveLength(0);
 });
 
 it("leaves only the store's own reconcile read after an in-flight write outlives the screen", async () => {

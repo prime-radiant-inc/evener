@@ -33,7 +33,12 @@ import {
 } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { useConnectionDisplay } from "./connectionDisplay";
+import {
+  isReady,
+  useConnectionDisplay,
+  useLiveReadiness,
+  whenReady,
+} from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { useProviderSurface } from "./providerSurface";
@@ -64,6 +69,8 @@ export function ProvidersScreen({
 }: NativeStackScreenProps<Routes, "Providers">) {
   const { activeProfile, client, state, fatal, retry } = useConnection();
   const display = useConnectionDisplay(state, fatal);
+  const ready = isReady(state);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   const [signIn, setSignIn] = useState<{
     hubId: string;
     name: string;
@@ -83,8 +90,8 @@ export function ProvidersScreen({
       setSignIn(null);
       return;
     }
-    signIn.flow.setConnection(state === "ready" ? client : null);
-  }, [signIn, activeProfile?.id, client, state]);
+    signIn.flow.setConnection(canUseConnection() ? client : null);
+  }, [signIn, activeProfile?.id, client, state, canUseConnection]);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -103,7 +110,10 @@ export function ProvidersScreen({
         key={`${activeProfile.id}:${revision}`}
         store={store}
         hubName={activeProfile.name}
+        ready={ready}
+        canUseConnection={canUseConnection}
         onSignIn={(name) => {
+          if (!canUseConnection()) return;
           const flow = new ProviderSignIn(store, name);
           flow.setConnection(client);
           setSignIn({ hubId: activeProfile.id, name, flow });
@@ -115,7 +125,7 @@ export function ProvidersScreen({
           flow={signIn.flow}
           name={signIn.name}
           hubName={activeProfile.name}
-          connected={state === "ready"}
+          connected={canUseConnection()}
           onClose={() => {
             signIn.flow.dispose();
             setSignIn(null);
@@ -130,10 +140,14 @@ export function ProvidersScreen({
 function Providers({
   store,
   hubName,
+  ready,
+  canUseConnection,
   onSignIn,
 }: {
   store: CredentialInstancesStore;
   hubName: string;
+  ready: boolean;
+  canUseConnection: () => boolean;
   onSignIn(name: string): void;
 }) {
   const colors = useColors();
@@ -236,6 +250,9 @@ function Providers({
       endpointAsserted = false,
     }: { secret?: boolean; endpointAsserted?: boolean } = {},
   ) {
+    // Deferred confirmations and editor callbacks must recheck the raw
+    // connection at invocation time; a ready render can outlive a flap.
+    if (!canUseConnection()) return;
     const version = editorVersion.current;
     setActionError(null);
     try {
@@ -262,14 +279,14 @@ function Providers({
       // screen.
       if (isStaleListingRefusal(err)) {
         setActionError(CONNECTION_REPLACED_ERROR);
-        surface.refresh();
+        refresh();
         return;
       }
       // Only an operation that asserted a destination can be refused for a
       // changed one; a generic conflict (a duplicate name) is not that.
       if (endpointAsserted && isEndpointConflict(err)) {
         setActionError(ENDPOINT_CHANGED_SAVE_MESSAGE);
-        surface.refresh();
+        refresh();
         return;
       }
       // Provider/transport errors may echo submitted credentials. Keep the
@@ -286,6 +303,7 @@ function Providers({
     action: () => Promise<unknown>,
     options: { endpointAsserted?: boolean } = {},
   ) {
+    if (!canUseConnection()) return;
     Alert.alert(title, `${selected} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -302,6 +320,7 @@ function Providers({
   // cannot fingerprint has no destination to assert, so the probe is refused
   // here rather than dialing whatever the name resolves to now.
   function probeCredentials(name: string) {
+    if (!canUseConnection()) return;
     // Only the current probe's outcome is shown: a new probe drops whatever the
     // last one said before it reports its own.
     setActionError(null);
@@ -322,6 +341,18 @@ function Providers({
       });
   }
 
+  function refresh() {
+    if (canUseConnection()) surface.refresh();
+  }
+
+  function create(params: Parameters<typeof surface.create>[0]) {
+    return canUseConnection() ? surface.create(params) : Promise.resolve(false);
+  }
+
+  function edit(params: Parameters<typeof surface.edit>[0]) {
+    return canUseConnection() ? surface.edit(params) : Promise.resolve(false);
+  }
+
   const sections = groupByProvider(core.instances).map((group) => ({
     title: group.providerId,
     data: group.instances,
@@ -333,7 +364,7 @@ function Providers({
         keyExtractor={(item) => item.name}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
         refreshing={core.loading}
-        onRefresh={surface.refresh}
+        onRefresh={refresh}
         ListHeaderComponent={
           <View style={{ gap: 8, paddingBottom: 12 }}>
             <Copy muted>{hubName}</Copy>
@@ -342,12 +373,13 @@ function Providers({
                 !core.listingEstablished ||
                 surface.busy ||
                 core.writesRefused ||
-                stale
+                stale ||
+                !ready
               }
-              onPress={() => {
+              onPress={whenReady(canUseConnection, () => {
                 close();
                 setConfiguration("create");
-              }}
+              })}
             >
               Add provider instance
             </Action>
@@ -437,9 +469,9 @@ function Providers({
                   key={configuration === "create" ? "create" : instance?.name}
                   instance={configuration === "edit" ? instance : undefined}
                   providers={core.availableProviders}
-                  onCreate={surface.create}
-                  onEdit={surface.edit}
-                  disabled={surface.busy || core.writesRefused || stale}
+                  onCreate={create}
+                  onEdit={edit}
+                  disabled={surface.busy || core.writesRefused || stale || !ready}
                   onSaved={(name) => {
                     setConfiguration(null);
                     setSelected(name);
@@ -502,7 +534,7 @@ function Providers({
                         />
                         <View style={styles.row}>
                           <Action
-                            disabled={surface.busy || stale || !key.trim()}
+                            disabled={surface.busy || stale || !ready || !key.trim()}
                             onPress={() => {
                               // A destination the hub cannot fingerprint has no
                               // endpoint to assert, so the save is refused here
@@ -514,7 +546,6 @@ function Providers({
                                 return;
                               }
                               const value = key.trim();
-                              setKey("");
                               void act(
                                 () => editingCredential === "credentialJson"
                                   ? surface.setCredentialJson(
@@ -551,6 +582,7 @@ function Providers({
                             surface.busy ||
                             core.loading ||
                             stale ||
+                            !ready ||
                             !!surface.credentialTest?.pending
                           }
                           onPress={() => {
@@ -567,19 +599,19 @@ function Providers({
                             <Copy>{surface.credentialTest.result.message}</Copy>
                           )}
                         <Action
-                          disabled={surface.busy || core.writesRefused || stale}
-                          onPress={() => setConfiguration("edit")}
+                          disabled={surface.busy || core.writesRefused || stale || !ready}
+                          onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
                         >
                           Edit instance
                         </Action>
                         {instance.authModes?.includes("oauth") && (
                           <Action
-                            disabled={surface.busy || stale}
-                            onPress={() => {
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => {
                               const name = instance.name;
                               close();
                               onSignIn(name);
-                            }}
+                            })}
                           >
                             {instance.hasStoredOAuth
                               ? "Refresh sign-in"
@@ -588,23 +620,23 @@ function Providers({
                         )}
                         {instance.authModes?.includes("apiKey") && (
                           <Action
-                            disabled={surface.busy || stale}
-                            onPress={() => editCredential("apiKey", instance)}
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
                           >
                             {instance.hasStoredFile ? "Replace key" : "Set key"}
                           </Action>
                         )}
                         {instance.authModes?.includes("credentialJson") && (
                           <Action
-                            disabled={surface.busy || stale}
-                            onPress={() => editCredential("credentialJson", instance)}
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
                           >
                             {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                           </Action>
                         )}
                         {!instance.isDefault && (
                           <Action
-                            disabled={surface.busy || core.writesRefused || stale}
+                            disabled={surface.busy || core.writesRefused || stale || !ready}
                             onPress={() => {
                               void act(() => surface.setDefault(instance.name));
                             }}
@@ -615,8 +647,8 @@ function Providers({
                         {instance.hasStoredFile &&
                           instance.activeSource !== "store" && (
                             <Action
-                              disabled={surface.busy || stale}
-                              onPress={() => {
+                              disabled={surface.busy || stale || !ready}
+                              onPress={whenReady(canUseConnection, () => {
                                 // A destination the hub cannot fingerprint has
                                 // no endpoint to assert: refuse with a reason
                                 // rather than grey the control out silently.
@@ -632,15 +664,15 @@ function Providers({
                                     instance.endpointFingerprint,
                                   ),
                                 { endpointAsserted: true });
-                              }}
+                              })}
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
                           )}
                         {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
-                            disabled={surface.busy || stale}
-                            onPress={() => {
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => {
                               if (fingerprintUnavailable(instance)) {
                                 setActionError(
                                   FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
@@ -653,15 +685,15 @@ function Providers({
                                   instance.endpointFingerprint,
                                 ),
                               { endpointAsserted: true });
-                            }}
+                            })}
                           >
                             Clear credentials
                           </Action>
                         )}
                         {!instance.implicit && (
                           <Action
-                            disabled={surface.busy || core.writesRefused || stale}
-                            onPress={() => {
+                            disabled={surface.busy || core.writesRefused || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => {
                               if (fingerprintUnavailable(instance)) {
                                 setActionError(
                                   FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
@@ -674,7 +706,7 @@ function Providers({
                                   instance.endpointFingerprint,
                                 ),
                               { endpointAsserted: true });
-                            }}
+                            })}
                           >
                             Remove instance
                           </Action>
