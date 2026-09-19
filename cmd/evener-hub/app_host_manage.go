@@ -603,8 +603,9 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // and in-progress rows render the retained attach state (midAttach,
 // lastAttachError) and last-known facts from the record. It never dials:
 // every seam here is attached-only. ctx is the caller's handler context — the
-// facts read runs on it, so a caller that goes away cancels the read instead
-// of leaving it running behind the mutation mutex List and Status hold.
+// facts read runs on it, so a caller that goes away cancels the read; List,
+// Status, and Add build their rows without holding the mutation mutex
+// (round-7 M4), so a parked facts read holds up no commit either.
 func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin string) appwire.HostRow {
 	row := appwire.HostRow{
 		Name:    host.Name,
@@ -736,9 +737,13 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	if _, err := hostreg.New([]hostreg.Host{entry}); err != nil {
 		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, err))
 	}
+	// The commit below is the read-modify-write cycle the mutation mutex
+	// exists for; the mutex is released before the response row's facts read,
+	// which runs on the network and must not hold up concurrent commits
+	// (round-7 M4, the same reason List and Status build rows lock-free).
 	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
 	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
+		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, hostreg.ErrDuplicateHost))
 	}
 	// Durable commit first: the sidecar file is the record of truth for
@@ -748,6 +753,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// the next start, the round-4 L2 finding).
 	prev := m.cfg.sidecar.snapshot()
 	if err := m.saveSidecar(append(prev, entry)); err != nil {
+		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, err
 	}
 	if err := m.addHostToRegistry(entry); err != nil {
@@ -755,12 +761,19 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 		// one seam that can fail here — so the API reports failure and the
 		// file rolls back to the pre-add contents: a retry starts from the
 		// same durable state, instead of the next start silently completing
-		// an add this call reported as failed.
-		return appwire.HostRow{}, m.rollbackSidecar(prev, err)
+		// an add this call reported as failed. The rollback still runs under
+		// the mutex: it is part of the commit, and a concurrent Add's own
+		// save must not interleave with restoring the file.
+		err = m.rollbackSidecar(prev, err)
+		m.cfg.mu.Unlock()
+		return appwire.HostRow{}, err
 	}
 	m.cfg.sidecar.add(entry)
 	m.cfg.state.remove(entry.Name) // a re-added name starts with no stale record
 	m.registerSource(entry)
+	m.cfg.mu.Unlock()
+	// The commit is complete, so the row reads a fully added host — the entry
+	// this call committed, whatever concurrent mutations do around it.
 	return m.hostRow(ctx, entry, hostOriginSidecar), nil
 }
 
@@ -821,24 +834,39 @@ func (m *hubHostManager) rollbackSidecar(previous []hostreg.Host, cause error) e
 // order (the registry's own; the origin field distinguishes hub.toml entries
 // from sidecar ones). Attached rows report live channel facts and retain them
 // as last-known; rows without a live channel render as offline with the
-// retained attach state and last-known facts. It never dials. It holds the
-// mutation mutex Add and Remove commit under, so a concurrent reader never
-// observes the window between a registry insert and the sidecar row and
-// source registration that finish it — a half-committed host would list
-// with a hub.toml origin and no source.
+// retained attach state and last-known facts. It never dials.
+//
+// The mutation mutex covers only the snapshot — the registry rows and their
+// sidecar origins — so a concurrent reader never observes the window between
+// a registry insert and the sidecar row and source registration that finish
+// it: a half-committed host would list with a hub.toml origin and no source.
+// The row building that follows runs lock-free (round-7 M4): hostRow's
+// attached-only lookups and its facts read run on the network, and one slow
+// or hung host must not block every concurrent Add and Remove commit or
+// serialize other lists. The rows are the snapshot's point-in-time view: a
+// host added after the snapshot is absent from that response, never
+// half-committed in it.
 func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwire.HostListResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostListResponse{}, err
 	}
+	type rowInput struct {
+		host   hostreg.Host
+		origin string
+	}
 	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
-	rows := make([]appwire.HostRow, 0, len(m.cfg.hosts.All()))
+	inputs := make([]rowInput, 0, len(m.cfg.hosts.All()))
 	for _, host := range m.cfg.hosts.All() {
 		origin := hostOriginHubTOML
 		if m.cfg.sidecar.isSidecar(host.Name) {
 			origin = hostOriginSidecar
 		}
-		rows = append(rows, m.hostRow(ctx, host, origin))
+		inputs = append(inputs, rowInput{host: host, origin: origin})
+	}
+	m.cfg.mu.Unlock()
+	rows := make([]appwire.HostRow, 0, len(inputs))
+	for _, input := range inputs {
+		rows = append(rows, m.hostRow(ctx, input.host, input.origin))
 	}
 	if rows == nil {
 		rows = []appwire.HostRow{}
@@ -847,23 +875,27 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 }
 
 // Status returns one host's row: the same HostRow evener/host/list serves.
-// Unknown names are InvalidParams. Never dials. It holds the same mutation
-// mutex List does, for the same fully-committed-row guarantee.
+// Unknown names are InvalidParams. Never dials. It snapshots the host and its
+// origin under the same mutation mutex List does, for the same
+// fully-committed-row guarantee, and then builds the row lock-free for the
+// same reason List does: the facts read must not hold up commits (round-7
+// M4).
 func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusParams) (appwire.HostStatusResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostStatusResponse{}, err
 	}
-	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
 	name := strings.TrimSpace(params.Name)
+	m.cfg.mu.Lock()
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {
+		m.cfg.mu.Unlock()
 		return appwire.HostStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	origin := hostOriginHubTOML
 	if m.cfg.sidecar.isSidecar(host.Name) {
 		origin = hostOriginSidecar
 	}
+	m.cfg.mu.Unlock()
 	return appwire.HostStatusResponse{Host: m.hostRow(ctx, host, origin)}, nil
 }
 
