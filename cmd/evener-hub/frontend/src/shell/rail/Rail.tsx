@@ -1655,6 +1655,10 @@ function NavigationRail({
           </Button>
         </div>
       </div>
+      {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
+          it. It wraps the tree only - the header and the dialogs render no
+          clock-derived value - so clock-derived chrome added later has to move
+          inside this boundary to tick. */}
       <RailTickProvider>
         <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
           {loading && !displayed && <Skeleton lines={6} />}

@@ -7,15 +7,18 @@
 //
 // The provider is a CHILDREN-PASSING component so its per-tick state lives
 // here: React bails out of re-rendering the (referentially unchanged) rail
-// subtree, and only the leaves that read RailNowContext re-render. That mirrors
-// panes/session/chrome/ActivityTree.tsx's TreeTickProvider, whose comment
-// states the same contract for the activity tree.
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+// subtree, and only the leaves that read RailNowContext re-render. The timer
+// itself is panes/session/liveness.ts's shared useNowTick/NOW_TICK_MS, not a
+// second copy of it. The CONTEXT stays rail-local, the way
+// chrome/treeNow.ts keeps its own: the rail and the activity tree tick
+// concurrently over different subtrees, so sharing one context would couple
+// two independent clocks.
+import { createContext, type ReactNode, useContext } from "react";
+import { NOW_TICK_MS, useNowTick } from "../../panes/session/liveness";
 
-// The rail's labels are minute-granular ("now"/"2m"/"3h"/"5d"), so the tick
-// only has to be fine enough that "now" turns into "1m" promptly. 3s matches
-// the session pane's liveness cadence (panes/session/liveness.ts NOW_TICK_MS).
-export const RAIL_NOW_TICK_MS = 3_000;
+// The rail's stamps are minute-granular and share the session pane's liveness
+// cadence, so one interval value governs both surfaces.
+export const RAIL_NOW_TICK_MS = NOW_TICK_MS;
 
 // null means "no live clock": a row rendered without the provider (a direct
 // unit test, or any future standalone use) reads the current instant once per
@@ -31,10 +34,6 @@ export function useRailNow(): number {
 }
 
 export function RailTickProvider({ children }: { children: ReactNode }): ReactNode {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), RAIL_NOW_TICK_MS);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNowTick(RAIL_NOW_TICK_MS);
   return <RailNowContext.Provider value={now}>{children}</RailNowContext.Provider>;
 }

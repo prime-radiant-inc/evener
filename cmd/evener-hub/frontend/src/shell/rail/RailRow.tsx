@@ -530,15 +530,11 @@ function useHostOnline(hostId: string): boolean {
 }
 
 // RailAge is the row's live "last update" stamp: the one leaf that subscribes
-// to the rail clock. It sits BELOW the memoized SessionRow on purpose (the
-// boundary ActivityTree.tsx draws with LiveMetaSegments) so a tick re-renders
-// only the stamps, never every row that carries one.
-//
-// The label is derived from updated_at against the ticking clock, never from
-// the model's preformatted `age`: that string is computed when the summary
-// arrives, so an idle session - which never sends another summary - froze at
-// its build value. `age` survives only as the reading for a session whose
-// summary carries no parseable anchor.
+// to the rail clock (railNow.tsx owns why the label comes from `updated_at`
+// rather than the model's preformatted `age`). Sitting BELOW the memoized
+// SessionRow - the boundary ActivityTree.tsx draws with LiveMetaSegments - is
+// what keeps a tick from re-rendering every row that carries a stamp. `age`
+// remains the reading for a summary with no parseable anchor.
 function RailAge({ updatedAt, age }: { updatedAt?: string; age?: string }): ReactNode {
   const now = useRailNow();
   const label = relativeAge(updatedAt, now) ?? age;
