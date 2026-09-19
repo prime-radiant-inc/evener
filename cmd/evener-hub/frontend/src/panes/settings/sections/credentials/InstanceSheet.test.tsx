@@ -2563,4 +2563,70 @@ describe("the form", () => {
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
+
+  // The endpoint fingerprint does not cover `surface`, and draftIdentity does
+  // not either, so an unconfirmed supersede of a surface change must mark the
+  // draft stale or a same-endpoint replacement is overwritten on the next Save.
+  test("a superseded surface save whose landing cannot be confirmed marks the draft stale", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "openai");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      surface: "openai",
+      originClientId: "test-tab",
+    });
+
+    // Same endpoint (same fingerprint), different surface.
+    const ours = { ...before, surface: "openai" };
+    const foreign = { ...before, surface: "anthropic" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A surface clear leaves no declared value to compare and the fingerprint
+  // excludes surface, so it is verified against the captured row instead.
+  test("a superseded clear-surface save is not re-anchored onto a replacement with a different surface", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      clearSurface: true,
+      originClientId: "test-tab",
+    });
+
+    const ours = { ...before, surface: "" };
+    const foreign = { ...before, surface: "anthropic" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
 });

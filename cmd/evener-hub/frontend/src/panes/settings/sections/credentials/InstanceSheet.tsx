@@ -459,6 +459,9 @@ function supersededSaveLanded(
     // (credentials, surface, declared variables) are verified separately, and
     // a credential clear fails closed.
     if (!credentialValuesLanded(listed, params, true)) return undefined;
+    // The fingerprint excludes surface, and a clear leaves no declared value to
+    // compare: the captured row is the only proof of what the clear resolved to.
+    if (params.clearSurface && (listed.surface ?? "") !== (authoritative?.surface ?? "")) return undefined;
     return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
   }
   return declaredValuesLanded(listed, params, true) ? listed : undefined;
@@ -699,14 +702,12 @@ export function InstanceSheet({
             seededIdentity.current = draftIdentity(landed);
           } else {
             // The save was superseded and its landing could not be confirmed.
-            // draftIdentity deliberately excludes the credential fields, so a
-            // same-endpoint replacement whose credentials differ would pass the
-            // next pre-write check and be overwritten. Mark the draft stale so
-            // that next Save refuses and re-seeds instead.
-            const changed = changedFields(params);
-            if (changed.has("apiKeyEnv") || changed.has("credentialHeader")) {
-              seededIdentity.current = null;
-            }
+            // The fields a draft edits are deliberately excluded from
+            // draftIdentity, so a same-name, same-endpoint replacement whose
+            // surface, variables or credentials differ would pass the next
+            // pre-write check and then be overwritten by the retained draft.
+            // Mark the draft stale so that next Save refuses and re-seeds.
+            seededIdentity.current = null;
           }
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);

@@ -4156,3 +4156,25 @@ func TestInstances_EditAnswersFromTheWriteLockedListing(t *testing.T) {
 		t.Fatalf("later List shows base_url %q, want the foreign edit", foreign.BaseURL)
 	}
 }
+
+// TestInstances_EditCapturesTheListingForARename: a successful rename answers
+// with the same lock-scoped listing a plain edit does. The rename branch must
+// fall through to the capture rather than return before it, or the client is
+// handed an empty response and blanks the pane.
+func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var out appwire.InstanceListResponse
+	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}, &out); err != nil {
+		t.Fatalf("edit(rename): %v", err)
+	}
+	if len(out.Instances) == 0 {
+		t.Fatal("a successful rename returned an empty listing")
+	}
+	if renamed := entry(t, out, "personal"); renamed.Name != "personal" {
+		t.Fatalf("captured row = %+v, want the renamed instance", renamed)
+	}
+}

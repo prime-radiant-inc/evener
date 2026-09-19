@@ -1124,11 +1124,14 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			// way.
 			return writeApplied(err)
 		}
-		return moveErr
+		if moveErr != nil {
+			return moveErr
+		}
 	}
 	if out != nil {
 		// Still under this edit's write locks, so no concurrent edit can land
-		// between the write and this read.
+		// between the write and this read. Reached for a plain edit AND a clean
+		// rename (the rename branch above only returns on an applied error).
 		*out = c.listLocked(key, keyErr)
 	}
 	return nil
