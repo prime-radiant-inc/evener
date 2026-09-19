@@ -595,6 +595,29 @@ func fuzzScenarioPastIndex_IndeterminateMissReturnsConcurrentlyIndexedRow(t *tes
 	}
 }
 
+// fuzzScenarioPastIndex_MissingGlobBaseIsDeterminate pins the low: a projects
+// root that does not exist is a definite absence, not an indeterminate one, so
+// Find's miss is authoritative and evicts a stale cached row rather than
+// serving (and holding) it until the next Rebuild.
+func fuzzScenarioPastIndex_MissingGlobBaseIsDeterminate(t *testing.T) {
+	root := t.TempDir()
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	// The projects root does not exist.
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx.afterFindCacheMiss = func() {
+		// A stale Rebuild indexed the id before Find probes.
+		foldNow(t, idx, PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "stale"}})
+	}
+	defer func() { idx.afterFindCacheMiss = nil }()
+
+	if got, ok := idx.Find(id); ok {
+		t.Fatalf("Find returned %+v for a session under a missing projects root", got)
+	}
+	if _, ok := idx.findCached(id); ok {
+		t.Fatal("a missing projects root is a determinate miss and must evict the stale row")
+	}
+}
+
 // fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate pins Medium 3: an
 // inaccessible projects root makes filepath.Glob return no matches with no
 // error, which must not read as an authoritative absence.

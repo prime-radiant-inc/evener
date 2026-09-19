@@ -62,6 +62,29 @@ func TestUntombstoneSessionMetaRestoresWritability(t *testing.T) {
 	}
 }
 
+// TestTombstoneSessionMetaDoesNotCreateMissingSessionsDir pins the medium: a
+// deletion of a session whose state dir is already gone must be a no-op, not
+// recreate the deleted project's state directory — which the PastIndex
+// projects/* glob would then surface as a live project.
+func TestTombstoneSessionMetaDoesNotCreateMissingSessionsDir(t *testing.T) {
+	base := t.TempDir()
+	stateDir := filepath.Join(base, "projects", "project-x-0123456789")
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+
+	if err := TombstoneSessionMeta(stateDir, id); err != nil {
+		t.Fatalf("tombstoning an already-removed session = %v, want nil", err)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("tombstone recreated the deleted state dir: %v", err)
+	}
+	if err := UntombstoneSessionMeta(stateDir, id); err != nil {
+		t.Fatalf("untombstoning an absent state dir = %v, want nil", err)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("untombstone recreated the deleted state dir: %v", err)
+	}
+}
+
 // TestSessionMetaRevisionInitializesAndIncrements pins the invariant hubcore's
 // metaNewer depends on: the first save of a session sets Revision to 1, and every
 // subsequent save (including an observer append) increments it by exactly one.

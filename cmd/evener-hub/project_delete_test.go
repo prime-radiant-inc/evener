@@ -1227,6 +1227,45 @@ func TestCleanupProjectDeletionTargetIgnoresMetaLockRemovalFailure(t *testing.T)
 	}
 }
 
+// TestCleanupProjectDeletionTargetDoesNotRecreateAbsentStateDir pins the medium
+// at the hub boundary: deleting an already-removed session must not recreate the
+// project's state dir, which the PastIndex projects/* glob would surface as a
+// live project.
+func TestCleanupProjectDeletionTargetDoesNotRecreateAbsentStateDir(t *testing.T) {
+	base := t.TempDir()
+	stateDir := filepath.Join(base, "projects", "project-x-0123456789")
+	runDir := filepath.Join(base, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: base, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err != nil {
+		t.Fatalf("cleanup of an already-removed session = %v, want nil", err)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup recreated the deleted state dir: %v", err)
+	}
+}
+
+// TestSessionMetaFilePresentTreatsNonNotExistErrorAsPresent pins the low: only a
+// confirmed absence may count as "metadata absent", so a transient stat error
+// cannot skip the tombstone rollback and fence a live, resumable session.
+func TestSessionMetaFilePresentTreatsNonNotExistErrorAsPresent(t *testing.T) {
+	base := t.TempDir()
+	// A regular file where a directory is expected makes any child stat fail with
+	// ENOTDIR — a non-IsNotExist error.
+	blocker := filepath.Join(base, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionMetaFilePresent(blocker, webTestSessionID) {
+		t.Fatal("a non-IsNotExist stat error must read as metadata present")
+	}
+	if sessionMetaFilePresent(filepath.Join(base, "missing"), webTestSessionID) {
+		t.Fatal("a confirmed absence must read as metadata absent")
+	}
+}
+
 func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "work")

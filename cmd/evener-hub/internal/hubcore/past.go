@@ -1326,8 +1326,10 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool, bool) {
 	// would otherwise look like an authoritative "no such session". Verify the
 	// glob's base directory is readable so a transiently inaccessible projects
 	// root is treated as indeterminate rather than evicting valid cached rows.
+	// A base that does not exist is a definite absence, not an indeterminate
+	// one: only a non-IsNotExist read error (EACCES, EIO) is indeterminate.
 	if base := globBaseDir(i.stateGlob); base != "" {
-		if _, err := os.ReadDir(base); err != nil {
+		if _, err := os.ReadDir(base); err != nil && !os.IsNotExist(err) {
 			determinate = false
 		}
 	}

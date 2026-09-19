@@ -655,10 +655,13 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 
 // sessionMetaFilePresent reports whether the session's metadata still exists on
 // disk, used to decide whether a failed deletion sweep must roll its tombstone
-// back (see cleanupProjectDeletionTarget).
+// back (see cleanupProjectDeletionTarget). Only a confirmed absence counts as
+// absent: a transient stat error (EACCES, EIO) must read as present, so a failed
+// sweep still rolls the tombstone back and cannot fence a live, resumable
+// session with ErrSessionDeleted.
 func sessionMetaFilePresent(stateDir, sessionID string) bool {
 	_, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID+".meta.json"))
-	return err == nil
+	return !os.IsNotExist(err)
 }
 
 func (s *WebServer) projectDeletionStateDir(projectID, threadID string, stateDirs map[string]string) string {

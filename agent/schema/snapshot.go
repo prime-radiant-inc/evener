@@ -325,6 +325,12 @@ var ErrSessionDeleted = errors.New("session meta deleted")
 // that, so a failed sweep still leaves the metadata for a resume. The tombstone
 // must be left in place by the caller once the metadata is durably removed;
 // UntombstoneSessionMeta reverses it when the sweep fails first.
+//
+// When the sessions dir is already gone there is nothing to fence, so the
+// tombstone is skipped rather than creating the directory: a marker write must
+// never resurrect a deleted project's state dir, which the PastIndex projects/*
+// glob would then surface as a live project. A daemon that recreates the dir
+// after the deletion is handled by the durable deletion record, not this marker.
 func TombstoneSessionMeta(dir, id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
@@ -332,13 +338,20 @@ func TombstoneSessionMeta(dir, id string) error {
 	lock := sessionMetaWriteLock(id)
 	lock.Lock()
 	defer lock.Unlock()
-	return withSessionMetaCrossProcessLock(sessionMetaFS, dir, id, func() error {
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
 		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
+			if os.IsNotExist(err) {
+				return errSessionsDirAbsent
+			}
 			return fmt.Errorf("write session tombstone: %w", err)
 		}
 		return nil
 	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
 }
 
 // UntombstoneSessionMeta removes a session's deletion marker under the same
@@ -355,13 +368,17 @@ func UntombstoneSessionMeta(dir, id string) error {
 	lock := sessionMetaWriteLock(id)
 	lock.Lock()
 	defer lock.Unlock()
-	return withSessionMetaCrossProcessLock(sessionMetaFS, dir, id, func() error {
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
 		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove session tombstone: %w", err)
 		}
 		return nil
 	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
 }
 
 // SessionsDirListable reports whether dir's sessions subdirectory can be
@@ -473,11 +490,29 @@ func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() erro
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
+	return withExistingSessionsDirLock(fs, dir, id, fn)
+}
+
+// errSessionsDirAbsent reports that a marker-only lock path found the sessions
+// dir already gone. Callers treat it as "nothing to fence" rather than a
+// failure: there is no metadata to protect.
+var errSessionsDirAbsent = errors.New("sessions dir absent")
+
+// withExistingSessionsDirLock takes the same in-process and cross-process locks
+// as withSessionMetaCrossProcessLock but never creates the sessions dir. The
+// tombstone paths use it so deleting an already-removed session cannot recreate
+// the deleted project's state directory — which the PastIndex projects/* glob
+// would then surface as a live project. It reports errSessionsDirAbsent when
+// that dir is missing.
+func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) error {
 	// The Revision increment is a read-modify-write, and the daemon rewrites the
 	// same session's meta out of process, so the in-process striped lock alone
 	// cannot serialize it. Hold a file lock across the load/increment/rename.
 	release, _, err := lockSessionMetaCrossProcess(fs, dir, id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return errSessionsDirAbsent
+		}
 		return fmt.Errorf("lock session meta: %w", err)
 	}
 	defer release()
