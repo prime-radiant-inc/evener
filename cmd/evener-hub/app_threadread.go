@@ -512,11 +512,8 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 	if cfg.ResumeLocks == nil {
 		return false
 	}
-	// RecoverySettled is the same predicate from the other side, and is also
-	// the rule that retires a completed recovery redirect whose target has
-	// ended (forkRedirectSessionID): the redirect stops being followed exactly
-	// when this fence would refuse the session it named.
-	return !cfg.ResumeLocks.RecoverySettled(threadID)
+	state := cfg.ResumeLocks.RecoveryState(threadID)
+	return state.ResumeRequired || state.Stopping > 0
 }
 
 // applyHubForkCapability projects the hub's fork authority after the common
