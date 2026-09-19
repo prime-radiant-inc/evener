@@ -242,6 +242,15 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		if old != "" {
 			_ = marketplaceRemoveAll(old)
 		}
+		// The destination holds this new clone now, so any retention a prior
+		// removal recorded for it or for anything beneath it is stale: the
+		// swap replaced the whole tree, so the directories such a retention
+		// kept are gone. Left in place they would make Gc and Doctor keep a
+		// clone that is later stranded here, lending a new marketplace's name
+		// to old residue.
+		if err := m.releaseCloneUnder(installLoc); err != nil {
+			_, _ = fmt.Fprintf(m.stderr(), "warning: releasing the retained clone %s: %v\n", installLoc, err)
+		}
 	} else {
 		_ = marketplaceRemoveAll(staging)
 	}
@@ -344,12 +353,41 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
-	// Decide whether the clone is safe to sweep from the pre-removal registry.
-	// This includes the removed record's directory source: legacy data may use
-	// the canonical clone path as live source data, even though new writes refuse
-	// sources inside the store.
+	// The registry and the exception record are read only once the name is
+	// known to exist: an unknown name is a lookup miss whatever those files
+	// hold, and a corrupt registry must not turn it into a parse error.
+	reg, err := m.loadRegistry()
+	if err != nil {
+		return err
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		return err
+	}
+	// Decide whether the clone is safe to sweep from the pre-removal registry:
+	// any record's directory source at or beneath it — the removed record's
+	// included, since legacy data may use the canonical clone path as live
+	// source data — any *other* record's install location, and every registry
+	// InstallPath. The removed record's own install location is excluded: its
+	// clone is what this reclaims. A registry install inside the clone
+	// outlives the removal (RemoveMarketplace leaves registry entries behind),
+	// so deleting the clone would break a still-recorded install.
+	ref := mk[name]
 	clone := m.marketplaceDir(name)
-	present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), clone)
+	present, protect := m.sweepDestroysSource(cloneProtectionPaths(mk, reg, retainedUnderClone(retained, clone), name), clone)
+	// The removed record's own directory source is about to lose its record, so
+	// carry it into the store's exception record where a later sweep could
+	// otherwise reclaim it. The clone this name derives is only one path it can
+	// sit under: a rename leaves the record sourcing the clone path it had
+	// before, which is not the clone the new name derives, and the removal then
+	// leaves that directory unreferenced. Retaining the *path* is what protects
+	// the clone the removal spared too — and it does not pin a clone another
+	// record still sources, which that record protects on its own. It runs
+	// before the save so a failure leaves the marketplace registered and
+	// nothing half-done.
+	if err := m.retainRemovedSource(ref, present && protect); err != nil {
+		return err
+	}
 	delete(mk, name)
 	if err := m.saveMarketplaces(mk); err != nil {
 		return m.saveFailed(name, marketplacesFileName, err)
@@ -358,8 +396,93 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 		if err := marketplaceRemoveAll(clone); err != nil {
 			return m.cloneRemovalFailed(name, err)
 		}
+		// Best-effort bookkeeping after the directory is gone: a retained path
+		// that no longer exists is skipped by the sweep, and failing the
+		// removal here would return before the directory was ever reclaimed —
+		// on an unregistration that already landed, with a retry that finds no
+		// entry and never reaches this step again.
+		if err := m.releaseClone(clone); err != nil {
+			_, _ = fmt.Fprintf(m.stderr(), "warning: releasing the retained clone %s: %v\n", clone, err)
+		}
 	}
 	return nil
+}
+
+// retainRemovedSource records a removed record's directory source in the store's
+// exception record where a later sweep could reclaim the directory it names. A
+// source outside the store is at risk only when the removal spared a clone it
+// reaches through — a link can pass through the clone from outside — so spared
+// is enough; one inside the store is at risk even when the clone this removal
+// derives is elsewhere, as a rename leaves it.
+func (m *Manager) retainRemovedSource(ref MarketplaceRef, spared bool) error {
+	if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
+		return nil
+	}
+	if !spared {
+		inStore, err := m.pathInStore(ref.Source.Path)
+		if err != nil {
+			return err
+		}
+		if !inStore {
+			return nil
+		}
+	}
+	return m.retainClone(ref.Source.Path)
+}
+
+// pathInStore reports whether path is strictly beneath the store's marketplaces
+// directory, lexically or after resolving symlinks. Only that directory: a
+// retained path is consumed by the marketplace-clone sweep, and the cache sweep
+// compares against registry InstallPaths alone, so retaining a path under the
+// cache would promise a guarantee nothing reads. The directory itself is not
+// "in the store" for this: RemoveAll never deletes an ancestor, so a source
+// naming it has nothing a sweep could take.
+//
+// The lexical check matters for the final component: a directory source can be
+// a symlink that sits under the marketplaces directory but points outside it,
+// and the clone sweep removes the link, not its target, so resolving alone
+// would miss the path the sweep takes.
+func (m *Manager) pathInStore(path string) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	absDir, err := filepath.Abs(m.marketplacesDir())
+	if err != nil {
+		return false, err
+	}
+	absDir = filepath.Clean(absDir)
+	if lexical := filepath.Clean(abs); lexical != absDir && pathWithinDir(absDir, lexical) {
+		return true, nil
+	}
+	resolved, err := resolveForContainment(path)
+	if err != nil {
+		return false, err
+	}
+	resolvedDir, err := resolveForContainment(m.marketplacesDir())
+	if err != nil {
+		return false, err
+	}
+	return resolved != resolvedDir && pathWithinDir(resolvedDir, resolved), nil
+}
+
+// retainedUnderClone names the retained paths strictly beneath clone. A path
+// equal to clone is the clone itself, which this removal reclaims; one beneath
+// it is separate live data — a recorded source a prior removal kept — that
+// deleting the tree would take with it.
+func retainedUnderClone(retained []string, clone string) []string {
+	cleanClone := filepath.Clean(clone)
+	var under []string
+	for _, p := range retained {
+		clean := filepath.Clean(p)
+		if clean == cleanClone {
+			continue
+		}
+		if pathWithinDir(cleanClone, clean) {
+			under = append(under, p)
+		}
+	}
+	return under
 }
 
 // sweepDestroysSource reports whether removing (or renaming away) the directory
@@ -751,6 +874,20 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	// 3. Apply the new source into the install location. An old clone that a
 	// directory source makes redundant goes only after the files say so.
 	var afterSave []func()
+	// A clone this edit replaces has its tree moved or destroyed, so any
+	// retention recorded for a path at or beneath it is stale once the edit
+	// lands; dropping it here keeps Gc and Doctor from later sparing a clone
+	// that is stranded under this name.
+	releaseUnder := func(dir string) func() {
+		return func() {
+			if err := m.releaseCloneUnder(dir); err != nil {
+				_, _ = fmt.Fprintf(m.stderr(), "warning: releasing retained clones under %s: %v\n", dir, err)
+			}
+		}
+	}
+	if renaming {
+		afterSave = append(afterSave, releaseUnder(m.marketplaceDir(name)))
+	}
 	if resourcing {
 		if src.Kind == SourceDirectory {
 			if ref.Source.Kind != SourceDirectory {
@@ -763,7 +900,10 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 				sources := append(marketplaceProtectionPaths(mk, name), src.Path)
 				present, protect := m.sweepDestroysSource(sources, clone)
 				if present && !protect {
-					afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+					afterSave = append(afterSave,
+						func() { _ = marketplaceRemoveAll(clone) },
+						releaseUnder(clone),
+					)
 				}
 			}
 			_ = marketplaceRemoveAll(staging)
@@ -786,6 +926,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 			if aside != "" {
 				afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(aside) })
 			}
+			afterSave = append(afterSave, releaseUnder(dest))
 			ref.InstallLocation = dest
 		}
 		ref.Source = *src
@@ -1269,6 +1410,11 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 	}
 	if old != "" {
 		_ = marketplaceRemoveAll(old)
+	}
+	// The reclone replaced the clone tree, so retentions for paths under it are
+	// stale.
+	if err := m.releaseCloneUnder(ref.InstallLocation); err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: releasing retained clones under %s: %v\n", ref.InstallLocation, err)
 	}
 	return nil
 }

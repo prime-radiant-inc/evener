@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -827,7 +828,9 @@ func seedLegacyInStoreDirectorySource(t *testing.T, m *Manager, name string) str
 // The store refuses a directory source inside itself today, so a directory at
 // <marketplaces>/<name> is normally residue. A record written before that rule
 // (or seeded by hand) can still name the clone path as its source, and then the
-// directory is the live source: RemoveMarketplace must not delete it.
+// directory is the live source: RemoveMarketplace must not delete it, and it
+// retains it so the next Gc honors the spare
+// (TestGc_AfterRemovingALegacyInStoreDirectorySource).
 func TestRemoveMarketplace_SparesADirectorySourceThatIsTheClonePath(t *testing.T) {
 	m := NewManager(t.TempDir())
 	sentinel := seedLegacyInStoreDirectorySource(t, m, "acme")
@@ -837,6 +840,298 @@ func TestRemoveMarketplace_SparesADirectorySourceThatIsTheClonePath(t *testing.T
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("the live directory source was deleted by removal: %v", err)
+	}
+}
+
+// A plugin installed inside the legacy directory source is live data: reclaiming
+// the directory at removal would break a still-recorded install, so it stays.
+func TestRemoveMarketplace_KeepsADirectorySourceAnInstallLivesIn(t *testing.T) {
+	m := NewManager(t.TempDir())
+	sentinel := seedLegacyInStoreDirectorySource(t, m, "acme")
+	pluginDir := filepath.Join(m.marketplaceDir("acme"), "plugins", "widget")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: pluginDir, Source: Source{Kind: SourceDirectory, Path: pluginDir}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("removal deleted a directory a registered install lives in: %v", err)
+	}
+}
+
+// Removing a marketplace must not pin the clone another record still sources:
+// that record protects the clone on its own, and the retained entry would
+// outlive it, making the clone unreclaimable forever once that record goes too.
+// Only the removed record's own directory source is retained.
+func TestRemoveMarketplace_DoesNotRetainACloneAnotherRecordSources(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceGitHub, Repo: "acme/widgets"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace acme: %v", err)
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 0 {
+		t.Fatalf("retained = %v, want none: beta still sources the clone, so acme's removal must not pin it", retained)
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("the clone beta sources was deleted: %v", err)
+	}
+
+	// Removing beta retires its source, so its path is retained then.
+	if err := m.RemoveMarketplace(context.Background(), "beta"); err != nil {
+		t.Fatalf("RemoveMarketplace beta: %v", err)
+	}
+	retained, err = m.loadRetainedClones()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 1 || filepath.Clean(retained[0]) != filepath.Clean(clone) {
+		t.Fatalf("retained = %v, want [%s]", retained, clone)
+	}
+}
+
+// Retention is consumed by the marketplace-clone sweep alone, so a source under
+// the cache is not retained: the cache sweep compares against registry
+// InstallPaths and never reads the exception record, and a retained entry there
+// would promise a guard nothing honours. The cache sweep's own treatment of an
+// unreferenced directory is unchanged by this feature.
+func TestRemoveMarketplace_DoesNotRetainASourceUnderTheCache(t *testing.T) {
+	m := NewManager(t.TempDir())
+	cacheSource := m.pluginCacheDir("acme", "widget", "deadbeef")
+	if err := os.MkdirAll(cacheSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: cacheSource},
+		InstallLocation: cacheSource,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 0 {
+		t.Fatalf("retained = %v, want none: retention is consumed by the clone sweep alone", retained)
+	}
+}
+
+// A registry install inside the clone outlives the removal — RemoveMarketplace
+// leaves registry entries behind — so reclaiming the clone would break a
+// still-recorded install. Removal must protect registry InstallPaths.
+func TestRemoveMarketplace_KeepsACloneARegistryInstallLivesIn(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	pluginDir := filepath.Join(clone, "plugins", "widget")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceGitHub, Repo: "acme/widgets"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: pluginDir, Source: Source{Kind: SourceDirectory, Path: pluginDir}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(pluginDir); err != nil {
+		t.Fatalf("removal deleted a directory a registry install lives in: %v", err)
+	}
+}
+
+// Another record's install location must protect the clone too: a hand-seeded
+// store can point two marketplaces at one clone path.
+func TestRemoveMarketplace_KeepsACloneAnotherRecordInstallsAt(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceGitHub, Repo: "acme/widgets"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/beta.git"}, InstallLocation: clone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("removal deleted a clone another record is installed at: %v", err)
+	}
+}
+
+// Releasing the retention is bookkeeping once the clone is gone: a failure
+// there must not fail an unregistration that already landed, or the clone stays
+// and a retry finds no entry to reach this step again.
+func TestRemoveMarketplace_ReclaimsTheCloneEvenWhenReleasingTheRetentionFails(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.retainClone(clone); err != nil {
+		t.Fatal(err)
+	}
+	// A second retained path keeps the record non-empty, so releasing clone
+	// writes it rather than removing the file.
+	if err := m.retainClone(m.marketplaceDir("other")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceGitHub, Repo: "acme/widgets"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == migrationRecordFileName {
+			return errors.New("boom")
+		}
+		return origWrite(path, data, perm)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace failed on a best-effort release: %v", err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the clone was not reclaimed: %v", err)
+	}
+}
+
+// A retained path strictly beneath the clone is separate live data a prior
+// removal kept. Removing the enclosing marketplace must not delete the tree
+// with it, even though a plain retained entry equal to the clone is reclaimable.
+func TestRemoveMarketplace_KeepsARetainedSourceBeneathTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sub := filepath.Join(clone, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.retainClone(sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceGitHub, Repo: "acme/widgets"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(sub); err != nil {
+		t.Fatalf("removal deleted a retained source beneath the clone: %v", err)
+	}
+}
+
+// An add replaces whatever the destination held, so a retention a prior removal
+// recorded for it is stale and must be dropped: left behind, it would make Gc
+// and Doctor keep a clone that is later stranded at that path for good.
+func TestAddMarketplace_ReleasesARetainedCloneItReplaces(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, _ := makeGitBackedMarketplace(t, "widget")
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := m.retainClone(clone); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.AddMarketplace(context.Background(), "acme", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 0 {
+		t.Fatalf("retained = %v, want none: the add replaced the directory", retained)
+	}
+}
+
+// The clone swap replaces the whole tree, so a retention for a path *beneath*
+// the destination is stale too. Left behind, it would keep Gc sparing a clone
+// that is later stranded there for good.
+func TestAddMarketplace_ReleasesRetainedPathsBeneathTheCloneItReplaces(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, _ := makeGitBackedMarketplace(t, "widget")
+	m := NewManager(t.TempDir())
+	sub := filepath.Join(m.marketplaceDir("acme"), "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.retainClone(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.AddMarketplace(context.Background(), "acme", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 0 {
+		t.Fatalf("retained = %v, want none: the add replaced the tree", retained)
+	}
+}
+
+// An unknown name is a lookup miss whatever the other store files hold, so a
+// corrupt registry must not turn it into a parse error: removal is one way a
+// user would try to recover from a corrupt store.
+func TestRemoveMarketplace_UnknownNameIgnoresACorruptRegistry(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.saveMarketplaces(Marketplaces{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := m.RemoveMarketplace(context.Background(), "missing")
+	if !errors.Is(err, ErrMarketplaceNotFound) {
+		t.Fatalf("err = %v, want ErrMarketplaceNotFound", err)
 	}
 }
 

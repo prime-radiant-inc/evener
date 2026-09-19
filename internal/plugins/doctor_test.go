@@ -209,6 +209,254 @@ func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing
 	}
 }
 
+// A clone no recorded marketplace names is the residue a failed removal, add or
+// edit leaves, and the report has to name the command that now clears it —
+// before this, no CLI did, so the user was told to delete it by hand.
+func TestDoctor_OrphanMarketplaceClone_ReportedWithGcRemediation(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	f := findFinding(t, findings, "orphaned marketplace clone")
+	if f.Level != LevelWarn {
+		t.Errorf("orphaned clone level = %s, want %s", f.Level, LevelWarn)
+	}
+	if !strings.Contains(f.Remediation, "gc") {
+		t.Errorf("remediation should point at gc: %q", f.Remediation)
+	}
+
+	// The report and the sweep agree: what Doctor flags, Gc clears, and then
+	// Doctor no longer flags it.
+	removed, err := m.Gc(context.Background())
+	if err != nil {
+		t.Fatalf("Gc: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != clone {
+		t.Fatalf("Gc removed = %v, want [%s]", removed, clone)
+	}
+	findings, err = m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor after Gc: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("the clone Gc removed is still reported: %+v", findings)
+	}
+}
+
+// A registered marketplace's install location is the clone directory the walk
+// finds, so it is not an orphan.
+func TestDoctor_OrphanMarketplaceClone_RegisteredCloneNotFlagged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceGitHub, Repo: "acme/widgets"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a registered marketplace's clone was flagged as an orphan: %+v", findings)
+	}
+}
+
+// A recorded directory source that sits inside the clone is live data, so the
+// clone is not an orphan the sweep would remove and Doctor must not call it
+// one.
+func TestDoctor_OrphanMarketplaceClone_DirectorySourceInsideNotFlagged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	source := filepath.Join(clone, "sub")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"other": {
+		Source:          Source{Kind: SourceDirectory, Path: source},
+		InstallLocation: source,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a clone a directory source sits in was flagged: %+v", findings)
+	}
+}
+
+// A leftover symlink occupies the marketplace name as a directory does, so the
+// report names it too rather than leaving the user with a name Doctor calls
+// healthy and a rename that refuses it.
+func TestDoctor_OrphanMarketplaceCloneSymlink_Reported(t *testing.T) {
+	m := NewManager(t.TempDir())
+	link := m.marketplaceDir("acme")
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if !hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a leftover clone symlink was not reported: %+v", findings)
+	}
+}
+
+// The cache-dir walk is independent of the marketplaces file, so a corrupt
+// marketplaces file is an additional finding, not a replacement that hides the
+// cache orphans the walk already computed.
+func TestDoctor_OrphanCacheDirStillReportedWhenMarketplacesCorrupt(t *testing.T) {
+	m := NewManager(t.TempDir())
+	sha := m.pluginCacheDir("acme", "widget", "deadbeef")
+	if err := os.MkdirAll(sha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.marketplacesFile(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := m.doctorOrphanCacheDirs()
+	if !hasFinding(findings, "orphaned cache directory") {
+		t.Errorf("a corrupt marketplaces file hid the cache-dir finding: %+v", findings)
+	}
+	if !hasFinding(findings, "marketplaces") {
+		t.Errorf("the marketplaces failure is not reported: %+v", findings)
+	}
+}
+
+// A clone that a still-recorded plugin install lives in is not reclaimable
+// data, so Doctor must not call it an orphan — Gc keeps it.
+func TestDoctor_CloneWithARegistryInstallInsideNotFlagged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	pluginDir := filepath.Join(clone, "plugins", "widget")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy record sources from its own clone; its plugin installs inside it.
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: clone},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: pluginDir, Enabled: true, Source: Source{Kind: SourceDirectory, Path: pluginDir}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// RemoveMarketplace leaves the clone (its own source) and the registry entry.
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a clone a registry install lives in was flagged: %+v", findings)
+	}
+}
+
+// A clone removed between the directory read and the check is nothing to
+// report: a finding would name a directory that no longer exists.
+func TestDoctor_SkipsACloneGoneBeforeTheCheck(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origReadDir := doctorReadDir
+	t.Cleanup(func() { doctorReadDir = origReadDir })
+	doctorReadDir = func(path string) ([]os.DirEntry, error) {
+		if path == m.marketplacesDir() {
+			return []os.DirEntry{ghostDirEntry{name: "ghost"}}, nil
+		}
+		return origReadDir(path)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a clone that does not exist was reported: %+v", findings)
+	}
+}
+
+// The registry InstallPath loop is the only safeguard when there is neither a
+// marketplace record nor a retained entry: a leftover clone a still-recorded
+// install lives in must not be reported as reclaimable.
+func TestDoctor_LeftoverCloneWithARegistryInstallInsideWithoutARecordNotFlagged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	pluginDir := filepath.Join(clone, "plugins", "widget")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: pluginDir, Enabled: true, Source: Source{Kind: SourceDirectory, Path: pluginDir}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned marketplace clone") {
+		t.Errorf("a clone a registry install lives in was flagged: %+v", findings)
+	}
+}
+
+// A top-level read error on the marketplaces directory is a finding, as it is
+// on the cache directory: skipping it silently hides every clone problem behind
+// no report at all.
+func TestDoctor_ReportsAnUnreadableMarketplacesDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	origReadDir := doctorReadDir
+	t.Cleanup(func() { doctorReadDir = origReadDir })
+	doctorReadDir = func(path string) ([]os.DirEntry, error) {
+		if path == m.marketplacesDir() {
+			return nil, boom
+		}
+		return origReadDir(path)
+	}
+
+	findings := m.doctorOrphanCacheDirs()
+	f := findFinding(t, findings, "reading marketplaces directory")
+	if f.Level != LevelFail {
+		t.Errorf("unreadable marketplaces dir level = %s, want %s", f.Level, LevelFail)
+	}
+}
+
 // storeTree is every path under root, relative and sorted: what a read-only
 // verb has to hand back untouched.
 func storeTree(t *testing.T, root string) []string {

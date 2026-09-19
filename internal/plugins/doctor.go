@@ -205,9 +205,15 @@ func sourceCannotUpgrade(src Source) bool {
 	return src.Rel || src.Kind == SourceDirectory
 }
 
-// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any
-// sha-dir that no registry entry's InstallPath points at — left behind by a
-// crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
+// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and
+// marketplaces/<name> and flags any directory no store record names: a sha-dir
+// that no registry entry's InstallPath points at — left behind by a crash
+// mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12) — or a
+// clone dir that no recorded marketplace's InstallLocation points at, the
+// residue a removal, add or edit whose directory cleanup failed leaves. Its
+// name is its original cache-only scope; it reports both because Gc removes
+// both, and a directory Doctor calls orphaned that Gc would keep would send the
+// user to a command that does nothing.
 //
 // Alone among Doctor's checks this one draws its conclusion from two pieces of
 // store state, so a writer caught between them invents it: a materialize
@@ -218,9 +224,11 @@ func sourceCannotUpgrade(src Source) bool {
 // rather than merely momentary. The registry Doctor's other checks read is the
 // one from before the lock, so this reads its own.
 func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
-	// A store with no cache directory has no orphans to report and no writer
-	// to wait for, so it is answered without going near the lock at all.
-	if _, err := doctorStat(m.cacheDir()); errors.Is(err, fs.ErrNotExist) {
+	// A store with neither directory has no orphans to report and no writer to
+	// wait for, so it is answered without going near the lock at all.
+	_, cacheErr := doctorStat(m.cacheDir())
+	_, marketplaceErr := doctorStat(m.marketplacesDir())
+	if errors.Is(cacheErr, fs.ErrNotExist) && errors.Is(marketplaceErr, fs.ErrNotExist) {
 		return nil
 	}
 
@@ -228,7 +236,7 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	if err != nil {
 		return []DoctorFinding{{
 			Level: LevelWarn, Category: catRegistry,
-			Message:     fmt.Sprintf("skipped the check for unreferenced cache directories: %v", err),
+			Message:     fmt.Sprintf("skipped the checks for unreferenced cache directories and marketplace clones: %v", err),
 			Remediation: "re-run the check once the plugin operation holding the store lock has finished",
 		}}
 	}
@@ -243,51 +251,119 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	}
 	referenced := referencedInstallPaths(reg)
 
-	marketplaceEnts, err := doctorReadDir(m.cacheDir())
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return []DoctorFinding{{
-			Level: LevelFail, Category: catRegistry,
-			Message: fmt.Sprintf("reading cache directory %s: %v", m.cacheDir(), err),
-		}}
-	}
-
 	var findings []DoctorFinding
-	for _, mktEnt := range marketplaceEnts {
-		if !mktEnt.IsDir() {
-			continue
+	if marketplaceEnts, err := doctorReadDir(m.cacheDir()); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return []DoctorFinding{{
+				Level: LevelFail, Category: catRegistry,
+				Message: fmt.Sprintf("reading cache directory %s: %v", m.cacheDir(), err),
+			}}
 		}
-		mktPath := filepath.Join(m.cacheDir(), mktEnt.Name())
-		pluginEnts, err := doctorReadDir(mktPath)
-		if err != nil {
-			continue
-		}
-		for _, plugEnt := range pluginEnts {
-			if !plugEnt.IsDir() {
+	} else {
+		for _, mktEnt := range marketplaceEnts {
+			if !mktEnt.IsDir() {
 				continue
 			}
-			plugPath := filepath.Join(mktPath, plugEnt.Name())
-			shaEnts, err := doctorReadDir(plugPath)
+			mktPath := filepath.Join(m.cacheDir(), mktEnt.Name())
+			pluginEnts, err := doctorReadDir(mktPath)
 			if err != nil {
 				continue
 			}
-			for _, shaEnt := range shaEnts {
-				if !shaEnt.IsDir() {
+			for _, plugEnt := range pluginEnts {
+				if !plugEnt.IsDir() {
 					continue
 				}
-				shaPath := filepath.Join(plugPath, shaEnt.Name())
-				if referenced[filepath.Clean(shaPath)] {
+				plugPath := filepath.Join(mktPath, plugEnt.Name())
+				shaEnts, err := doctorReadDir(plugPath)
+				if err != nil {
 					continue
 				}
-				findings = append(findings, DoctorFinding{
-					Level: LevelWarn, Category: catRegistry,
-					Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
-					Remediation: "run `evener plugin gc` to reclaim disk space",
-				})
+				for _, shaEnt := range shaEnts {
+					if !shaEnt.IsDir() {
+						continue
+					}
+					shaPath := filepath.Join(plugPath, shaEnt.Name())
+					if referenced[filepath.Clean(shaPath)] {
+						continue
+					}
+					findings = append(findings, DoctorFinding{
+						Level: LevelWarn, Category: catRegistry,
+						Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
+						Remediation: "run `evener plugin gc` to reclaim disk space",
+					})
+				}
 			}
 		}
+	}
+
+	// The marketplaces are read after the cache walk and a failure is an
+	// additional finding rather than a replacement: the cache findings computed
+	// above are still true, and dropping them would hide real orphans on the
+	// strength of an unrelated file's failure.
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		findings = append(findings, DoctorFinding{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("reading the marketplaces for the unreferenced clone check: %v", err),
+		})
+		return findings
+	}
+	ownedClones, err := referencedClonePaths(mk)
+	if err != nil {
+		findings = append(findings, DoctorFinding{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("resolving marketplace clones for the unreferenced clone check: %v", err),
+		})
+		return findings
+	}
+	retained, err := m.loadRetainedClones()
+	if err != nil {
+		findings = append(findings, DoctorFinding{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("reading the retained clone record for the unreferenced clone check: %v", err),
+		})
+		return findings
+	}
+
+	protectedClones := cloneProtectionPaths(mk, reg, retained)
+	if cloneEnts, err := doctorReadDir(m.marketplacesDir()); err == nil {
+		for _, ent := range cloneEnts {
+			// A symlink occupies the name as a directory does, so it is
+			// reported too; sweepDestroysSource compares sources against the
+			// link without following it, as Gc's removal does.
+			if isScratchCloneName(ent.Name()) || (!ent.IsDir() && ent.Type()&fs.ModeSymlink == 0) {
+				continue
+			}
+			clonePath := filepath.Join(m.marketplacesDir(), ent.Name())
+			// As in Gc's sweep: ancestors resolved, a final symlink not
+			// followed, so a leftover link is compared as the name it occupies.
+			resolved, err := resolveAncestors(clonePath)
+			if err != nil {
+				continue
+			}
+			if ownedClones[resolved] {
+				continue
+			}
+			// present is checked too: an entry removed between ReadDir and
+			// here is nothing to report, and a finding would name a directory
+			// that no longer exists.
+			if present, protect := m.sweepDestroysSource(protectedClones, clonePath); !present || protect {
+				continue
+			}
+			findings = append(findings, DoctorFinding{
+				Level: LevelWarn, Category: catRegistry,
+				Message:     fmt.Sprintf("orphaned marketplace clone %s has no registered marketplace", clonePath),
+				Remediation: "run `evener plugin gc` to reclaim disk space",
+			})
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// Mirror the cache walk above: a top-level read error is a finding, not
+		// a silent skip, or an unreadable marketplaces directory hides every
+		// clone problem behind no report at all.
+		findings = append(findings, DoctorFinding{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("reading marketplaces directory %s: %v", m.marketplacesDir(), err),
+		})
 	}
 	return findings
 }
