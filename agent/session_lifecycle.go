@@ -2354,28 +2354,35 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // shared answer so the callers keyed on that sentinel -- the queued restore in
 // ProcessPendingUserInput -- recognize this refusal as one of theirs.
 //
-// Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
-// failed once still accepts the next record, and whether that is right for
-// every producer is the audit in #1181, not this path's rule to settle.
+// A retained whole line is adopted by the shared pair helper, while any write
+// that recorded nothing is returned before the input is announced or the model
+// runs. This direct user-input door owns the stronger admission contract: the
+// pending ask cannot be cleared until the reply is recorded and synced.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
-	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(turn)
-	if writeErr != nil && s.attachedTranscript().Poisoned() {
-		s.attentionMu.Unlock()
-		return errors.Join(writeErr, errTranscriptRefusesRecords())
+	var barrierErr error
+	err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error {
+			if err := s.writeTranscriptLocked(turn); err != nil {
+				return err
+			}
+			if writer := s.attachedTranscript(); writer != nil {
+				barrierErr = writer.EstablishDurability()
+			}
+			return nil
+		},
+		func() { s.history = append(s.history, turn) },
+	)
+	if barrierErr != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript durability barrier failed: %v", barrierErr)})
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
-	s.mu.Unlock()
-	s.attentionMu.Unlock()
-	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
+	if err != nil {
+		if s.attachedTranscript().Poisoned() {
+			return errors.Join(err, errTranscriptRefusesRecords())
+		}
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	// A buffered write whose whole line landed but did not sync returns nil and
-	// queues its diagnostic; this path owns surfacing it, outside the lock.
-	s.surfaceTranscriptWarnings()
-	return nil
+	return err
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {

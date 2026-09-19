@@ -107,11 +107,11 @@ func TestAskUser_DurableAdmissionTranscriptAppendFailureMatchesRestore(t *testin
 	t.Parallel()
 	sess := newDurableAdmissionAskSession(t, SessionConfig{})
 	ctx := seedDurableAdmissionAsk(t, sess)
-	failure := errors.New("user transcript append durability failure")
+	failure := errors.New("user transcript append zero-byte failure")
 	fs := attachEnvironmentFailureFS(t, sess)
 	fs.mu.Lock()
 	fs.writeFailure = failure
-	fs.transferBeforeWriteFailure = 12
+	fs.transferBeforeWriteFailure = 0
 	fs.mu.Unlock()
 	if _, err := sess.ProcessInput(ctx, "answer the question", nil); !errors.Is(err, failure) {
 		t.Fatalf("transcript-refused resolving input error = %v, want %v", err, failure)
