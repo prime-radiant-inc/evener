@@ -54,7 +54,14 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 			entry := rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now()}
 			writeRendezvous(t, cfg.RunDir, entry)
 			var killObserved, waitObserved atomic.Bool
-			cfg.DaemonProcesses = forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			var ownerExited atomic.Bool
+			cfg.DaemonProcesses = forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+				if ownerExited.Load() {
+					if target.PID != entry.PID || target.SessionID != sessionID || target.StateDir != entry.StateDir || !target.StartedAt.Equal(entry.StartedAt) {
+						return nil, errors.New("exit proof requested for a different owner")
+					}
+					return nil, daemonprocess.ErrExited
+				}
 				if outcome == "already exited" {
 					return nil, daemonprocess.ErrExited
 				}
@@ -117,6 +124,45 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 			}
 			if *resumes != 0 {
 				t.Fatalf("automatic resume calls=%d", *resumes)
+			}
+			if outcome == "wait failed" || outcome == "signal denied" {
+				if _, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: ref}); err == nil {
+					t.Fatal("explicit resume replaced an owner whose exit was unconfirmed")
+				}
+				if *resumes != 0 {
+					t.Fatalf("unconfirmed replacement launches=%d", *resumes)
+				}
+				persisted, err := hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state := persisted.RecoveryState(sessionID); !state.ResumeRequired || state.ExitConfirmed || state.ResumeSessionID != sessionID {
+					t.Fatalf("failed termination lost unconfirmed recovery: %+v", state)
+				}
+
+				// The old owner's later exit is verified through the real Stop route.
+				// Losing its marker and recreating the hub did not establish this proof.
+				ownerExited.Store(true)
+				writeRendezvous(t, cfg.RunDir, entry)
+				if err := client.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}, nil); err != nil {
+					t.Fatal(err)
+				}
+				persisted, err = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state := persisted.RecoveryState(sessionID); !state.ResumeRequired || !state.ExitConfirmed || state.ResumeSessionID != sessionID {
+					t.Fatalf("verified exit was not durable: %+v", state)
+				}
+				if err := rendezvous.Remove(cfg.RunDir, entry.PID); err != nil {
+					t.Fatal(err)
+				}
+				client.Close()
+				client = dialHubRPC(t, hub)
+				defer client.Close()
+				if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if outcome == "clear write failed" {
 				restore := obstructRecoveryDirectory(t, cfg.HubStateRoot)

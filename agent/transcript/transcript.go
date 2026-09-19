@@ -734,6 +734,50 @@ func (w *Writer) Poisoned() bool {
 	return w.poisoned
 }
 
+// Closed reports whether this writer has been closed and its ordinary appends
+// have become silent no-ops. Nil-safe, like the append doors: a session with no
+// state directory has no writer and so nothing to refuse.
+func (w *Writer) Closed() bool {
+	if w == nil {
+		return false
+	}
+	return w.closed.Load()
+}
+
+// WhileHealthy runs f under the writer's write door when the writer still
+// accepts records, and returns nil when it ran. This is an admission decision,
+// not a sample of one: an append holds this same door across its write, and a
+// write it cannot resolve records the poison under the door, so an append that
+// poisons is either already visible here -- f does not run -- or it has not
+// started, which orders the poison after f. A caller that checks Poisoned()
+// outside the door can promise neither, and publishing work between such a check
+// and its commit leaves a window for a poisoning to land in.
+//
+// A closed writer is refused too, with its own reason rather than the poisoned
+// one: its ordinary appends are silent no-ops, so work published against it
+// would record nothing, but nothing was poisoned.
+//
+// f runs while the door is held, so it must not append to this writer and must
+// not take a lock whose holder appends: it is the announcement that the work is
+// about to be done, not the work itself. Nil-safe, like the append doors: a
+// session with no state directory has no writer and so nothing to refuse.
+func (w *Writer) WhileHealthy(f func()) error {
+	if w == nil {
+		f()
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.poisoned {
+		return ErrWriterPoisoned
+	}
+	if w.closed.Load() {
+		return ErrWriterClosed
+	}
+	f()
+	return nil
+}
+
 // DrainWarnings removes and returns every pending retained-entry diagnostic —
 // wrapped errors carrying the sync cause and ErrRollbackFailed. A retained entry
 // (whole line in the file, no fsync) is recorded, so the append returned nil;
