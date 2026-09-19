@@ -758,11 +758,11 @@ func TestIdentitySection_CleanupRuleScopedToDeliverables(t *testing.T) {
 	}
 
 	// The old unscoped rule read a deliverable as "a temporary artifact you
-	// created" and made it a cleanup target; it must not come back. The
-	// negative is clause-level and case-folded: a revert that rewords the
-	// surrounding sentence but keeps removal guidance paired with
-	// artifacts-you-created must still fail here, not only the exact
-	// pre-fix sentence.
+	// created" and made it a cleanup target; it must not come back. This is a
+	// narrow, case-folded pin on the exact pre-fix phrase "temporary artifacts
+	// you created": it catches that substring surviving a revert, but it does
+	// not provide paraphrase coverage, so a reworded rule that keeps the same
+	// concept without this wording would evade it.
 	folded := strings.ToLower(section)
 	for _, bad := range []string{
 		"temporary artifacts you created",
