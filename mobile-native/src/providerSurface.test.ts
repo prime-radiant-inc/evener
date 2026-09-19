@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { renderHook } from "./renderNative.testkit";
@@ -316,8 +317,10 @@ it("refuses configuration writes on a replaced connection's rows", async () => {
   await vi.waitFor(() => expect(store.getState().loading).toBe(false));
   const { result } = renderHook(() => useProviderSurface(store));
   await act(async () => {
-    await expect(result.current.remove("work")).rejects.toThrow(
-      "configuration",
+    // The store's own refusal, so the caller names the changed connection
+    // rather than reporting an unconfirmed write.
+    await expect(result.current.remove("work")).rejects.toBeInstanceOf(
+      StaleListingRefusal,
     );
   });
   expect(

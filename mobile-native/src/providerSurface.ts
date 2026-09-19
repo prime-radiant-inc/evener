@@ -11,6 +11,7 @@ import {
   type CredentialInstancesStore,
   foreignListingChange,
   isStaleListingRefusal,
+  StaleListingRefusal,
   staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
 
@@ -198,13 +199,14 @@ export function useProviderSurface(
     if (gate.active())
       throw new Error("A provider operation is in progress");
     const state = store.getState();
-    if (
-      writesConfiguration &&
-      (!state.listingEstablished ||
-        state.writesRefused ||
-        staleListingHeld(state))
-    )
-      throw new Error("Provider configuration is unavailable for editing");
+    if (writesConfiguration) {
+      // A replaced connection's rows are not this connection's to write, and
+      // the store refuses them the same way: throw its own refusal so the
+      // caller names the changed connection instead of an unconfirmed write.
+      if (staleListingHeld(state)) throw new StaleListingRefusal();
+      if (!state.listingEstablished || state.writesRefused)
+        throw new Error("Provider configuration is unavailable for editing");
+    }
     gate.setActive(true);
     clearCredentialTest();
     try {

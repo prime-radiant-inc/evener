@@ -185,7 +185,7 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
   expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_ERROR);
 });
 
-it("disables endpoint-sensitive destructive actions without a fingerprint", async () => {
+it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
   const listing = rows(
     row("alpha", {
       baseUrl: "https://alpha.example",
@@ -194,7 +194,7 @@ it("disables endpoint-sensitive destructive actions without a fingerprint", asyn
       authModes: ["oauth"],
     }),
   );
-  const { tree } = mount({ request: async () => listing });
+  const { tree, scripted } = mount({ request: async () => listing });
   await act(async () => {});
   pressRow(tree, "alpha");
   for (const label of [
@@ -206,8 +206,13 @@ it("disables endpoint-sensitive destructive actions without a fingerprint", asyn
       (node) => node.props.accessibilityLabel === label,
     );
     if (!action) throw new Error(`no action ${label}`);
-    expect(action.props.disabled).toBe(true);
+    // Not silently greyed out: pressing says why it cannot proceed.
+    expect(action.props.disabled).toBeFalsy();
+    pressLabel(tree, label);
+    await act(async () => {});
+    expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_ERROR);
   }
+  expect(scripted.methods).not.toContain("evener/instance/remove");
 });
 
 it("leaves only the store's own reconcile read after an in-flight write outlives the screen", async () => {

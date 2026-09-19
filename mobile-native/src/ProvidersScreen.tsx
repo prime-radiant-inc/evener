@@ -581,58 +581,60 @@ function Providers({
                         {instance.hasStoredFile &&
                           instance.activeSource !== "store" && (
                             <Action
-                              disabled={
-                                surface.busy ||
-                                stale ||
-                                fingerprintUnavailable(instance)
-                              }
-                              onPress={() =>
+                              disabled={surface.busy || stale}
+                              onPress={() => {
+                                // A destination the hub cannot fingerprint has
+                                // no endpoint to assert: refuse with a reason
+                                // rather than grey the control out silently.
+                                if (fingerprintUnavailable(instance)) {
+                                  setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                  return;
+                                }
                                 confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
                                   surface.clearStoredKey(
                                     instance.name,
                                     instance.endpointFingerprint,
                                   ),
-                                )
-                              }
+                                );
+                              }}
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
                           )}
                         {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
-                            disabled={
-                              surface.busy ||
-                              stale ||
-                              fingerprintUnavailable(instance)
-                            }
-                            onPress={() =>
+                            disabled={surface.busy || stale}
+                            onPress={() => {
+                              if (fingerprintUnavailable(instance)) {
+                                setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                return;
+                              }
                               confirm("Clear active credentials?", () =>
                                 surface.logout(
                                   instance.name,
                                   instance.endpointFingerprint,
                                 ),
-                              )
-                            }
+                              );
+                            }}
                           >
                             Clear credentials
                           </Action>
                         )}
                         {!instance.implicit && (
                           <Action
-                            disabled={
-                              surface.busy ||
-                              core.writesRefused ||
-                              stale ||
-                              fingerprintUnavailable(instance)
-                            }
-                            onPress={() =>
+                            disabled={surface.busy || core.writesRefused || stale}
+                            onPress={() => {
+                              if (fingerprintUnavailable(instance)) {
+                                setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                return;
+                              }
                               confirm("Remove provider instance?", () =>
                                 surface.remove(
                                   instance.name,
                                   instance.endpointFingerprint,
                                 ),
-                              )
-                            }
+                              );
+                            }}
                           >
                             Remove instance
                           </Action>
