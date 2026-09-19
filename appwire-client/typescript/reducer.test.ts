@@ -902,7 +902,12 @@ test("active full turn/completed preserves only identity-matched hydrated item m
     observedStartedAt: beforeCompletion.observedStartedAt,
     observedCompletedAt: new Date(1200).toISOString(),
   });
-  expect(keep.reasoningSummaries).toEqual([["hydrated reasoning", " + live"]]);
+  // The settle carries its own text ("final reasoning", asserted on the item
+  // above), which is authoritative for a reasoning row exactly as it is for
+  // assistant text: mergeReasoning replaces the hydrated seed plus the live
+  // delta with the settled row rather than masking the corrected text behind
+  // stale chunks.
+  expect(keep.reasoningSummaries).toEqual([["final reasoning"]]);
 
   const unrelated = itemAt(settledTurn, 2);
   expect(unrelated).toMatchObject({ id: "item_new", text: "new unrelated item", status: "completed" });
@@ -1410,6 +1415,232 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
   const items = turnAt(model, 0).items;
   expect(items).toHaveLength(1);
   expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["thinking..."]]);
+});
+
+test("item/completed's own reasoning text differs from the seeded chunks and replaces them", () => {
+  // The row's chunks were seeded from the item's own text (item/started here;
+  // hydrate's wireItemToModel does the same). Item/completed's explicit text
+  // is authoritative for a reasoning row exactly as it is for assistant text
+  // (mergeCompletedText): the settle carries the complete flattened reasoning,
+  // so it corrects the row instead of leaving the stale seed on screen.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", text: "stale partial seed", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["stale partial seed"]]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", text: "settled reasoning", status: "completed" },
+      },
+    },
+    1003,
+  );
+
+  const settled = itemAt(turnAt(model, 0), 0);
+  expect(settled.text).toBe("settled reasoning");
+  expect(settled.reasoningSummaries).toEqual([["settled reasoning"]]);
+});
+
+test("item/completed's explicit reasoning text replaces chunks accumulated from deltas", () => {
+  // The streaming row's live chunks are only a partial view; the settle's own
+  // flattened text is the complete reasoning and wins, mirroring assistant
+  // text (mergeCompletedText). This is the "a settle corrects a reasoning row"
+  // case for a deltas-only row.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  for (const [index, delta] of ["partial ", "stream"].entries()) {
+    model = applyNotification(
+      model,
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta },
+      },
+      1003 + index,
+    );
+  }
+  expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["partial ", "stream"]]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", text: "complete reasoning", status: "completed" },
+      },
+    },
+    1010,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["complete reasoning"]]);
+});
+
+test("item/completed that omits reasoning text keeps the model's accumulated chunks", () => {
+  // Omission is not a replacement (mergeCompletedText's own rule): a settle
+  // with no text of its own has nothing to say about the row, so the chunks
+  // accumulated live survive. Complements the two tests above, which pin the
+  // explicit-text side of the same boundary.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "live chunk",
+      },
+    },
+    1003,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" },
+      },
+    },
+    1004,
+  );
+  expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["live chunk"]]);
+});
+
+test("item/completed's explicit empty reasoning text clears chunks instead of reading as an omission", () => {
+  // An explicitly provided empty text is authoritative (mergeCompletedText's
+  // own rule), so a reasoning row must read as empty rather than keeping the
+  // chunks an omission would. The wire never sends an empty Text
+  // (appwire/types.go's `text,omitempty`), so this pins the hand-built-payload
+  // boundary: mergeReasoning's "no seed means keep chunks" rule would
+  // otherwise misread the empty settle as an omission.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "live chunk",
+      },
+    },
+    1003,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", text: "", status: "completed" },
+      },
+    },
+    1004,
+  );
+
+  const settled = itemAt(turnAt(model, 0), 0);
+  expect(settled.text).toBe("");
+  expect(settled.reasoningSummaries).toEqual([[""]]);
 });
 
 test('turn/completed with itemsView "full" replaces items outright — a payload carrying a differently-id\'d item drops the streamed one entirely', () => {
