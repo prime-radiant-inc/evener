@@ -514,6 +514,17 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
+	if msg.ListGeneration != m.marketplaceListGeneration {
+		return m, nil
+	}
+	if msg.Err == nil && m.marketplaceReconcilePending {
+		m.marketplaceRemovePending = ""
+		m.marketplaceRemoveGeneration = 0
+		m.marketplaceReconcilePending = false
+		m.marketplaceListGeneration++
+	} else if msg.Err == nil {
+		m.marketplaceListGeneration++
+	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(msg)
 		panel := updated.(launchconfig.PluginsPanel)
@@ -524,11 +535,66 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 }
 
 func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
+	currentRemoval := msg.Action == "remove" && msg.Name == m.marketplaceRemovePending &&
+		(m.marketplaceRemoveGeneration == 0 || msg.ListGeneration == m.marketplaceRemoveGeneration)
+	staleSnapshot := msg.ListGeneration < m.marketplaceListGeneration
 	if msg.Err != nil {
+		if currentRemoval {
+			switch state, applied := classifyMarketplaceCloneRemains(msg.Err); state {
+			case marketplaceCloneRemainsApplied:
+				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
+				if staleSnapshot {
+					reconcile := m.startMarketplaceReconciliation()
+					return m, reconcile
+				}
+				m.marketplaceRemovePending = ""
+				m.marketplaceRemoveGeneration = 0
+				m.marketplaceReconcilePending = false
+				m.marketplaceListGeneration++
+				if m.pluginsPanel != nil {
+					updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: applied})
+					panel := updated.(launchconfig.PluginsPanel)
+					m.pluginsPanel = &panel
+					return m, cmd
+				}
+				return m, nil
+			case marketplaceCloneRemainsUnavailable:
+				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
+				reconcile := m.startMarketplaceReconciliation()
+				return m, reconcile
+			}
+		}
 		m.err = msg.Err
+		if currentRemoval {
+			m.marketplaceRemovePending = ""
+			m.marketplaceRemoveGeneration = 0
+			m.marketplaceReconcilePending = false
+		}
 		return m, nil
 	}
+	if staleSnapshot && !currentRemoval {
+		return m, nil
+	}
+	if staleSnapshot {
+		if !m.marketplaceReconcilePending {
+			m.err = nil
+		}
+		reconcile := m.startMarketplaceReconciliation()
+		return m, reconcile
+	}
+	if m.marketplaceReconcilePending {
+		reconcile := m.startMarketplaceReconciliation()
+		return m, reconcile
+	}
 	m.err = nil
+	if currentRemoval {
+		m.marketplaceRemovePending = ""
+		m.marketplaceRemoveGeneration = 0
+		m.marketplaceReconcilePending = false
+	}
+	// A successful mutation snapshot is authoritative for reads issued before
+	// the mutation completed.
+	m.marketplaceListGeneration++
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
 		panel := updated.(launchconfig.PluginsPanel)
@@ -536,6 +602,20 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m *hubModel) startMarketplaceReconciliation() tea.Cmd {
+	m.marketplaceReconcilePending = true
+	if m.client == nil {
+		return nil
+	}
+	generation := m.nextMarketplaceListGeneration()
+	return launchconfig.CmdMarketplaceListWithGeneration(m.client, generation)
+}
+
+func (m *hubModel) nextMarketplaceListGeneration() uint64 {
+	m.marketplaceListGeneration++
+	return m.marketplaceListGeneration
 }
 
 func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrowseResultMsg) (tea.Model, tea.Cmd) {
@@ -550,21 +630,26 @@ func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrow
 
 func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubmitMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params)
+		return m, launchconfig.CmdMarketplaceAddWithGeneration(m.client, msg.Params, m.marketplaceListGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg) (tea.Model, tea.Cmd) {
+	if m.marketplaceRemovePending != "" {
+		return m, nil
+	}
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name)
+		m.marketplaceRemovePending = msg.Name
+		m.marketplaceRemoveGeneration = m.marketplaceListGeneration
+		return m, launchconfig.CmdMarketplaceRemoveWithGeneration(m.client, msg.Name, m.marketplaceListGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRefresh(msg launchconfig.MarketplaceRefreshMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name)
+		return m, launchconfig.CmdMarketplaceRefreshWithGeneration(m.client, msg.Name, m.marketplaceListGeneration)
 	}
 	return m, nil
 }

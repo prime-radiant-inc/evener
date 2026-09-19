@@ -119,7 +119,7 @@ func TestCovRefreshPluginsPanel(t *testing.T) {
 		message := command()
 		switch result := message.(type) {
 		case launchconfig.MarketplaceListResultMsg:
-			if result.Err != nil || len(result.List.Marketplaces) != 1 || result.List.Marketplaces[0].Name != "official" {
+			if result.Err != nil || result.ListGeneration != m.marketplaceListGeneration || len(result.List.Marketplaces) != 1 || result.List.Marketplaces[0].Name != "official" {
 				t.Fatalf("marketplace refresh result = %#v", result)
 			}
 			marketplaceSeen = true
