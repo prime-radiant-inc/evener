@@ -23,7 +23,9 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/e2ecap"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -42,10 +44,11 @@ import (
 // no production HOME is used: the fixture owns its HOME/XDG roots and cleans up
 // through exact process handles.
 const (
-	daemonRetirementProcessHelperVar = "DAEMON_RETIREMENT_PROCESS_HELPER"
-	daemonRetirementProcessEnvFile   = "DAEMON_RETIREMENT_PROCESS_ENV_FILE"
-	daemonRetirementProcessCtlFD     = "DAEMON_RETIREMENT_PROCESS_CTL_FD"
-	daemonRetirementProcessEvtFD     = "DAEMON_RETIREMENT_PROCESS_EVT_FD"
+	daemonRetirementProcessHelperVar          = "DAEMON_RETIREMENT_PROCESS_HELPER"
+	daemonRetirementProcessEnvFile            = "DAEMON_RETIREMENT_PROCESS_ENV_FILE"
+	daemonRetirementProcessCtlFD              = "DAEMON_RETIREMENT_PROCESS_CTL_FD"
+	daemonRetirementProcessEvtFD              = "DAEMON_RETIREMENT_PROCESS_EVT_FD"
+	daemonArtifactBrokerFailBeforeRegisterVar = "DAEMON_ARTIFACT_BROKER_FAIL_BEFORE_REGISTER"
 
 	// daemonRetirementHubLaunchHelperVar gates the re-executed hub-side helper
 	// that launches a daemon from its own process and then exits, so the
@@ -320,17 +323,19 @@ type daemonRetirementProcessFixture struct {
 	entry     rendezvous.Entry
 	sessionID string
 
-	mu             sync.Mutex
-	handles        []*daemonRetirementProcessHandle
-	params         map[string]appwire.TurnStartParams
-	turnMutations  map[string]string
-	advanceSeq     int
-	effectiveArm   time.Duration
-	lastAdvance    daemonRetirementProcessEvent
-	haveAdvance    bool
-	seamInstalled  bool
-	previousSeam   func(binary string, args, env []string) *exec.Cmd
-	launchSequence int
+	mu                               sync.Mutex
+	handles                          []*daemonRetirementProcessHandle
+	params                           map[string]appwire.TurnStartParams
+	turnMutations                    map[string]string
+	advanceSeq                       int
+	effectiveArm                     time.Duration
+	lastAdvance                      daemonRetirementProcessEvent
+	haveAdvance                      bool
+	seamInstalled                    bool
+	artifactBroker                   bool
+	artifactBrokerFailBeforeRegister bool
+	previousSeam                     func(binary string, args, env []string) *exec.Cmd
+	launchSequence                   int
 }
 
 // newDaemonRetirementProcessFixture is the plan's fixture constructor: a Hub
@@ -468,7 +473,14 @@ func (f *daemonRetirementProcessFixture) launchCommand(_ string, args, env []str
 }
 
 func (f *daemonRetirementProcessFixture) daemonEnv(env []string) []string {
-	return rewriteDaemonRetirementHome(env, f.home, f.configHome, f.stateHome, f.cacheHome)
+	env = rewriteDaemonRetirementHome(env, f.home, f.configHome, f.stateHome, f.cacheHome)
+	if f.artifactBroker {
+		env = append(env, "DAEMON_ARTIFACT_BROKER_PROCESS_HELPER=1")
+	}
+	if f.artifactBrokerFailBeforeRegister {
+		env = append(env, daemonArtifactBrokerFailBeforeRegisterVar+"=1")
+	}
+	return env
 }
 
 func daemonRetirementHelperCommand(helper string, args, env []string, envFile string, ctlR, evtW *os.File) *exec.Cmd {
@@ -501,7 +513,7 @@ func writeDaemonRetirementEnvFile(path string, env []string) error {
 }
 
 func (f *daemonRetirementProcessFixture) launchRequest() hubcore.SpawnRequest {
-	return hubcore.SpawnRequest{
+	req := hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model: "fixture/gpt-test",
 		}},
@@ -510,6 +522,10 @@ func (f *daemonRetirementProcessFixture) launchRequest() hubcore.SpawnRequest {
 		RunDir:     f.runDir,
 		Provider:   "fixture",
 	}
+	if f.artifactBroker {
+		req.Project = identifier.ProjectFromCanonicalPath(f.workDir)
+	}
+	return req
 }
 
 func (f *daemonRetirementProcessFixture) launchInitial() error {
@@ -521,6 +537,199 @@ func (f *daemonRetirementProcessFixture) launchInitial() error {
 		return err
 	}
 	return f.adoptLaunch(before, entry)
+}
+
+func TestOwnedDaemonArtifactBrokerHandshakePrecedesRendezvous(t *testing.T) {
+	// TRIPWIRE: launchInitial and event waits use daemonRetirementWatchdog only
+	// to expose a stranded owned process or handshake reader; pipe events, not
+	// elapsed time, advance every assertion below.
+	f := &daemonRetirementProcessFixture{
+		t: t, cfg: DefaultConfig(), params: map[string]appwire.TurnStartParams{},
+		turnMutations: map[string]string{}, artifactBroker: true,
+	}
+	f.setupRoots(t)
+	f.installSeam()
+	f.hub = f.newSpawner()
+	authorityPath := filepath.Join(f.root, "artifact-authority")
+	authority, err := interactiveartifacts.OpenHostAuthority(authorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = authority.Close() })
+	f.hub.ArtifactAuthority = authority
+	f.hub.ArtifactHubEpoch = interactiveartifacts.NewBrokerID()
+	t.Cleanup(func() {
+		if err := f.cleanup(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := f.launchInitial(); err != nil {
+		t.Fatalf("owned daemon launch: %v", err)
+	}
+	handle, err := f.currentHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	constructorIndex := -1
+	constructor, err := handle.events.waitForIndexed("real constructor return", func(i int, ev daemonRetirementProcessEvent) bool {
+		if ev.Kind == "broker_constructor_returned" {
+			constructorIndex = i
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	establishedIndex := -1
+	_, err = handle.events.waitForIndexed("broker establishment before rendezvous", func(i int, ev daemonRetirementProcessEvent) bool {
+		if ev.Kind != "broker_established" || ev.Root != constructor.Root {
+			return false
+		}
+		establishedIndex = i
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredIndex := -1
+	_, err = handle.events.waitForIndexed("rendezvous registration", func(i int, ev daemonRetirementProcessEvent) bool {
+		if ev.Kind == "registered" {
+			registeredIndex = i
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !(constructorIndex < establishedIndex && establishedIndex < registeredIndex) {
+		t.Fatalf("startup order constructor=%d broker=%d rendezvous=%d, events=%+v", constructorIndex, establishedIndex, registeredIndex, handle.events.history())
+	}
+	if _, err := authority.RootAssociation(t.Context(), f.sessionID); err != nil {
+		t.Fatalf("durable root association after launch: %v", err)
+	}
+	association, err := authority.RootAssociation(t.Context(), f.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := f.startMutation("artifact-broker-cloexec")
+	if err != nil {
+		t.Fatalf("start model shell probe: %v", err)
+	}
+	mutationText := "daemon-retirement-mutation:artifact-broker-cloexec"
+	firstProvider, err := handle.events.waitFor("first model shell probe call", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "provider" && ev.Input == mutationText
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDaemonRetirementProcessCommand(handle.ctlW, daemonRetirementProcessCommand{Cmd: "release", Seq: firstProvider.Seq}); err != nil {
+		t.Fatal(err)
+	}
+	secondProvider, err := handle.events.waitFor("post-shell model call", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "provider" && ev.Input == mutationText && ev.Seq != firstProvider.Seq
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDaemonRetirementProcessCommand(handle.ctlW, daemonRetirementProcessCommand{Cmd: "release", Seq: secondProvider.Seq}); err != nil {
+		t.Fatal(err)
+	}
+	shellResult, err := handle.events.waitFor("model shell CLOEXEC result", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "broker_shell_result"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shellResult.Input, "broker-fds-closed") {
+		t.Fatalf("model shell observed inherited broker descriptors: %q", shellResult.Input)
+	}
+	if err := f.waitKind("settled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.awaitReflected("artifact-broker-cloexec"); err != nil {
+		t.Fatalf("model shell turn %s did not reflect: %v", turn.Turn.ID, err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatalf("close original Hub authority: %v", err)
+	}
+	restartedAuthority, err := interactiveartifacts.OpenHostAuthority(authorityPath)
+	if err != nil {
+		t.Fatalf("reopen Hub authority while daemon survives: %v", err)
+	}
+	defer restartedAuthority.Close() //nolint:errcheck
+	rebootstrap, err := rebootstrapLiveDaemon(t.Context(), restartedAuthority, interactiveartifacts.NewBrokerID(), f.entry)
+	if err != nil {
+		t.Fatalf("rebootstrap surviving real daemon: %v", err)
+	}
+	if err := rebootstrap.Close(); err != nil {
+		t.Fatalf("close restarted Hub broker: %v", err)
+	}
+	visible, _ := json.Marshal(struct {
+		Args   []string
+		Env    []string
+		Events []daemonRetirementProcessEvent
+	}{handle.cmd.Args, handle.cmd.Env, handle.events.history()})
+	for _, secret := range []string{association.RealmID, association.PrincipalID, association.NamespaceID} {
+		if secret != "" && bytes.Contains(visible, []byte(secret)) {
+			t.Fatalf("private association secret %q escaped into argv/env/events", secret)
+		}
+	}
+}
+
+func TestOwnedDaemonArtifactBrokerEarlyFailureSealsPreRendezvousLaunch(t *testing.T) {
+	// TRIPWIRE: the production spawn waits on the owned child exit and every
+	// observation below comes from its inherited event pipe.
+	f := &daemonRetirementProcessFixture{
+		t: t, cfg: DefaultConfig(), params: map[string]appwire.TurnStartParams{}, turnMutations: map[string]string{},
+		artifactBroker: true, artifactBrokerFailBeforeRegister: true,
+	}
+	f.setupRoots(t)
+	f.installSeam()
+	f.hub = f.newSpawner()
+	authority, err := interactiveartifacts.OpenHostAuthority(filepath.Join(f.root, "artifact-authority"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = authority.Close() })
+	f.hub.ArtifactAuthority = authority
+	f.hub.ArtifactHubEpoch = interactiveartifacts.NewBrokerID()
+	t.Cleanup(func() {
+		if err := f.cleanup(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), daemonRetirementWatchdog)
+	defer cancel()
+	if _, err := f.hub.Spawn(ctx, f.launchRequest()); err == nil {
+		t.Fatal("daemon launch succeeded after the pre-rendezvous fixture failure")
+	}
+	handle, err := f.handleAt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle.afterStart()
+	established, err := handle.events.waitFor("artifact broker establishment before startup failure", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "broker_established"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.events.waitFor("pre-rendezvous startup failure", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "broker_pre_register_failure" && ev.Root == established.Root
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.RootAssociation(t.Context(), established.Root); err != nil {
+		t.Fatalf("root association was not durable before startup failure: %v", err)
+	}
+	for _, ev := range handle.events.history() {
+		if ev.Kind == "registered" {
+			t.Fatalf("failed launch published rendezvous: %+v", ev)
+		}
+	}
 }
 
 // adoptLaunch binds the just-launched handle to the rendezvous entry the Hub

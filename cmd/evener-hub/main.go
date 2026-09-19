@@ -635,6 +635,27 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
+	for _, live := range roster.List() {
+		entry := live.Entry
+		if _, err := authority.RootAssociation(ctx, entry.SessionID); err != nil {
+			continue
+		}
+		startBackground(func() {
+			connection, err := rebootstrapLiveDaemon(ctx, authority, spawner.ArtifactHubEpoch, entry)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] artifact broker rebootstrap %s: %v\n", entry.SessionID, err)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				_ = connection.Close()
+			case <-connection.Done():
+				if err := connection.Err(); err != nil && ctx.Err() == nil {
+					_, _ = fmt.Fprintf(stderr, "[hub] artifact broker %s closed: %v\n", entry.SessionID, err)
+				}
+			}
+		})
+	}
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	startBackground(func() { web.navigation.Start(ctx) })

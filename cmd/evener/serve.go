@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -739,11 +740,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	hubToken := envvars.EVENERHubToken.Getenv()
+	var privateBrokerHandler func(context.Context, appwire.Transport)
 	srv := deps.newServer(server.ServerConfig{
 		AppReplaySize: *appReplaySize,
 		HubToken:      hubToken,
 		AllowedHost:   listener.Addr().String(),
 		StateDir:      sd,
+		PrivateBrokerHandler: func(handlerCtx context.Context, transport appwire.Transport) {
+			if privateBrokerHandler == nil {
+				_ = transport.Close()
+				return
+			}
+			privateBrokerHandler(handlerCtx, transport)
+		},
 	})
 	// Seed the daemon's turn snapshot from this session's transcript BEFORE the
 	// event bridge starts, so the first read answers from the same memory every
@@ -774,6 +783,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// final identity swap. It remains held through the old session's drain and
 	// identity projection; currentMu is held only for the brief ownership check.
 	var identityTransitionMu sync.Mutex
+	var brokerGeneration uint64
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
 	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
@@ -795,6 +805,51 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentMu.RLock()
 		defer currentMu.RUnlock()
 		return currentSess
+	}
+	privateBrokerHandler = func(_ context.Context, transport appwire.Transport) {
+		if daemonBroker == nil {
+			_ = transport.Close()
+			return
+		}
+		var candidateIdentity appwire.BrokerDaemonIdentity
+		callbacks := interactiveartifacts.DaemonRebootstrapCallbacks{
+			Validate: func(expected appwire.BrokerDaemonIdentity) (appwire.BrokerDaemonIdentity, uint64, error) {
+				identityTransitionMu.Lock()
+				defer identityTransitionMu.Unlock()
+				entry, ok := rvRegistration.Entry()
+				if !ok {
+					return appwire.BrokerDaemonIdentity{}, 0, interactiveartifacts.ErrBrokerAuthentication
+				}
+				actual := interactiveartifacts.DaemonIdentity(entry)
+				currentMu.RLock()
+				liveID := currentSess.ID()
+				currentMu.RUnlock()
+				if liveID != entry.SessionID || !reflect.DeepEqual(actual, expected) {
+					return appwire.BrokerDaemonIdentity{}, 0, interactiveartifacts.ErrBrokerAuthentication
+				}
+				candidateIdentity = actual
+				return actual, brokerGeneration + 1, nil
+			},
+			Complete: func(candidate uint64) error {
+				identityTransitionMu.Lock()
+				defer identityTransitionMu.Unlock()
+				entry, ok := rvRegistration.Entry()
+				if !ok || candidate != brokerGeneration+1 || !reflect.DeepEqual(interactiveartifacts.DaemonIdentity(entry), candidateIdentity) {
+					return interactiveartifacts.ErrBrokerAuthentication
+				}
+				currentMu.RLock()
+				liveID := currentSess.ID()
+				currentMu.RUnlock()
+				if liveID != entry.SessionID {
+					return interactiveartifacts.ErrBrokerAuthentication
+				}
+				brokerGeneration = candidate
+				return nil
+			},
+		}
+		if err := daemonBroker.AcceptRebootstrap(ctx, transport, callbacks); err != nil {
+			_ = transport.Close()
+		}
 	}
 	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
 		currentMu.Lock()

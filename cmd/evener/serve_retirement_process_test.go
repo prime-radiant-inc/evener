@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,9 +20,11 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
@@ -60,9 +64,40 @@ const (
 	// pipe descriptors. ExtraFiles maps to 3 and 4; they are configurable so a
 	// nested launch (a hub test-binary subprocess handing the same pipes on)
 	// can preserve the numbers.
-	daemonRetirementCtlFDVar = "DAEMON_RETIREMENT_PROCESS_CTL_FD"
-	daemonRetirementEvtFDVar = "DAEMON_RETIREMENT_PROCESS_EVT_FD"
+	daemonRetirementCtlFDVar                  = "DAEMON_RETIREMENT_PROCESS_CTL_FD"
+	daemonRetirementEvtFDVar                  = "DAEMON_RETIREMENT_PROCESS_EVT_FD"
+	daemonArtifactBrokerProcessHelperVar      = "DAEMON_ARTIFACT_BROKER_PROCESS_HELPER"
+	daemonArtifactBrokerFailBeforeRegisterVar = "DAEMON_ARTIFACT_BROKER_FAIL_BEFORE_REGISTER"
 )
+
+type daemonArtifactBrokerRuntime struct{}
+
+func (daemonArtifactBrokerRuntime) Catalog() ([]agent.ManagedTool, error) {
+	return []agent.ManagedTool{{
+		Definition: llm.ToolDefinition{
+			Name: "artifact_broker_probe", Description: "Private broker process-fixture probe",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+		},
+		Operation: "probe", ReadOnly: true, Validate: func(json.RawMessage) error { return nil },
+	}}, nil
+}
+
+func (daemonArtifactBrokerRuntime) Bind(agent.ManagedSession) (agent.ManagedBinding, error) {
+	return daemonArtifactBrokerBinding{}, nil
+}
+
+type daemonArtifactBrokerBinding struct{}
+
+func (daemonArtifactBrokerBinding) Prepare(context.Context, agent.ManagedCall) (agent.ManagedRequest, error) {
+	return agent.ManagedRequest{}, agent.ErrManagedUnavailable
+}
+func (daemonArtifactBrokerBinding) Authorize(context.Context, agent.ManagedRequest) error {
+	return agent.ErrManagedUnavailable
+}
+func (daemonArtifactBrokerBinding) Execute(context.Context, agent.ManagedRequest) (agent.ManagedResult, error) {
+	return agent.ManagedResult{}, agent.ErrManagedUnavailable
+}
+func (daemonArtifactBrokerBinding) Close(context.Context) error { return nil }
 
 // daemonRetirementProcessEvent is one line on the helper's event pipe. The
 // fixture decodes the same shape; the JSON field names are the contract.
@@ -408,6 +443,23 @@ func (a *daemonRetirementProcessAdapter) Complete(ctx context.Context, req llm.R
 		return llm.Response{}, ctx.Err()
 	}
 	resp := scriptedCommunicate("retirement execution complete")
+	input := lastUserMessageText(req)
+	if os.Getenv(daemonArtifactBrokerProcessHelperVar) != "" && strings.Contains(input, "artifact-broker-cloexec") {
+		if shellResult, ok := requestToolResult(req, "artifact_broker_cloexec"); ok {
+			event := daemonRetirementProcessEvent{Kind: "broker_shell_result", Root: input, Input: fmt.Sprint(shellResult.Content)}
+			if shellResult.IsError {
+				event.Err = event.Input
+			}
+			a.h.emit(event)
+		} else {
+			readFD, writeFD, fdErr := inheritedBrokerFDs(flag.Args())
+			if fdErr != nil {
+				return llm.Response{}, fdErr
+			}
+			command := fmt.Sprintf(`test ! -e /dev/fd/%d && test ! -e /dev/fd/%d && printf broker-fds-closed`, readFD, writeFD)
+			resp = scriptedToolCalls(scriptedShellCall("artifact_broker_cloexec", command, "foreground"))
+		}
+	}
 	resp.Provider = a.Name()
 	resp.Model = req.Model
 	resp.Finish = llm.FinishReason{Reason: llm.FinishReasonToolCalls}
@@ -440,12 +492,54 @@ func (h *daemonRetirementProcessHelper) deps() serveDeps {
 	deps.buildProfile = func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error) {
 		return provider.NewOpenAIProfile("gpt-test"), nil
 	}
+	if os.Getenv(daemonArtifactBrokerProcessHelperVar) != "" {
+		var broker *interactiveartifacts.DaemonBroker
+		deps.managedRuntime = func(inherited *interactiveartifacts.DaemonBroker) agent.ManagedRuntimeProvider {
+			broker = inherited
+			return daemonArtifactBrokerRuntime{}
+		}
+		newSession := deps.newSession
+		deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+			sess, err := newSession(client, profile, env, cfg)
+			if err != nil {
+				return nil, err
+			}
+			h.emit(daemonRetirementProcessEvent{Kind: "broker_constructor_returned", Root: sess.ID()})
+			readFD, writeFD, err := inheritedBrokerFDs(flag.Args())
+			if err == nil {
+				check := exec.Command("/bin/sh", "-c", `test ! -e "/dev/fd/$1" && test ! -e "/dev/fd/$2"`, "broker-cloexec", strconv.Itoa(readFD), strconv.Itoa(writeFD))
+				err = check.Run()
+			}
+			if err != nil {
+				sess.Close()
+				return nil, fmt.Errorf("artifact broker descendant CLOEXEC: %w", err)
+			}
+			if broker == nil {
+				sess.Close()
+				return nil, errors.New("artifact broker constructor seam missing")
+			}
+			establishCtx := cfg.LifetimeContext
+			if establishCtx == nil {
+				establishCtx = context.Background()
+			}
+			if _, err := broker.EstablishRoot(establishCtx, sess.ID(), 1); err != nil {
+				sess.Close()
+				return nil, fmt.Errorf("establish artifact broker root: %w", err)
+			}
+			h.emit(daemonRetirementProcessEvent{Kind: "broker_established", Root: sess.ID()})
+			return sess, nil
+		}
+	}
 	deps.retirementClock = h.clock
 	deps.retirementObserve = func(event, rootID string) {
 		h.emit(daemonRetirementProcessEvent{Kind: "beat", Name: event, Root: rootID})
 	}
 	register := deps.register
 	deps.register = func(reg *rvreg.Registration, dir string, entry rendezvous.Entry) error {
+		if os.Getenv(daemonArtifactBrokerFailBeforeRegisterVar) != "" {
+			h.emit(daemonRetirementProcessEvent{Kind: "broker_pre_register_failure", Root: entry.SessionID})
+			return errors.New("fixture failed after artifact broker establishment and before rendezvous")
+		}
 		if err := register(reg, dir, entry); err != nil {
 			return err
 		}
@@ -470,6 +564,30 @@ func (h *daemonRetirementProcessHelper) deps() serveDeps {
 		}, onDrained)
 	}
 	return deps
+}
+
+func inheritedBrokerFDs(args []string) (int, int, error) {
+	readFD, writeFD := -1, -1
+	for _, arg := range args {
+		name, value, ok := strings.Cut(arg, "=")
+		if !ok {
+			continue
+		}
+		fd, err := strconv.Atoi(value)
+		if err != nil {
+			continue
+		}
+		switch name {
+		case "--artifact-broker-read-fd":
+			readFD = fd
+		case "--artifact-broker-write-fd":
+			writeFD = fd
+		}
+	}
+	if readFD < 3 || writeFD < 3 {
+		return 0, 0, errors.New("artifact broker descriptor flags missing")
+	}
+	return readFD, writeFD, nil
 }
 
 // TestDaemonRetirementProcessHelper is the test-binary subprocess entry. It
