@@ -300,7 +300,97 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: true,
 			conflict: true,
 			error: null,
+			draftUnreadable: false,
+			draftError: null,
 			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("tracks retained unreadable classification across storage failures and recovery", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+
+		writeDraft("hub-a", "{not json");
+		const unreadable = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: unreadable.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: true,
+			draftError:
+				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			storageUnavailable: true,
+			writeUncertain: false,
+		});
+
+		harness.storage.throwOnGet = true;
+		const failedProbe = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: failedProbe.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: true,
+			draftError:
+				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			storageUnavailable: true,
+		});
+
+		harness.storage.throwOnGet = false;
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		const readable = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: readable.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		const absent = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: absent.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+			writeUncertain: false,
 		});
 		mounted.unmount();
 	});
@@ -338,6 +428,8 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			writeUncertain: false,
 			conflict: false,
 			error: null,
+			draftUnreadable: false,
+			draftError: null,
 			storageUnavailable: false,
 		});
 		mounted.unmount();

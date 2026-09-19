@@ -73,6 +73,9 @@ const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
 
 type DraftReadWithValue = ReturnType<typeof readDraftOutcomeWithValue>;
 
+const DRAFT_RESTORE_FAILED_MESSAGE =
+	"Could not restore the saved shortcut draft. Check current shortcuts to retry.";
+
 function reconcileRetainedDraftProjection(
 	snapshot: NativePreferencesSnapshot,
 	result: DraftReadWithValue,
@@ -81,6 +84,7 @@ function reconcileRetainedDraftProjection(
 	let draft = keybindings.draft;
 	let writeUncertain = keybindings.writeUncertain;
 	let storageUnavailable = keybindings.storageUnavailable;
+	let draftUnreadable = keybindings.draftUnreadable;
 	let conflict = keybindings.conflict;
 	let draftError = keybindings.draftError;
 	switch (result.outcome) {
@@ -91,6 +95,7 @@ function reconcileRetainedDraftProjection(
 			draft = null;
 			writeUncertain = false;
 			storageUnavailable = false;
+			draftUnreadable = false;
 			conflict = false;
 			draftError = null;
 			break;
@@ -98,13 +103,16 @@ function reconcileRetainedDraftProjection(
 			draft = null;
 			writeUncertain = false;
 			storageUnavailable = true;
+			draftUnreadable = true;
 			conflict = false;
+			draftError = DRAFT_RESTORE_FAILED_MESSAGE;
 			break;
 		case "readable": {
 			const fields = decodeKeybindingDraftFields(result.value);
 			draft = fields.draft;
 			writeUncertain = fields.writeUncertain;
 			storageUnavailable = false;
+			draftUnreadable = false;
 			conflict =
 				draft !== null &&
 				keybindings.confirmed !== null &&
@@ -122,6 +130,7 @@ function reconcileRetainedDraftProjection(
 		keybindings.draft === draft &&
 		keybindings.writeUncertain === writeUncertain &&
 		keybindings.storageUnavailable === storageUnavailable &&
+		keybindings.draftUnreadable === draftUnreadable &&
 		keybindings.conflict === conflict &&
 		keybindings.draftError === draftError &&
 		keybindings.error === error
@@ -134,6 +143,7 @@ function reconcileRetainedDraftProjection(
 			draft,
 			writeUncertain,
 			storageUnavailable,
+			draftUnreadable,
 			conflict,
 			draftError,
 			error,
