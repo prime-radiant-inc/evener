@@ -198,8 +198,11 @@ function varsCarriedOver(before: InstanceEntry, listed: InstanceEntry, params: I
 /** Whether the listed entry carries every identity field this save did not
  * touch - the confirmation a superseded rename and a superseded plain save
  * share. `vars` is compared key-by-key (see varsCarriedOver); the derived
- * endpointFingerprint is not compared when this save edited a field it derives
- * from (ENDPOINT_AFFECTING_FIELDS). `base` is the one field whose comparison
+ * fields are not compared when this save edited a field they derive from
+ * (ENDPOINT_AFFECTING_FIELDS): `endpointFingerprint` is the digest of the
+ * resolved endpoint, and `baseUrl` is the RESOLVED URL (the hub substitutes
+ * this instance's vars into the provider's template), so editing a var or a
+ * URL-affecting field moves both. `base` is the one field whose comparison
  * differs by path - a rename may legitimately pin it, a plain save may not -
  * so the caller supplies that comparison. */
 function untouchedIdentityMatches(
@@ -211,7 +214,10 @@ function untouchedIdentityMatches(
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(
-    (field) => field !== "vars" && !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
+    (field) =>
+      field !== "vars" &&
+      !changed.has(field) &&
+      !(endpointChanged && (field === "endpointFingerprint" || field === "baseUrl")),
   );
   const matches = untouched.every((field) =>
     field === "base" ? matchesBase(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
@@ -225,8 +231,9 @@ function untouchedIdentityMatches(
  * Go's net/url form; both sides are reduced through this one parser so host
  * case and explicit default ports (where the two libraries disagree) cannot
  * make a representable URL refuse. A URL that does not parse or carries no
- * host reduces to empty, as the hub's does; a trailing slash is normalized
- * away because the libraries disagree on it for a bare authority. */
+ * host reduces to empty, as the hub's does. The path is kept verbatim: the hub
+ * preserves meaningful path differences such as a trailing slash, so stripping
+ * it here would let `/v1/` and `/v1` match each other. */
 function listedEndpoint(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed === "") return "";
@@ -241,8 +248,7 @@ function listedEndpoint(raw: string): string {
   parsed.password = "";
   parsed.search = "";
   parsed.hash = "";
-  const out = parsed.toString();
-  return out.endsWith("/") ? out.slice(0, -1) : out;
+  return parsed.toString();
 }
 
 /** Whether the listed endpoint is the one this save declared. The listed URL
@@ -287,20 +293,21 @@ function normalizedCredentialHeader(raw: string): string {
  * RESOLVED value (baseUrl/protocol/surface inherit from the base provider) or
  * an OMITTED field (apiKeyEnv/credentialHeader, which the hub omits when the
  * authored value is invalid or a literal secret) - neither is proof of the
- * clear, so the match fails closed on every clear rather than accept any
- * same-name instance as the clear's landing. A declared header is compared
- * after the hub's own normalization. A declared var has to be present and
- * equal, key by key. */
-function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  if (
+ * clear, so the plain-save path fails closed on every clear rather than accept
+ * any same-name instance as the clear's landing. The rename path passes
+ * `failClosedOnClear: false`: a rename is confirmed by the untouched identity
+ * fields it did not change, and a clear riding along is simply unverifiable
+ * rather than a reason to drop a rename that plainly landed. A declared header
+ * is compared after the hub's own normalization. A declared var has to be
+ * present and equal, key by key. */
+function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams, failClosedOnClear: boolean): boolean {
+  const cleared =
     params.clearBaseUrl ||
     params.clearProtocol ||
     params.clearSurface ||
     params.clearApiKeyEnv ||
-    params.clearCredentialHeader
-  ) {
-    return false;
-  }
+    params.clearCredentialHeader;
+  if (cleared && failClosedOnClear) return false;
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
@@ -332,7 +339,7 @@ function renamedInstanceLanded(
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
-  return declaredValuesLanded(listed, params) ? newName : undefined;
+  return declaredValuesLanded(listed, params, false) ? newName : undefined;
 }
 
 /** The entry the store's own listing carries for a plain (non-rename) save
@@ -359,7 +366,7 @@ function supersededSaveLanded(
   if (listed.implicit !== before.implicit && !(before.implicit && !listed.implicit)) return undefined;
   const plainBase = (a: InstanceEntry, b: InstanceEntry): boolean => fieldValue(a, "base") === fieldValue(b, "base");
   if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
-  return declaredValuesLanded(listed, params) ? listed : undefined;
+  return declaredValuesLanded(listed, params, true) ? listed : undefined;
 }
 
 export interface InstanceSheetProps {

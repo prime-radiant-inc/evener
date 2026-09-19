@@ -2102,4 +2102,118 @@ describe("the form", () => {
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
+
+  // The listing's baseUrl is the RESOLVED URL: editing a template variable that
+  // feeds the provider's base_url changes it, so it is derived from this save
+  // and cannot be compared as an untouched identity field on an endpoint-
+  // affecting save.
+  test("a superseded save that changes a template variable re-anchors on the new resolved URL", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://old.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    // The variable change resolves a different base URL in the listing.
+    const landed = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://new.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // The hub preserves meaningful path differences (a trailing slash), so a
+  // declaration at `/v1/` must not match a listing at `/v1`: normalizing the
+  // slash away would re-anchor the draft onto a concurrent replacement.
+  test("a superseded save at a trailing-slash path does not re-anchor onto the slashless entry", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1/");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/",
+      originClientId: "test-tab",
+    });
+
+    const foreign = { ...before, baseUrl: "https://gw.example.test/v1", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A rename riding along with a clear still landed: its confirmation is the
+  // untouched identity fields it did not change, and the clear is merely
+  // unverifiable. Failing the whole rename on the clear leaves the sheet on a
+  // name the store no longer holds.
+  test("a superseded rename that also clears a credential field is still confirmed", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // The renamed instance landed without the cleared authored field.
+    const landed = instance({
+      name: "work2",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
 });
