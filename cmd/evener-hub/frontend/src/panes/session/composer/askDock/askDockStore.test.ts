@@ -18,8 +18,8 @@ import {
   resetThreadsStoreForTests,
   threadsStore,
 } from "../../../../stores/threads";
-import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDock.testFixture";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
+import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
 
@@ -111,7 +111,7 @@ function userMessageNotification(ref: string, turnId: string, itemId: string, te
   };
 }
 
-// ackAskUserCallWith is askDock.testFixture's ackAskUserCall with a
+// ackAskUserCallWith is askDockTestUtils's ackAskUserCall with a
 // parameterized question set, generalized for the multi-question batches the
 // kata-99yf active-tab tests need.
 function ackAskUserCallWith(

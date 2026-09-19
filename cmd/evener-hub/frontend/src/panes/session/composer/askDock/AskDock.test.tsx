@@ -18,8 +18,8 @@ import {
 } from "../../../../stores/threads";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
-import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDock.testFixture";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
+import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
 
 afterEach(() => {
   cleanup();

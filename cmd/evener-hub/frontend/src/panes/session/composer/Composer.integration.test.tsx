@@ -27,8 +27,8 @@ import {
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { replaceEditorText, selectEditorText } from "../testing/editor";
-import { ackAskUserCall } from "./askDock/askDock.testFixture";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
+import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
 import { readComposerDraft, readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
