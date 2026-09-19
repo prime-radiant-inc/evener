@@ -10804,7 +10804,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // The replacement publishes: same thread id, rotated instance.
     fake.on("thread/read", (params) =>
-      readResponse(params.ref ?? "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } } }),
+      readResponse(params.ref ?? "ref_a", {
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+      }),
     );
     await threadsStore.getState().refreshThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
@@ -10973,7 +10975,13 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     const clientA = new FakeClient("ready");
     clientA.on("thread/clear", (params) =>
-      clearResponse(params, testThread("ref_a", { turns: [], evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } } })),
+      clearResponse(
+        params,
+        testThread("ref_a", {
+          turns: [],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+        }),
+      ),
     );
     const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
     await tabA.enqueueIntent({
@@ -10990,7 +10998,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // the resync push lands, this tab re-reads, and the rotated instance
     // publishes over the one the canceled row belonged to — same thread id.
     clientB.on("thread/read", (params) =>
-      readResponse(params.ref ?? "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } } }),
+      readResponse(params.ref ?? "ref_a", {
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+      }),
     );
     act(() => {
       clientB.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
