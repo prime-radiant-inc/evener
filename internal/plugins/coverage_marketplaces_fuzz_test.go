@@ -251,7 +251,11 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	marketplaceReadFile = func(string) ([]byte, error) { return removeBody, nil }
 	marketplaceRemoveAll = func(string) error { return fail }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err == nil {
+	removeManager := NewManager(t.TempDir())
+	if err := os.MkdirAll(removeManager.marketplaceDir("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeManager.RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove clone-removal error accepted")
 	}
 	reset()
