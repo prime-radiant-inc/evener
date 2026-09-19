@@ -31,7 +31,6 @@ import {
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { useConnectionStore } from "../../stores/connection";
 import {
-  relativeAge,
   selectAttentionSummary,
   selectPinSectionSummaries,
   selectPinSections,
@@ -394,7 +393,6 @@ function summarySession(
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    age: relativeAge(summary.updated_at),
     children,
   };
   let entries = sessionModelCache.get(summary as object);
