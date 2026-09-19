@@ -192,9 +192,10 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // exists for an item currently streaming). A reasoning item that already
 // carries flattened text (e.g. replayed from a persisted transcript on
 // hydrate) is seeded as a single chunk so display-time joining still works;
-// live in-flight chunks accumulated via item/reasoning/summaryTextDelta are
-// preserved separately by the item/completed and turn/completed handlers
-// (mergeReasoning), since they are more complete than this seed.
+// when a later settle carries no text of its own, the live in-flight chunks
+// accumulated via item/reasoning/summaryTextDelta are preserved by the
+// item/completed and turn/completed handlers (mergeReasoning). A settle that
+// DOES carry text re-seeds through here and wins — see mergeReasoning.
 const ITEM_TEXT_PRESENCE = Symbol("itemTextPresence");
 type ItemTextPresence = "omitted" | "provided";
 type InternalItemModel = ItemModel & { [ITEM_TEXT_PRESENCE]?: ItemTextPresence };
@@ -256,17 +257,39 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
-  if (item.type === "reasoning" && item.text) {
+  // `item.text !== undefined` (not truthiness): an explicitly provided empty
+  // text is authoritative for a reasoning row exactly as it is for assistant
+  // text (mergeCompletedText), so it seeds an authoritative EMPTY summary
+  // ([[""]], which display-time joining drops to no paragraph) instead of
+  // leaving reasoningSummaries unset — unset means "the settle said nothing"
+  // to mergeReasoning, which would keep stale chunks on screen.
+  if (item.type === "reasoning" && item.text !== undefined) {
     model.reasoningSummaries = [[item.text]];
   }
   return model;
 }
 
-// The model "keeps chunks": reasoningSummaries accumulated from
-// item/reasoning/summaryTextDelta are never discarded on settlement (only
-// joined for display, by the consumer). Wins over whatever wireItemToModel
-// seeded from the settled wire item's own (usually empty) text.
+// The model "keeps chunks" only when the settle carries no text of its own.
+// An item/completed (or a "full" turn/completed item) that brings its own
+// text is authoritative for a reasoning row exactly as it is for assistant
+// text (mergeCompletedText): wireItemToModel has already seeded
+// reasoningSummaries from that text (including an explicit empty text, as the
+// authoritative-empty [[""]]), and that complete flattened reasoning replaces
+// whatever the model accumulated, so a settle can correct a row the item's
+// earlier seed or live deltas got wrong. An omitted text — the wire never
+// sends an empty Text (appwire/types.go's `text,omitempty`), and the live
+// settle carries none for reasoning — has nothing to say, so the chunks
+// accumulated from item/reasoning/summaryTextDelta survive (only ever joined
+// for display, by the consumer).
+//
+// The seed, not itemTextPresence(settled), is the signal deliberately:
+// mergeCompletedText runs before this helper in every chain and copies the
+// EXISTING item's presence onto its result when the settle omitted text, so
+// by the time this runs a previously-text-bearing item's omitted settle still
+// reads "provided" — presence here would discard the very chunks an omission
+// must preserve.
 function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (settled.reasoningSummaries) return settled;
   if (existing?.reasoningSummaries) {
     return copyItemTextPresence(settled, { ...settled, reasoningSummaries: existing.reasoningSummaries });
   }
