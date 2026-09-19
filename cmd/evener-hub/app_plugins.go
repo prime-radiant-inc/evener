@@ -245,7 +245,8 @@ func marketplaceRefusalToWire(err error) error {
 	case errors.Is(err, plugins.ErrMarketplaceExists):
 		return appwire.Conflict(err.Error())
 	case errors.Is(err, plugins.ErrMarketplaceNotFound), errors.Is(err, plugins.ErrInvalidName),
-		errors.Is(err, plugins.ErrMarketplaceSourceInStore):
+		errors.Is(err, plugins.ErrMarketplaceSourceInStore),
+		errors.Is(err, plugins.ErrMarketplaceSourceUnsupported):
 		return appwire.InvalidParams(err.Error())
 	}
 	return err
