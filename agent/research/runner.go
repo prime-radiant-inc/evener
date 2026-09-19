@@ -60,7 +60,7 @@ type sessionExecutor interface {
 
 // ExecExecutor runs the harness binary headless:
 //
-//	evener --model <model> --state-dir <dir> --max-rounds <n> -n <atif> <prompt>
+//	evener --model <model> --state-dir <dir> --max-rounds <n> --export-atif <atif> <prompt>
 //
 // with the process working directory set to the run workdir.
 type ExecExecutor struct {
@@ -72,7 +72,7 @@ func (e ExecExecutor) Run(ctx context.Context, run SessionRun) error {
 	args := []string{
 		"--state-dir", run.StateDir,
 		"--max-rounds", strconv.Itoa(run.MaxRounds),
-		"-n", run.AtifPath,
+		"--export-atif", run.AtifPath,
 	}
 	if run.Model != "" {
 		args = append(args, "--model", run.Model)
