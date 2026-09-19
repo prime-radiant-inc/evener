@@ -583,9 +583,13 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
       // have taken the ref's last durable row without this tab observing it.
       // The notify refreshes the projection; the pin refresh lets a later
       // releaseThread drop a model whose rows are already gone - a stale pin
-      // keeps it pinned, and the cleared model leaks.
+      // keeps it pinned, and the cleared model leaks. The pin-only variant,
+      // never the full refresh: a removal-triggered cleanup has authority
+      // over the pin and none over dispatchability - a full refresh can read
+      // the stores empty while an enqueue is mid-chain and de-arm a dispatch
+      // the chain already scheduled (the supersede-discard listener's rule).
       notifyMutationPersistence([targetRef]);
-      void refreshMutationPins(runtime, [targetRef]).catch(() => {});
+      void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
     })
     .catch(() => {});
 }
