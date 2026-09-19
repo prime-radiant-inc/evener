@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzProcessRuntimeProgram exercises the public command, grep-ripgrep, stream,
@@ -539,9 +541,10 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	processRuntimeCheckSystemAdapter(t)
 	factory.assertConsumed()
 	// Every spawn exports the lazily provisioned per-session scratch dir as
-	// EVENER_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
-	// "feat(execenv): preserve developer PATH and always export session scratch
-	// vars"). SessionScratchDir reports it without provisioning; the spawns
+	// EVENER_SCRATCH_DIR, with TMPDIR naming its shared temp subdirectory, under
+	// every env policy (commit bf79673f5, "feat(execenv): preserve developer PATH
+	// and always export session scratch vars"; issue #495 split the two).
+	// SessionScratchDir reports it without provisioning; the spawns
 	// above already provisioned it. A WithWorkingDirectory clone does not
 	// inherit the parent's scratch: it provisions its own on first use.
 	scratch := env.SessionScratchDir()
@@ -551,13 +554,13 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	}
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
 		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
-			"EVENER_SCRATCH_DIR": scratch,
-			"TMPDIR":             scratch,
+			"EVENER_SCRATCH_DIR": sandbox.SessionScratchPrivateDir(scratch),
+			"TMPDIR":             sandbox.SessionScratchTmpDir(scratch),
 		}, nil)
 	}
 	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
-		"EVENER_SCRATCH_DIR": childScratch,
-		"TMPDIR":             childScratch,
+		"EVENER_SCRATCH_DIR": sandbox.SessionScratchPrivateDir(childScratch),
+		"TMPDIR":             sandbox.SessionScratchTmpDir(childScratch),
 	}, nil)
 	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
 	for _, command := range factory.byName {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // allocatedSessionScratch provisions the same per-session scratch directory
@@ -59,7 +60,7 @@ type toolExecResult struct {
 func TestFileToolsAllowOwnAllocatedScratch(t *testing.T) {
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
-	target := filepath.Join(scratch, "probe.txt")
+	target := filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "probe.txt")
 
 	write := fileToolCall(t, s, "write_file", map[string]string{
 		"file_path": target,
@@ -114,7 +115,10 @@ func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
 	}{
 		{name: "arbitrary", target: filepath.Join(t.TempDir(), "issue-368-arbitrary.txt")},
 		{name: "scratch-parent", target: filepath.Join(parentFixture, "issue-368-parent.txt")},
-		{name: "other-session", target: filepath.Join(otherScratch, "issue-368-other.txt")},
+		// The file tools are granted the PRIVATE subtree, so a cross-session case has to
+		// name that subtree: the container root is denied for every session and would pass
+		// even if the grant wrongly covered all private subtrees.
+		{name: "other-session", target: filepath.Join(sandbox.SessionScratchPrivateDir(otherScratch), "issue-368-other.txt")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,6 +134,10 @@ func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
 				t.Fatalf("denied write changed %q: stat err=%v", target, err)
 			}
 
+			// A live scratch withholds write from everyone; a fixture that seeds a
+			// file in ANOTHER session's scratch opens that directory up first. The
+			// denial under test is the file tool\'s grant, not the container mode.
+			_ = os.Chmod(filepath.Dir(target), 0o700)
 			if err := os.WriteFile(target, []byte("original\n"), 0o644); err != nil {
 				t.Fatalf("seed unallocated edit target: %v", err)
 			}
@@ -156,7 +164,13 @@ func TestFileToolsDenySymlinkEscapeFromAllocatedScratch(t *testing.T) {
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
 	outside := t.TempDir()
-	link := filepath.Join(scratch, "escape")
+	// The file tools are granted the PRIVATE subtree, so the escape symlink has to be
+	// planted there for the denial to come from the symlink-component check rather
+	// than from the path simply being outside every granted root.
+	link := filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "escape")
+	// The live container withholds owner write, so the fixture opens the window
+	// Evener\'s own setup uses before planting its symlink.
+	_ = os.Chmod(scratch, 0o700)
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatalf("create scratch escape symlink: %v", err)
 	}
@@ -197,7 +211,10 @@ func TestFileToolsDenySymlinkEscapeFromAllocatedScratch(t *testing.T) {
 func TestFileToolsPinAllocatedScratchAcrossRootSwap(t *testing.T) {
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
-	first := filepath.Join(scratch, "first.txt")
+	// The file tools are granted the scratch's private subtree, not the scratch
+	// container (issue #495), so the pinned root this test swaps is that subtree.
+	granted := sandbox.SessionScratchPrivateDir(scratch)
+	first := filepath.Join(granted, "first.txt")
 	write := fileToolCall(t, s, "write_file", map[string]string{
 		"file_path": first,
 		"content":   "before root swap\n",
@@ -206,8 +223,10 @@ func TestFileToolsPinAllocatedScratchAcrossRootSwap(t *testing.T) {
 		t.Fatalf("initial scratch write: %s", write.output)
 	}
 
-	moved := scratch + "-moved"
-	if err := os.Rename(scratch, moved); err != nil {
+	moved := granted + "-moved"
+	// Renaming a subtree needs write on the container, which the live mode withholds.
+	_ = os.Chmod(scratch, 0o700)
+	if err := os.Rename(granted, moved); err != nil {
 		t.Fatalf("move allocated scratch root: %v", err)
 	}
 	t.Cleanup(func() {
@@ -215,12 +234,12 @@ func TestFileToolsPinAllocatedScratchAcrossRootSwap(t *testing.T) {
 		_ = os.RemoveAll(moved)
 	})
 	outside := t.TempDir()
-	if err := os.Symlink(outside, scratch); err != nil {
+	if err := os.Symlink(outside, granted); err != nil {
 		t.Fatalf("replace scratch root with symlink: %v", err)
 	}
 
 	second := fileToolCall(t, s, "write_file", map[string]string{
-		"file_path": filepath.Join(scratch, "after.txt"),
+		"file_path": filepath.Join(granted, "after.txt"),
 		"content":   "must stay in pinned root\n",
 	})
 	if second.isError {

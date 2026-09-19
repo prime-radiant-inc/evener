@@ -271,7 +271,7 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		t.Fatalf("wrapped command = path=%q args=%v extra=%v", cmd.Path, cmd.Args, cmd.ExtraFiles)
 	}
 	joinedEnv := strings.Join(cmd.Env, "\n")
-	if strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || strings.Contains(joinedEnv, "AWS_ACCESS_KEY_ID=") || !strings.Contains(joinedEnv, "TMPDIR="+scratch) {
+	if strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || strings.Contains(joinedEnv, "AWS_ACCESS_KEY_ID=") || !strings.Contains(joinedEnv, "TMPDIR="+sandbox.SessionScratchTmpDir(scratch)) {
 		t.Fatalf("wrapped command environment did not enforce sandbox floor: %v", cmd.Env)
 	}
 	trace.WrapperArgv = sandboxLifecycleNormalizedArgv(base, scratch, cmd.Args)

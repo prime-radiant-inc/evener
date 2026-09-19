@@ -263,17 +263,42 @@ func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
 
 func TestBuildBwrapArgvSessionTmp(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
-	tmp := t.TempDir()
+	tmp := scratchWithWriteRoots(t)
 	args := buildBwrapArgv(rp, tmp, cwd)
 	if !hasSeq(args, "--tmpfs", "/tmp") {
 		t.Errorf("expected a non-shared /tmp tmpfs: %v", args)
 	}
-	if !hasSeq(args, "--bind", tmp, tmp) {
-		t.Errorf("expected the session tmp %q bound writable: %v", tmp, args)
+	// The container is traversal-only: it must be read-only, never writable, or a
+	// shell could drop a 0644 artifact beside the two exported subtrees where any
+	// local user who can reach the base could read it (issue #495).
+	if !hasSeq(args, "--ro-bind", tmp, tmp) {
+		t.Errorf("expected the session scratch container %q bound read-only: %v", tmp, args)
+	}
+	if seqIndex(args, "--bind", tmp, tmp) >= 0 {
+		t.Errorf("the session scratch container %q must NOT be bound writable: %v", tmp, args)
+	}
+	for _, dir := range SessionScratchWriteRoots(tmp) {
+		if !hasSeq(args, "--bind", dir, dir) {
+			t.Errorf("expected the writable scratch subtree %q bound writable: %v", dir, args)
+		}
 	}
 	if seqIndex(args, "--remount-ro", "/tmp") >= 0 {
 		t.Errorf("writable mode must NOT remount /tmp read-only: %v", args)
 	}
+}
+
+// scratchWithWriteRoots creates a session scratch container with the two exported
+// writable subtrees under it, which is what the backends derive their bind roots
+// from. A bare directory (no subtrees) is not a session scratch.
+func scratchWithWriteRoots(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, sub := range SessionScratchWriteRoots(dir) {
+		if err := os.Mkdir(sub, 0o700); err != nil {
+			t.Fatalf("provision scratch subtree %q: %v", sub, err)
+		}
+	}
+	return dir
 }
 
 // TestBuildBwrapArgvReadOnlySessionTmp pins the fix for the read-only-mode /tmp
@@ -283,19 +308,25 @@ func TestBuildBwrapArgvSessionTmp(t *testing.T) {
 // scratch dir stays writable while everything else under /tmp is not.
 func TestBuildBwrapArgvReadOnlySessionTmp(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeReadOnly, true)
-	tmp := t.TempDir()
+	tmp := scratchWithWriteRoots(t)
 	args := buildBwrapArgv(rp, tmp, cwd)
 
-	bindIdx := seqIndex(args, "--bind", tmp, tmp)
+	// The writable root in read-only mode is the private subtree; the container
+	// itself stays read-only and traversal-only (issue #495).
+	writable := SessionScratchPrivateDir(tmp)
+	bindIdx := seqIndex(args, "--bind", writable, writable)
 	if bindIdx < 0 {
-		t.Fatalf("expected the session tmp %q bound writable: %v", tmp, args)
+		t.Fatalf("expected the private scratch subtree %q bound writable: %v", writable, args)
+	}
+	if seqIndex(args, "--bind", tmp, tmp) >= 0 {
+		t.Errorf("the session scratch container %q must NOT be bound writable: %v", tmp, args)
 	}
 	remountIdx := seqIndex(args, "--remount-ro", "/tmp")
 	if remountIdx < 0 {
 		t.Fatalf("expected /tmp remounted read-only in read-only mode: %v", args)
 	}
 	if remountIdx < bindIdx {
-		t.Errorf("--remount-ro /tmp (at %d) must come AFTER the session tmp bind (at %d): %v", remountIdx, bindIdx, args)
+		t.Errorf("--remount-ro /tmp (at %d) must come AFTER the writable scratch bind (at %d): %v", remountIdx, bindIdx, args)
 	}
 }
 

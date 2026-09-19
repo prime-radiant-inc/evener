@@ -168,7 +168,7 @@ var (
 	SSHConnection  = Var{Name: "SSH_CONNECTION", Summary: "Used to auto-detect headless OpenAI login sessions.", Visibility: Inherited}
 	SSHTTY         = Var{Name: "SSH_TTY", Summary: "Used to auto-detect headless OpenAI login sessions.", Visibility: Inherited}
 	Term           = Var{Name: "TERM", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
-	TmpDir         = Var{Name: "TMPDIR", Summary: "Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see EVENER_SCRATCH_DIR).", Visibility: Inherited}
+	TmpDir         = Var{Name: "TMPDIR", Summary: "Inherited by core-only command environments; a session/daemon env overrides it to the sticky, world-writable temp subdirectory of the session scratch (see EVENER_SCRATCH_DIR).", Visibility: Inherited}
 	User           = Var{Name: "USER", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	UserProfile    = Var{Name: "USERPROFILE", Summary: "Windows user profile fallback.", Visibility: Inherited}
 	WaylandDisplay = Var{Name: "WAYLAND_DISPLAY", Summary: "Used to auto-detect graphical sessions and clipboard support.", Visibility: Inherited}

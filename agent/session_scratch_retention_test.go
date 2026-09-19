@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -576,11 +577,12 @@ func TestRetirementColdDelegateScratchManifest(t *testing.T) {
 	}
 
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	scratch, err := sandbox.NewSessionScratch(base, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifact := filepath.Join(scratch.Dir, "cold.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratch.Dir), "cold.bin")
 	want := []byte("cold-delegate-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -704,7 +706,7 @@ func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
 			t.Fatalf("install child retention: %v", err)
 		}
 	}
-	artifact := filepath.Join(scratchDir, "aged-required.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), "aged-required.bin")
 	want := []byte("aged-cold-delegate-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -803,7 +805,7 @@ func TestRetirementRootScratchRestoresAtOriginalPath(t *testing.T) {
 	if scratchDir == "" {
 		t.Fatal("root minted no scratch")
 	}
-	artifact := filepath.Join(scratchDir, "root-required.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), "root-required.bin")
 	want := []byte("root-aged-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -941,6 +943,7 @@ func TestRetirementConsumerRolesRecordEachBinding(t *testing.T) {
 func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 	stateDir := t.TempDir()
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	const rootID = "crashed-root"
 	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
@@ -990,6 +993,7 @@ func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T) {
 	stateDir := t.TempDir()
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	const rootID = "crashed-owning-binding"
 	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
@@ -1057,6 +1061,7 @@ func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T
 func TestRetirementRestorePreservesHistoricalEmptyBinding(t *testing.T) {
 	stateDir := t.TempDir()
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	const rootID = "resumed-backswap-root"
 	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
@@ -1146,7 +1151,7 @@ func TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath(t *testing.T)
 		t.Fatal("E0 minted no sandbox scratch")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(scratchDir) })
-	artifact := filepath.Join(scratchDir, "root-sandbox-required.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), "root-sandbox-required.bin")
 	want := []byte("root-sandbox-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -1330,6 +1335,7 @@ func TestRetirementStaleSwapRetryKeepsMovedSlots(t *testing.T) {
 		t.Fatal("root has no scratch retention owner")
 	}
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	sandboxScratch, err := sandbox.NewSessionScratch(base, workDir)
 	if err != nil {
@@ -1419,6 +1425,7 @@ func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	const rootID = "l1-foreign-pin-root"
 	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
 	scratch, err := sandbox.NewSessionScratch(base, workDir)
@@ -1483,8 +1490,27 @@ func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
 // go before the retained slot can be restored — which means a FAILED adoption
 // must re-provision one rather than leave the environment with no sandbox
 // scratch at all.
+// relaxScratchDirForCleanup makes any live scratch a test leaves behind removable by
+// the harness sweep: a live container withholds write even from its owner, and only
+// Evener's own teardown (Cleanup, or Retain's retained mode) relaxes it first.
+func relaxScratchDirForCleanup(t *testing.T, base string) {
+	t.Helper()
+	t.Cleanup(func() {
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "evener-sandbox-") {
+				_ = os.Chmod(filepath.Join(base, entry.Name()), 0o700)
+			}
+		}
+	})
+}
+
 func TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch(t *testing.T) {
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	const sessionID = "01RESUMEDROOTADOPTFAIL1"
 	const bindingID = "b-adopt-fail"
@@ -1551,6 +1577,7 @@ func TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch(t *testi
 // directory.
 func TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal(t *testing.T) {
 	base := t.TempDir()
+	relaxScratchDirForCleanup(t, base)
 	workDir := t.TempDir()
 	root := t.TempDir()
 	const sessionID = "01RESUMEDROOTWRAPFAIL1"
@@ -1638,7 +1665,7 @@ func TestRetirementResumedUnsandboxedRootKeepsRetainedScratch(t *testing.T) {
 	if scratchDir == "" {
 		t.Fatal("root minted no scratch")
 	}
-	artifact := filepath.Join(scratchDir, "root-required.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), "root-required.bin")
 	want := []byte("root-aged-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)

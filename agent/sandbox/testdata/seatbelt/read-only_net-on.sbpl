@@ -124,6 +124,7 @@
 ; write grants
 (allow file-write*
   (subpath (param "WRITABLE_ROOT_0"))
+  (subpath (param "WRITABLE_ROOT_1"))
 )
 ; network
 (allow network-outbound)

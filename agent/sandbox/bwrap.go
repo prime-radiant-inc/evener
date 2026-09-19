@@ -67,12 +67,24 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	add("--dev", "/dev")
 	add("--proc", "/proc")
 
-	// A non-shared /tmp, with the per-session tmp bound writable inside it. The
+	// A non-shared /tmp, with the per-session scratch reachable inside it. The
 	// tmpfs discards everything else under /tmp; the session dir is a real host
 	// directory (cleaned at session end) reachable at its host path.
+	//
+	// The CONTAINER is bound READ-ONLY: it exists so the two exported subtrees
+	// below it can be reached, and nothing may be written directly into it — a
+	// 0644 artifact there would be readable by any local user who can reach the
+	// base, since the container itself is traversable (issue #495). Only the
+	// private subtree and the shared temp subtree are bound writable, layered on
+	// top so they win.
 	add("--tmpfs", "/tmp")
 	if sessionTmp != "" {
-		add("--bind", sessionTmp, sessionTmp)
+		add("--ro-bind", sessionTmp, sessionTmp)
+		for _, dir := range SessionScratchWriteRoots(sessionTmp) {
+			if pathExists(dir) {
+				add("--bind", dir, dir)
+			}
+		}
 	}
 
 	// A read-granted root that falls under /tmp was just shadowed by the /tmp
@@ -169,8 +181,8 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// /tmp after all binds and masks have created their mountpoints: doing it
 	// earlier prevents bwrap from creating a shadowed cwd/read-root destination
 	// in the fresh tmpfs. No command runs before this fence. --remount-ro is
-	// non-recursive, so the separate sessionTmp bind remains writable while
-	// writes elsewhere in the /tmp tmpfs fail EROFS.
+	// non-recursive, so the separate writable subtree binds (private, tmp) remain
+	// writable while writes elsewhere in the /tmp tmpfs fail EROFS.
 	if rp.Mode == ModeReadOnly || rp.WriteBlocked {
 		add("--remount-ro", "/tmp")
 	}

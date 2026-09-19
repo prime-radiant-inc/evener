@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // Session close runs the environment's Cleanup while a file tool may still be
@@ -12,7 +14,7 @@ import (
 // and is closed then; a drained one is closed at once.
 func TestCleanupLeavesAHeldFileToolLayerOpenUntilItsOperationCompletes(t *testing.T) {
 	env := readConfinedEnvAt(t, t.TempDir())
-	scratch := env.SessionScratchDir()
+	scratch := sandbox.SessionScratchPrivateDir(env.SessionScratchDir())
 	if _, err := env.WriteFile(filepath.Join(scratch, "probe"), "held\n"); err != nil {
 		t.Fatalf("write_file into the scratch: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestRetainSessionScratchIsSafeToRunConcurrently(t *testing.T) {
 // same drain a teardown uses.
 func TestRetainSessionScratchRetiresTheFileToolLayers(t *testing.T) {
 	env := readConfinedEnvAt(t, t.TempDir())
-	scratch := env.SessionScratchDir()
+	scratch := sandbox.SessionScratchPrivateDir(env.SessionScratchDir())
 	if _, err := env.WriteFile(filepath.Join(scratch, "probe"), "built\n"); err != nil {
 		t.Fatalf("write_file into the scratch: %v", err)
 	}

@@ -287,6 +287,38 @@ func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session 
 	}))
 }
 
+// pinnedScratchBase returns a scratch base the allocator will actually choose when a
+// test redirects TMPDIR at it. The allocator prefers a base whose whole ancestor
+// chain grants other-user traverse (issue #495), and a t.TempDir() base is 0700
+// under the harness's own 0700 root, so allocation would silently escape to the real
+// user cache: the test's leak assertions would then pass vacuously against a
+// directory nothing used, and the run would leave retained scratch next to the
+// developer's cache. This creates a traversable base directly under the system temp
+// so the pin holds on any host.
+func pinnedScratchBase(t *testing.T) string {
+	t.Helper()
+	base, err := os.MkdirTemp("/tmp", "evener-pinned-scratch-")
+	if err != nil {
+		t.Skipf("no writable system temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for dir := filepath.Clean(base); ; {
+		info, err := os.Stat(dir)
+		if err != nil || info.Mode().Perm()&0o001 == 0 {
+			t.Skipf("this host's temp chain is not traversable by other users (%q)", dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return base
+}
+
 // scratchDirsIn lists the session scratch directories under base. Tests that
 // cannot reach an internally built environment point TMPDIR here instead and
 // read the disposal off the filesystem, the way an operator would.
@@ -320,7 +352,7 @@ func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
 	}
 	defer root.Close()
 
-	scratchBase := t.TempDir()
+	scratchBase := pinnedScratchBase(t)
 	t.Setenv(envvars.TmpDir.Name, scratchBase)
 	// The child takes production's snapshot path, so its environment mints a
 	// scratch before anything can fail; the fault then fails the construction
@@ -365,7 +397,7 @@ func TestSpawnedSubagentSessionFailureDisposesTheChildScratch(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai"})
 	root := newSession(t, withClient(client), withDir(workspace), withoutGitSnapshot())
 
-	scratchBase := t.TempDir()
+	scratchBase := pinnedScratchBase(t)
 	t.Setenv(envvars.TmpDir.Name, scratchBase)
 	// The child takes production's snapshot path, and the fault then fails its
 	// construction after it.
@@ -495,7 +527,7 @@ func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) 
 	meta.WorktreePath = lane
 	meta.WorktreeRestoreRoot = launchDir
 
-	scratchBase := t.TempDir()
+	scratchBase := pinnedScratchBase(t)
 	t.Setenv(envvars.TmpDir.Name, scratchBase)
 	boom := errors.New("restore failed after the snapshot")
 	cfg := artifactRestoreConfig(t, stateDir)

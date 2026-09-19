@@ -107,9 +107,11 @@ func (rp *ResolvedPolicy) ControlPolicy(mainRepoRoot string) (*ResolvedPolicy, e
 // directory only AFTER resolving the policy (the directory does not exist yet at
 // resolve time), so this is the one late-bound file-tool grant — the execenv
 // package calls it when it builds the file-tool enforcement layer, passing the
-// concrete sandbox.SessionScratch.Dir / Wrapper.SessionTmp() path. The
+// PRIVATE subtree (agent/sandbox.SessionScratchPrivateDir of the session scratch) —
+// never the scratch container, which is traversable to other users and whose use
+// here would re-expose session artifacts by name (issue #495). The
 // kernel-wrapped spawned-process layer needs no equivalent: it already reaches
-// the scratch dir through its own sessionTmp parameter at Wrap-build time
+// the scratch through its own sessionTmp parameter at Wrap-build time
 // (buildBwrapArgv / SeatbeltPolicy both take sessionTmp separately from
 // rp.Spawned), so Spawned's roots are left untouched here.
 //

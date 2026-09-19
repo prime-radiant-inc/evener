@@ -189,7 +189,7 @@ func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
 	if scratch == "" {
 		t.Fatal("a degraded read-only delegate must still get a scratch dir to write into")
 	}
-	if _, err := child.WriteFile(filepath.Join(scratch, "findings.md"), "what I found\n"); err != nil {
+	if _, err := child.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "findings.md"), "what I found\n"); err != nil {
 		t.Fatalf("the delegate's own scratch dir must stay writable: %v", err)
 	}
 }
@@ -204,7 +204,7 @@ func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
 // prepareSubagentEnvironment), not by calling DisposeSandboxScratch directly. Not
 // parallel: it isolates TMPDIR to observe the scratch base.
 func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
@@ -363,7 +363,7 @@ func TestInheritedDegradedWorktreeProvisionsScratchBeforeFileToolUse(t *testing.
 	if scratch == "" {
 		t.Fatal("an inherited wrapperless write block must provision scratch before file-tool use")
 	}
-	if _, err := child.WriteFile(filepath.Join(scratch, "findings.md"), "ready\n"); err != nil {
+	if _, err := child.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "findings.md"), "ready\n"); err != nil {
 		t.Fatalf("the first file-tool use must write the inherited child's scratch: %v", err)
 	}
 	if _, ok := degradedReadOnlyBoundaryFromEnv(child); !ok {

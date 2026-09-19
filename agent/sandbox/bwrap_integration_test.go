@@ -138,7 +138,7 @@ func TestBwrapReadOnlyTmpRootsPreserveAccess(t *testing.T) {
 			cwd := filepath.Join(base, "cwd")
 			readRoot := filepath.Join(base, "read-grant")
 			sessionTmp := filepath.Join(base, "session")
-			for _, dir := range []string{cwd, readRoot, sessionTmp} {
+			for _, dir := range []string{cwd, readRoot, sessionTmp, SessionScratchPrivateDir(sessionTmp), SessionScratchTmpDir(sessionTmp)} {
 				if err := os.Mkdir(dir, 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -166,9 +166,14 @@ func TestBwrapReadOnlyTmpRootsPreserveAccess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The writable scratch is the private subtree (and the shared temp
+			// subtree); the CONTAINER is traversal-only, so a write to it must fail
+			// (issue #495).
 			const script = `set -eu
 test "$(cat "$1/readable")" = fixture
-printf writable > "$3/written"
+printf writable > "$3/private/written"
+printf temp > "$3/tmp/scratch"
+if (printf forbidden > "$3/escaped") 2>/dev/null; then exit 13; fi
 for dir in "$1" "$4"; do
     if (printf forbidden > "$dir/forbidden") 2>/dev/null; then exit 11; fi
 done
@@ -187,8 +192,14 @@ echo ACCESS-OK`
 			if !strings.Contains(string(out), "ACCESS-OK") {
 				t.Fatalf("access assertions did not finish: %s", out)
 			}
-			if data, err := os.ReadFile(filepath.Join(sessionTmp, "written")); err != nil || string(data) != "writable" {
-				t.Fatalf("session scratch write not preserved: %q %v", data, err)
+			if data, err := os.ReadFile(filepath.Join(SessionScratchPrivateDir(sessionTmp), "written")); err != nil || string(data) != "writable" {
+				t.Fatalf("private scratch subtree write not preserved: %q %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(SessionScratchTmpDir(sessionTmp), "scratch")); err != nil || string(data) != "temp" {
+				t.Fatalf("shared temp subtree write not preserved: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(sessionTmp, "escaped")); !os.IsNotExist(err) {
+				t.Fatalf("a write landed directly in the traversable scratch container: %v", err)
 			}
 			for _, dir := range []string{cwd, readRoot, base} {
 				if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {

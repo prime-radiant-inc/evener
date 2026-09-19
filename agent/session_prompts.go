@@ -241,7 +241,7 @@ func (s *Session) canPromptDelegation() bool {
 // its mode and network when an OS sandbox enforces it, and which half is enforced
 // when only the file tools do (see sandboxPromptBoundary). When a scratch
 // directory has been provisioned, its path is appended (kata g8q6): a spawned
-// shell command learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but
+// shell command learns the scratch dir through $EVENER_SCRATCH_DIR, but
 // the model's own file tools (write_file, read_file, …) never see process
 // environment variables, so without this line a model has no way to discover the
 // one directory its file tools can actually write to outside the worktree — it was
@@ -255,9 +255,12 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 		return ""
 	}
 	line := sandboxPromptBoundary(le.Sandbox)
-	if scratch := le.SessionScratchDir(); scratch != "" {
+	// The scratch the model's tools write is the private subtree; the scratch
+	// allocation also holds the shared temp subtree $TMPDIR names (issue #495).
+	if root := le.SessionScratchDir(); root != "" {
+		scratch := sandbox.SessionScratchPrivateDir(root)
 		line += ". Scratch directory (read-write even in this sandbox; also $" +
-			envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
+			envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
 		if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
 			if le.Sandbox.Enforced() {
 				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied"
@@ -266,6 +269,12 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 			}
 		}
 		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
+		// Stated last so the scratch path stays immediately after the marker above:
+		// $TMPDIR names the scratch's shared temp subdirectory, not the scratch.
+		if tmp := sandbox.SessionScratchTmpDir(root); tmp != "" {
+			line += " Shell temp files go to $" + envvars.TmpDir.Name + " = " + tmp +
+				" (a sticky, world-writable subdirectory, so descendants that drop privileges can use it too)."
+		}
 	}
 	return line
 }

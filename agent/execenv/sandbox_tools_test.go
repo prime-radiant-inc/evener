@@ -608,10 +608,10 @@ func TestWriteFileReachesSessionScratch(t *testing.T) {
 				t.Fatalf("NewSessionScratch: %v", err)
 			}
 			env.ownedSessionTmp = tmp
-			granted := env.Sandbox.WithSessionScratch(tmp.Dir)
+			granted := env.Sandbox.WithSessionScratch(sandbox.SessionScratchPrivateDir(tmp.Dir))
 			env.Sandbox = &granted
 
-			target := filepath.Join(tmp.Dir, "scratch.txt")
+			target := filepath.Join(sandbox.SessionScratchPrivateDir(tmp.Dir), "scratch.txt")
 			if _, err := env.WriteFile(target, "hello scratch\n"); err != nil {
 				t.Fatalf("%v: write_file to the session's own scratch dir should succeed: %v", mode, err)
 			}
@@ -620,6 +620,33 @@ func TestWriteFileReachesSessionScratch(t *testing.T) {
 				t.Fatalf("%v: read_file of the just-written scratch file failed: got %q err %v", mode, got, err)
 			}
 		})
+	}
+}
+
+// TestFileToolsRefuseTheScratchContainerRoot pins the grant scoping for issue
+// #495: the scratch container is traversable so the shared temp subtree beneath it
+// is reachable by a privilege-dropping child, and a 0644 artifact created directly
+// in the container would be readable by any local user who can reach the base. The
+// file tools are therefore granted the PRIVATE subtree, and the container root is
+// refused.
+func TestFileToolsRefuseTheScratchContainerRoot(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeWorkspaceWrite)
+	tmp, err := sandbox.NewSessionScratch("", worktree)
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	env.ownedSessionTmp = tmp
+	container := env.SessionScratchDir()
+	if container == "" {
+		t.Fatal("a sandboxed env must provision a session scratch container")
+	}
+
+	if _, err := env.WriteFile(filepath.Join(container, "escape.txt"), "x\n"); err == nil {
+		t.Fatalf("write_file must not create an artifact directly under the traversable scratch container %q", container)
+	}
+	if _, err := env.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(container), "ok.txt"), "ok\n"); err != nil {
+		t.Fatalf("write_file into the scratch's private subtree must succeed: %v", err)
 	}
 }
 

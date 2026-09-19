@@ -81,7 +81,8 @@ func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 	if !slices.Contains(cmd.Args, "--unshare-pid") {
 		t.Errorf("wrapped argv missing confinement flags: %v", cmd.Args)
 	}
-	// Env floor: ssh-agent + cloud creds dropped, TMPDIR points at the session tmp.
+	// Env floor: ssh-agent + cloud creds dropped, TMPDIR points at the session
+	// scratch's shared temp subdirectory.
 	joined := strings.Join(cmd.Env, "\n")
 	if strings.Contains(joined, "SSH_AUTH_SOCK=") {
 		t.Errorf("env floor must drop SSH_AUTH_SOCK: %v", cmd.Env)
@@ -89,8 +90,8 @@ func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 	if strings.Contains(joined, "AWS_SECRET_ACCESS_KEY=") {
 		t.Errorf("env floor must drop AWS_* creds: %v", cmd.Env)
 	}
-	if !slices.Contains(cmd.Env, "TMPDIR="+sessionTmp) {
-		t.Errorf("env floor must point TMPDIR at the session tmp: %v", cmd.Env)
+	if !slices.Contains(cmd.Env, "TMPDIR="+sandbox.SessionScratchTmpDir(sessionTmp)) {
+		t.Errorf("env floor must point TMPDIR at the session scratch's shared temp subdirectory: %v", cmd.Env)
 	}
 }
 

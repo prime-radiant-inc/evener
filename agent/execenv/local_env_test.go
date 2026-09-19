@@ -225,8 +225,13 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	if !ok || strings.TrimSpace(scratch) == "" {
 		t.Fatalf("EVENER_SCRATCH_DIR missing from an unsandboxed command env: %v", got)
 	}
-	if got["TMPDIR"] != scratch {
-		t.Fatalf("TMPDIR = %q, want it to match EVENER_SCRATCH_DIR %q", got["TMPDIR"], scratch)
+	// EVENER_SCRATCH_DIR names the scratch's private subtree while TMPDIR names the
+	// scratch's shared, world-writable temp subtree (issue #495).
+	if want := sandbox.SessionScratchPrivateDir(filepath.Dir(scratch)); want != scratch {
+		t.Fatalf("EVENER_SCRATCH_DIR = %q, want the scratch's private subtree %q", scratch, want)
+	}
+	if want := sandbox.SessionScratchTmpDir(filepath.Dir(scratch)); got["TMPDIR"] != want {
+		t.Fatalf("TMPDIR = %q, want the shared temp subdirectory %q", got["TMPDIR"], want)
 	}
 	info, err := os.Stat(scratch)
 	if err != nil || !info.IsDir() {
@@ -294,6 +299,24 @@ func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
 	}
 }
 
+// openScratchTreesForCleanup makes any scratch a test leaves behind removable by the
+// harness sweep: a live container withholds write even from its owner, and only
+// Evener's own disposal (Cleanup, or Retain's retained mode) is expected to relax it.
+func openScratchTreesForCleanup(t *testing.T, base string) {
+	t.Helper()
+	t.Cleanup(func() {
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "evener-sandbox-") {
+				_ = os.Chmod(filepath.Join(base, entry.Name()), 0o700)
+			}
+		}
+	})
+}
+
 // TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock pins the one
 // working-directory shape that used to drive the lazy scratch mint through a
 // `git rev-parse` subprocess, and through that into itself.
@@ -333,6 +356,7 @@ func TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(work)
 	env.sandboxTmpBase = t.TempDir()
+	openScratchTreesForCleanup(t, env.sandboxTmpBase)
 	env.inheritedEnv = func() []string { return []string{"PATH=/usr/bin:/bin"} }
 
 	// Concurrent callers also pin the once-only invariant on this path: the

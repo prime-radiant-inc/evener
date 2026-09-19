@@ -93,8 +93,9 @@ unavailable → `private`) is reflected honestly in the line.
 
 The model gets the same facts in its system prompt's `<environment>` block, as a
 short capability preamble: the sandbox mode and network decision, a summary of
-the writable roots, the masked-path count, the scratch directory behind
-`$EVENER_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
+the writable roots, the masked-path count, the private scratch directory behind
+`$EVENER_SCRATCH_DIR` and the shared temp subdirectory behind `$TMPDIR`, the
+cache strategy, the resolved `GOCACHE` /
 `GOMODCACHE`, the toolchain residuals this doc records for the session's mode,
 and two probes (the exit status of `git config --list`, and which of `go`,
 `node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
@@ -379,9 +380,119 @@ spawned process:
   `GCLOUD_*`, and `VAULT_*`.
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
-- Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
-  there.
+- Points `TMPDIR` at the session scratch's shared temp subtree and
+  `EVENER_SCRATCH_DIR` at the scratch's private subtree, and, under the
+  session-private cache strategy, redirects
+  `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME` into the private
+  subtree. A session scratch has three parts, because `TMPDIR` is inherited by
+  every descendant while the session's own files are not:
+
+  | path | mode | exported as |
+  |---|---|---|
+  | `<scratch>` (container) | `0511` live — traverse only, writable by nobody; `0711` retained | — (holds the two subtrees, the lease and the pin) |
+  | `<scratch>/private` | `0700` — owner only | `EVENER_SCRATCH_DIR`, the redirected caches, the model's file tools |
+  | `<scratch>/tmp` | `1777` — world-writable, sticky | `TMPDIR` |
+
+  `tmp` is world-writable with the sticky bit, exactly like `/tmp`: any user may
+  create a temp file there and no user may remove or rename a file they do not
+  own. Because it is a SHARED directory, a tool that puts something confidential
+  in `$TMPDIR` must create it `0600` or under its own `0700` subdirectory: the
+  point of the shared temp subtree is that another user's child can write it too.
+  That is what lets a child which deliberately runs as another user create temp
+  files instead of failing with `Permission denied` on a path the user never
+  chose (issue #495), while the container's missing group/other read keeps the
+  session's own files — still behind the `0700` private subtree — unreadable and
+  unlistable to everyone else.
+
+  Nothing may write directly into the container. The model's file tools are granted
+  the **private** subtree, and the kernel backends bind/grant only the two subtrees
+  writable — the container itself is bound read-only on Linux and is a read root but
+  never a write root under Seatbelt — so neither a `write_file` nor a spawned shell
+  can deposit an artifact in the traversable container where another local user
+  could open it by name. The container holds nothing but the two subtrees and
+  Evener's own metadata (the liveness lease and the retention pin, both `0600`).
+  The kernel wrapper puts an existing container directory into the exported layout
+  before wrapping it — traversable container, both subtrees, legacy entries migrated —
+  and refuses, never unlinks, a non-directory entry squatting on either subtree name,
+  so a sandbox is never handed a `$TMPDIR` or `$EVENER_SCRATCH_DIR` that does not
+  exist or whose parent a dropped-privilege child cannot traverse.
+
+  A *defaulted* scratch base is chosen for reachability and integrity, not merely for
+  existence. Reachability: the whole ancestor chain must grant other-user traverse
+  (`o+x`), because a path lookup needs that on every component down to the scratch and
+  the scratch's own modes cannot compensate. Integrity: no component of that chain —
+  base or ancestor — may be group- or other-writable without the sticky bit, or
+  another local user could delete or replace this session's container and with it the
+  sandbox's own grant target. Integrity is what the allocator never concedes: a
+  candidate that satisfies both is preferred, and if none does it falls back to one
+  that is merely unreachable rather than one another user can replace, refusing
+  outright when every candidate is replaceable. A base the caller names explicitly
+  (`--sandbox-tmp`-style configuration) is honoured exactly as asked, and a host
+  whose only bases sit under a private ancestor still allocates from the ordinary
+  preference rather than refusing to start a session — in that configuration the
+  shared temp subtree is unreachable to another user, exactly as it was before this
+  change.
+
+  These judgements are mode-based, so they apply only where the platform records
+  POSIX permission and sticky bits. On a platform that does not — Windows synthesizes
+  writable permission bits and never sets the sticky bit — the reachability and
+  integrity tests stand down rather than declaring every location replaceable, which
+  would refuse to allocate a scratch at all, and the borrow validator checks that the
+  layout exists without judging its modes.
+
+  A scratch minted before this layout existed keeps the session's files directly at
+  the container's root, several of them world-readable by their own mode. Restoring
+  one **migrates** it: while the container is still `0700`, every direct entry
+  other than the two subtrees and Evener's metadata is moved into `private/` (a name
+  collision takes a numeric suffix, never a clobber), its contents are tightened to
+  owner-only, and only then is the container settled at its live mode `0511` — so a
+  legacy file is never reachable through a traversable container, not even
+  transiently. A legacy
+  entry that already carries a reserved name is reused as that subtree with its old
+  contents hardened in place. Relocating rather than refusing to loosen is
+  deliberate: a container left at `0700` would hide the temp subtree from a
+  privilege-dropping child, which is the failure this layout exists to fix.
+
+  The live container is writable by **nobody**: another user cannot write it (no group
+  or other write) and neither can a wrapperless command running as the session's own
+  user (no owner write), so nothing can drop a `0644` artifact beside the exported
+  subtrees where another local user could read it by name. Evener's own metadata
+  writes — laying out the subtrees, migrating legacy entries, acquiring the liveness
+  lease, publishing or clearing the retention pin — take a brief owner-only `0700`
+  window that adds no exposure to any other user and restores the mode it found. The
+  wrapper settles a directory in Evener's own scratch namespace; a caller-supplied
+  directory is provisioned and migrated but keeps its own mode. When a session ends,
+  `Retain` relaxes the container to `0711`, so a retained scratch stays removable with
+  a plain recursive delete — retained cleanup is manual — and usable by a borrowing
+  consumer; restoring it settles it again.
+
+  A **non-directory entry** at a reserved subtree name (`tmp`, `private`) — regular
+  file, symlink or FIFO — is moved aside under a free name and relocated, never
+  unlinked: a session owns its scratch and anything left there is the session's,
+  whatever its type. Only a directory at such a name is reused as the subtree itself.
+
+  Tightening a relocated file first **breaks any hard link**: a legacy artifact may
+  be a hard link to a file outside the scratch (a worktree file, say), and hard links
+  share one inode, so an in-place `chmod` would tighten that outside file too. The
+  migration replaces such a file with a private copy on a fresh inode and tightens
+  the copy.
+
+  A scratch **borrowed** for a sharing consumer is validated against this layout
+  first — container mode, both subtree modes, and existence —
+  `BorrowRetainedSessionScratch` refuses an allocation its owner has not migrated
+  (still `0700`, missing a subtree, or carrying modes other than the exported ones)
+  rather than publishing a scratch whose exported temp path is unreachable to a
+  dropped-privilege child or whose container another user can write.
+
+  The crash sweep applies the same integrity rule as allocation: it reclaims
+  scratch only from bases another user cannot replace, because a replaceable base
+  lets an attacker redirect a name between the sweep's lease check and its removal.
+  And because the shared temp subtree is world-writable by design, a
+  privilege-dropping child can leave a tree inside it that this session cannot
+  remove (it is not that tree's owner and cannot become root): teardown removes
+  everything it can, then tightens the container to `0700` so no further foreign
+  entry can be created in what remains, and reports the residue rather than
+  pretending the scratch is gone.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

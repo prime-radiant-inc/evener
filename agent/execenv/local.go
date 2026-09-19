@@ -240,7 +240,7 @@ func (e *LocalExecutionEnvironment) ObserveScratchMoveWindowForTesting(fn func()
 // sandboxFS is built lazily and cached, and rebuilt when the session's scratch
 // has moved since (AdoptSessionScratch): it folds in the concrete per-session
 // scratch directory (sessionScratchPath) so the file tools reach the SAME scratch
-// dir a spawned shell command gets via $TMPDIR — regardless of which
+// dir a spawned shell command gets via $EVENER_SCRATCH_DIR — regardless of which
 // policy-replacement path built it (EnableSandbox, WithWorkingDirectory's
 // re-root, UseControlPolicy), since they all funnel through this single lazy
 // builder. The layer returned is acquired for the caller's operation; the caller
@@ -251,7 +251,11 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	}
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
-	scratch := e.sessionScratchPath()
+	// The file-tool layer is granted the scratch's PRIVATE subtree, never the
+	// container: the container is traversable to make the shared temp subtree
+	// reachable, so a 0644 artifact created directly in it would be readable by
+	// any local user who can reach the base (issue #495).
+	scratch := e.allocatedSessionScratchPath()
 	if e.sbfs != nil && e.sbfsScratch != scratch {
 		e.retireFileToolLayerLocked(e.sbfs)
 		e.sbfs = nil
@@ -284,9 +288,10 @@ func (e *LocalExecutionEnvironment) retireFileToolLayerLocked(layer *sandboxFS) 
 	}
 }
 
-// sessionScratchPath returns the concrete per-session scratch directory this
-// env's kernel wrapper already grants spawned processes via $TMPDIR /
-// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
+// sessionScratchPath returns the concrete per-session scratch CONTAINER this
+// env's kernel wrapper already grants spawned processes — the directory whose
+// `private` subtree $EVENER_SCRATCH_DIR names and whose `tmp` subtree $TMPDIR
+// names (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
 // one. It reads through Wrapper rather than ownedSessionTmp because a re-rooted
 // clone (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper
 // without necessarily owning it (ownedSessionTmp is nil on a fresh clone — see
@@ -324,14 +329,21 @@ func (e *LocalExecutionEnvironment) wrapperlessScratchDir() string {
 	return e.unsandboxedScratch.Dir
 }
 
-// allocatedSessionScratchPath returns an already-provisioned scratch root owned
-// by this environment. It deliberately does not provision one: checking an
-// arbitrary write path must never allocate a new grant as a side effect. Enforced
-// environments are handled by sandbox(), whose policy already folds
-// Wrapper.SessionTmp() into the fd-anchored roots; this accessor is for the
-// otherwise-unconfined environment's late-bound scratch grant.
+// allocatedSessionScratchPath returns the already-provisioned PRIVATE subtree of
+// this environment's session scratch — the one place the model's file tools may
+// write, and the directory $EVENER_SCRATCH_DIR names. It is deliberately not the
+// scratch container: the container is traversable so the shared temp subtree
+// under it is reachable by a privilege-dropping child, which would leave a 0644
+// artifact written there readable by any local user who can reach the base
+// (issue #495).
+//
+// It deliberately does not provision a scratch: checking an arbitrary write path
+// must never allocate a new grant as a side effect. Enforced environments are
+// handled by sandbox(), whose policy already folds this subtree into the
+// fd-anchored roots; this accessor is for the otherwise-unconfined environment's
+// late-bound scratch grant.
 func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
-	return e.sessionScratchPath()
+	return sandbox.SessionScratchPrivateDir(e.sessionScratchPath())
 }
 
 // scratchSandboxForAfterRootRead is a test-only seam observing the point in
@@ -395,10 +407,12 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 	return sfs
 }
 
-// SessionScratchDir reports the per-session scratch directory spawned commands
-// already receive as $EVENER_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
-// the write-blocked env's own owned dir, or an unsandboxed env's lazily
-// provisioned one — and "" when none has been provisioned. It deliberately never
+// SessionScratchDir reports the per-session scratch CONTAINER — the sandboxed
+// env's wrapper tmp, the write-blocked env's own owned dir, or an unsandboxed
+// env's lazily provisioned one — and "" when none has been provisioned. The
+// container is not what a spawned command sees: $EVENER_SCRATCH_DIR is
+// SessionScratchPrivateDir(container) and $TMPDIR is SessionScratchTmpDir(container),
+// and the model's file tools are granted the private subtree. It deliberately never
 // provisions one: it is a REPORTING accessor (the session prompt's capability
 // preamble), and reporting a path must not create it, nor turn a prompt render
 // into a filesystem side effect.
@@ -567,8 +581,11 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	}
 	if e.Wrapper == nil {
 		if scratch := e.unsandboxedScratchDir(); scratch != "" {
-			overlay[envvars.TmpDir.Name] = scratch
-			overlay[envvars.EVENERScratchDir.Name] = scratch
+			// TMPDIR and EVENER_SCRATCH_DIR name different directories inside one
+			// scratch: the shared sticky temp subdirectory a privilege-dropping
+			// child can also write, and the 0700 private subtree (issue #495).
+			overlay[envvars.TmpDir.Name] = sandbox.SessionScratchTmpDir(scratch)
+			overlay[envvars.EVENERScratchDir.Name] = sandbox.SessionScratchPrivateDir(scratch)
 		}
 	}
 	if len(overlay) == 0 {
@@ -972,7 +989,7 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 func (e *LocalExecutionEnvironment) retireStaleFileToolLayers() {
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
-	scratch := e.sessionScratchPath()
+	scratch := e.allocatedSessionScratchPath()
 	if e.sbfs != nil && e.sbfsScratch != scratch {
 		e.retireFileToolLayerLocked(e.sbfs)
 		e.sbfs = nil

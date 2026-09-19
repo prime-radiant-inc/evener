@@ -142,6 +142,7 @@
   (subpath (param "WRITABLE_ROOT_7"))
   (subpath (param "WRITABLE_ROOT_8"))
   (subpath (param "WRITABLE_ROOT_9"))
+  (subpath (param "WRITABLE_ROOT_10"))
 )
 ; network
 (allow network-outbound)

@@ -355,8 +355,14 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
-	artifact := filepath.Join(scratch.Dir, "shared-child.bin")
+	// The child's borrow below keeps the container write-withheld for as long as it is
+	// live, so the fixture takes the same window Evener's own disposal takes before it
+	// removes the tree.
+	t.Cleanup(func() {
+		_ = os.Chmod(scratch.Dir, 0o700)
+		_ = os.RemoveAll(scratch.Dir)
+	})
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratch.Dir), "shared-child.bin")
 	want := []byte("shared-child-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -470,7 +476,7 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	if scratchDir == "" {
 		t.Fatal("root minted no scratch")
 	}
-	artifact := filepath.Join(scratchDir, "terminal-required.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), "terminal-required.bin")
 	if err := os.WriteFile(artifact, []byte("terminal"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +788,7 @@ func (f *retirementPreservationFixture) recordIsolatedChild(delegateID, childSes
 		f.t.Fatalf("install delegate %q retention: %v", task, err)
 	}
 	lanePath := childEnv.WorkingDirectory()
-	artifact := filepath.Join(scratchDir, task+".bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratchDir), task+".bin")
 	want := []byte("nested-cold-restore-artifact:" + task)
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
 		f.t.Fatal(err)
@@ -1444,8 +1450,8 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	// Distinct artifact bytes written through R and C into A.
 	rootArtifactA := []byte("shared-child-root-artifact")
 	childArtifactA := []byte("shared-child-child-artifact")
-	sharedChildWriteBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA)
-	sharedChildWriteBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA)
+	sharedChildWriteBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "root.bin"), rootArtifactA)
+	sharedChildWriteBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "child.bin"), childArtifactA)
 
 	// Move R into a real worktree through its normal tool path: E1 adopts A.
 	if _, err := repo.create(t, map[string]any{"name": "root-lane"}); err != nil {
@@ -1494,7 +1500,7 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(scratchB) })
 	childArtifactB := []byte("shared-child-b-artifact")
-	sharedChildWriteBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB)
+	sharedChildWriteBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchB), "child-b.bin"), childArtifactB)
 
 	// The live sharing relationships, recorded independently of the manifest:
 	// E1/A for R, E0/B for C, C on the parked E0 object, both bindings owned by R.
@@ -1595,9 +1601,9 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 		t.Fatalf("restored C scratch = %q, want the original B %q", got, scratchB)
 	}
 	// Both artifact byte sets, compared with the original live reference.
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's")
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's")
-	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "root.bin"), rootArtifactA, "R's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "child.bin"), childArtifactA, "C's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchB), "child-b.bin"), childArtifactB, "C's")
 	// Two binding identities, not two invented owners; no child rebinding to R's
 	// worktree.
 	manifest, err = sandbox.LoadScratchRetention(owner)
@@ -1640,9 +1646,9 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	if err := aHandle.Retain(); err != nil {
 		t.Fatal(err)
 	}
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's")
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's")
-	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "root.bin"), rootArtifactA, "R's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "child.bin"), childArtifactA, "C's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchB), "child-b.bin"), childArtifactB, "C's")
 	manifest, err = sandbox.LoadScratchRetention(owner)
 	if err != nil {
 		t.Fatal(err)
@@ -1681,8 +1687,8 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	if err := sandbox.SweepCrashedSessionScratch(repo.stateDir); err != nil {
 		t.Fatalf("second startup sweep: %v", err)
 	}
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's historical")
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's historical")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "root.bin"), rootArtifactA, "R's historical")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "child.bin"), childArtifactA, "C's historical")
 	restored2 := restoreSharedChildRoot(t, repo, root.ID())
 	renv2, ok := restored2.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -1703,9 +1709,9 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	if got := cenv2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchB) {
 		t.Fatalf("second restored C scratch = %q, want E0/B %q", got, scratchB)
 	}
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's historical")
-	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's historical")
-	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "root.bin"), rootArtifactA, "R's historical")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchA), "child.bin"), childArtifactA, "C's historical")
+	sharedChildAssertBytes(t, filepath.Join(sandbox.SessionScratchPrivateDir(scratchB), "child-b.bin"), childArtifactB, "C's")
 	manifest, err = sandbox.LoadScratchRetention(owner)
 	if err != nil {
 		t.Fatal(err)
@@ -1870,7 +1876,9 @@ func TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare(t *testin
 	if root.retainedScratch.Load() == nil {
 		t.Fatal("fixture prepared no retained pool")
 	}
-	// Remove the retained allocation after preparation.
+	// Remove the retained allocation after preparation; a live container withholds
+	// owner write, so open the window Evener's own teardown uses.
+	_ = os.Chmod(scratch.Dir, 0o700)
 	if err := os.RemoveAll(scratch.Dir); err != nil {
 		t.Fatal(err)
 	}

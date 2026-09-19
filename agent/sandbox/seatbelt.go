@@ -192,15 +192,19 @@ func (ps *paramSet) defineRead(key, root string) []string {
 }
 
 // writeRootKeys allocates the write allow's root params: each spawned write root
-// plus the session tmp. The worktree root grants all of its .git (objects, refs,
-// index, logs, HEAD, COMMIT_EDITMSG, …) — matching the bwrap backend, which binds
-// the whole worktree writable — and denySection then subtracts the protected
-// config/hook surfaces, so a commit works while a core.hooksPath redirect cannot
-// be persisted. A linked worktree's external git-metadata roots are separate
-// write roots; the main repo's config is under no write root (write-denied) yet
-// stays readable.
+// plus the session scratch's two writable subtrees — the private subtree (the
+// agent's files) and the shared temp subtree (world-writable and sticky). The
+// session scratch CONTAINER is deliberately not a write root: it is readable and
+// traversable so the subtrees can be reached, but a 0644 artifact written directly
+// into it would be readable by any local user who can reach the base (issue #495).
+// Matching the bwrap backend, which binds the whole worktree writable, the worktree
+// root grants all of its .git (objects, refs, index, logs, HEAD, COMMIT_EDITMSG, …)
+// and denySection then subtracts the protected config/hook surfaces, so a commit
+// works while a core.hooksPath redirect cannot be persisted. A linked worktree's
+// external git-metadata roots are separate write roots; the main repo's config is
+// under no write root (write-denied) yet stays readable.
 func writeRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
-	roots := dedupeRoots(appendNonEmpty(slices.Clone(rp.Spawned.WriteRoots), sessionTmp))
+	roots := dedupeRoots(append(slices.Clone(rp.Spawned.WriteRoots), SessionScratchWriteRoots(sessionTmp)...))
 	keys := make([]string, 0, len(roots))
 	for i, root := range roots {
 		keys = append(keys, ps.define(fmt.Sprintf("WRITABLE_ROOT_%d", i), root))

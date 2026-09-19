@@ -206,6 +206,9 @@ func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) 
 	if err := scratch.Pin(owner, ref); err != nil {
 		t.Fatal(err)
 	}
+	// A live scratch withholds write even from its owner, so the removal opens the
+	// same window Evener's own teardown uses before deleting the allocation.
+	_ = os.Chmod(scratch.Dir, 0o700)
 	if err := os.RemoveAll(scratch.Dir); err != nil {
 		t.Fatal(err)
 	}

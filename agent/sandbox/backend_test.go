@@ -1,10 +1,82 @@
 package sandbox
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 )
+
+// TestNewWrapperProvisionsExportedSubtrees pins the wrapper-boundary half of issue
+// #495: the wrapper's writable bind/grant roots are the container's two exported
+// subtrees, and the environment floor names them as $TMPDIR and
+// $EVENER_SCRATCH_DIR, so a container directory that exists but was not laid out by
+// NewSessionScratch must still come out with both, rather than a sandbox whose
+// exported temp/scratch paths do not exist.
+func TestNewWrapperProvisionsExportedSubtrees(t *testing.T) {
+	// An Evener scratch directory handed to the wrapper is settled at the live mode:
+	// traversable by everyone so the exported subtrees are reachable, writable by
+	// nobody so no artifact can be dropped beside them.
+	dir := filepath.Join(t.TempDir(), sessionScratchPrefix+"wrapped")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, sessionScratchSetupMode) })
+	rp := ResolvedPolicy{Mode: ModeWorkspaceWrite, Backend: BackendBwrap}
+	if _, err := NewWrapper(rp, "/usr/bin/bwrap", dir); err != nil {
+		t.Fatalf("NewWrapper must provision an existing container: %v", err)
+	}
+	containerInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerInfo.Mode().Perm()&0o001 == 0 {
+		t.Fatalf("wrapper container mode = %04o, must be traversable by other users", containerInfo.Mode().Perm())
+	}
+	if containerInfo.Mode().Perm()&0o066 != 0 {
+		t.Fatalf("wrapper container mode = %04o, must not become group/other readable or writable", containerInfo.Mode().Perm())
+	}
+	if containerInfo.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("wrapper container mode = %04o, must not be writable, even by its owner", containerInfo.Mode().Perm())
+	}
+	for _, sub := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{SessionScratchPrivateDir(dir), sessionScratchPrivateMode},
+		{SessionScratchTmpDir(dir), sessionScratchTmpMode},
+	} {
+		info, err := os.Lstat(sub.path)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("the wrapper must provision %q so $TMPDIR/$EVENER_SCRATCH_DIR exist: info=%v err=%v", sub.path, info, err)
+		}
+		if info.Mode().Perm() != sub.mode.Perm() {
+			t.Fatalf("%q mode = %04o, want %04o", sub.path, info.Mode().Perm(), sub.mode.Perm())
+		}
+		if got, want := info.Mode()&os.ModeSticky != 0, sub.mode&os.ModeSticky != 0; got != want {
+			t.Fatalf("%q sticky = %v, want %v", sub.path, got, want)
+		}
+	}
+}
+
+// TestNewWrapperRefusesOccupiedSubtreeName: the wrapper runs on a directory a
+// caller owns, so a non-directory entry at a subtree name is refused and never
+// unlinked — the same data-preservation rule the scratch migration follows.
+func TestNewWrapperRefusesOccupiedSubtreeName(t *testing.T) {
+	dir := t.TempDir()
+	occupied := filepath.Join(dir, sessionScratchTmpName)
+	if err := os.WriteFile(occupied, []byte("caller data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{Mode: ModeWorkspaceWrite, Backend: BackendBwrap}
+	if _, err := NewWrapper(rp, "/usr/bin/bwrap", dir); err == nil {
+		t.Fatal("NewWrapper must refuse a container whose subtree name is occupied by a non-directory")
+	}
+	if data, err := os.ReadFile(occupied); err != nil || string(data) != "caller data" {
+		t.Fatalf("NewWrapper must not unlink the caller's entry: %q err %v", data, err)
+	}
+}
 
 func TestNewWrapperRejectsNonEnforcingBackend(t *testing.T) {
 	if _, err := NewWrapper(ResolvedPolicy{Backend: BackendNone}, "/usr/bin/bwrap", "/tmp/s"); err == nil {

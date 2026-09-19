@@ -24,10 +24,148 @@ func scratchRetentionBase(t *testing.T) (base, workspace string) {
 	return base, workspace
 }
 
+// TestBorrowRelocatesDirectContainerArtifacts pins that a borrow cannot publish a container
+// whose own root still holds the session's files. A retained container is owner-writable, so
+// a 0644 artifact can sit directly under it, and the live mode a borrower gets makes the
+// container traversable — so any local user who knows the name could then read it
+// (issue #495). The artifact must move into the private subtree (hardened) before the borrow
+// tightens the container.
+func TestBorrowRelocatesDirectContainerArtifacts(t *testing.T) {
+	if !scratchModesRecorded {
+		t.Skip("the exported container modes are not recorded on this platform")
+	}
+	base := t.TempDir()
+	scratch, err := NewSessionScratch(base, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	if err := scratch.Retain(); err != nil {
+		t.Fatalf("Retain: %v", err)
+	}
+	artifact := filepath.Join(scratch.Dir, "left-at-root.bin")
+	if err := os.WriteFile(artifact, []byte("shared"), 0o644); err != nil {
+		t.Fatalf("seed a direct container artifact: %v", err)
+	}
+	if _, err := BorrowRetainedSessionScratch(scratch.Dir); err != nil {
+		t.Fatalf("BorrowRetainedSessionScratch: %v", err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Errorf("a borrowed container still publishes %q at its root, where every local user can read it", artifact)
+	}
+	relocated := filepath.Join(SessionScratchPrivateDir(scratch.Dir), "left-at-root.bin")
+	fi, err := os.Stat(relocated)
+	if err != nil {
+		t.Fatalf("the artifact must survive inside the private subtree: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("relocated artifact mode = %04o, want 0600", got)
+	}
+}
+
 // TestScratchRetentionStartupSweepKeepsAgedRequiredArtifact is the plan's
 // collector test: a pinned, aged, unreleased required artifact survives the
 // startup sweep and restores at its original path; once released, the same
 // directory is collected.
+// TestBorrowRetainedSessionScratchRefusesUnpreparedLayout: a borrow publishes an
+// allocation to a sharing consumer that will export its temp and scratch paths, so a
+// legacy directory nobody has migrated — still 0700 with no subtrees — must be
+// refused rather than published as an unusable scratch (issue #495). A container in
+// the exported layout borrows exactly as before.
+func TestBorrowRetainedSessionScratchRefusesUnpreparedLayout(t *testing.T) {
+	legacy := filepath.Join(t.TempDir(), sessionScratchPrefix+"legacy")
+	if err := os.Mkdir(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BorrowRetainedSessionScratch(legacy); err == nil {
+		t.Fatalf("a scratch that is not in the exported layout (%q) must not be borrowed", legacy)
+	}
+
+	prepared, err := NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prepared.Cleanup() })
+	borrowed, err := BorrowRetainedSessionScratch(prepared.Dir)
+	if err != nil {
+		t.Fatalf("a container in the exported layout must still borrow: %v", err)
+	}
+	if borrowed.Dir == "" {
+		t.Fatal("borrowed scratch reported no directory")
+	}
+
+	// Modes matter as much as existence: a world-visible container or a non-sticky
+	// temp subtree must not be published as a shared scratch either.
+	wrongModes := filepath.Join(t.TempDir(), sessionScratchPrefix+"wrong-modes")
+	if err := os.MkdirAll(SessionScratchTmpDir(wrongModes), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(SessionScratchPrivateDir(wrongModes), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wrongModes, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(SessionScratchTmpDir(wrongModes), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BorrowRetainedSessionScratch(wrongModes); err == nil {
+		t.Fatalf("a scratch with unexported modes (%q) must not be borrowed", wrongModes)
+	}
+
+	// A container whose mode omits the OWNER's own access satisfies "others may
+	// traverse, no group/other write" while being unusable by the session itself.
+	ownerless := filepath.Join(t.TempDir(), sessionScratchPrefix+"ownerless")
+	if err := os.Mkdir(ownerless, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(SessionScratchPrivateDir(ownerless), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(SessionScratchTmpDir(ownerless), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(SessionScratchTmpDir(ownerless), sessionScratchTmpMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ownerless, 0o001); err != nil {
+		t.Fatal(err)
+	}
+	// Give the owner access back before the TempDir cleanup runs (cleanups are LIFO):
+	// a 0001 container cannot be traversed by anyone, not even this test.
+	t.Cleanup(func() { _ = os.Chmod(ownerless, 0o700) })
+	if _, err := BorrowRetainedSessionScratch(ownerless); err == nil {
+		t.Fatalf("a container mode that denies the session its own access (%q) must not be borrowed", ownerless)
+	}
+
+	// The container must carry EXACTLY the exported mode: an unexpected special bit
+	// (setgid here) would change how the session's own scratch behaves, so a borrow
+	// must not publish it.
+	specialBits := filepath.Join(t.TempDir(), sessionScratchPrefix+"special-bits")
+	if err := os.Mkdir(specialBits, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(SessionScratchPrivateDir(specialBits), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(SessionScratchTmpDir(specialBits), sessionScratchTmpMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(SessionScratchTmpDir(specialBits), sessionScratchTmpMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(specialBits, os.ModeSetgid|0o711); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(specialBits, 0o700) })
+	if _, err := BorrowRetainedSessionScratch(specialBits); err == nil {
+		t.Fatalf("a container carrying an unexpected special mode bit (%q) must not be borrowed", specialBits)
+	}
+}
+
 func TestScratchRetentionStartupSweepKeepsAgedRequiredArtifact(t *testing.T) {
 	base, workspace := scratchRetentionBase(t)
 	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
@@ -36,7 +174,7 @@ func TestScratchRetentionStartupSweepKeepsAgedRequiredArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
-	artifact := filepath.Join(scratch.Dir, "required.bin")
+	artifact := filepath.Join(SessionScratchPrivateDir(scratch.Dir), "required.bin")
 	want := []byte("opaque-required-artifact")
 	if err := os.WriteFile(artifact, want, 0600); err != nil {
 		t.Fatal(err)
@@ -220,7 +358,7 @@ func TestScratchRetentionRestoreSweepBothOrders(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
-			artifact := filepath.Join(scratch.Dir, "keep.bin")
+			artifact := filepath.Join(SessionScratchPrivateDir(scratch.Dir), "keep.bin")
 			if err := os.WriteFile(artifact, []byte("keep"), 0600); err != nil {
 				t.Fatal(err)
 			}

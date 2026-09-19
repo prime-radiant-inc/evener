@@ -2155,9 +2155,12 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
 	// SessionScratchDir is a reporting-only accessor (never provisions), so this
 	// is safe to read even on an externally cancelled run — it costs nothing and
-	// carries no side effect, matching the worktree report above.
+	// carries no side effect, matching the worktree report above. The recorded
+	// path is the scratch's PRIVATE subtree, which is what $EVENER_SCRATCH_DIR
+	// names for the child's own commands — the container is only the allocation
+	// that holds that subtree and the shared temp subtree (issue #495).
 	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		inputs.scratchPath = le.SessionScratchDir()
+		inputs.scratchPath = sandbox.SessionScratchPrivateDir(le.SessionScratchDir())
 	}
 	finish := stableDelegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {

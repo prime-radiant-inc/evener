@@ -124,6 +124,7 @@
 ; write grants
 (allow file-write*
   (subpath (param "WRITABLE_ROOT_0"))
+  (subpath (param "WRITABLE_ROOT_1"))
 )
 ; authoritative denials (override every allow above)
 (deny file-read* file-write* (literal (param "MASKED_0")) (subpath (param "MASKED_0")))

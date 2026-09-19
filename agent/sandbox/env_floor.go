@@ -40,7 +40,9 @@ var floorPrefixDrops = []string{
 //   - puts the resolved developer-toolchain bin directory on PATH ahead of the
 //     system directories, so a spawned `git` is the real git and not the
 //     /usr/bin xcrun shim (which is loud and slow under a sandbox),
-//   - points TMPDIR and EVENER_SCRATCH_DIR at the per-session scratch, and
+//   - points TMPDIR at the per-session scratch's shared temp subdirectory and
+//     EVENER_SCRATCH_DIR at the scratch's private subtree (see
+//     ApplySessionScratchEnv), and
 //   - redirects the language cache vars (GOCACHE / GOMODCACHE / npm_config_cache /
 //     CARGO_HOME) into the session tmp when the cache strategy is session-private,
 //     so a sandboxed build can never poison a cache a later build consumes.
@@ -72,11 +74,14 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 	out = ApplySessionScratchEnv(out, sessionScratch)
 	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
+			// Caches are session-private state: they live in the private subtree,
+			// never directly in the traversable scratch container.
+			private := SessionScratchPrivateDir(sessionScratch)
 			out = append(out,
-				"GOCACHE="+filepath.Join(sessionScratch, "gocache"),
-				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, "gomodcache")),
-				"npm_config_cache="+filepath.Join(sessionScratch, "npm"),
-				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, "cargo")),
+				"GOCACHE="+filepath.Join(private, "gocache"),
+				envvars.GoModCache.Assignment(filepath.Join(private, "gomodcache")),
+				"npm_config_cache="+filepath.Join(private, "npm"),
+				envvars.CargoHome.Assignment(filepath.Join(private, "cargo")),
 			)
 		}
 	}
@@ -146,7 +151,12 @@ func insertToolchainDir(path, binDir string) string {
 }
 
 // ApplySessionScratchEnv replaces the two reserved scratch variables together.
-// An empty path removes stale values without installing a replacement.
+// They name DIFFERENT directories inside one scratch: EVENER_SCRATCH_DIR is the
+// 0700 private subtree and TMPDIR is the scratch's sticky, world-writable temp
+// subtree. TMPDIR must be the shared one because it is inherited by every
+// descendant, including a child that deliberately runs as another user, and such
+// a child cannot write the private subtree (issue #495). An empty path removes
+// stale values without installing a replacement.
 func ApplySessionScratchEnv(env []string, scratchDir string) []string {
 	out := make([]string, 0, len(env)+2)
 	for _, kv := range env {
@@ -158,8 +168,8 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
 	}
 	if scratchDir != "" {
 		out = append(out,
-			envvars.TmpDir.Assignment(scratchDir),
-			envvars.EVENERScratchDir.Assignment(scratchDir),
+			envvars.TmpDir.Assignment(SessionScratchTmpDir(scratchDir)),
+			envvars.EVENERScratchDir.Assignment(SessionScratchPrivateDir(scratchDir)),
 		)
 	}
 	return out

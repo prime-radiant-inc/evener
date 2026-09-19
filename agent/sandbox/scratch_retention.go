@@ -236,7 +236,11 @@ func writeScratchDirectoryPin(dir string, owner ScratchOwner, ref ScratchReferen
 	if err != nil {
 		return fmt.Errorf("sandbox: marshal retention pin: %w", err)
 	}
-	return atomicWritePrivateFile(filepath.Join(canonical, scratchPinName), raw)
+	// The live container withholds write, so the pin is written inside the
+	// owner-only setup window (issue #495).
+	return withWritableScratchContainer(canonical, func() error {
+		return atomicWritePrivateFile(filepath.Join(canonical, scratchPinName), raw)
+	})
 }
 
 // Pin writes and synchronizes the directory pin first, then the root manifest
@@ -461,7 +465,12 @@ func rollbackUnpublishedScratchPin(owner ScratchOwner, dir, kind string) error {
 	pin, pinErr := readScratchDirectoryPin(dir)
 	switch {
 	case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == kind:
-		if removeErr := os.Remove(filepath.Join(dir, scratchPinName)); removeErr != nil && !os.IsNotExist(removeErr) {
+		if removeErr := withWritableScratchContainer(dir, func() error {
+			if err := os.Remove(filepath.Join(dir, scratchPinName)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}); removeErr != nil {
 			return fmt.Errorf("sandbox: roll back retention pin for %q: %w", dir, removeErr)
 		}
 		return nil
@@ -773,12 +782,11 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if hook := scratchRetentionOpenBeforeLease; hook != nil {
 		hook()
 	}
-	lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+	lease, contended, leaseErr := acquireScratchLeaseInWindow(dir)
 	if contended {
 		return nil, ErrScratchRetentionLeaseHeld
-	}
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: acquire retained scratch lease: %w", err)
+	} else if leaseErr != nil {
+		return nil, fmt.Errorf("sandbox: acquire retained scratch lease: %w", leaseErr)
 	}
 	after, err := os.Stat(dir)
 	if err != nil || !os.SameFile(before, after) {
@@ -791,6 +799,15 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if err := revalidateRetainedScratchAfterLease(owner, dir, ref.Kind); err != nil {
 		_ = lease.Release()
 		return nil, err
+	}
+	// A scratch minted before this layout existed (or before it was fully
+	// repaired) still has to serve $TMPDIR and $EVENER_SCRATCH_DIR once it is
+	// restored, so put every mode — container and both subtrees — into place under
+	// the held lease. Releasing first would let a second restorer use a
+	// half-repaired directory.
+	if err := prepareSessionScratch(dir); err != nil {
+		_ = lease.Release()
+		return nil, fmt.Errorf("sandbox: prepare restored scratch layout: %w", err)
 	}
 	return &SessionScratch{Dir: dir, base: base, lease: lease}, nil
 }
@@ -895,17 +912,17 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 			failures = append(failures, err)
 			continue
 		}
-		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+		lease, contended, leaseErr := acquireScratchLeaseInWindow(dir)
 		if contended {
 			// A live lease owns the directory; leave its pin for the collector,
 			// which acquires the lease before deciding.
 			continue
 		}
-		if err != nil {
+		if leaseErr != nil {
 			// A confirmed contention reads as "still owned"; anything else (open,
 			// stat or chmod failure) means the lease could not be inspected, so the
 			// release must not look successful.
-			failures = append(failures, fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err))
+			failures = append(failures, fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, leaseErr))
 			continue
 		}
 		// Re-verify identity under the held lease: remove the pin only when it is
@@ -915,8 +932,13 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 		pin, pinErr := readScratchDirectoryPin(dir)
 		switch {
 		case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
-			removeErr := os.Remove(filepath.Join(dir, scratchPinName))
-			if removeErr != nil && !os.IsNotExist(removeErr) {
+			removeErr := withWritableScratchContainer(dir, func() error {
+				if err := os.Remove(filepath.Join(dir, scratchPinName)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				return nil
+			})
+			if removeErr != nil {
 				failures = append(failures, fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, removeErr))
 			}
 		case os.IsNotExist(pinErr):
@@ -946,7 +968,40 @@ func BorrowRetainedSessionScratch(dir string) (*SessionScratch, error) {
 	if _, err := os.Stat(canonical); err != nil {
 		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
 	}
-	return &SessionScratch{Dir: canonical, base: filepath.Dir(canonical)}, nil
+	// A borrowed allocation is published to another consumer, which will export its
+	// temp and scratch paths. Its owner prepares it at mint and at restore, so a
+	// directory that is not in the exported layout is a legacy allocation nobody has
+	// migrated yet: refuse it rather than publish a scratch whose `$TMPDIR` a
+	// dropped-privilege child cannot reach.
+	if err := validateSessionScratchLayout(canonical); err != nil {
+		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
+	}
+	// A borrowing consumer is live, so the container has to withhold write from it
+	// exactly as it does from a session: otherwise a wrapperless consumer could drop a
+	// 0644 artifact beside the exported subtrees, where any local user could read it by
+	// name (issue #495). The claim is registered before the mode is settled, so the
+	// retained mode is never restored underneath a consumer that is already running, and
+	// the last consumer to finish puts it back.
+	claim, err := acquireScratchBorrowClaim(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
+	}
+	// A retained container is owner-writable, so it can hold entries at its own root, and
+	// the live mode the borrower gets makes the container traversable: a 0644 entry left
+	// there would be readable by any local user who knows its name (issue #495). Move
+	// everything non-reserved into the private subtree — which also hardens it — before the
+	// container is tightened.
+	if err := withWritableScratchContainer(canonical, func() error {
+		return relocateScratchRootEntries(canonical)
+	}); err != nil {
+		_ = claim.Release()
+		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
+	}
+	if err := setScratchContainerMode(canonical, sessionScratchDirMode); err != nil {
+		_ = claim.Release()
+		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
+	}
+	return &SessionScratch{Dir: canonical, base: filepath.Dir(canonical), borrow: claim}, nil
 }
 
 // scratchDirectoryRetained decides whether the collector must skip dir. A

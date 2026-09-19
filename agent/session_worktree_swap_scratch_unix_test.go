@@ -274,7 +274,7 @@ func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.
 	// current at that moment; build it before this test redirects TMPDIR to a
 	// directory it will delete.
 	worktreeBaseRepo(t)
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 	cfg := worktreeTestSessionConfig()
 	cfg.testOnly.skipGitSnapshot = false
@@ -617,7 +617,7 @@ func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
 	// the shared base repo before any subtest redirects TMPDIR.
 	worktreeBaseRepo(t)
 	t.Run("create, exit, remove", func(t *testing.T) {
-		isolated := t.TempDir()
+		isolated := pinnedScratchBase(t)
 		t.Setenv("TMPDIR", isolated)
 		r := newWorktreeRepo(t)
 		assertOnlyOwnHeld := func(step string) {
@@ -643,7 +643,7 @@ func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
 		assertOnlyOwnHeld("remove")
 	})
 	t.Run("refused create", func(t *testing.T) {
-		isolated := t.TempDir()
+		isolated := pinnedScratchBase(t)
 		t.Setenv("TMPDIR", isolated)
 		r := newWorktreeRepo(t)
 		closeDone := armCloseDuringSwap(r, nil)
@@ -657,7 +657,7 @@ func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
 		}
 	})
 	t.Run("refused switch", func(t *testing.T) {
-		isolated := t.TempDir()
+		isolated := pinnedScratchBase(t)
 		t.Setenv("TMPDIR", isolated)
 		r := newWorktreeRepo(t)
 		if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
@@ -685,7 +685,7 @@ func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
 // an unsandboxed session leaks a held lease.
 func TestDelegateWorktreeReport_LeavesNoUnownedHeldLease(t *testing.T) {
 	worktreeBaseRepo(t)
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 	r := newWorktreeRepo(t)
 	_, lanePath, _ := r.seedStableIsolationLane(t)
@@ -941,7 +941,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	// directory it will delete. (Same discipline as
 	// TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch.)
 	worktreeBaseRepo(t)
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 	cfg := worktreeTestSessionConfig()
 	cfg.testOnly.skipGitSnapshot = false

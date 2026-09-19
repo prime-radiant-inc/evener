@@ -80,7 +80,7 @@ func TestEnableSandboxFileToolsReachOwnScratch(t *testing.T) {
 				t.Fatalf("EnableSandbox(%v): %v", mode, err)
 			}
 
-			target := filepath.Join(env.Wrapper.SessionTmp(), "scratch.txt")
+			target := filepath.Join(sandbox.SessionScratchPrivateDir(env.Wrapper.SessionTmp()), "scratch.txt")
 			if _, err := env.WriteFile(target, "hello scratch\n"); err != nil {
 				t.Fatalf("%v: write_file into the session's own scratch dir should succeed: %v", mode, err)
 			}
@@ -406,7 +406,7 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 	if scratch == "" {
 		t.Fatal("a write-blocked env must provision a session scratch dir to write into")
 	}
-	note := filepath.Join(scratch, "findings.md")
+	note := filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "findings.md")
 	if _, err := env.WriteFile(note, "what I found\n"); err != nil {
 		t.Fatalf("write_file into the delegate's own scratch dir must succeed: %v", err)
 	}
@@ -414,13 +414,18 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 		t.Fatalf("read_file of the just-written scratch file failed: got %q err %v", back, err)
 	}
 
-	// One scratch dir, both layers: the shell's $TMPDIR/$EVENER_SCRATCH_DIR must be
-	// the SAME directory the file tools may write, or the delegate's own prompt
-	// would name a path half its tools cannot use.
+	// One scratch dir, both layers: the shell's $EVENER_SCRATCH_DIR must be the
+	// SAME directory the file tools may write, or the delegate's own prompt would
+	// name a path half its tools cannot use. $TMPDIR names the shared temp
+	// subdirectory inside it (issue #495).
 	shell := envToMap(env.commandEnvironment(nil))
-	if shell["EVENER_SCRATCH_DIR"] != scratch || shell["TMPDIR"] != scratch {
-		t.Errorf("shell scratch vars = %q/%q, want the file tools' scratch %q",
-			shell["EVENER_SCRATCH_DIR"], shell["TMPDIR"], scratch)
+	if want := sandbox.SessionScratchPrivateDir(scratch); shell["EVENER_SCRATCH_DIR"] != want {
+		t.Errorf("shell EVENER_SCRATCH_DIR = %q, want the file tools' private scratch %q",
+			shell["EVENER_SCRATCH_DIR"], want)
+	}
+	if want := sandbox.SessionScratchTmpDir(scratch); shell["TMPDIR"] != want {
+		t.Errorf("shell TMPDIR = %q, want the scratch's shared temp subdirectory %q",
+			shell["TMPDIR"], want)
 	}
 }
 
@@ -682,11 +687,14 @@ func assertFileToolsShareTheShellScratch(t *testing.T, env *LocalExecutionEnviro
 	if scratch == "" {
 		t.Fatal("the env reports no scratch after a shell command")
 	}
-	if got, err := env.ReadFile(filepath.Join(scratch, "probe"), nil, nil); err != nil || !strings.Contains(got, "shell") {
-		t.Errorf("read_file of the shell's probe in %s: got %q err %v; the file tools do not reach the scratch the shell writes to", scratch, got, err)
+	// The shell writes through $EVENER_SCRATCH_DIR, which names the private
+	// subtree the file tools must also reach.
+	shared := sandbox.SessionScratchPrivateDir(scratch)
+	if got, err := env.ReadFile(filepath.Join(shared, "probe"), nil, nil); err != nil || !strings.Contains(got, "shell") {
+		t.Errorf("read_file of the shell's probe in %s: got %q err %v; the file tools do not reach the scratch the shell writes to", shared, got, err)
 	}
-	if _, err := env.WriteFile(filepath.Join(scratch, "tool.txt"), "tool\n"); err != nil {
-		t.Errorf("write_file into %s: %v; the file tools do not reach the scratch the shell writes to", scratch, err)
+	if _, err := env.WriteFile(filepath.Join(shared, "tool.txt"), "tool\n"); err != nil {
+		t.Errorf("write_file into %s: %v; the file tools do not reach the scratch the shell writes to", shared, err)
 	}
 }
 
@@ -716,7 +724,7 @@ func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 	t.Run("environment that was left", func(t *testing.T) {
 		from := readConfinedEnvAt(t, t.TempDir())
 		// A file tool builds the layer around the scratch the env owns now.
-		if _, err := from.WriteFile(filepath.Join(from.SessionScratchDir(), "before.txt"), "before\n"); err != nil {
+		if _, err := from.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(from.SessionScratchDir()), "before.txt"), "before\n"); err != nil {
 			t.Fatalf("write_file into the owned scratch: %v", err)
 		}
 		to := from.WithWorkingDirectory(t.TempDir())
@@ -748,7 +756,7 @@ func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testin
 			default:
 				// The scratch may be mid-move: a refusal is the expected outcome
 				// then, and only the absence of a race is under test.
-				_, _ = from.WriteFile(filepath.Join(from.SessionScratchDir(), "racing.txt"), "x\n")
+				_, _ = from.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(from.SessionScratchDir()), "racing.txt"), "x\n")
 			}
 		}
 	}()
@@ -786,7 +794,7 @@ func TestRetiredFileToolLayersAreReclaimedOnceDrained(t *testing.T) {
 	from := readConfinedEnvAt(t, t.TempDir())
 	to := readConfinedEnvAt(t, t.TempDir())
 	to.DisposeSandboxScratch()
-	first := from.SessionScratchDir()
+	first := sandbox.SessionScratchPrivateDir(from.SessionScratchDir())
 	if _, err := from.WriteFile(filepath.Join(first, "held.txt"), "held\n"); err != nil {
 		t.Fatalf("write_file into the owned scratch: %v", err)
 	}
@@ -884,7 +892,7 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 					t.Fatalf("re-root to the lane: %v", err)
 				}
 				clone.AdoptSessionScratch(owner)
-				if _, err := clone.WriteFile(filepath.Join(clone.SessionScratchDir(), "cycle.txt"), "x\n"); err != nil {
+				if _, err := clone.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(clone.SessionScratchDir()), "cycle.txt"), "x\n"); err != nil {
 					t.Fatalf("write_file on the entered clone: %v", err)
 				}
 				owner.AdoptSessionScratch(clone)
@@ -897,7 +905,7 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 			if open != 0 {
 				t.Errorf("200 discarded clones still hold %d root fds open, want none", open)
 			}
-			if _, err := owner.WriteFile(filepath.Join(owner.SessionScratchDir(), "after.txt"), "x\n"); err != nil {
+			if _, err := owner.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(owner.SessionScratchDir()), "after.txt"), "x\n"); err != nil {
 				t.Errorf("write_file on the owner after the cycles: %v", err)
 			}
 		})

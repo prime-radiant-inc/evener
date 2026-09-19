@@ -68,7 +68,7 @@ func TestDelegateRestoreFailurePreservesAdoptedRetainedScratch(t *testing.T) {
 	if err := scratch.Pin(owner, ref); err != nil {
 		t.Fatal(err)
 	}
-	artifact := filepath.Join(scratch.Dir, "durable.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(scratch.Dir), "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func newRestorableSandboxedDelegate(t *testing.T, kind string) restorableSandbox
 // its retained handle orphaned and its kernel wrapper pointing at the mint.
 func TestDelegateSandboxedRestoreAdoptsRetainedSandboxScratch(t *testing.T) {
 	fixture := newRestorableSandboxedDelegate(t, sandbox.ScratchKindSandbox)
-	artifact := filepath.Join(fixture.ref.Dir, "durable.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(fixture.ref.Dir), "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestDelegateSandboxedRestoreAdoptsRetainedSandboxScratch(t *testing.T) {
 // adopted flag must come from adoption itself.
 func TestDelegateSandboxedRestoreFailurePreservesAdoptedUnsandboxedScratch(t *testing.T) {
 	fixture := newRestorableSandboxedDelegate(t, sandbox.ScratchKindUnsandboxed)
-	artifact := filepath.Join(fixture.ref.Dir, "durable.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(fixture.ref.Dir), "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestDiscardRestoredCandidateRetainsAdoptedRetainedScratch(t *testing.T) {
 		t.Fatalf("candidate env = %T, want a local environment", candidate.currentEnv())
 	}
 	ref := pinRetainedConsumerSlot(t, owner, candidate.id, "E-r8-discard", dir, sandbox.ScratchKindUnsandboxed)
-	artifact := filepath.Join(ref.Dir, "durable.bin")
+	artifact := filepath.Join(sandbox.SessionScratchPrivateDir(ref.Dir), "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +568,7 @@ func pinRetainedScratchPair(t *testing.T, owner sandbox.ScratchOwner, childID, b
 		if err := scratch.Pin(owner, ref); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(scratch.Dir, "durable.bin"), []byte("durable"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(sandbox.SessionScratchPrivateDir(scratch.Dir), "durable.bin"), []byte("durable"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := scratch.Retain(); err != nil {
@@ -702,7 +702,7 @@ func TestDelegatePartialAdoptionFailurePreservesRetainedScratch(t *testing.T) {
 			t.Fatalf("failed restore returned sub=%p restored=%t", sub, restored)
 		}
 		for _, ref := range []sandbox.ScratchReference{sandboxRef, unsandboxedRef} {
-			got, err := os.ReadFile(filepath.Join(ref.Dir, "durable.bin"))
+			got, err := os.ReadFile(filepath.Join(sandbox.SessionScratchPrivateDir(ref.Dir), "durable.bin"))
 			if err != nil || string(got) != "durable" {
 				t.Fatalf("failed restore destroyed the manifest-referenced %s scratch %q: bytes=%q err=%v", ref.Kind, ref.Dir, got, err)
 			}

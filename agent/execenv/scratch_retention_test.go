@@ -19,6 +19,7 @@ import (
 // reference/mapping.
 func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 	base, workspace := t.TempDir(), t.TempDir()
+	openScratchTreesForCleanup(t, base)
 	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-test-session"}
 
 	e0 := NewLocalExecutionEnvironment(workspace)

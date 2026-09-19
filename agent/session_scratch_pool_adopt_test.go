@@ -2,7 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -113,6 +115,23 @@ func TestScratchRetentionConcurrentAdoption(t *testing.T) {
 // adopted before the lease-owning binding, whether the owner's handle is still
 // pooled or its lease is contended in this process. The wrapper-only slot never
 // takes a second lease, so neither condition may skip its restore.
+// relaxScratchTreesUnder relaxes every live scratch under root at cleanup time, so a
+// test that leaves an allocation behind does not defeat the harness sweep.
+func relaxScratchTreesUnder(t *testing.T, root string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || !entry.IsDir() {
+				return nil //nolint:nilerr // a vanished subtree is already clean
+			}
+			if strings.HasPrefix(entry.Name(), "evener-sandbox-") {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
+}
+
 func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -123,6 +142,11 @@ func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			// A live scratch withholds write even from its owner; relax it before the
+			// harness sweeps the test directory.
+			// The scratch may live under any of this test's temp directories, not just
+			// this one, so walk their common parent.
+			relaxScratchTreesUnder(t, filepath.Dir(dir))
 			root := newQueuePersistTestSession(t, dir)
 			defer root.Close()
 			owner, ok := root.scratchRetentionOwner()

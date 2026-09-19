@@ -1073,8 +1073,10 @@ func canonicalScratchDir(dir string) string {
 
 // rebuildSandboxWrapper rebuilds env's kernel wrapper around dir after a restore
 // replaced its eagerly provisioned session scratch, so the wrapper grants the
-// restored directory as TMPDIR instead of the discarded fresh mint. A wrapperless
-// env (an off or write-blocked allocation with no kernel layer) is left alone.
+// restored directory as the session scratch instead of the discarded fresh mint
+// ($EVENER_SCRATCH_DIR is dir's private subtree; $TMPDIR is its shared temp
+// subtree, both of which OpenRetainedSessionScratch provisions). A wrapperless env (an off or
+// write-blocked allocation with no kernel layer) is left alone.
 func (s *Session) rebuildSandboxWrapper(env *execenv.LocalExecutionEnvironment, dir string) error {
 	if env.Wrapper == nil {
 		return nil

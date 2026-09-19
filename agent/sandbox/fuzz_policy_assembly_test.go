@@ -192,7 +192,9 @@ func fuzzEnvironmentFloor(t *testing.T, fixture structuralFixture, home, raw str
 	if kubeconfigIsExternal("relative"+string(os.PathListSeparator)+insideKube, policy) {
 		t.Fatalf("kubeconfigIsExternal rejected only in-scope/relative entries")
 	}
-	if !slices.Contains(got, "TMPDIR="+sessionTmp) {
+	// TMPDIR names the scratch's shared temp subdirectory, not the private
+	// scratch itself (issue #495).
+	if !slices.Contains(got, "TMPDIR="+SessionScratchTmpDir(sessionTmp)) {
 		t.Fatalf("env floor did not redirect TMPDIR: %v", got)
 	}
 	if policy.CacheStrategy == CacheSessionPrivate {
@@ -261,7 +263,7 @@ func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) 
 	if err != nil {
 		t.Fatalf("NewSessionScratch: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp.Dir, "state"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(SessionScratchPrivateDir(tmp.Dir), "state"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write session tmp: %v", err)
 	}
 	if err := tmp.Cleanup(); err != nil {

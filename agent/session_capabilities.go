@@ -160,7 +160,13 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
 	}
 	if f.scratchDir != "" {
-		lines = append(lines, "Scratch ($"+envvars.EVENERScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
+		// EVENER_SCRATCH_DIR and TMPDIR are different directories inside one
+		// scratch: the 0700 private subtree the session's files live in, and the
+		// sticky world-writable temp subtree (issue #495).
+		lines = append(lines, "Scratch ($"+envvars.EVENERScratchDir.Name+"): "+sandbox.SessionScratchPrivateDir(f.scratchDir))
+		if tmp := sandbox.SessionScratchTmpDir(f.scratchDir); tmp != "" {
+			lines = append(lines, "Temp ($"+envvars.TmpDir.Name+"): "+tmp)
+		}
 	}
 	if f.sandboxed() {
 		lines = append(lines, "Cache: "+f.policy.CacheStrategy.String())

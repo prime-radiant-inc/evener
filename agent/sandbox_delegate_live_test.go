@@ -206,7 +206,12 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 	if _, err := os.Stat(createPath); !os.IsNotExist(err) {
 		t.Fatalf("shell create unexpectedly changed the workspace: err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(scratch, "report.txt")); err != nil {
+	// The scripted shell writes through $EVENER_SCRATCH_DIR, which is the private
+	// subtree — not the scratch container (issue #495).
+	if _, err := os.Stat(filepath.Join(sandbox.SessionScratchPrivateDir(scratch), "report.txt")); err != nil {
 		t.Fatalf("read-only delegate could not write its own scratch report: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "report.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the report must not land directly in the traversable scratch container: %v", err)
 	}
 }

@@ -177,6 +177,41 @@ func TestSeatbeltGolden(t *testing.T) {
 	}
 }
 
+// TestSeatbeltWriteRootsAreTheScratchSubtrees pins the write side of issue #495:
+// the session scratch CONTAINER is readable/traversable (so the exported subtrees
+// can be reached) but must never be a WRITE root — a 0644 artifact written directly
+// into a traversable container is readable by any local user who can reach the base.
+// Only the private subtree and the shared temp subtree are writable.
+func TestSeatbeltWriteRootsAreTheScratchSubtrees(t *testing.T) {
+	rp, _ := seatbeltResolve(t, ModeWorkspaceWrite, false, MainCheckout)
+	const sessionTmp = "/evener-session-tmp"
+	_, params := SeatbeltPolicy(rp, sessionTmp, identityCanon)
+
+	reads := map[string]bool{}
+	writes := map[string]bool{}
+	for _, p := range params {
+		switch {
+		case strings.HasPrefix(p.Key, "WRITABLE_ROOT_"):
+			writes[p.Path] = true
+		case strings.HasPrefix(p.Key, "READABLE_ROOT_"):
+			reads[p.Path] = true
+		}
+	}
+	for _, want := range SessionScratchWriteRoots(sessionTmp) {
+		if !writes[want] {
+			t.Errorf("expected the writable scratch subtree %q to be a write root: %v", want, params)
+		}
+	}
+	if writes[sessionTmp] {
+		t.Errorf("the scratch container %q must NOT be a write root: %v", sessionTmp, params)
+	}
+	// When the mode reads anywhere, "/" already covers the container; a
+	// worktree-only mode must name it explicitly or its subtrees are unreachable.
+	if rp.Spawned.Read == ReadWorktreeOnly && !reads[sessionTmp] {
+		t.Errorf("the scratch container %q must stay readable so its subtrees are reachable: %v", sessionTmp, params)
+	}
+}
+
 // TestSeatbeltPlatformDefaultsGating pins that the macOS system read-roots are
 // appended ONLY for restricted (worktree-only reads), never for the full-disk
 // read modes, and the network block ONLY when egress is on.
@@ -206,14 +241,21 @@ func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 }
 
 // TestSeatbeltReadOnlyNoPersistentWrite pins the read-only contract: the only
-// writable root is the session tmp — no worktree write allow.
+// writable roots are the session scratch's two exported subtrees — no worktree
+// write allow, and never the scratch container itself (issue #495).
 func TestSeatbeltReadOnlyNoPersistentWrite(t *testing.T) {
 	t.Parallel()
 	rp, cwd := seatbeltResolve(t, ModeReadOnly, true, MainCheckout)
-	_, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+	const sessionTmp = "/evener-session-tmp"
+	_, params := SeatbeltPolicy(rp, sessionTmp, identityCanon)
 
-	if k := paramKeyForPath(params, "/evener-session-tmp"); !strings.HasPrefix(k, "WRITABLE_ROOT_") {
-		t.Errorf("read-only must grant the session tmp as the writable root; params: %+v", params)
+	for _, want := range SessionScratchWriteRoots(sessionTmp) {
+		if k := paramKeyForPath(params, want); !strings.HasPrefix(k, "WRITABLE_ROOT_") {
+			t.Errorf("read-only must grant %q as a writable root; params: %+v", want, params)
+		}
+	}
+	if k := paramKeyForPath(params, sessionTmp); strings.HasPrefix(k, "WRITABLE_ROOT_") {
+		t.Errorf("read-only must not grant the scratch container %q writable; params: %+v", sessionTmp, params)
 	}
 	// No writable root covers the worktree.
 	for _, p := range params {

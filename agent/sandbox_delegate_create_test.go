@@ -124,7 +124,9 @@ func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 	if !ok || le.Wrapper == nil {
 		t.Fatal("sandboxed child env must have a kernel wrapper with a scratch dir")
 	}
-	wantScratch := le.SessionScratchDir()
+	// The recorded path is the private subtree, which is what the child's own
+	// commands see as $EVENER_SCRATCH_DIR — not the scratch container.
+	wantScratch := sandbox.SessionScratchPrivateDir(le.SessionScratchDir())
 	if wantScratch == "" {
 		t.Fatal("sandboxed child env reports no scratch dir")
 	}
@@ -190,7 +192,7 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 // client (via childClientFactory) forces NewSession to fail AFTER EnableSandbox. Not
 // parallel: it isolates TMPDIR to observe the sandbox scratch base.
 func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
@@ -232,7 +234,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 // per-delegate sandbox that reaches the post-NewSession grant validation must
 // dispose its scratch when the child cannot adopt a parent-only tool.
 func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *testing.T) {
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
@@ -260,7 +262,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *tes
 // can be fully prepared and then rejected by the parent-closing gate before it
 // is adopted. That late failure must roll back a fresh sandbox environment too.
 func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testing.T) {
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
@@ -284,7 +286,7 @@ func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testi
 // sandboxed child's scratch must be retained and its live lease released. Not
 // parallel: isolates TMPDIR to observe the scratch base.
 func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
-	isolated := t.TempDir()
+	isolated := pinnedScratchBase(t)
 	t.Setenv("TMPDIR", isolated)
 
 	lane, home := sbxLane(t)
@@ -374,8 +376,12 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	if scratch == "" {
 		t.Fatal("EnableSandbox must provision a session scratch dir")
 	}
-	if !strings.Contains(got, scratch) {
-		t.Fatalf("sandbox prompt line must name the scratch directory so the model can find it: got %q, want it to contain %q", got, scratch)
+	// The prompt must name the PRIVATE subtree, not merely the container: the
+	// container is a prefix of the private path, so a Contains check against the
+	// container alone would also pass for a prompt that still named the
+	// pre-split path (issue #495).
+	if want := sandbox.SessionScratchPrivateDir(scratch); !strings.Contains(got, want) {
+		t.Fatalf("sandbox prompt line must name the private scratch subtree so the model can find it: got %q, want it to contain %q", got, want)
 	}
 }
 
@@ -401,8 +407,8 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 	if scratch == "" {
 		t.Fatal("EnableSandbox must provision a session scratch dir")
 	}
-	if !strings.Contains(got, scratch) {
-		t.Fatalf("read-only prompt line must name the scratch directory: got %q, want it to contain %q", got, scratch)
+	if want := sandbox.SessionScratchPrivateDir(scratch); !strings.Contains(got, want) {
+		t.Fatalf("read-only prompt line must name the private scratch subtree: got %q, want it to contain %q", got, want)
 	}
 	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
 		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
@@ -414,12 +420,12 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 
 func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	const (
-		scratchMarker = "Scratch directory (read-write even in this sandbox; also $TMPDIR / $EVENER_SCRATCH_DIR for shell commands): "
+		scratchMarker = "Scratch directory (read-write even in this sandbox; also $EVENER_SCRATCH_DIR for shell commands): "
 		guidance      = "Read-only delegates may write only inside this scratch directory; all other writes are denied."
 	)
 
 	root := t.TempDir()
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("TMPDIR", pinnedScratchBase(t))
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	var chosenPath string
 	var sawGuidance bool

@@ -120,7 +120,7 @@ process environments.
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`). |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the sticky, world-writable `tmp` subtree of the session scratch, so a descendant that drops privileges can still create temp files. `EVENER_SCRATCH_DIR` names the sibling `private` subtree instead. |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |

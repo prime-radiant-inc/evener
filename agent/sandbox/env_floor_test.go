@@ -54,8 +54,8 @@ func TestEnvFloorRedirectsCacheWhenSessionPrivate(t *testing.T) {
 			t.Errorf("%s must redirect into the session tmp, got %q", name, v)
 		}
 	}
-	if v, _ := envValue(out, "TMPDIR"); v != tmp {
-		t.Errorf("TMPDIR must point at the session tmp, got %q", v)
+	if v, _ := envValue(out, "TMPDIR"); v != SessionScratchTmpDir(tmp) {
+		t.Errorf("TMPDIR must point at the session scratch's shared temp subdirectory, got %q", v)
 	}
 }
 
@@ -143,10 +143,13 @@ func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
 		"CARGO_HOME=/cache/cargo",
 	}
 	out := ApplySessionScratchEnv(in, "/tmp/evener-sandbox-owned")
-	for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
-		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
-			t.Fatalf("%s = %q, want session scratch", name, got)
-		}
+	// The two reserved variables name different directories: the private scratch
+	// and its shared temp subdirectory (issue #495).
+	if got, _ := envValue(out, "EVENER_SCRATCH_DIR"); got != "/tmp/evener-sandbox-owned/private" {
+		t.Fatalf("EVENER_SCRATCH_DIR = %q, want the scratch's private subtree", got)
+	}
+	if got, _ := envValue(out, "TMPDIR"); got != "/tmp/evener-sandbox-owned/tmp" {
+		t.Fatalf("TMPDIR = %q, want the session scratch's shared temp subdirectory", got)
 	}
 	for name, want := range map[string]string{
 		"HOME": "/home/jesse", "GOCACHE": "/cache/go",
@@ -186,10 +189,11 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 			t.Errorf("security filter retained %s: %v", name, out)
 		}
 	}
-	for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
-		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
-			t.Errorf("%s = %q, want session scratch", name, got)
-		}
+	if got, _ := envValue(out, "EVENER_SCRATCH_DIR"); got != "/tmp/evener-sandbox-owned/private" {
+		t.Errorf("EVENER_SCRATCH_DIR = %q, want the scratch's private subtree", got)
+	}
+	if got, _ := envValue(out, "TMPDIR"); got != "/tmp/evener-sandbox-owned/tmp" {
+		t.Errorf("TMPDIR = %q, want the session scratch's shared temp subdirectory", got)
 	}
 	for name, want := range map[string]string{
 		"HOME": "/home/jesse", "GOCACHE": "/cache/go",

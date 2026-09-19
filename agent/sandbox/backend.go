@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -21,7 +22,12 @@ import (
 type Wrapper struct {
 	policy     ResolvedPolicy
 	binaryPath string // absolute backend binary, resolved outside cwd (PATH-injection defense)
-	sessionTmp string // per-session writable tmp; also the child's TMPDIR
+	// sessionTmp is the per-session scratch CONTAINER — the one directory the
+	// backend is given. It is reachable but never writable: the child's TMPDIR is
+	// its `tmp` subtree and its EVENER_SCRATCH_DIR is its `private` subtree (see
+	// SessionScratchTmpDir / SessionScratchPrivateDir), which are the writable
+	// roots the backends derive from it.
+	sessionTmp string
 }
 
 var wrapSeatbelt = seatbeltWrap
@@ -35,6 +41,18 @@ var wrapSeatbelt = seatbeltWrap
 // HostFacts.SandboxExecPath (both absolute). The Seatbelt Wrap path additionally
 // hard-codes /usr/bin/sandbox-exec regardless of binaryPath, so a bogus stored
 // path can never redirect the exec.
+//
+// It also MUTATES sessionTmp when that directory exists: the container is put into
+// the session-scratch layout (traversable container, `0700` private subtree,
+// `1777`+sticky temp subtree, legacy direct entries migrated into the private
+// subtree), because the wrapper's writable roots and the environment floor's
+// $TMPDIR/$EVENER_SCRATCH_DIR are derived from it. That is idempotent for a
+// container NewSessionScratch or a restore already laid out — every in-repo caller
+// passes such a scratch — and it fails closed rather than unlink anything, so the
+// constructor can fail where it previously could not. A caller must therefore hold
+// whatever exclusivity the directory needs: the restore path (rebuildSandboxWrapper)
+// only ever unwraps an allocation OpenRetainedSessionScratch has already prepared
+// under its lease.
 func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper, error) {
 	switch policy.Backend {
 	case BackendBwrap, BackendSeatbelt:
@@ -54,13 +72,34 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 			return nil, err
 		}
 	}
+	// The wrapper derives its writable roots from the container's two exported
+	// subtrees, and the environment floor names them as $TMPDIR and
+	// $EVENER_SCRATCH_DIR, so the container has to be in the exported layout before
+	// it is wrapped: a bare or legacy `0700` directory would export a `$TMPDIR` whose
+	// parent a dropped-privilege child cannot traverse. prepareSessionScratch is
+	// idempotent for a container Evener already laid out, and fails closed rather
+	// than unlink a caller's entry. A container path that does not exist is left
+	// alone: the wrapper is handed a directory Evener provisioned, and inventing a
+	// tree for a caller that passed a path it never created would hide the caller's
+	// own error rather than fix the sandbox.
+	if sessionTmp != "" {
+		if info, err := os.Stat(sessionTmp); err == nil && info.IsDir() {
+			if err := prepareSessionScratchForWrapper(sessionTmp); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
 }
 
 // Policy returns the resolved policy this wrapper enforces.
 func (w *Wrapper) Policy() ResolvedPolicy { return w.policy }
 
-// SessionTmp returns the per-session writable tmp directory (the child's TMPDIR).
+// SessionTmp returns the per-session scratch CONTAINER the wrapper was built with.
+// It is traversal-only inside the sandbox: the child's $TMPDIR is
+// SessionScratchTmpDir(SessionTmp()) and its $EVENER_SCRATCH_DIR is
+// SessionScratchPrivateDir(SessionTmp()). Callers that need one of those paths must
+// derive it, never use this value as the child's temp directory.
 func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 
 // Confine rewrites cmd to run under the wrapper's backend confinement: it prepends

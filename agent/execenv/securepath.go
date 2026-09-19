@@ -122,9 +122,10 @@ func (s *sandboxFS) isGranted(abs string) bool {
 // newSandboxFS builds a sandboxFS for a file-tool-confining resolved policy. The
 // caller (e.sandbox()) guarantees policy != nil and policy.FileToolConfined().
 //
-// scratchDir, when non-empty, is the concrete per-session scratch directory
-// (agent/sandbox.SessionScratch.Dir, via the env's Wrapper.SessionTmp() or, for a
-// wrapper-less write-blocked env, its own session scratch) folded into the
+// scratchDir, when non-empty, is the PRIVATE subtree the model's file tools are
+// granted — agent/sandbox.SessionScratchPrivateDir of the per-session scratch, which
+// maps Wrapper.SessionTmp() or, for a wrapper-less write-blocked env, its own session
+// scratch — folded into the
 // policy's file-tool grants via WithSessionScratch: Resolve ran before the
 // directory existed, so p alone never carries it. A blank scratchDir (an
 // unsandboxed caller, or a policy resolved without a scratch dir) leaves p
