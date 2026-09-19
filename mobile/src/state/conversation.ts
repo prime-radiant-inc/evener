@@ -55,6 +55,7 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
+import type { ConversationMutationSubmitter } from "./conversationMutation";
 
 function attachmentSourceId(item: MobileTimelineItem): string | null {
   return item.kind === "attachments" && item.id.endsWith(":attachments")
@@ -313,7 +314,12 @@ export interface ConversationMutationState {
 /** Display-safe local acknowledgement of a completed production mutation. */
 export interface AcceptedConversationMutation {
   readonly kind: "send" | "steer" | "queue" | "interrupt";
-  readonly receipt: MutationReceipt;
+  readonly receipt?: MutationReceipt;
+}
+
+export interface ConversationStoreOptions {
+  readonly mutationHubId?: string;
+  readonly mutationSubmitter?: ConversationMutationSubmitter;
 }
 
 export type LoadOlderResult =
@@ -843,7 +849,11 @@ function projectSingleItem(
   return null;
 }
 
-export function createConversationStore() {
+export function createConversationStore(options: ConversationStoreOptions = {}) {
+  if (options.mutationSubmitter !== undefined && options.mutationHubId === undefined)
+    throw new Error("ConversationStore: mutationHubId is required with mutationSubmitter");
+  const mutationHubId = options.mutationHubId ?? "";
+  const mutationSubmitter = options.mutationSubmitter;
   let conversationGen = 0;
   let mutationIdCounter = 0;
   // Draft revision: a monotonically increasing counter incremented on every
@@ -2160,7 +2170,16 @@ export function createConversationStore() {
         // it.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.send(input);
+          const receipt = mutationSubmitter
+            ? await mutationSubmitter.submit({
+                kind: "send",
+                hubId: mutationHubId,
+                targetRef: opBinding.ref,
+                threadId: state.conversation.threadId,
+                instanceId: state.conversation.instanceId ?? state.conversation.threadId,
+                input,
+              })
+            : await service.send(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a

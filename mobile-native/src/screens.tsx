@@ -60,6 +60,8 @@ import { ImageSelection } from "./imageSelection";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
+import { createNativeMutationHost } from "./nativeMutationHost";
+import { getNativeMutationRuntime } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -828,17 +830,42 @@ export function ConversationScreen({
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
+	const mutationRuntime = useMemo(() => getNativeMutationRuntime(), []);
+	const mutationHost = useMemo(
+		() =>
+			client
+				? createNativeMutationHost(
+						mutationRuntime,
+						route.params.hubId,
+						route.params.ref,
+						client,
+					)
+				: null,
+		[client, mutationRuntime, route.params.hubId, route.params.ref],
+	);
 	const store = useMemo(
-		() => createConversationStore(),
-		[route.params.hubId, route.params.ref],
+		() =>
+			createConversationStore({
+				mutationHubId: route.params.hubId,
+				mutationSubmitter: mutationRuntime,
+			}),
+		[mutationRuntime, route.params.hubId, route.params.ref],
 	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
 	// The conversation store validates the exact bound sink object on refresh.
 	const activitySink = useMemo(() => activity.getState(), [activity]);
 	const service = useMemo(
-		() => (client ? createConversationService(client) : null),
-		[client],
+		() =>
+			client
+				? createConversationService(client, {
+						onReadStart: (ref, expectedThreadId) =>
+							mutationHost?.beginRead(ref, expectedThreadId),
+						onReadComplete: (lease, response) =>
+							mutationHost?.reconcileRead(lease, response),
+					})
+				: null,
+		[client, mutationHost],
 	);
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
@@ -961,6 +988,11 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	useEffect(() => {
+		if (!mutationHost) return;
+		void mutationHost.start().catch(() => undefined);
+		return () => mutationHost.dispose();
+	}, [mutationHost]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.

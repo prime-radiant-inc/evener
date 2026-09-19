@@ -33,6 +33,7 @@ import type {
   ConversationReadProjection,
   LiveConversationService,
 } from "../services/conversation";
+import type { ConversationMutationSubmitter } from "./conversationMutation";
 import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
 import {
@@ -401,6 +402,40 @@ describe("ConversationStore", () => {
   });
 
   describe("send", () => {
+    it("admits send through the native submitter without fabricating a receipt", async () => {
+      const service = new FakeConversationService();
+      let request: Parameters<ConversationMutationSubmitter["submit"]>[0] | null = null;
+      const submitter: ConversationMutationSubmitter = {
+        submit: async (value) => {
+          request = value;
+          return undefined;
+        },
+      };
+      const store = createConversationStore({
+        mutationHubId: "hub-1",
+        mutationSubmitter: submitter,
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().setDraft("my message");
+
+      await store.getState().send(service, textInput("my message"));
+
+      expect(service.sendCallCount).toBe(0);
+      expect(request).toMatchObject({
+        kind: "send",
+        hubId: "hub-1",
+        targetRef: "ref-1",
+        threadId: "thread-1",
+        instanceId: "thread-1",
+        input: textInput("my message"),
+      });
+      expect(store.getState().pendingMutation).toBeNull();
+      expect(store.getState().lastAcceptedMutation).toEqual({
+        kind: "send",
+        receipt: undefined,
+      });
+    });
+
     it("clears draft on success and sets pendingSend", async () => {
       const service = new FakeConversationService();
       service.receipt = makeReceipt({ clientMutationId: "cmid-99" });

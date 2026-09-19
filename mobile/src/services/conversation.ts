@@ -78,10 +78,20 @@ export type IdFactory = () => string;
 // applied here where the fence is computed, so the displayed conversation and
 // the mutations it offers can never disagree about the instance.
 
-export interface ConversationServiceOptions {
+export interface ConversationServiceOptions<ReadLease = unknown> {
   readonly idFactory?: IdFactory;
   // The clock hydrateThread stamps the model with; tests inject a fixed one.
   readonly now?: () => number;
+  // Native uses these hooks to fence durable mutation dispatch around the same
+  // raw authoritative read that produces the conversation projection.
+  readonly onReadStart?: (
+    threadRef: string,
+    expectedThreadId?: string,
+  ) => ReadLease | undefined;
+  readonly onReadComplete?: (
+    lease: ReadLease | undefined,
+    response: ThreadReadResponse,
+  ) => void | Promise<unknown>;
 }
 
 export interface ConversationReadProjection {
@@ -539,9 +549,9 @@ function validateQueueAction(
   }
 }
 
-export function createConversationService(
+export function createConversationService<ReadLease = unknown>(
   client: ConversationClientLike | AppwireClient,
-  options: ConversationServiceOptions = {},
+  options: ConversationServiceOptions<ReadLease> = {},
 ): QueueConversationService &
   ConversationModelCatalog &
   ConversationGoalActions &
@@ -660,13 +670,17 @@ export function createConversationService(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
       });
+      if (options.onReadComplete !== undefined)
+        await options.onReadComplete(readLease, response);
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw here leaves ref+capabilities null/fail-closed. Only
       // commit the pair after projection succeeds and the epoch is still
@@ -700,7 +714,9 @@ export function createConversationService(
           : pendingProjection?.ref === threadRef
             ? pendingProjection.instanceId
             : null;
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const read = client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -711,6 +727,8 @@ export function createConversationService(
       });
       pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
       const response: ThreadReadResponse = await read;
+      if (options.onReadComplete !== undefined)
+        await options.onReadComplete(readLease, response);
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw in hydration, projectConversation or activity
       // projection (or a malformed response) leaves ref+capabilities
