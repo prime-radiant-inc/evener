@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"syscall"
 
 	"primeradiant.com/evener/internal/interactiveartifacts"
 )
@@ -27,8 +26,11 @@ func openInheritedDaemonBroker(readFD, writeFD int) (*interactiveartifacts.Daemo
 
 	// These descriptors carry Hub authority. Seal inheritance before any plugin,
 	// tool, shell, or session construction can start a descendant process.
-	syscall.CloseOnExec(readFD)
-	syscall.CloseOnExec(writeFD)
+	if err := sealInheritedDaemonBrokerDescriptors(readFD, writeFD); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return nil, err
+	}
 	launchID, err := interactiveartifacts.ReadLaunchCorrelation(reader)
 	if err != nil {
 		_ = reader.Close()
