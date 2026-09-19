@@ -39,6 +39,18 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
+// awaitingOrHasPendingAsk reports whether the session is SessionAwaiting or
+// has an unresolved ask_user question, sampling state and the pending set
+// under one lock. The drain-ladder gate (session_lifecycle.go) needs both
+// facts as of the SAME instant: two separate locked calls (State() then
+// askPendingCount()) could observe a state transition or an askPending
+// mutation land between them.
+func (s *Session) awaitingOrHasPendingAsk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == SessionAwaiting || len(s.askPending) > 0
+}
+
 // WireState is the externally-reported session state. It equals State()
 // except for one override: an idle session with undelivered job notifications
 // or claimable queued input reads as "active" because work the session owns
@@ -264,6 +276,18 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 		}
 		s.finishActiveProvenance()
 	}
+}
+
+// finishProcessingAtFailureBoundary settles a failed turn to the same boundary
+// state restore derives from its transcript. A pending ask survives provider,
+// retry-budget, and other terminal failures, so those paths must remain
+// awaiting instead of reporting idle to the live client.
+func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
+	state := SessionIdle
+	if s.askPendingCount() > 0 {
+		state = SessionAwaiting
+	}
+	s.finishProcessingAtBoundary(ctx, state)
 }
 
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
