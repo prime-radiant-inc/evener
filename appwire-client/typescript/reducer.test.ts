@@ -3371,6 +3371,79 @@ test("mergeTurnHistory treats matching fresh fragments as one coverage window", 
   expect(merged.transcriptOverlap).toBe(true);
 });
 
+test("mergeTurnHistory checks coverage against every transitively matching fresh fragment", () => {
+  const newer: TurnModel[] = [
+    {
+      id: "turn-a",
+      status: "completed",
+      items: [{ id: "item-x", turnId: "turn-a", type: "agentMessage", text: "fresh-a", status: "completed" }],
+    },
+    {
+      id: "turn-b",
+      status: "completed",
+      usage: { inputTokens: 11 },
+      items: [{ id: "item-x", turnId: "turn-b", type: "agentMessage", text: "fresh-b", status: "completed" }],
+    },
+  ];
+
+  const merged = mergeTurnHistory(
+    [{ id: "turn-a", status: "completed", usage: { inputTokens: 11 }, items: [] }],
+    newer,
+  );
+
+  expect(merged.turns).toBe(newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(false);
+});
+
+test("mergeTurnHistory treats collectively supplied item fields as covered", () => {
+  const newer: TurnModel[] = [
+    {
+      id: "turn-a",
+      status: "completed",
+      items: [{ id: "item-x", turnId: "turn-a", type: "agentMessage", text: "fresh-a", status: "completed" }],
+    },
+    {
+      id: "turn-b",
+      status: "completed",
+      items: [
+        {
+          id: "item-x",
+          turnId: "turn-b",
+          type: "agentMessage",
+          text: "fresh-b",
+          output: "settled output",
+          status: "completed",
+        },
+      ],
+    },
+  ];
+
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-a",
+        status: "completed",
+        items: [
+          {
+            id: "item-x",
+            turnId: "turn-a",
+            type: "agentMessage",
+            text: "older",
+            output: "settled output",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    newer,
+  );
+
+  expect(merged.turns).toBe(newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
 function orderedHistoryTurn(id: string, entry?: number): TurnModel {
   return {
     id,
