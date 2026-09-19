@@ -58,7 +58,7 @@ function observePersistence(): void {
 function refreshPersistence(): void {
   const read = ++persistenceRead;
   void readMutationPersistence()
-    .then(({ outbox, recovery }) => {
+    .then(({ outbox, optimistic, recovery }) => {
       if (read !== persistenceRead) return;
       const latest = new Map<string, MutationOutboxRecord>();
       for (const record of [...outbox, ...recovery]) {
@@ -89,6 +89,40 @@ function refreshPersistence(): void {
         const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
         const { state, error } = submittedStatusFor(record, refused);
         put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+      }
+      // The optimistic store holds accepted-but-unreflected rows: another
+      // connection's "pending" receipt moved this tab's blocked note out of
+      // the outbox (settleReceipt's accepted copy, the retention notes carry
+      // since e7a2098d5), so a draft whose submitted identity now lives only
+      // there is waiting on its canonical reflection - not on session
+      // recovery. Reading only the outbox and recovery stores left the draft
+      // showing the stale blocked status for a save that had already been
+      // accepted. Map the accepted row to the draft's pending state and clear
+      // that stale error, the same mapping the post-retry lookup's accepted
+      // branch applies: the draft keeps its submitted identity so the
+      // canonical note state that arrives next still acknowledges it.
+      for (const accepted of optimistic) {
+        if (accepted.method !== "notes/human/set") continue;
+        // A row the outbox or recovery store still holds reports itself
+        // through the loop above; the optimistic copy is authoritative only
+        // for a row neither other store holds anymore.
+        if (
+          outbox.some((record) => record.clientMutationId === accepted.clientMutationId) ||
+          recovery.some((record) => record.clientMutationId === accepted.clientMutationId)
+        )
+          continue;
+        const draft = get(accepted.targetRef);
+        if (draft?.submitted?.id !== accepted.clientMutationId || draft.generation !== draft.submitted.generation)
+          continue;
+        // Idempotent: the accepted copy persists until reconcileIdentities
+        // settles it, while refreshes fire on every notification and mount.
+        if (draft.submitted.state === "submitting" && draft.error === null) continue;
+        put(accepted.targetRef, {
+          ...draft,
+          submitted: { ...draft.submitted, state: "submitting" },
+          error: null,
+          saved: false,
+        });
       }
     })
     .catch(() => {
