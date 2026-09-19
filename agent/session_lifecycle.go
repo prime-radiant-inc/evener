@@ -1798,7 +1798,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// no turn of its own) only resolves the pending ask when the steer it is
 	// about to carry actually answers it: computed before the lock below
 	// since it reads the client-mutation journal, not session state.
-	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedClientMutationFromContext(ctx))
+	queuedIdentity := queuedClientMutationFromContext(ctx)
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
@@ -1810,13 +1811,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
-	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
-	// beside comm's reset, under the lock already held (not via the
-	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	// Skipped when carrierAnswersAsk is false (a human-note carrier): the
-	// mid-round clear in clearAskPendingForResolvingSteer decides that case
-	// once acceptSteeringCarrierInput's drain actually runs.
-	if carrierAnswersAsk {
+	// A claimed answering steering carrier has already crossed its durable
+	// admission boundary before this carrier turn runs, so preserve its
+	// established entry-clear behavior. Ordinary user input clears only after
+	// acceptUserInputWithSkillSelection has durably admitted its user turn;
+	// failed MaxTurns, environment, or transcript admission must leave the
+	// pending ask available for the next real reply and for restore.
+	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
 		s.askPending = nil
 	}
 	s.mu.Unlock()
@@ -2353,28 +2354,26 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // shared answer so the callers keyed on that sentinel -- the queued restore in
 // ProcessPendingUserInput -- recognize this refusal as one of theirs.
 //
-// Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
-// failed once still accepts the next record, and whether that is right for
-// every producer is the audit in #1181, not this path's rule to settle.
+// A retained whole line is adopted by the shared pair helper, while any write
+// that recorded nothing is returned before the input is announced or the model
+// runs. This direct user-input door owns the stronger admission contract: the
+// pending ask cannot be cleared until the reply is recorded. A retained,
+// unsynced record is still adopted as the authoritative line rather than
+// appended again, which is the transcript pair's explicit retained-record
+// contract.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
-	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(turn)
-	if writeErr != nil && s.attachedTranscript().Poisoned() {
-		s.attentionMu.Unlock()
-		return errors.Join(writeErr, errTranscriptRefusesRecords())
+	err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	)
+	if err != nil {
+		if s.attachedTranscript().Poisoned() {
+			return errors.Join(err, errTranscriptRefusesRecords())
+		}
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
-	s.mu.Unlock()
-	s.attentionMu.Unlock()
-	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
-	}
-	// A buffered write whose whole line landed but did not sync returns nil and
-	// queues its diagnostic; this path owns surfacing it, outside the lock.
-	s.surfaceTranscriptWarnings()
-	return nil
+	return err
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
@@ -2411,7 +2410,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
 				Budget:    exhaustedBudgetTurns,
 				Limit:     s.cfg.MaxTurns,
@@ -2425,6 +2424,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
+		s.clearAskPending()
 		return nil
 	}
 
@@ -2489,8 +2489,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
 					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
 				}
-				if err := s.recoverClientMutationFailures(true); err != nil {
-					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
+				recoveryErr := s.recoverClientMutationFailures(true)
+				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
+				if userRecorded {
+					s.clearAskPending()
+				}
+				if recoveryErr != nil {
+					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
+				}
+				if !userRecorded {
+					return failure
 				}
 				s.emit(events.EventUserInput, events.UserInputData{
 					Text:             input,
@@ -2513,9 +2521,17 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
+		// The claimed user turn is now durable. Resolve the pending ask only
+		// after this admission point; failures before it must preserve the ask.
+		s.clearAskPending()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
+	}
+	if queuedIdentity.ClientMutationID == "" {
+		// The direct user turn is durable (or was durably preseeded) at this
+		// point. Earlier admission failures intentionally leave askPending set.
+		s.clearAskPending()
 	}
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:             input,
