@@ -1,10 +1,10 @@
 import {
   awaitingFirstFrameSend,
   blockedEntries,
-  submitWithPendingTracking as coreSubmitWithPendingTracking,
   createMutationProjectionFence,
   createMutationProjectionWorkTracker,
   createPendingTurnsStore,
+  createSubmissionRunner,
   type MutationPersistencePort,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
@@ -91,6 +91,10 @@ function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
   return projectionWorkTracker.track(work);
 }
 
+// The fire-and-forget refresh port both the commit feed and the submission
+// runner take, bound once here rather than written inline at each site.
+const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsProjection(ref);
+
 // Awaits whatever projection work is outstanding right now and reports how
 // much that was. Callers repeat until it reports zero, flushing React in
 // between: the components start this work from effects, so only a flush can
@@ -132,13 +136,14 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
 // triggers for every other changed target both live in the package; this
 // binds them to the browser's own durable-mutation feed and the refresh
 // declared below.
-wireMutationCommitFeed(pendingTurnsStore, projectionFence, { subscribe: subscribeMutationPersistence }, (ref) => {
-  void refreshPendingTurnsProjection(ref);
-});
+wireMutationCommitFeed(pendingTurnsStore, projectionFence, { subscribe: subscribeMutationPersistence }, refreshTarget);
+
+// The submission lifecycle's four singletons (store, fence, tracker, refresh),
+// bound once here rather than repeated at every submitWithPendingTracking call.
+const runSubmission = createSubmissionRunner(pendingTurnsStore, projectionFence, trackProjectionWork, refreshTarget);
 
 export interface SubmitWithPendingTrackingOptions {
   ref: string;
-  method: PendingMethod;
   text: string;
   attachments?: InputAttachment[];
   // The canonical skill selections submitted with this text, for the
@@ -184,10 +189,7 @@ export function submitWithPendingTracking(
   perform: () => Promise<void>,
 ): Promise<void> {
   const skillNames = [...(opts.skillNames ?? [])];
-  return coreSubmitWithPendingTracking(
-    pendingTurnsStore,
-    projectionFence,
-    trackProjectionWork,
+  return runSubmission(
     {
       ref: opts.ref,
       draftRevisionAtStart: readDraftRevision(opts.ref),
@@ -196,9 +198,8 @@ export function submitWithPendingTracking(
       onFailure: opts.onFailure,
     },
     perform,
-    (ref) => void refreshPendingTurnsProjection(ref),
-    ({ clearedDraft, draftUnchanged }) => {
-      if (!clearedDraft && !opts.recoveryId) return;
+    ({ cleared, draftUnchanged }) => {
+      if (!cleared && !opts.recoveryId) return;
       for (const listener of submissionCommittedListeners) {
         try {
           listener(

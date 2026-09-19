@@ -2,6 +2,9 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -407,5 +410,42 @@ func TestInstall_PluginWithOwnManifest_EntryIgnored(t *testing.T) {
 	}
 	if len(inst.MCPConfigs) != 0 {
 		t.Fatalf("MCPConfigs = %+v, want none — entry's mcpServers must be ignored when plugin.json exists", inst.MCPConfigs)
+	}
+}
+
+// Install's registry save is one of four saveRegistry callers (Install,
+// Upgrade, mutateEntry's SetEnabled/SetAutoUpgrade, Remove) that returned
+// installSaveRegistry's own *fs.PathError - naming this machine's absolute
+// plugin-store path - straight to the RPC caller. The scrub belongs in
+// saveRegistry itself (the shared boundary every one of them calls), not
+// four separate wraps, so this test exercises the boundary through the one
+// caller and the mechanism covers the other three by construction.
+func TestInstall_SaveRegistryFailureNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	path := m.registryPath()
+	origSave := installSaveRegistry
+	t.Cleanup(func() { installSaveRegistry = origSave })
+	installSaveRegistry = func(string, Registry) error {
+		return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.Install(context.Background(), "widget", name)
+	if err == nil {
+		t.Fatal("Install = nil, want the failed registry save reported")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), registryFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, registryFileName)
 	}
 }

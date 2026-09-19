@@ -1257,12 +1257,30 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
+		// The clear must land before the event publishes: the server refreshes
+		// its ask facet on EventSteeringInjected (server/thread_envelope.go),
+		// so emitting first lets that refresh read a stale askPending=true
+		// until the next ask change (RoboRev #1806 member-3 Medium). Only the
+		// clear moves ahead of the emit -- admit/unpark stay after it, their
+		// original order, so a skill-admission failure's own EventWarning
+		// still publishes after EventSteeringInjected rather than before it.
+		s.clearAskPendingForResolvingSteer(t)
+		if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+			hook()
+		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
+	// Same ordering requirement as the client-mutation branch above: clear
+	// before the event that triggers the server's ask-facet refresh, admit
+	// after it (unchanged order).
+	s.clearAskPendingForResolvingSteer(t)
+	if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+		hook()
+	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
 	return steeringDelivered
@@ -1278,6 +1296,34 @@ func queuedInputFromSteering(msg steeringMessage) queuedInput {
 		Images:           msg.Images,
 		SkillNames:       msg.SkillNames,
 	}
+}
+
+// setSteeringCarrierClaimDrain records which steer (by client mutation id) a
+// claimed steering-carrier turn (acceptSteeringCarrierInput) is currently
+// draining, for steeringSelectionFailureIsCarrierClaim below to read; ""
+// clears it once the drain returns.
+func (s *Session) setSteeringCarrierClaimDrain(clientMutationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steeringCarrierClaimClientMutationID = clientMutationID
+}
+
+// steeringSelectionFailureIsCarrierClaim reports whether clientMutationID is
+// the steer a claimed steering-carrier turn is currently draining
+// (setSteeringCarrierClaimDrain above) — the turn whose mere acceptance
+// cleared askPending before this selection failure ran, PROVIDED that steer
+// itself answers the ask (steeringCarrierClaimAnswersAsk): the caller
+// (recordFailedSteeringSelection) checks both before tagging the TurnFailure
+// a resolution boundary (schema.TurnFailureInfo.SteeringCarrier) — a
+// human-note carrier's entry clear left askPending set, so this alone is not
+// sufficient.
+func (s *Session) steeringSelectionFailureIsCarrierClaim(clientMutationID string) bool {
+	if clientMutationID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringCarrierClaimClientMutationID == clientMutationID
 }
 
 // recordFailedSteeringSelection durably records a steering input whose skill
@@ -1297,7 +1343,17 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(cause.Error()))
 	turn.ClientMutationID = msg.ClientMutationID
 	turn.StableTurnID = msg.StableTurnID
-	turn.Error = &schema.TurnFailureInfo{Message: cause.Error()}
+	// Tagged only when this IS the claimed carrier's own steer (
+	// steeringSelectionFailureIsCarrierClaim) AND that steer answers the ask
+	// (steeringCarrierClaimAnswersAsk, the same journal-kind check the entry
+	// clear uses): a human-note carrier's entry clear already left askPending
+	// set, so its failure must not be a resolution boundary either.
+	steeringCarrier := s.steeringSelectionFailureIsCarrierClaim(msg.ClientMutationID) &&
+		s.steeringCarrierClaimAnswersAsk(queuedClientMutationIdentity{ClientMutationID: msg.ClientMutationID, SteeringCarrier: true})
+	turn.Error = &schema.TurnFailureInfo{
+		Message:         cause.Error(),
+		SteeringCarrier: steeringCarrier,
+	}
 	turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,

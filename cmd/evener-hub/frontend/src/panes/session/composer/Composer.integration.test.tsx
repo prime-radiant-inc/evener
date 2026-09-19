@@ -640,7 +640,11 @@ test("a second message queues behind a committed start even when recovery projec
     status: { type: "idle" },
     evener: {
       ref: "ref_a",
-      capabilities: { ...FULL_CAPABILITIES, queue: false, steer: false, interrupt: false },
+      // A live idle snapshot's capability set: Steer, Interrupt and Queue
+      // advertise harness support (#1375), so an idle thread on a wired daemon
+      // carries them true. The false idle set the kata-8c65 window used to
+      // carry no longer exists.
+      capabilities: FULL_CAPABILITIES,
       queue: { revision: 0 },
     },
     turns: [],
