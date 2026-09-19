@@ -1526,6 +1526,9 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 // A forwarded method that mutates the host uses AdminMutationCall instead,
 // whose lost-response mapping reports the mutation outcome as unknown.
 func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if appwire.IsPrivateBrokerMethod(method) {
+		return appwire.InvalidParams("private broker methods may not be forwarded")
+	}
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
@@ -1604,6 +1607,9 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // been applied and blocking its retry is simply wrong. Only from dispatch onward
 // does the ambiguous in-flight reading apply.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if appwire.IsPrivateBrokerMethod(method) {
+		return appwire.InvalidParams("private broker methods may not be forwarded")
+	}
 	if err := ctx.Err(); err != nil {
 		// Provably not sent: this runs before the request is handed to the
 		// client, so the caller's context ending maps exactly as AdminCall maps

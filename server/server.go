@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/coder/websocket"
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
@@ -308,6 +309,9 @@ type ServerConfig struct {
 	HubToken      string
 	AllowedHost   string
 	StateDir      string
+	// PrivateBrokerHandler receives only a directly authenticated daemon broker
+	// WebSocket. Nil leaves the internal route unavailable.
+	PrivateBrokerHandler func(context.Context, appwire.Transport)
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -328,9 +332,11 @@ type taskPublicationCursor struct {
 
 // Server is the HTTP server that bridges an agent.Session to AppWire clients.
 type Server struct {
-	mux         *http.ServeMux
-	appServer   *appserver.Server
-	appNotifier *appserver.Notifier
+	mux                  *http.ServeMux
+	appServer            *appserver.Server
+	appNotifier          *appserver.Notifier
+	privateBrokerHandler func(context.Context, appwire.Transport)
+	allowedHost          string
 
 	mu             sync.RWMutex
 	status         StatusInfo
@@ -525,16 +531,18 @@ func NewServer(cfg ServerConfig) *Server {
 		// replay for a reconnecting subscriber. It does not bound the turn
 		// snapshot: eviction changes how far a client can catch up from
 		// deltas, never what the thread contains.
-		appNotifier:         appserver.NewNotifier(replaySize),
-		appSourceID:         "local",
-		appTurns:            &appTurnSnapshot{},
-		appDescendants:      make(map[string]*appDescendantProjection),
-		appTaskPublications: make(map[string]taskPublicationCursor),
-		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
-		clearRecords:        make(map[string]threadClearRecord),
-		inputCh:             make(chan InputMessage, 1),
-		hubToken:            strings.TrimSpace(cfg.HubToken),
-		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		appNotifier:          appserver.NewNotifier(replaySize),
+		appSourceID:          "local",
+		appTurns:             &appTurnSnapshot{},
+		appDescendants:       make(map[string]*appDescendantProjection),
+		appTaskPublications:  make(map[string]taskPublicationCursor),
+		clearJournalPath:     threadClearJournalPath(cfg.StateDir),
+		clearRecords:         make(map[string]threadClearRecord),
+		inputCh:              make(chan InputMessage, 1),
+		hubToken:             strings.TrimSpace(cfg.HubToken),
+		sameOrigin:           httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		allowedHost:          strings.TrimSpace(cfg.AllowedHost),
+		privateBrokerHandler: cfg.PrivateBrokerHandler,
 	}
 	runtime = s
 	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
@@ -547,6 +555,10 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if appwire.IsPrivateBrokerPath(r.URL.Path, r.URL.RawPath) {
+		s.servePrivateBroker(w, r)
+		return
+	}
 	if message := s.sameOrigin.Rejection(r); message != "" {
 		http.Error(w, message, http.StatusForbidden)
 		return
@@ -557,6 +569,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) servePrivateBroker(w http.ResponseWriter, r *http.Request) {
+	if !appwire.IsExactPrivateBrokerPath(r.URL.Path, r.URL.RawPath) || s.privateBrokerHandler == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Host != s.allowedHost || len(r.Header.Values("Origin")) != 0 {
+		http.Error(w, "private broker request rejected", http.StatusForbidden)
+		return
+	}
+	if s.hubToken == "" || !httpguard.HubTokenAuthorized(s.hubToken, r.Header.Get("Authorization")) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	transport := appwire.NewPrivateWSTransport(conn)
+	s.privateBrokerHandler(r.Context(), transport)
 }
 
 // SetStatus replaces the full session status.

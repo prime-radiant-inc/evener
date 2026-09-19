@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -59,6 +60,10 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if appwire.IsPrivateBrokerPath(r.URL.Path, r.URL.RawPath) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			rec := recordedHTTPRequest{
 				Method:  r.Method,
 				Path:    r.URL.Path,

@@ -61,6 +61,33 @@ func TestRemoteHubSourceAdminCallPreservesSemanticWireError(t *testing.T) {
 	}
 }
 
+func TestRemoteHubSourceAdminForwardersRejectPrivateBrokerMethodsBeforeClientResolution(t *testing.T) {
+	resolved := 0
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		resolved++
+		return nil, errors.New("must not resolve")
+	})
+	for _, call := range []func() error{
+		func() error {
+			var out json.RawMessage
+			return source.AdminCall(t.Context(), appwire.MethodBrokerInstall, json.RawMessage(`{"capability":"secret"}`), &out)
+		},
+		func() error {
+			var out json.RawMessage
+			return source.AdminMutationCall(t.Context(), appwire.MethodBrokerAuthenticate, json.RawMessage(`{"capability":"secret"}`), &out)
+		},
+	} {
+		err := call()
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Errorf("private forward error = %T %v, want InvalidParams", err, err)
+		}
+	}
+	if resolved != 0 {
+		t.Fatalf("resolved remote client %d times for private methods", resolved)
+	}
+}
+
 // TestRemoteHubSourceAdminCallTransportFailureBecomesSessionUnavailable pins the
 // component-07a error mapping: a channel that dies mid-call must reach the proxy
 // as a typed SessionUnavailable, not a raw transport error that WireError would

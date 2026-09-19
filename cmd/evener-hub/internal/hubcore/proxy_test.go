@@ -109,6 +109,37 @@ func fuzzScenarioRESTProxyStripsBrowserOrigin(t *testing.T) {
 	}
 }
 
+func TestRESTProxyRejectsPrivateBrokerBeforeResolutionOrCredentialStamping(t *testing.T) {
+	calls := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case calls <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	proxy := NewRESTProxy(fakeRoster{addr: upstream.Listener.Addr().String(), id: "01SESS001", token: "daemon-secret"})
+	for _, target := range []string{
+		"/live/01SESS001/internal/artifacts/broker",
+		"/live/01SESS001/internal/artifacts/%62roker",
+		"/live/01SESS001/internal//artifacts/../artifacts/broker",
+	} {
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader("private-secret"))
+		req.Header.Set("Origin", "http://browser.invalid")
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", target, rec.Code)
+		}
+	}
+	select {
+	case <-calls:
+		t.Fatal("private broker target was forwarded")
+	default:
+	}
+}
+
 func fuzzScenarioRESTProxy_404UnknownSession(t *testing.T) {
 	resolver := fakeRoster{}
 	proxy := NewRESTProxy(resolver)

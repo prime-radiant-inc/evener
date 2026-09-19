@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -112,5 +113,60 @@ func TestPrivateWSTransportBoundsFramesWithoutRecording(t *testing.T) {
 	}
 	if len(recorded) != 0 {
 		t.Fatalf("private frames reached global recorder: %s", recorded)
+	}
+}
+
+type privateFrameObserver struct{ frames [][]byte }
+
+func (o *privateFrameObserver) RecordSend(data []byte) {
+	o.frames = append(o.frames, append([]byte(nil), data...))
+}
+func (o *privateFrameObserver) RecordRecv(data []byte) {
+	o.frames = append(o.frames, append([]byte(nil), data...))
+}
+
+func TestOrdinaryWSTransportDoesNotRecordAttemptedPrivateRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		defer conn.CloseNow() //nolint:errcheck
+		for _, msg := range []Message{
+			RequestMessage(NewIntID(1), MethodBrokerAuthenticate, BrokerAuthenticateParams{Capability: "must-not-be-recorded"}),
+			RequestMessage(NewIntID(2), MethodPing, EmptyParams{}),
+		} {
+			data, err := marshalWSMessage(msg)
+			if err != nil {
+				t.Errorf("marshal: %v", err)
+				return
+			}
+			if err := conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+				t.Errorf("write: %v", err)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &privateFrameObserver{}
+	transport := NewObservedWSTransport(conn, observer)
+	defer transport.Close() //nolint:errcheck
+	for range 2 {
+		if _, err := transport.Recv(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorded := string(bytes.Join(observer.frames, nil))
+	if strings.Contains(recorded, "must-not-be-recorded") || strings.Contains(recorded, MethodBrokerAuthenticate) {
+		t.Fatalf("attempted private frame was recorded: %s", recorded)
+	}
+	if !strings.Contains(recorded, MethodPing) {
+		t.Fatalf("ordinary frame was not recorded: %s", recorded)
 	}
 }

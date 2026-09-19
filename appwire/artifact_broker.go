@@ -1,5 +1,46 @@
 package appwire
 
+import (
+	"net/url"
+	pathpkg "path"
+	"strings"
+)
+
+const PrivateBrokerPath = "/internal/artifacts/broker"
+
+func IsPrivateBrokerMethod(method string) bool {
+	return strings.HasPrefix(method, "evener/artifacts/broker/")
+}
+
+func IsExactPrivateBrokerPath(path, rawPath string) bool {
+	return path == PrivateBrokerPath && (rawPath == "" || rawPath == PrivateBrokerPath)
+}
+
+// IsPrivateBrokerPath recognizes the private route even when a public proxy
+// receives a cleaned or encoded spelling. Callers still require the exact form
+// to serve it; this broader predicate exists only to reject forwarding.
+func IsPrivateBrokerPath(path, rawPath string) bool {
+	if IsExactPrivateBrokerPath(path, rawPath) {
+		return true
+	}
+	for _, candidate := range []string{path, rawPath} {
+		for range 3 {
+			if candidate == "" {
+				break
+			}
+			if pathpkg.Clean("/"+strings.TrimPrefix(candidate, "/")) == PrivateBrokerPath {
+				return true
+			}
+			decoded, err := url.PathUnescape(candidate)
+			if err != nil || decoded == candidate {
+				break
+			}
+			candidate = decoded
+		}
+	}
+	return false
+}
+
 const (
 	MethodBrokerLaunchHello       = "evener/artifacts/broker/launchHello"
 	MethodBrokerLaunchInstall     = "evener/artifacts/broker/launchInstall"

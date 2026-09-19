@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // SessionResolver resolves a session_id to a live daemon entry.
@@ -50,6 +52,10 @@ func (p *RESTProxy) proxyFor(address string) *httputil.ReverseProxy {
 func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessID, rest, ok := splitLivePath(r.URL.Path)
 	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if appwire.IsPrivateBrokerPath("/"+rest, "") {
 		http.NotFound(w, r)
 		return
 	}

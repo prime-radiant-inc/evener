@@ -97,11 +97,13 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 	if len(data) > t.limit {
 		return ErrPrivateFrameTooLarge
 	}
-	t.rec.RecordSend(data)
+	if shouldRecordFrame(msg) {
+		t.rec.RecordSend(data)
+	}
 	if err := t.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		return err
 	}
-	if t.observer != nil {
+	if t.observer != nil && shouldRecordFrame(msg) {
 		t.observer.RecordSend(data)
 	}
 	return nil
@@ -112,15 +114,31 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	t.rec.RecordRecv(data)
-	if t.observer != nil {
-		t.observer.RecordRecv(data)
-	}
 	var msg Message
 	if err := unmarshalWSMessage(data, &msg); err != nil {
+		t.rec.RecordRecv(data)
+		if t.observer != nil {
+			t.observer.RecordRecv(data)
+		}
 		return Message{}, err
 	}
+	if shouldRecordFrame(msg) {
+		t.rec.RecordRecv(data)
+		if t.observer != nil {
+			t.observer.RecordRecv(data)
+		}
+	}
 	return msg, nil
+}
+
+func shouldRecordFrame(msg Message) bool {
+	if msg.Request != nil {
+		return !IsPrivateBrokerMethod(msg.Request.Method)
+	}
+	if msg.Notification != nil {
+		return !IsPrivateBrokerMethod(msg.Notification.Method)
+	}
+	return true
 }
 
 // Ping implements Pinger: it sends a WebSocket ping and blocks until the peer

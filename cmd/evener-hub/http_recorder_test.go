@@ -105,6 +105,29 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 	}
 }
 
+func TestHTTPRecorderOmitsPrivateBrokerPathAndPayload(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	secret := "private-capability-must-not-be-recorded"
+	seen := ""
+	handler := newHTTPRequestRecorder(root)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck
+		seen = string(body)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/internal/artifacts/%62roker", strings.NewReader(secret))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != secret {
+		t.Fatalf("downstream body = %q, want unchanged private payload", seen)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "hub-http.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("private request reached HTTP recording: %s", data)
+	}
+}
+
 // Oversized bodies are capped, not buffered without bound, and the downstream
 // handler still sees the full body.
 func TestHTTPRecorderCapsBody(t *testing.T) {
