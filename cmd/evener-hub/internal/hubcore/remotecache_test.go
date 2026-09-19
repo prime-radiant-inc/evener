@@ -307,7 +307,7 @@ func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 func TestRemoteThreadCacheRemovalLeavesNoPerNameState(t *testing.T) {
 	c := &RemoteThreadCache{}
 	const names = 32
-	for i := 0; i < names; i++ {
+	for i := range names {
 		id := fmt.Sprintf("host-%02d", i)
 		c.RegisterSource(id)
 		c.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: id}}, true)
