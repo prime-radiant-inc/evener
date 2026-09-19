@@ -180,45 +180,15 @@ root_skip="$fuzz_test_skip"
 # reaches a command: evener-dev decides which flags the enumeration also needs, a
 # value with a space must reach go test whole, and no value may be pathname-
 # expanded. It is never flattened back to a string.
+#
+# The argv and the effective GOFLAGS are validated by evener-dev's shared,
+# value-aware parser (check-gate-flags) once logdir exists, below: this gate
+# appends its own -run/-skip and package list after the caller's flags, and a -C
+# in either the argv or GOFLAGS would move the enumeration and the tests out of
+# the module directory the gate anchored. Doing that in shell would be a second
+# parser that gets `-run -args` and Go's GOFLAGS quoting wrong.
 gate_args=("$@")
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
-
-# This gate appends its own -run/-skip filters and its own package list after the
-# caller's flags, so a caller flag that ends flag parsing would turn them into
-# arguments instead. Refuse rather than silently misplace them.
-for gate_arg in ${gate_args[@]+"${gate_args[@]}"}; do
-	case "$gate_arg" in
-	-args|--|--args|-args=*|--args=*)
-		printf 'run-module-tests.sh: %s ends flag parsing, which this gate cannot honour: it appends its own -run/-skip and package list after the caller'\''s flags\n' "$gate_arg" >&2
-		exit 2
-		;;
-	-C|-C=*|--C|--C=*)
-		printf 'run-module-tests.sh: %s would move the gate out of the module directory it anchors; it applies to the enumeration and the tests alike, so remove it\n' "$gate_arg" >&2
-		exit 2
-		;;
-	esac
-done
-
-# GOFLAGS applies to every go command this gate runs, including each module's
-# go test and its enumerating go list. A -C there would move them out of the
-# module directory the gate anchored, so the enumeration and the tests would
-# describe different trees. The effective value is what go env reports, since a
-# go env file can set it too.
-effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
-# Go parses GOFLAGS with its own quoting rules, so a quoted entry such as
-# GOFLAGS='"-C" /tmp' is a -C this word-splitting guard would miss. Drop the
-# quote characters before splitting; that only ever merges a value with its
-# flag, which the -C patterns still catch.
-effective_goflags=${effective_goflags//\"/}
-effective_goflags=${effective_goflags//\'/}
-for gate_arg in $effective_goflags; do
-	case "$gate_arg" in
-	-C|-C=*|--C|--C=*)
-		printf 'run-module-tests.sh: GOFLAGS carries %s, which would move the gate out of the module directory it anchors; remove it\n' "$gate_arg" >&2
-		exit 2
-		;;
-	esac
-done
 
 # module_test_flags_array sets the global test_flags array for module m: the
 # caller's argv, minus -short for the root module under ROOT_FULL. An array, not
@@ -342,6 +312,16 @@ run_bounded_timeout_diagnostic() {
 # and disagree with the module directory the enumeration and tests run in.
 run_list_build_flags() {
 	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} )
+}
+
+# run_check_gate_flags runs the shared Go validator from the repository root: it
+# parses the caller's argv and the effective GOFLAGS with the value-aware walker
+# and Go's own GOFLAGS quoting, and fails on a terminator (-args, --) or a -C
+# this gate cannot honour. GOFLAGS is cleared for this one build (the value is
+# passed as an argument), so the same relative-path concern cannot apply here.
+run_check_gate_flags() {
+	local goflags="$1"
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev check-gate-flags --goflags "$goflags" -- ${gate_args[@]+"${gate_args[@]}"} )
 }
 
 # derive_list_flags sets list_flags to the caller's flags that the `go list`
@@ -489,6 +469,14 @@ if [ "$WEB" -ne 0 ]; then
 	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" XDG_CONFIG_HOME="$web_tmp/xdg-config" XDG_CACHE_HOME="$web_tmp/xdg-cache" XDG_STATE_HOME="$web_tmp/xdg-state" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
 	web_pid="$!"
 	active_pids+=("$web_pid")
+fi
+
+# Validate the caller's argv and the effective GOFLAGS before any module runs,
+# with evener-dev's shared Go parser rather than a second one in shell.
+effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev check-gate-flags' 'gate' "$logdir/gate-flags" run_check_gate_flags "$effective_goflags"; then
+	printf 'run-module-tests.sh: refusing to run: the caller flags or GOFLAGS are not usable by this gate\n' >&2
+	exit 2
 fi
 
 run_wave $WAVE1

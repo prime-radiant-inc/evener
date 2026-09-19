@@ -15,6 +15,7 @@ import (
 
 var subcommands = map[string]func(args []string) int{
 	"agent-shards":     runAgentShards,
+	"check-gate-flags": checkGateFlagsMain,
 	"covstmt":          covstmtMain,
 	"list-build-flags": listBuildFlagsMain,
 	"module-lint":      lintMain,
