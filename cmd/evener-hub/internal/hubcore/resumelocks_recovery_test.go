@@ -189,3 +189,27 @@ func TestRejectForceStopOverlappingFencesRestoreTruePreFenceSequence(t *testing.
 		}
 	}
 }
+
+// TestForceStopFenceFinishIsIdempotent is the Low RoboRev reported on the
+// fence release: Finish records finished but never checks it, while Reject
+// guards on rejected || finished, so a second Finish would decrement Stopping
+// below zero and advance the connection-level recovery sequence again. The
+// release must be idempotent the way the rejection already is.
+func TestForceStopFenceFinishIsIdempotent(t *testing.T) {
+	locks := NewResumeLocks()
+	finish := locks.BeginForceStop([]string{"A"})
+	finish.Finish(false)
+	first := locks.RecoveryState("A")
+	firstSequence := locks.RecoverySequence()
+	finish.Finish(false)
+	state := locks.RecoveryState("A")
+	if state.Stopping != first.Stopping {
+		t.Fatalf("second Finish changed Stopping: after first=%d, after second=%d", first.Stopping, state.Stopping)
+	}
+	if got := locks.RecoverySequence(); got != firstSequence {
+		t.Fatalf("second Finish advanced the connection-level sequence: got %d, want %d", got, firstSequence)
+	}
+	if state.LastRecoverySequence != first.LastRecoverySequence {
+		t.Fatalf("second Finish rewrote the fenced alias's sequence: after first=%d, after second=%d", first.LastRecoverySequence, state.LastRecoverySequence)
+	}
+}

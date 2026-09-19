@@ -700,6 +700,9 @@ func (f *ForceStopFence) Finish(stopped bool) {
 	r := f.owner
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if f.finished {
+		return
+	}
 	f.finished = true
 	r.fences = slices.DeleteFunc(r.fences, func(held *ForceStopFence) bool { return held == f })
 	r.sequence++
