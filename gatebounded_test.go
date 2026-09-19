@@ -105,11 +105,6 @@ rm -rf "$dir"
 	if !strings.Contains(got, "diagnostic:slow step:1") {
 		t.Fatalf("run_bounded timeout = %q, want the diagnostic hook called", got)
 	}
-	// A timed-out command publishes no status: the file is either absent or
-	// complete, never an empty one a reader would mistake for a failure.
-	if !strings.Contains(got, "status_present=no") {
-		t.Fatalf("run_bounded timeout = %q, want no status file for a killed command", got)
-	}
 	// Bound plus the 5s TERM grace, with slack; it must not hang on the child.
 	var elapsed int
 	for f := range strings.FieldsSeq(got) {
@@ -136,6 +131,35 @@ poll_gone() {
 	return 1
 }
 `
+
+// TestRunBoundedLetsACommandHandleTERM pins the wrapper's TERM disposition: a
+// caught no-op keeps the wrapper alive without making the command inherit
+// SIG_IGN, so a command that handles TERM exits on it instead of forcing the
+// whole grace then KILL.
+func TestRunBoundedLetsACommandHandleTERM(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+export EVENER_STOP_TREE_GRACE_SECONDS=4
+. `+gateBoundedLib+`
+dir=$(mktemp -d)
+start=$SECONDS
+run_bounded 1 unit test "$dir/log" bash -c 'trap "exit 0" TERM; while :; do sleep 0.05; done'
+printf 'rc=%s elapsed=%s\n' "$?" "$((SECONDS - start))"
+rm -rf "$dir"
+`)
+	if !strings.Contains(got, "rc=1") {
+		t.Fatalf("run_bounded = %q, want rc=1", got)
+	}
+	var elapsed int
+	for f := range strings.FieldsSeq(got) {
+		if v, ok := strings.CutPrefix(f, "elapsed="); ok {
+			elapsed, _ = strconv.Atoi(v)
+		}
+	}
+	if elapsed >= 4 {
+		t.Fatalf("run_bounded = %q, want the command's TERM handler to end it well before the 4s grace", got)
+	}
+}
 
 // TestStopCommandReapsALateFork is the reason run_bounded uses a process group:
 // a parent that forks a child after cleanup has begun puts that child behind any

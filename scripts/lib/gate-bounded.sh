@@ -114,10 +114,12 @@ run_bounded() {
 	# the command, is the group leader whose pid stop_command signals.
 	set -m
 	(
-		# The wrapper ignores TERM so it can always publish the final status once
-		# the command is gone, whether that was before the deadline or during the
-		# grace; the group KILL still ends it if it has not exited.
-		trap '' TERM
+		# A caught no-op handler keeps the wrapper alive to publish the final
+		# status while the command's own processes keep the default disposition,
+		# so a command that handles TERM still gets a chance to exit on it. An
+		# ignored signal (trap '') would be inherited and force every timeout to
+		# the full grace then KILL.
+		trap ':' TERM
 		"$@" >"$log_file" 2>"${log_file}.stderr"
 		printf '%s\n' "$?" >"${log_file}.status.tmp"
 		mv "${log_file}.status.tmp" "${log_file}.status"

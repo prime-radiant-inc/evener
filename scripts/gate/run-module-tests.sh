@@ -188,8 +188,12 @@ repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 # arguments instead. Refuse rather than silently misplace them.
 for gate_arg in ${gate_args[@]+"${gate_args[@]}"}; do
 	case "$gate_arg" in
-	-args|--|--args)
+	-args|--|--args|-args=*|--args=*)
 		printf 'run-module-tests.sh: %s ends flag parsing, which this gate cannot honour: it appends its own -run/-skip and package list after the caller'\''s flags\n' "$gate_arg" >&2
+		exit 2
+		;;
+	-C|-C=*|--C|--C=*)
+		printf 'run-module-tests.sh: %s would move the gate out of the module directory it anchors; it applies to the enumeration and the tests alike, so remove it\n' "$gate_arg" >&2
 		exit 2
 		;;
 	esac
@@ -201,6 +205,12 @@ done
 # describe different trees. The effective value is what go env reports, since a
 # go env file can set it too.
 effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+# Go parses GOFLAGS with its own quoting rules, so a quoted entry such as
+# GOFLAGS='"-C" /tmp' is a -C this word-splitting guard would miss. Drop the
+# quote characters before splitting; that only ever merges a value with its
+# flag, which the -C patterns still catch.
+effective_goflags=${effective_goflags//\"/}
+effective_goflags=${effective_goflags//\'/}
 for gate_arg in $effective_goflags; do
 	case "$gate_arg" in
 	-C|-C=*|--C|--C=*)
@@ -216,7 +226,7 @@ done
 module_test_flags_array() {
 	local m="$1" flag
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
-		test_flags=("${gate_args[@]}")
+		test_flags=(${gate_args[@]+"${gate_args[@]}"})
 		return
 	fi
 	test_flags=()
@@ -383,7 +393,7 @@ run_module() {
 		# ROOT_FULL removes short mode through module_test_flags_array while
 		# retaining the regular Test/Example name filter. Fuzz-owned targets and
 		# sanity functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
+		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -402,7 +412,7 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards "${test_flags[@]}") || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
@@ -416,11 +426,11 @@ run_module() {
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$agent_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each

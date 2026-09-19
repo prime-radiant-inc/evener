@@ -94,30 +94,26 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		// module's own directory, so it is refused rather than half-applied.
 		{name: "-C is refused", args: []string{"-C", "somewhere"}, wantErr: true},
 		{name: "-C is refused inline too", args: []string{"-C=somewhere"}, wantErr: true},
-		// The gate word-splits its go test invocation, so a value with
-		// whitespace, and an empty value, cannot reach go test the way they
-		// reach go list.
-		{name: "a whitespace value is refused", args: []string{"-tags", "a b"}, wantErr: true},
-		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, wantErr: true},
-		{name: "a separate empty value is refused", args: []string{"-tags", ""}, wantErr: true},
-		// An inline empty value is one argv word that survives the gate's word
-		// splitting, and is the normal way to clear tags inherited via GOFLAGS.
+		// The gate keeps the caller's argv as a quoted array, so whitespace and
+		// shell glob metacharacters survive to both commands; only a single
+		// line can be handed back, so a newline is refused.
+		{name: "a whitespace value survives", args: []string{"-tags", "a b"}, want: []string{"-tags=a b"}},
+		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, want: []string{"-overlay=a b.json"}},
+		{name: "a separate empty value survives", args: []string{"-tags", ""}, want: []string{"-tags="}},
 		{name: "an inline empty value clears tags", args: []string{"-tags="}, want: []string{"-tags="}},
 		{name: "and an inline empty overlay too", args: []string{"-overlay="}, want: []string{"-overlay="}},
-		// A glob metacharacter would pathname-expand for go test but not for
-		// the quoted go list, so the two would see different values.
-		{name: "a glob metacharacter is refused", args: []string{"-overlay", "a*b"}, wantErr: true},
-		{name: "a character class is refused", args: []string{"-overlay=a[bc].json"}, wantErr: true},
+		{name: "a glob metacharacter survives", args: []string{"-overlay", "a*b"}, want: []string{"-overlay=a*b"}},
+		{name: "and a character class too", args: []string{"-overlay=a[bc].json"}, want: []string{"-overlay=a[bc].json"}},
+		{name: "a newline value is refused", args: []string{"-tags", "a\nb"}, wantErr: true},
 		// A value flag with nothing after it must not be dropped silently:
 		// go test would choke on the mangled list instead.
 		{name: "a dangling value flag is refused", args: []string{"-short", "-tags"}, wantErr: true},
 		// Every value-taking flag's value is checked, not just the forwarded
-		// ones: the gate word-splits `go test`'s flags, so -run "Smoke -race"
-		// hands go test a real -race the enumeration never applied.
-		{name: "a whitespace value on a non-selection flag is refused", args: []string{"-run", "Smoke -race"}, wantErr: true},
-		{name: "and inline whitespace there too", args: []string{"-run=Smoke -race"}, wantErr: true},
-		{name: "a glob value on a non-selection flag is refused", args: []string{"-run", "Test*"}, wantErr: true},
-		{name: "a separate empty value on a non-selection flag is refused", args: []string{"-run", ""}, wantErr: true},
+		// ones, since it still has to survive the line-oriented handoff.
+		{name: "a whitespace value on a non-selection flag survives", args: []string{"-run", "Smoke -race"}},
+		{name: "a glob value on a non-selection flag survives", args: []string{"-run", "Test*"}},
+		{name: "a separate empty value on a non-selection flag survives", args: []string{"-run", ""}},
+		{name: "a newline value on a non-selection flag is refused", args: []string{"-run", "a\nb"}, wantErr: true},
 		{name: "a dangling non-selection value flag is refused", args: []string{"-short", "-run"}, wantErr: true},
 		// A plain non-selection value is still consumed without complaint.
 		{name: "an ordinary non-selection value is fine", args: []string{"-run", "TestFoo", "-race"}, want: []string{"-race"}},
@@ -167,13 +163,19 @@ func TestListBuildFlagsPrintsOnePerLine(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := listBuildFlags([]string{"--", "-tags", "a b"}, &stdout, &stderr); code == 0 {
-		t.Fatalf("listBuildFlags with a whitespace value = 0, want nonzero; stdout = %q", stdout.String())
+	if code := listBuildFlags([]string{"--", "-tags", "a b"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("listBuildFlags with a whitespace value = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "-tags=a b\n" {
+		t.Fatalf("stdout = %q, want a whitespace value on one line", got)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := listBuildFlags([]string{"--", "-tags", ""}, &stdout, &stderr); code == 0 {
-		t.Fatalf("listBuildFlags with a separate empty value = 0, want nonzero; stdout = %q", stdout.String())
+	if code := listBuildFlags([]string{"--", "-tags", ""}, &stdout, &stderr); code != 0 {
+		t.Fatalf("listBuildFlags with a separate empty value = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "-tags=\n" {
+		t.Fatalf("stdout = %q, want an empty value preserved", got)
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -182,6 +184,11 @@ func TestListBuildFlagsPrintsOnePerLine(t *testing.T) {
 	}
 	if got := stdout.String(); got != "-tags=\n-race\n" {
 		t.Fatalf("stdout = %q, want the inline empty value preserved", got)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := listBuildFlags([]string{"--", "-tags", "a\nb"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("listBuildFlags with a newline value = 0, want nonzero; stdout = %q", stdout.String())
 	}
 }
 

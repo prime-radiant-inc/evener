@@ -21,18 +21,16 @@ package dev
 // build-level `--` end the flags: everything after either belongs to the test
 // binary, not to `go test`.
 //
-// Two cases are refused rather than forwarded. -C changes directory before the
-// command runs, and the gate has already anchored the enumeration to each
-// module's own directory, so applying it to only one of `go list` and `go test`
-// would recreate the tree mismatch this exists to prevent. A value cannot be
-// carried whole either when it is empty as a separate argument, contains
-// whitespace, or contains a shell glob metacharacter: the gate word-splits and
-// pathname-expands its `go test` invocation, so the two commands would see
-// different values (a separate empty argument would vanish entirely, and a glob
-// would expand to whatever filenames match). That is checked for every
-// value-taking flag, not only the ones forwarded to `go list`: a `-run "Smoke
-// -race"` value hands `go test` a real `-race` build flag that the enumeration,
-// reading the preserved argv, never applied.
+// The gate passes the caller's argv through as a quoted array, so a value may
+// contain whitespace, a shell glob metacharacter, or be empty and still reach
+// `go test` and the enumeration intact. The one thing that cannot survive is a
+// newline: the helper hands its flags back one per line, so a value containing
+// a newline cannot be represented, and it is refused rather than truncated.
+//
+// -C is refused rather than forwarded: it changes directory before the command
+// runs, and the gate has already anchored the enumeration to each module's own
+// directory, so applying it to only one of `go list` and `go test` would
+// recreate the tree mismatch this exists to prevent.
 
 import (
 	"errors"
@@ -81,46 +79,31 @@ func packageSelectionFlags(args []string) ([]string, error) {
 		}
 		switch {
 		case packageSelectionValueFlags[name]:
-			if inline {
-				if value != "" {
-					if err := checkValue(name, value, false); err != nil {
-						return nil, err
-					}
+			if !inline {
+				if i+1 >= len(args) {
+					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
 				}
-				out = append(out, name+"="+value)
-				continue
+				i++
+				value = args[i]
 			}
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
-			}
-			i++
-			if err := checkValue(name, args[i], true); err != nil {
+			if err := checkValue(name, value); err != nil {
 				return nil, err
 			}
-			out = append(out, name+"="+args[i])
+			out = append(out, name+"="+value)
 		case packageSelectionBareFlags[name]:
 			out = append(out, whole)
 		case consumesValue(name):
 			// A value-taking flag this walker does not forward still has its
-			// value checked: the gate word-splits every one of its `go test`
-			// flags, so a value that splits or globs there changes what `go
-			// test` builds even for a flag `go list` never sees. `-run "Smoke
-			// -race"` is the case -- `-race` becomes a real build flag for `go
-			// test` while the enumeration, which reads the preserved argv,
-			// keeps it inside the regex.
-			if inline {
-				if value != "" {
-					if err := checkValue(name, value, false); err != nil {
-						return nil, err
-					}
+			// value checked, so the line-oriented handoff cannot be broken by a
+			// value it cannot represent.
+			if !inline {
+				if i+1 >= len(args) {
+					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
 				}
-				continue
+				i++
+				value = args[i]
 			}
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
-			}
-			i++
-			if err := checkValue(name, args[i], true); err != nil {
+			if err := checkValue(name, value); err != nil {
 				return nil, err
 			}
 		}
@@ -128,25 +111,13 @@ func packageSelectionFlags(args []string) ([]string, error) {
 	return out, nil
 }
 
-// checkValue refuses a value the gate's word-split, pathname-expanding `go test`
-// invocation cannot carry whole: the enumeration is handed the preserved argv
-// and would see it intact, so the two commands would build different trees. An
-// empty value written as a separate argument is covered too, since that argv
-// word is lost entirely to the split, and a glob metacharacter is covered
-// because the unquoted expansion matches filenames. An inline empty value is
-// allowed: it is one word and survives.
-func checkValue(name, value string, separate bool) error {
-	if value == "" {
-		if !separate {
-			return nil
-		}
-		return fmt.Errorf("the %s value is empty as a separate argument, which the gate's word-split go test invocation drops; write it inline (%s=) or omit the flag", name, name)
-	}
-	if strings.ContainsAny(value, " \t\n") {
-		return fmt.Errorf("the %s value %q contains whitespace, which the gate's word-split go test invocation cannot forward intact; pass it without whitespace", name, value)
-	}
-	if strings.ContainsAny(value, `*?[`) {
-		return fmt.Errorf("the %s value %q contains a shell glob metacharacter, which the gate's unquoted go test invocation would pathname-expand; pass a literal value without * ? or [", name, value)
+// checkValue refuses the one value the line-per-flag handoff from the helper to
+// the gate cannot carry. Everything else -- whitespace, shell glob
+// metacharacters, an empty value -- survives, because the gate keeps the
+// caller's argv as a quoted array and expands it quoted for every command.
+func checkValue(name, value string) error {
+	if strings.Contains(value, "\n") {
+		return fmt.Errorf("the %s value %q contains a newline, which the line-per-flag handoff to the gate cannot carry", name, value)
 	}
 	return nil
 }
