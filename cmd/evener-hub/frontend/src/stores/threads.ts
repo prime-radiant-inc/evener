@@ -1218,8 +1218,11 @@ export async function retryBlockedMutation(
     epoch,
     record.targetRef,
     // A background note save never dispatches (its own resend belongs to the
-    // outbox's lifecycle scan); a user retry dispatches the whole target.
-    mode === "backgroundNote" ? () => false : undefined,
+    // outbox's lifecycle scan) and reopens only the record it retries; a user
+    // retry dispatches and reconciles the whole target.
+    mode === "backgroundNote"
+      ? { suppressTargetDispatch: () => false, reopenOnlyClientMutationId: clientMutationId }
+      : undefined,
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
@@ -2015,6 +2018,10 @@ async function publishAndReconcileThreadHydration(
   ref: string,
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
+  // A background note retry proves absence only for the record it carries and
+  // must not reopen an unrelated blocked row of the same ref (#1716); every
+  // other caller leaves this undefined for the ordinary target-wide reopen.
+  reopenOnlyClientMutationId?: string,
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
@@ -2079,7 +2086,21 @@ async function publishAndReconcileThreadHydration(
           }
           notifyMutationPersistence([ref]);
         } else {
-          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+          // restoreProvenAbsent reopens EVERY blockedUnknown row of the ref
+          // that this read did not name. A scoped caller must reopen only its
+          // own record: every other blocked row joins the set this reopen
+          // excludes, so it stays blockedUnknown for a later target-wide
+          // reconciliation. An unscoped caller keeps that whole-target reopen.
+          let reopenExcludedIds = authoritativeIds;
+          if (reopenOnlyClientMutationId !== undefined) {
+            reopenExcludedIds = new Set(authoritativeIds);
+            for (const record of await runtime.storage.listOutbox(ref)) {
+              if (record.state === "blockedUnknown" && record.clientMutationId !== reopenOnlyClientMutationId)
+                reopenExcludedIds.add(record.clientMutationId);
+            }
+            if (!current()) return;
+          }
+          await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -2503,6 +2524,7 @@ async function refreshTrackedThread(
   targetedResync: boolean,
   reportFailure = false,
   beforePublish?: () => void,
+  reopenOnlyClientMutationId?: string,
 ): Promise<number | undefined> {
   // Returns the tracked-hydration attempt this refresh began, or undefined
   // when it never began one (an unowned ref, or an in-flight non-targeted
@@ -2539,7 +2561,7 @@ async function refreshTrackedThread(
       unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
-    return publishAndReconcileThreadHydration(ref, pending, result);
+    return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId);
   });
   const completion = hydration.then(
     () => undefined,
@@ -2649,10 +2671,13 @@ async function handleReady(
   // The targeted tail dispatches every dispatchable record of the target in
   // FIFO order, which is right when the caller is user intent on that session.
   // A caller that must not do that - a background note save, which must not
-  // submit other pending mutations for the session - passes a fence; `false`
-  // suppresses the schedule. Evaluated synchronously at the scheduling point,
-  // after every await.
-  beforeScheduleTargetDispatch?: () => boolean,
+  // submit other pending mutations for the session - passes
+  // `suppressTargetDispatch`; `false` suppresses the schedule. Evaluated
+  // synchronously at the scheduling point, after every await.
+  // `reopenOnlyClientMutationId` narrows the reconciliation's reopen to the
+  // one record for the same caller: a background note retry must not return an
+  // unrelated blocked row to submitting (#1716).
+  options?: { suppressTargetDispatch?: () => boolean; reopenOnlyClientMutationId?: string },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
   if (targetRef) dispatchableMutationRefs.delete(targetRef);
@@ -2668,7 +2693,9 @@ async function handleReady(
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
-    ...Array.from(refs, (ref) => refreshTrackedThread(client, epoch, ref, targetedResync)),
+    ...Array.from(refs, (ref) =>
+      refreshTrackedThread(client, epoch, ref, targetedResync, false, undefined, options?.reopenOnlyClientMutationId),
+    ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
   ]);
 
@@ -2699,7 +2726,7 @@ async function handleReady(
     dispatchReadyClient = client;
     dispatchReadyEpoch = epoch;
     await runtime.outbox.connectionReady();
-  } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (beforeScheduleTargetDispatch?.() ?? true)) {
+  } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (options?.suppressTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
   }
 }
