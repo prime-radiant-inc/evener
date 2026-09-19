@@ -203,6 +203,14 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		startGen := i.gen
 		i.mu.RUnlock()
 
+		i.mu.Lock()
+		// Mark when this scan begins: a fold whose probe read a session before
+		// this point may have read a row a later scan legitimately lacks (a
+		// deletion), while a scan that began before the probe cannot prove
+		// deletion and must not suppress the fold (see foldOne).
+		i.rebuildGen++
+		i.mu.Unlock()
+
 		all, byID, skipped, err := i.scanAll()
 		if err != nil {
 			return false, err
@@ -221,7 +229,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		i.all = all
 		i.byID = byID
 		i.gen++
-		i.rebuildGen++
 		gen := i.gen
 		i.mu.Unlock()
 		// Report skips only for the scan that actually replaced the index; a
@@ -1131,24 +1138,16 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if i.afterFindProbe != nil {
 		i.afterFindProbe()
 	}
-	// A Rebuild that completed during the probe may have dropped this session
-	// (deleted from disk after the probe read it and before the scan listed its
-	// project). Folding the stale probe would resurrect it, so report a miss.
-	i.mu.RLock()
-	_, indexed := i.byID[sessionID]
-	rebuildMoved := i.rebuildGen != probeRebuildGen
-	i.mu.RUnlock()
-	if !indexed && rebuildMoved {
-		return PastEntry{}, false
-	}
-	i.foldOne(entry)
+	i.foldOne(entry, probeRebuildGen)
 	// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
 	// swapped it in after this Find's cache lookup missed, or another fold won the
-	// id — so return what the index actually holds, not the probe's older meta.
+	// id — so return what the index actually holds. If it still holds nothing, the
+	// fold was declined because a Rebuild dropped the session (a deletion racing
+	// the probe); report a miss rather than handing back the deleted probe.
 	if live, ok := i.findCached(sessionID); ok {
 		return live, true
 	}
-	return entry, true
+	return PastEntry{}, false
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
@@ -1204,9 +1203,21 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 // slice Rebuild may still be reading must not be mutated in place); the one
 // difference is that it inserts an id the index has never seen, where
 // UpdateMeta replaces an existing one.
-func (i *PastIndex) foldOne(entry PastEntry) {
+//
+// probeRebuildGen is the index's rebuildGen when the probe read the session. If
+// the id is not indexed and a scan has begun since that read, the scan listed
+// the sessions directory after the probe and did not find this session, so the
+// deletion wins and the stale probe is not folded (validated under this same
+// lock, so a Rebuild cannot slip between the check and the insert). A scan that
+// began before the probe cannot prove deletion and leaves the fold to proceed.
+func (i *PastIndex) foldOne(entry PastEntry, probeRebuildGen uint64) {
 	i.mu.Lock()
-	if old, ok := i.byID[entry.ID]; ok && !metaNewer(entry.Meta, old.Meta) {
+	old, ok := i.byID[entry.ID]
+	if !ok && i.rebuildGen > probeRebuildGen {
+		i.mu.Unlock()
+		return
+	}
+	if ok && !metaNewer(entry.Meta, old.Meta) {
 		// A concurrent Rebuild indexed it first and its row is at least as fresh
 		// as the probe's; keep it. The reverse — the scan read v1, an external
 		// writer then bumped the meta to v2, and the probe read v2 — must not keep
