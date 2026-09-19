@@ -1092,8 +1092,12 @@ function olderTurnContributes(merged: TurnModel, fresh: TurnModel): boolean {
   });
 }
 
-export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
-  const groups = coalesceTurnFragments(older, newer);
+function mergeTurnHistoryWithContext(
+  older: TurnModel[],
+  newer: TurnModel[],
+  context?: ToolItemMergeContext,
+): TurnHistoryMergeResult {
+  const groups = coalesceTurnFragments(older, newer, context);
   let olderContributed = false;
   let olderCoverage = false;
   let transcriptOverlap = false;
@@ -1120,68 +1124,19 @@ export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHi
       olderContributed = true;
       continue;
     }
-    const fresh = foldTurnFragments(freshTurns);
-    if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
-  }
-
-  return {
-    turns: olderContributed
-      ? mergeToolCallsByCallId(
-          placeCoalescedTurns(groups, older.length),
-          new Set(newer.flatMap((turn) => turn.items.map((item) => item.id))),
-        )
-      : newer,
-    olderCoverage,
-    transcriptOverlap,
-  };
-}
-
-function mergeTurnHistoryWithContext(
-  older: TurnModel[],
-  newer: TurnModel[],
-  context?: ToolItemMergeContext,
-): TurnHistoryMergeResult {
-  const groups = coalesceTurnFragments(older, newer, context);
-  let olderContributed = false;
-  let olderCoverage = false;
-  let transcriptOverlap = false;
-
-  for (const turn of older) {
-    const matches = newer.filter((candidate) => turnsMatch(candidate, turn));
-    if (
-      turn.items.some(
-        (item) =>
-          item.type !== "warning" &&
-          matches.some((candidate) => candidate.items.some((next) => itemIdentityMatches(item, next))),
-      )
-    ) {
-      transcriptOverlap = true;
-    }
-    if (olderTurnAddsCoverage(turn, matches)) olderCoverage = true;
-  }
-
-  for (const group of groups) {
-    if (group.olderIndexes.length === 0) continue;
-    if (group.freshIndexes.length === 0) {
-      olderContributed = true;
-      continue;
-    }
-    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
     const fresh = foldTurnFragments(freshTurns, context);
     if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
   }
 
   return {
-    turns: olderContributed
-      ? mergeToolCallsByCallId(placeCoalescedTurns(groups, older.length), context)
-      : newer,
+    turns: olderContributed ? mergeToolCallsByCallId(placeCoalescedTurns(groups, older.length), context) : newer,
     olderCoverage,
     transcriptOverlap,
   };
 }
 
 export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
-  return mergeTurnHistoryWithContext(older, newer);
+  return mergeTurnHistoryWithContext(older, newer, createToolItemMergeContext(newer, older));
 }
 
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
