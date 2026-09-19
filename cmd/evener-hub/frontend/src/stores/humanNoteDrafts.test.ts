@@ -592,6 +592,38 @@ test("a blocked note accepted by another connection updates the draft through th
   expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
 });
 
+// RoboRev low (PR 1873, afde1e2): the canceled branch of submittedStatusFor -
+// the user-visible "Note save was canceled by Stop" - had no test. A pending
+// note row canceled through the real storage must surface as canceled on the
+// refresh, and no blur/flush cycle may release or duplicate it: its only
+// release is the user's next save (the design's §6 supersede-discard).
+test("a note row canceled by Stop reports the canceled status and no blur cycle releases it", async () => {
+  const { fake } = noteHarness();
+  const ref = "ref-a";
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("stopped note text");
+  await storage.cancelUnattempted(ref);
+  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("canceled");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  await waitFor(() => expect(result.current?.submitted?.state).toBe("canceled"));
+  expect(result.current?.error).toBe("Note save was canceled by Stop");
+  // A pagehide flush (the draft's fire path) must not resurrect or duplicate
+  // the canceled row: still exactly one row, still canceled.
+  await act(async () => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  await advance(10_000);
+  expect((await storage.listOutbox(ref)).map((row) => [row.clientMutationId, row.state])).toEqual([
+    [original.clientMutationId, "canceled"],
+  ]);
+});
+
 // RoboRev Medium (PR 1393 fresh review, b04a358): the accepted-row mapping the
 // persistence refresh applies can land while a blocked draft's blur-save timer
 // is still armed. When the timer then fires, the save read "submitting", skipped

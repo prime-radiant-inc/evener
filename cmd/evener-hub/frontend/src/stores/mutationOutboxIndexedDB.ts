@@ -564,6 +564,12 @@ export class MutationOutboxIndexedDB {
     state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean> {
+    // The literal type already narrows this at compile time, but an untyped
+    // caller (a JS bridge, dev tooling) could still ask for "canceled" - the
+    // user's durable Stop decision that only an explicit Retry releases - and
+    // this delivery-uncertainty path must never fabricate one. The native
+    // adapter's guard is the same check.
+    if (state !== "blockedUnknown") throw new Error('markUnknown only names "blockedUnknown"');
     return this.#write(OUTBOX_STORE, undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));

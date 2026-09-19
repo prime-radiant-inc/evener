@@ -593,6 +593,21 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  // The runtime half of that contract: the literal type narrows at compile
+  // time, but an untyped caller (a JS bridge, dev tooling) can pass anything,
+  // and this delivery-uncertainty write must never fabricate a "canceled"
+  // row - the user's durable Stop decision, releasable only by an explicit
+  // Retry. The native adapter's runtime guard is the same check.
+  test("markUnknown refuses a non-blockedUnknown state at runtime, not only at the type level", async () => {
+    const storage = store();
+    const row = await storage.enqueueIntent(intent("live"));
+    await expect(storage.markUnknown(row.clientMutationId, "canceled" as "blockedUnknown")).rejects.toThrow(
+      'markUnknown only names "blockedUnknown"',
+    );
+    expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("submitting");
+    storage.close();
+  });
+
   test("a canceled head row does not park the queue, but a blockedUnknown head still does", async () => {
     const storage = store();
     await storage.enqueueIntent(intent("canceled head"));
