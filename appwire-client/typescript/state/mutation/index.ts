@@ -20,6 +20,7 @@ export type {
   MutationOutboxChannel,
   MutationOutboxOptions,
   MutationOutboxStorage,
+  MutationStopBarrier,
   MutationVisibilityTarget,
 } from "./outbox";
 export { isClientReady, MutationOutbox } from "./outbox";

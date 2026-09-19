@@ -27,5 +27,9 @@ export type MutationRecoveryRecord = PackageMutationRecoveryRecord<MutationAttac
 // a storage port, with every host-shaped capability an option. This module is
 // the web's side of that — the attachment type with bytes in it (above), and
 // the re-export every importer here already names.
-export type { MutationClientLookup, MutationOutboxOptions } from "@evener/appwire-client/state/mutation";
+export type {
+  MutationClientLookup,
+  MutationOutboxOptions,
+  MutationStopBarrier,
+} from "@evener/appwire-client/state/mutation";
 export { MutationOutbox } from "@evener/appwire-client/state/mutation";

@@ -8,6 +8,7 @@ import type {
   MutationRecord,
   MutationRecoveryKind,
   MutationRecoveryRecord,
+  MutationStopBarrier,
 } from "./mutationOutbox";
 import { createSecureUUID } from "./secureUUID";
 
@@ -61,6 +62,10 @@ export class MutationStorageTimeoutError extends Error {
 interface TargetSequence {
   targetRef: string;
   lastSequence: number;
+  // The ref's durable stop epoch (§4's stop barrier): bumped inside every
+  // Stop's cancel transaction and compared by an enqueue carrying a click-time
+  // capture. Rides the sequence row so the barrier needs no schema change.
+  stopEpoch?: number;
 }
 
 // The rows a Stop may honestly cancel: still waiting ("submitting" or
@@ -132,9 +137,16 @@ export class MutationOutboxIndexedDB {
     this.#databasePromise = undefined;
   }
 
-  async enqueueIntent(intent: MutationIntent): Promise<MutationOutboxRecord> {
+  async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "enqueueIntent", async (transaction) => {
+      // §4's stop barrier: a Stop whose cancel transaction committed while
+      // this submission was in flight - after the click, before this write
+      // issued - has left the ref's durable stop epoch past the click-time
+      // capture. The row commits born-"canceled": announced for the canceled
+      // queue strip, never dispatched, released only by an explicit Retry.
+      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
+      const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
       const record: MutationOutboxRecord = {
@@ -145,12 +157,20 @@ export class MutationOutboxIndexedDB {
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: "submitting",
+        state: canceledByBarrier ? "canceled" : "submitting",
         attempted: false,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       return record;
     });
+  }
+
+  // The click-time half of §4's stop barrier: what an enqueuing tab reads at
+  // its user's click, before its durable write issues. Fresh from the
+  // ref's sequence row, never cached - another tab's Stop is invisible to
+  // this tab's memory.
+  async readStopEpoch(targetRef: string): Promise<number> {
+    return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
   }
 
   async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
@@ -171,6 +191,7 @@ export class MutationOutboxIndexedDB {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "enqueueInterruptAndCancel", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       await this.#cancelUnattempted(transaction, intent.targetRef);
+      await this.#bumpStopEpoch(transaction, intent.targetRef);
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
       const record: MutationOutboxRecord = {
@@ -194,8 +215,10 @@ export class MutationOutboxIndexedDB {
   // storage failure aborts the stop instead of orphaning it. Returns the ids
   // that moved to "canceled".
   async cancelUnattempted(targetRef: string): Promise<string[]> {
-    return this.#write(OUTBOX_STORE, "cancelUnattempted", async (transaction) => {
-      return this.#cancelUnattempted(transaction, targetRef);
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "cancelUnattempted", async (transaction) => {
+      const canceled = await this.#cancelUnattempted(transaction, targetRef);
+      await this.#bumpStopEpoch(transaction, targetRef);
+      return canceled;
     });
   }
 
@@ -770,7 +793,29 @@ export class MutationOutboxIndexedDB {
     const store = transaction.objectStore(SEQUENCE_STORE);
     const current = await requestResult<TargetSequence | undefined>(store.get(targetRef));
     const next = (current?.lastSequence ?? 0) + 1;
-    await requestResult(store.put({ targetRef, lastSequence: next } satisfies TargetSequence));
+    // The spread preserves the row's stopEpoch: an allocation that dropped it
+    // would silently reset the ref's stop barrier for every later enqueue.
+    await requestResult(store.put({ ...current, targetRef, lastSequence: next } satisfies TargetSequence));
     return next;
+  }
+
+  async #stopEpochOf(transaction: IDBTransaction, targetRef: string): Promise<number> {
+    const row = await requestResult<TargetSequence | undefined>(transaction.objectStore(SEQUENCE_STORE).get(targetRef));
+    return row?.stopEpoch ?? 0;
+  }
+
+  // One Stop, one bump, inside the Stop's own cancel transaction: the bump is
+  // what a later-committing enqueue compares its click-time capture against.
+  async #bumpStopEpoch(transaction: IDBTransaction, targetRef: string): Promise<void> {
+    const store = transaction.objectStore(SEQUENCE_STORE);
+    const current = await requestResult<TargetSequence | undefined>(store.get(targetRef));
+    await requestResult(
+      store.put({
+        ...current,
+        targetRef,
+        lastSequence: current?.lastSequence ?? 0,
+        stopEpoch: (current?.stopEpoch ?? 0) + 1,
+      } satisfies TargetSequence),
+    );
   }
 }

@@ -99,6 +99,28 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   sees. The per-operation generation baselines and settle-step machinery proposed
   in v1 are no longer needed for outbox cancellation.
 
+  **The one interleave transaction ordering cannot fence** (added 2026-09-18,
+  the RoboRev in-flight-enqueue finding): an enqueue clicked before the Stop whose
+  durable write had not yet been *issued* when the Stop's cancel transaction
+  committed — a cold tab still opening its connection while a warm tab's Stop
+  lands — commits *after* the cancel scan, so the scan never sees it. Same-tab
+  writes cannot reach that order (the send and stop chains serialize on the same
+  `runtime.start`/`#open` promises, and IndexedDB runs same-scope transactions in
+  creation order), but two tabs hold two connections, and the engine's ordering is
+  exactly what puts the late write after the cancel. The fix is a durable
+  **stop-epoch barrier**: every Stop's cancel transaction bumps a per-ref
+  `stopEpoch` (riding the `sequences` store's row for that ref, so no schema
+  change), the enqueueing tab reads the epoch at click time, and the enqueue's
+  own transaction compares the two — a Stop that landed in between makes the
+  record commit born-`canceled`: announced for the canceled queue strip, never
+  dispatched, released only by explicit Retry, exactly like any other canceled
+  row. The Stop's own interrupt record passes no barrier (it *is* the click the
+  epoch records), and explicit Retry / recovery resends are equally exempt — they
+  are the user deliberately sending after a Stop. The barrier's comparison is
+  commit-order, not click-order: a Stop whose durable write lands after a later
+  send's capture still cancels that send — the conservative direction, retryable,
+  the same reversibility §4 stands on.
+
 The honest boundary: a row already `attempted` (dispatcher flipped it in a
 transaction before transport, `mutationDispatcher.ts:113`) may be in flight to the
 daemon. Cancellation cannot unsend it. The dispatcher's existing pre-transport
@@ -118,6 +140,8 @@ is `submitting` or `blockedUnknown` and which has not been attempted, to `cancel
 Attempted rows are reported as in-flight/uncertain, not canceled. This matches the
 prior mechanism's scope (all rows on the ref) minus the rows it could not honestly
 cancel.
+The same transaction bumps the ref's stop epoch — the fence §4's in-flight
+barrier compares against — so the scan and the fence commit as one durable fact.
 
 ## 6. Lifecycle of a `canceled` row
 
@@ -206,6 +230,12 @@ Real store, real flows, no mocks of the mechanism under test:
 8. Canceled rows are removed on thread clear/delete.
 9. Every wait-helper in the new tests fails loudly when its condition is never
    reached (the Low-8 lesson).
+10. An enqueue clicked before the Stop whose durable write issues after the
+    Stop's cancel committed lands born-`canceled` and never dispatches (the §4
+    in-flight barrier): the storage-level test interleaves a real write past a
+    completed second-connection Stop, and the store-level test gates the real
+    write at the seam. A capture taken after the Stop still sends, and the epoch
+    survives later enqueues, a reload, and both stop paths.
 
 ## 10. Open questions for Jesse
 

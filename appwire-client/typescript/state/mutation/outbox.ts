@@ -62,6 +62,18 @@ export type MutationDiscoveryReason =
   | "visibility"
   | "interval";
 
+// The click-time half of a host's durable stop barrier: the ref's durable
+// stop epoch as the submitting click observed it. A host whose Stop cancels
+// rows durably bumps that epoch in the same transaction, and passes this
+// capture to the enqueue so a Stop landing while the submission was in
+// flight - after the click, before the commit - makes the record commit
+// already canceled instead of live. The comparison is commit-order, not
+// click-order: a Stop whose durable write lands after a later send's capture
+// still cancels that send, which is the conservative, retryable direction.
+export interface MutationStopBarrier {
+  stopEpoch: number;
+}
+
 // The storage this layer needs, as an interface rather than a class: the web's
 // MutationOutboxIndexedDB implements it and stays where it is (it is IndexedDB
 // through and through), and another host implements the same 14 calls over
@@ -74,7 +86,10 @@ export type MutationDiscoveryReason =
 // store returns resolved promises.
 export interface MutationOutboxStorage<A extends MutationAttachmentRef = MutationAttachmentRef> {
   // --- used by MutationOutbox ---
-  enqueueIntent(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
+  // The optional barrier is the host's click-time stop-epoch capture (see
+  // MutationStopBarrier): a storage that honors it commits the record
+  // canceled when a Stop landed between the capture and this transaction.
+  enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>>;
   // Stop's combined durable write: cancel the ref's non-attempted rows and
   // enqueue the interrupt record in one transaction — both or neither.
   enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
@@ -244,8 +259,9 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   async enqueueIntent(
     intent: MutationIntent<A>,
     onCommitted?: (record: MutationOutboxRecord<A>) => void,
+    barrier?: MutationStopBarrier,
   ): Promise<MutationOutboxRecord<A>> {
-    const record = await this.#storage.enqueueIntent(intent);
+    const record = await this.#storage.enqueueIntent(intent, barrier);
     this.#announceCommit(record, onCommitted);
     return record;
   }

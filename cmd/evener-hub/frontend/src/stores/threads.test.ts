@@ -10398,6 +10398,49 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect((await tabA.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
   });
 
+  // An enqueue clicked before the Stop but whose durable write had not yet
+  // been issued when the stop's cancel transaction committed - a cold tab's
+  // connection still opening, its runtime still starting, while a warm tab's
+  // Stop lands - is the one interleave IndexedDB's transaction ordering cannot
+  // fence: the engine's FIFO puts that write AFTER the cancel scan, so the row
+  // would commit "submitting" and dispatch into the session the user just
+  // stopped. The durable stop-epoch barrier (§4) closes it: the enqueue
+  // captures the ref's stop epoch at click time, and a Stop landing in
+  // between makes the row commit born-"canceled" - still announced for the
+  // canceled queue strip, never dispatched. The seam wrapper below only
+  // delays the adapter's real write; the write that lands is the real one.
+  test("an in-flight enqueue whose write lands after the stop's cancel commits canceled, never dispatched", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const realEnqueueIntent = storage.enqueueIntent.bind(storage);
+    const writeReached = deferred<void>();
+    const writeRelease = deferred<void>();
+    storage.enqueueIntent = (...args: Parameters<typeof realEnqueueIntent>) => {
+      writeReached.resolve();
+      return writeRelease.promise.then(() => realEnqueueIntent(...args));
+    };
+
+    // The send is clicked and in flight; its write waits at the seam.
+    const send = threadsStore.getState().queue("ref_a", "clicked before the stop");
+    await writeReached.promise;
+    // The Stop's cancel commits while the send's write is still in flight.
+    await threadsStore.getState().interrupt("ref_a");
+    // The send's write finally issues - after the cancel, the finding's order.
+    writeRelease.resolve();
+    await send;
+
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+    await flushIndexedDBUntil(() => false);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("canceled");
+  });
+
   // §9 item 4: a canceled row must not ride a Resume back out. The stopped
   // session's recovery flow - Force stop, the recovery obligation it leaves,
   // the explicit Resume that clears it - all run between the cancellation and

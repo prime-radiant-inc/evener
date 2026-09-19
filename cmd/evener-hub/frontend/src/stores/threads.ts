@@ -52,6 +52,7 @@ import {
   type MutationOutboxOptions,
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
+  type MutationStopBarrier,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
@@ -1552,12 +1553,21 @@ async function enqueueMutationIntent(
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
+  // §4's stop barrier, the click-time half: capture the ref's durable stop
+  // epoch before this submission's write issues, so a Stop that lands while
+  // the write is in flight - after the click, before the commit, the one
+  // interleave transaction ordering cannot fence when another tab's Stop
+  // commits on its own connection - makes the record commit born-"canceled"
+  // instead of live. The Stop's own interrupt record passes no barrier: it IS
+  // the click the epoch records.
+  const barrier: MutationStopBarrier | undefined =
+    durableWrite === "enqueue" ? { stopEpoch: await runtime.storage.readStopEpoch(ref) } : undefined;
   let record: MutationOutboxRecord;
   try {
     record =
       durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
-        : await runtime.outbox.enqueueIntent(intent, onCommitted);
+        : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
   } catch (error) {
     if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
     throw error;

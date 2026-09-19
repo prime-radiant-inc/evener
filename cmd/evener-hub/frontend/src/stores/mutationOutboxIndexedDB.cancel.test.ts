@@ -177,6 +177,71 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     tabB.close();
   });
 
+  // §4's stop barrier, the half a second connection exercises: the submitter
+  // reads the ref's stop epoch at its click, another tab's Stop commits while
+  // the submitter's write is still in flight, and the write that lands after
+  // that cancel must commit born-"canceled" - the one interleave transaction
+  // ordering cannot fence, because the engine's FIFO is exactly what put the
+  // enqueue's write after the cancel scan.
+  test("an in-flight enqueue whose barrier predates another tab's stop commits canceled, not submitting", async () => {
+    // Two connections share one id space: distinct tabs mint distinct ids, and
+    // per-store counters would collide on the outbox's primary key.
+    const ids = idSequence();
+    const sender = store({ createMutationId: ids });
+    const capture = await sender.readStopEpoch(TARGET);
+    expect(capture).toBe(0);
+
+    const stopper = store({ createMutationId: ids });
+    const interrupt = await stopper.enqueueInterruptAndCancel(interruptIntent());
+    stopper.close();
+
+    const raced = await sender.enqueueIntent(intent("raced the stop"), { stopEpoch: capture });
+    expect(raced).toMatchObject({ state: "canceled", attempted: false });
+    // The FIFO head is the stop's own interrupt, never the canceled row behind it.
+    expect(await sender.nextDispatchable(TARGET)).toMatchObject({ clientMutationId: interrupt.clientMutationId });
+    // A canceled row's only release is still the explicit user Retry.
+    expect(await sender.releaseCanceled(raced.clientMutationId)).toBe(true);
+    sender.close();
+  });
+
+  test("an enqueue after the stop captures the bumped epoch and still sends", async () => {
+    const storage = store();
+    await storage.cancelUnattempted(TARGET);
+    const capture = await storage.readStopEpoch(TARGET);
+    expect(capture).toBe(1);
+
+    // The user clicked send after the stop: the barrier the click captured is
+    // the post-stop epoch, nothing intervenes, and the row goes live. A caller
+    // passing no barrier at all (a host that never captured) is unchanged.
+    const after = await storage.enqueueIntent(intent("sent after the stop"), { stopEpoch: capture });
+    const barrierless = await storage.enqueueIntent(intent("no barrier"));
+    expect(after.state).toBe("submitting");
+    expect(barrierless.state).toBe("submitting");
+    expect(await storage.nextDispatchable(TARGET)).toMatchObject({ method: "turn/queue" });
+    storage.close();
+  });
+
+  // The epoch rides the sequence row, so every allocation that writes that
+  // row back must preserve it - and a reload (a fresh connection) reads the
+  // same count both stop paths bump.
+  test("the stop epoch survives later enqueues, a reload, and both stop paths bump it", async () => {
+    const ids = idSequence();
+    const first = store({ createMutationId: ids });
+    await first.cancelUnattempted(TARGET);
+    await first.enqueueIntent(intent("after the first stop"));
+    await first.enqueueIntent(intent("and another"));
+    expect(await first.readStopEpoch(TARGET)).toBe(1);
+    first.close();
+
+    const reloaded = store({ createMutationId: ids });
+    expect(await reloaded.readStopEpoch(TARGET)).toBe(1);
+    await reloaded.enqueueInterruptAndCancel(interruptIntent());
+    expect(await reloaded.readStopEpoch(TARGET)).toBe(2);
+    await reloaded.cancelUnattempted(TARGET);
+    expect(await reloaded.readStopEpoch(TARGET)).toBe(3);
+    reloaded.close();
+  });
+
   test("cancelUnattempted returns the canceled ids and never touches attempted rows or other refs", async () => {
     const storage = store();
     const queued = await storage.enqueueIntent(intent("queued"));
