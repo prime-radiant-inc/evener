@@ -3636,6 +3636,36 @@ test("mergeTurnHistory keeps live-only fields and warning items out of transcrip
   expect(unmatchedWarning.turns[0]?.items).toHaveLength(1);
 });
 
+test("mergeTurnHistory counts canonical fields on an unmatched warning-only turn", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "unmatched-warning-with-usage",
+        status: "completed",
+        usage: { inputTokens: 11, outputTokens: 4 },
+        completedAt: "2026-09-19T12:00:00.000Z",
+        items: [
+          {
+            id: "warning-with-usage",
+            turnId: "unmatched-warning-with-usage",
+            type: "warning",
+            text: "provider warning",
+            status: "completed",
+            warning: { title: "Provider" },
+          },
+        ],
+      },
+    ],
+    [],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns[0]?.usage).toEqual({ inputTokens: 11, outputTokens: 4 });
+  expect(merged.turns[0]?.completedAt).toBe("2026-09-19T12:00:00.000Z");
+  expect(merged.turns[0]?.items).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({ type: "warning", warning: { title: "Provider" } });
+});
+
 test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {
   const sharedItem = {
     id: "shared-item",

@@ -1062,12 +1062,12 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
 }
 
 function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
-  if (matches.length === 0) return older.items.length === 0 || older.items.some((item) => item.type !== "warning");
   if (
     turnCoverageFields.some((field) => older[field] !== undefined && matches.every((turn) => turn[field] === undefined))
   ) {
     return true;
   }
+  if (matches.length === 0) return older.items.length === 0 || older.items.some((item) => item.type !== "warning");
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
     const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
