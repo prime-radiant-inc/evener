@@ -1497,8 +1497,30 @@ describe("projectThread", () => {
     // A live "warning" notification is the only way an ItemModel ever carries
     // type "warning" (reducer.ts's case "warning" fold; there is no wire
     // ThreadItem.warning field, so hydrateThread alone can never produce one) -
-    // this test drives that fold directly rather than a static fixture.
-    it("surfaces a warning's title/hint even when the fold left text blank (message-less frame)", () => {
+    // these tests drive that fold directly rather than a static fixture. Each
+    // row asserts the same contract - every non-blank part appears - for a
+    // different combination of parts present: title+hint alone (folded.text
+    // is blank, so warningFallbackText must still surface them);
+    // message+hint (item.text || warningFallbackText(item) || item.output
+    // used to pick the message and never look at the hint once item.text was
+    // non-blank); and title+message+hint together (warningFallbackText used
+    // to compose only [item.text, item.warning.hint], dropping the title
+    // entirely once there was also a message - this canonical projected
+    // activity row has no separate title slot the way the live warning row
+    // does, so the title was silently lost).
+    it.each<[string, Record<string, unknown>, string[]]>([
+      ["a message-less frame", { title: "Sandbox blocked", hint: "retry later" }, ["Sandbox blocked", "retry later"]],
+      [
+        "a message with a hint, no title",
+        { message: "disk is nearly full", hint: "retry later" },
+        ["disk is nearly full", "retry later"],
+      ],
+      [
+        "a title together with a message and hint",
+        { title: "Sandbox blocked", message: "disk is nearly full", hint: "retry later" },
+        ["Sandbox blocked", "disk is nearly full", "retry later"],
+      ],
+    ])("composes a warning's parts together instead of dropping any of them (%s)", (_case, warningParams, expectedSubstrings) => {
       const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
         evener: evenerThread({ activeTurnId: "t1" }),
       });
@@ -1507,7 +1529,7 @@ describe("projectThread", () => {
         model,
         {
           method: "warning",
-          params: { threadId: "thread-1", ref: "ref-1", title: "Sandbox blocked", hint: "retry later" },
+          params: { threadId: "thread-1", ref: "ref-1", ...warningParams },
         } as AnyNotification,
         2000,
       );
@@ -1515,71 +1537,7 @@ describe("projectThread", () => {
       const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
       expect(a?.kind).toBe("activity");
       if (a?.kind === "activity") {
-        expect(a.detail.output).toContain("Sandbox blocked");
-        expect(a.detail.output).toContain("retry later");
-      }
-    });
-
-    // item.text || warningFallbackText(item) || item.output picks the
-    // message and never looks at warningFallbackText at all once item.text
-    // is non-blank, dropping the hint whenever a message is present — the
-    // web (WarningItem.tsx) and the live warning row (conversation.ts's case
-    // "warning") both compose message and hint together instead of picking
-    // one with ||.
-    it("composes a warning's message and hint together, not just one or the other", () => {
-      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
-        evener: evenerThread({ activeTurnId: "t1" }),
-      });
-      let model = hydrateThread({ thread: t }, "ref-1", 1000);
-      model = applyNotification(
-        model,
-        {
-          method: "warning",
-          params: { threadId: "thread-1", ref: "ref-1", message: "disk is nearly full", hint: "retry later" },
-        } as AnyNotification,
-        2000,
-      );
-      const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("activity");
-      if (a?.kind === "activity") {
-        expect(a.detail.output).toContain("disk is nearly full");
-        expect(a.detail.output).toContain("retry later");
-      }
-    });
-
-    // warningFallbackText composed [item.text, item.warning.hint] when there
-    // was a message, dropping item.warning.title entirely - the web
-    // WarningItem renders title + message + hint, and the mobile live row
-    // keeps title as its own field, but this canonical projected activity
-    // row has no separate title slot, so the title was silently lost
-    // whenever a message was also present.
-    it("composes a warning's title, message, and hint together, not dropping the title when there's a message", () => {
-      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
-        evener: evenerThread({ activeTurnId: "t1" }),
-      });
-      let model = hydrateThread({ thread: t }, "ref-1", 1000);
-      model = applyNotification(
-        model,
-        {
-          method: "warning",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            title: "Sandbox blocked",
-            message: "disk is nearly full",
-            hint: "retry later",
-          },
-        } as AnyNotification,
-        2000,
-      );
-      const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("activity");
-      if (a?.kind === "activity") {
-        expect(a.detail.output).toContain("Sandbox blocked");
-        expect(a.detail.output).toContain("disk is nearly full");
-        expect(a.detail.output).toContain("retry later");
+        for (const substring of expectedSubstrings) expect(a.detail.output).toContain(substring);
       }
     });
   });
