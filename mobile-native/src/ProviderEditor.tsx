@@ -2,27 +2,31 @@ import { useEffect, useRef, useState } from "react";
 import { TextInput, View } from "react-native";
 import type {
   InstanceEntry,
+  InstanceCreateParams,
+  InstanceEditParams,
   ProviderDescriptor,
 } from "@evener/appwire-client";
-import {
-  createProviderParams,
-  editProviderParams,
-  type ProviderDraft,
-} from "./providerForm";
-import type { ProviderInstances } from "./providerInstances";
+import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function ProviderEditor({
   instance,
   providers,
-  model,
+  onCreate,
+  onEdit,
   disabled,
   onSaved,
   onCancel,
 }: {
   instance?: InstanceEntry;
   providers: ProviderDescriptor[];
-  model: ProviderInstances;
+  // The screen owns the write gate (one write at a time, refused while the
+  // listing refuses configuration): the editor hands a validated draft back
+  // and the screen issues it against the credential core. Each resolves the
+  // core's applied verdict, so the editor reports success only on a confirmed
+  // write.
+  onCreate(params: InstanceCreateParams): Promise<boolean>;
+  onEdit(params: InstanceEditParams): Promise<boolean>;
   disabled: boolean;
   onSaved(name: string): void;
   onCancel(): void;
@@ -87,8 +91,25 @@ export function ProviderEditor({
     }
     setSaving(true);
     try {
-      if (edit) await model.edit(edit);
-      else if (create) await model.create(create);
+      let applied: boolean;
+      if (edit) applied = await onEdit(edit);
+      else if (create) applied = await onCreate(create);
+      else {
+        // Neither an edit nor a create was built: there is no write to issue,
+        // so the draft is simply accepted as it stands.
+        if (alive.current) onSaved(instance?.name ?? draft.name.trim());
+        return;
+      }
+      if (!applied) {
+        // A newer listing superseded this save's answer: the write may have
+        // landed on the host, but the store cannot confirm it, so the editor
+        // does not close reporting success.
+        if (alive.current)
+          setError(
+            "Save could not be confirmed. Check the provider list before trying again.",
+          );
+        return;
+      }
       if (alive.current) onSaved(instance?.name ?? draft.name.trim());
     } catch {
       if (alive.current)
