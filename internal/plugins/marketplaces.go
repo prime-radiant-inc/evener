@@ -433,49 +433,43 @@ func resolveAncestors(path string) (string, error) {
 const maxSymlinkHops = 64
 
 // sourceTouchesClone reports whether deleting the tree at the clone would delete
-// or break the recorded source: whether the source's absolute path, its fully
-// resolved target, or any symlink met while resolving it sits at or beneath the
-// clone. The walk follows each link's own target in turn, because a chain can
-// leave the clone and come back — a source reached through a link the clone
-// holds is broken even when its final target is elsewhere, and EvalSymlinks
-// alone would hide both that hop and a second link standing between them.
+// or break the recorded source: whether any location the source's path passes
+// through sits at or beneath the clone. It walks the path as written —
+// resolving `.`/`..` in traversal order and following symlinks at each
+// component — because canonicalizing first would erase a `..` (or a link
+// target's `..`) that needs the clone to exist, and a full EvalSymlinks would
+// hide a hop that dips into the clone and back out.
 func sourceTouchesClone(source string, underClone func(string) bool, depth int) (bool, error) {
 	if depth > maxSymlinkHops {
 		// Deeper than any sane chain: assume the sweep holds a link the source
 		// needs and protect.
 		return true, nil
 	}
-	// filepath.Abs and Clean erase `.` and `..`, yet the OS cannot resolve
-	// `<clone>/../outside` without the clone — the `..` needs the clone to
-	// exist. Walk the path as written first, before it is canonicalized.
 	raw, err := absoluteUncleaned(source)
 	if err != nil {
 		return false, fmt.Errorf("resolving %s: %w", source, err)
 	}
-	if rawPrefixTouchesClone(raw, underClone) {
-		return true, nil
-	}
-	abs, err := filepath.Abs(source)
-	if err != nil {
-		return false, fmt.Errorf("resolving %s: %w", source, err)
-	}
-	if underClone(abs) {
-		return true, nil
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil && underClone(resolved) {
-		return true, nil
-	}
-	root := filepath.VolumeName(abs) + string(filepath.Separator)
+	root := filepath.VolumeName(raw) + string(filepath.Separator)
 	current := root
-	for comp := range strings.SplitSeq(strings.TrimPrefix(abs, root), string(filepath.Separator)) {
-		if comp == "" {
+	for comp := range strings.SplitSeq(strings.TrimPrefix(raw, root), string(filepath.Separator)) {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			// Applied to the location the path has actually reached, so a
+			// `..` after a link into the clone walks back out of the clone.
+			current = filepath.Dir(current)
 			continue
 		}
 		next := filepath.Join(current, comp)
+		if underClone(next) {
+			return true, nil
+		}
 		info, err := marketplaceLstat(next)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
-				// A component that is not there cannot be destroyed.
+				// A component that is not there cannot be destroyed, and
+				// nothing after it can resolve through it either.
 				return false, nil
 			}
 			return false, fmt.Errorf("checking %s: %w", next, err)
@@ -489,15 +483,16 @@ func sourceTouchesClone(source string, underClone func(string) bool, depth int) 
 			return false, fmt.Errorf("reading link %s: %w", next, err)
 		}
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(next), target)
+			// Kept uncleaned: the target's own `.`/`..` components matter.
+			target = filepath.Dir(next) + string(filepath.Separator) + target
 		}
 		// The link itself, and the path it names, both go if the clone holds
 		// them — the final target alone would miss a hop back out of the clone.
 		if underClone(next) || underClone(target) {
 			return true, nil
 		}
-		// The target is a path in its own right: its own links can lead back
-		// into the clone even where the recorded path's components do not.
+		// The target is a path in its own right: its own links and `..`
+		// components can lead through the clone even where this path's do not.
 		touches, err := sourceTouchesClone(target, underClone, depth+1)
 		if err != nil {
 			return false, err
@@ -505,13 +500,19 @@ func sourceTouchesClone(source string, underClone func(string) bool, depth int) 
 		if touches {
 			return true, nil
 		}
-		current = filepath.Clean(target)
+		// Continue with the directory the link resolves to, so components after
+		// it apply to the location they actually see.
+		resolved, err := filepath.EvalSymlinks(next)
+		if err != nil {
+			return false, nil
+		}
+		current = resolved
 	}
 	return false, nil
 }
 
 // absoluteUncleaned makes path absolute without canonicalizing it, so a `.` or
-// `..` component survives for the traversal check.
+// `..` component survives for the traversal walk.
 func absoluteUncleaned(path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return path, nil
@@ -523,28 +524,22 @@ func absoluteUncleaned(path string) (string, error) {
 	return wd + string(filepath.Separator) + path, nil
 }
 
-// rawPrefixTouchesClone reports whether resolving path as written must pass
-// through the clone. It walks the components in order, applying `.` and `..`
-// literally, and checks each actual location against underClone — so
-// `<clone>/../outside`, whose `..` needs the clone to exist, is caught where
-// canonicalizing first would erase the traversal.
-func rawPrefixTouchesClone(path string, underClone func(string) bool) bool {
-	root := filepath.VolumeName(path) + string(filepath.Separator)
-	current := root
-	for comp := range strings.SplitSeq(strings.TrimPrefix(path, root), string(filepath.Separator)) {
-		switch comp {
-		case "", ".":
-			continue
-		case "..":
-			current = filepath.Dir(current)
-		default:
-			current = filepath.Join(current, comp)
-			if underClone(current) {
-				return true
-			}
-		}
+// sourceTouchesPath reports whether a directory source at source depends on the
+// directory at path — it sits at, beneath, or resolves through it — so that
+// moving or removing that directory would break the source.
+func (m *Manager) sourceTouchesPath(source, path string) (bool, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", path, err)
 	}
-	return false
+	resolvedPath, err := resolveAncestors(path)
+	if err != nil {
+		return false, err
+	}
+	under := func(p string) bool {
+		return pathWithinDir(absPath, p) || pathWithinDir(resolvedPath, p)
+	}
+	return sourceTouchesClone(source, under, 0)
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
@@ -606,6 +601,19 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 			// the paths this refuses.
 			if err := m.refuseSourceInStore(src.Path); err != nil {
 				return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, err)
+			}
+			if renaming {
+				// The rename moves the clone, so a source that lives inside it
+				// moves too while Source.Path would still name the old
+				// location — leaving the marketplace recorded against a path
+				// that is gone. Refuse rather than save that.
+				touches, err := m.sourceTouchesPath(src.Path, m.marketplaceDir(name))
+				if err != nil {
+					return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, err)
+				}
+				if touches {
+					return MarketplaceRef{}, fmt.Errorf("marketplace %q: a directory source inside its own clone %s cannot be combined with a rename to %q", name, m.marketplaceDir(name), newName)
+				}
 			}
 		}
 	}

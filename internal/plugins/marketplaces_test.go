@@ -1470,6 +1470,68 @@ func TestRemoveMarketplace_SparesASourceThatTraversesTheClone(t *testing.T) {
 	}
 }
 
+// A `..` reached through a symlink into the clone still needs the clone to
+// exist: `alias/../beta` where alias points at the clone cannot resolve once
+// the clone is gone. The walk must follow the link before applying the `..`.
+func TestRemoveMarketplace_SparesASourceWhoseLinkTraversesTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	beta := filepath.Join(m.marketplacesDir(), "beta")
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(clone, alias); err != nil {
+		t.Fatal(err)
+	}
+	traversing := alias + string(filepath.Separator) + ".." + string(filepath.Separator) + "beta"
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: traversing}, InstallLocation: traversing},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("the source traversing the clone through a link did not protect it: %v", err)
+	}
+}
+
+// A rename moves the clone, so a directory source that lives inside it moves
+// too while Source.Path would still name the old location. The combined edit
+// must be refused rather than recorded against a path that is gone.
+func TestEditMarketplace_RenameRefusesADirectorySourceInsideTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := makeDirectoryMarketplace(t, "local", "widget")
+	link := filepath.Join(clone, "source")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: link}); err == nil {
+		t.Fatal("expected a rename with a directory source inside the clone to be refused")
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the clone or the in-clone source moved despite the refusal: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
