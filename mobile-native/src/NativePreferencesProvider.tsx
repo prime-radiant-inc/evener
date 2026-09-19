@@ -158,8 +158,17 @@ export function NativePreferencesProvider({
 		// happen in exactly that state.
 		setOfflineDraftUnreadable(draftUnreadableAfterDiscard(current));
 		// A readable current record is a replacement the store-free CAS refused;
-		// nudging the model would discard its own readable classification.
-		if (current !== "readable" && bound?.hubId === hubId && bound.client === client) {
+		// nudging a model that already restored it would discard its own readable
+		// classification. A model still reporting storageUnavailable is the
+		// unreadable-record case (or a genuine storage failure, which its own
+		// discard gate safely refuses), so let the store reclassify through its
+		// existing recovery seam.
+		const liveKeybindings = bound?.model.getSnapshot().keybindings;
+		if (
+			bound?.hubId === hubId &&
+			bound.client === client &&
+			(current !== "readable" || liveKeybindings?.storageUnavailable === true)
+		) {
 			// A live model exists for this hub, and its OWN keybindings store
 			// classifies this same record independently, from the same storage
 			// this store-free path just changed - patching a COPY of its

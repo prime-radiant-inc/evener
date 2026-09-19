@@ -202,6 +202,41 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		mounted.unmount();
 	});
 
+	it("reclassifies a live unreadable model when a readable replacement is found", async () => {
+		writeDraft("hub-a", "{not json");
+		const connection = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(connection);
+
+		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
+			draft: null,
+			storageUnavailable: true,
+		});
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+
+		let outcome: unknown;
+		act(() => {
+			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+		});
+		expect(outcome).toBe("refused");
+		expect(harness.values.has(draftKey("hub-a"))).toBe(true);
+		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
 	it("reports storage failure from the probe and discard", () => {
 		harness.storage.throwOnGet = true;
 		harness.connection = {
