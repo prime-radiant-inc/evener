@@ -80,6 +80,33 @@ export interface MutationOutboxSQLiteOptions {
 // what the table membership already says.
 export const TABLES = { outbox: "mutation_outbox", optimistic: "mutation_optimistic", recovery: "mutation_recovery" } as const;
 
+const COLUMNS = [
+	"client_mutation_id",
+	"version",
+	"origin_client_id",
+	"target_ref",
+	"thread_id",
+	"method",
+	"payload",
+	"attachments",
+	"optimistic_display",
+	"composer_text",
+	"intent_sequence",
+	"created_at",
+	"state",
+	"attempted",
+	"recovery_kind",
+	"recovery_reason",
+] as const;
+
+const insertSQL = (table: string): string =>
+	`INSERT INTO ${table} (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(() => "?").join(", ")})`;
+
+const replaceSQL = (table: string): string =>
+	`${insertSQL(table)} ON CONFLICT (client_mutation_id) DO UPDATE SET ${COLUMNS.slice(1)
+		.map((column) => `${column} = excluded.${column}`)
+		.join(", ")}`;
+
 export interface Row {
 	client_mutation_id: string;
 	version: number;
@@ -144,6 +171,18 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			recovery_kind TEXT, recovery_reason TEXT)`;
 		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
 		this.db.execSync(
+			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_outbox_target_sequence
+			 ON ${TABLES.outbox} (target_ref, intent_sequence)`,
+		);
+		this.db.execSync(
+			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_optimistic_target_sequence
+			 ON ${TABLES.optimistic} (target_ref, intent_sequence)`,
+		);
+		this.db.execSync(
+			`CREATE INDEX IF NOT EXISTS mutation_recovery_target_sequence
+			 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
+		);
+		this.db.execSync(
 			"CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL)",
 		);
 	}
@@ -151,17 +190,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	async enqueueIntent(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>> {
 		if (!intent.targetRef.trim()) throw new Error("targetRef is required");
 		return this.transaction("mutation_outbox_enqueue", () => {
+			// Allocate and persist the next sequence in one write so a reentrant
+			// enqueue cannot reuse a value read before another allocation.
 			const sequenceRow = this.db.getFirstSync<{ last_sequence: number }>(
-				"SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?",
+				`INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 1)
+				 ON CONFLICT (target_ref) DO UPDATE SET last_sequence = last_sequence + 1
+				 RETURNING last_sequence`,
 				intent.targetRef,
 			);
-			const intentSequence = (sequenceRow?.last_sequence ?? 0) + 1;
-			this.db.runSync(
-				`INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, ?)
-				 ON CONFLICT (target_ref) DO UPDATE SET last_sequence = excluded.last_sequence`,
-				intent.targetRef,
-				intentSequence,
-			);
+			if (!sequenceRow) throw new Error("failed to allocate intent sequence");
+			const intentSequence = sequenceRow.last_sequence;
 			const clientMutationId = this.#createMutationId();
 			const record: MutationOutboxRecord<A> = {
 				...intent,
@@ -297,13 +335,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// the id, not that this record should overwrite whatever collided with
 	// it - the same rejection the oracle's `add` gives a duplicate key.
 	protected insertNew(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
-		this.db.runSync(
-			`INSERT INTO ${table} (client_mutation_id, version, origin_client_id, target_ref, thread_id, method, payload,
-				attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted,
-				recovery_kind, recovery_reason)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			...this.insertValues(record),
-		);
+		this.db.runSync(insertSQL(table), ...this.insertValues(record));
 	}
 
 	// A transition (a receipt settling, a rejection transferring) writes a
@@ -313,21 +345,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// only state/attempted would leave a stale payload/display/recovery
 	// reason behind from whatever the row held before.
 	protected replace(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
-		this.db.runSync(
-			`INSERT INTO ${table} (client_mutation_id, version, origin_client_id, target_ref, thread_id, method, payload,
-				attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted,
-				recovery_kind, recovery_reason)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (client_mutation_id) DO UPDATE SET
-				version = excluded.version, origin_client_id = excluded.origin_client_id,
-				target_ref = excluded.target_ref, thread_id = excluded.thread_id, method = excluded.method,
-				payload = excluded.payload, attachments = excluded.attachments,
-				optimistic_display = excluded.optimistic_display, composer_text = excluded.composer_text,
-				intent_sequence = excluded.intent_sequence, created_at = excluded.created_at,
-				state = excluded.state, attempted = excluded.attempted,
-				recovery_kind = excluded.recovery_kind, recovery_reason = excluded.recovery_reason`,
-			...this.insertValues(record),
-		);
+		this.db.runSync(replaceSQL(table), ...this.insertValues(record));
 	}
 
 	protected insertValues(
@@ -347,7 +365,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			record.composerText ?? null,
 			record.intentSequence,
 			record.createdAt,
-			"state" in record ? record.state : "accepted",
+			record.state,
 			"attempted" in record && record.attempted ? 1 : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,

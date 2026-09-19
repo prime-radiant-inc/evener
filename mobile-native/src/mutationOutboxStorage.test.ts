@@ -161,51 +161,61 @@ test("intentSequence is gap-free and per target ref", async () => {
 
 // Round 4 Medium (mutationOutboxStorage.ts:152-163): the original allocation
 // read last_sequence on its own statement, separate from the write that
-// persists the next value, so two SQLite handles open on the same file could
-// both read the same last_sequence and both compute the same intentSequence.
-// Reproduced by hand, the only way to force the interleaving deterministically
-// on a single JS thread: a second MutationOutboxSQLite over a second
-// DatabaseSync connection to the same on-disk file (handle B), raced in via a
-// spy on handle A's getFirstSync right where the review's read happens, before
-// handle A has written anything back.
-test("enqueueIntent's sequence allocation never collides across two SQLite handles racing the same target", async () => {
-	const otherConnection = new DatabaseSync(join(directory, "outbox.sqlite"));
+// persists the next value, so two enqueue operations could both compute the
+// same intentSequence. SQLite serializes actual writers on separate handles
+// (the direct two-handle attempt reports `database is locked` while the first
+// savepoint still owns its read), so this deterministic reentrant call forces
+// the same statement interleaving on one real SQLite connection.
+test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
 	let otherNext = 0;
 	const storageB = new MutationOutboxSQLite(
-		{
-			execSync: (sql) => otherConnection.exec(sql),
-			runSync: (sql, ...params) => otherConnection.prepare(sql).run(...params),
-			getFirstSync: <T>(sql: string, ...params: (string | number)[]) =>
-				(otherConnection.prepare(sql).get(...params) as T | undefined) ?? null,
-			getAllSync: <T>(sql: string, ...params: (string | number)[]) => otherConnection.prepare(sql).all(...params) as T[],
-		},
+		databaseAdapter(),
 		{ createMutationId: () => `other-${++otherNext}`, now: () => 5678 },
 	);
 
-	let sequenceReads = 0;
+	let sequenceAllocations = 0;
+	let recordB: ReturnType<typeof storageB.enqueueIntent> | undefined;
 	const racingAdapter: MutationOutboxDatabase = {
 		...databaseAdapter(),
 		getFirstSync: <T>(sql: string, ...params: (string | number)[]) => {
 			const result = databaseAdapter().getFirstSync<T>(sql, ...params);
-			sequenceReads += 1;
-			// Handle B fully allocates and commits its own sequence for the same
-			// target right after handle A's own read - before handle A has
-			// written anything back - on the FIRST getFirstSync call only
-			// (enqueueIntent's one sequence lookup; a later settle/transfer read
-			// must not re-trigger this).
-			if (sequenceReads === 1) storageB.enqueueIntent(intent("handle B", TARGET)).catch(() => undefined);
+			sequenceAllocations += 1;
+			// The old allocator's first getFirstSync is its standalone sequence
+			// read. Re-enter with a second storage instance before that allocator
+			// can persist its computed value. An atomic INSERT ... RETURNING
+			// allocator has already committed the next sequence by this point.
+			if (sequenceAllocations === 1) recordB = storageB.enqueueIntent(intent("handle B", TARGET));
 			return result;
 		},
 	};
 	const racingStorage = new MutationOutboxSQLite(racingAdapter, { createMutationId: () => "handle-a", now: () => 1234 });
 
-	await racingStorage.enqueueIntent(intent("handle A", TARGET));
+	const recordA = await racingStorage.enqueueIntent(intent("handle A", TARGET));
+	if (!recordB) throw new Error("reentrant enqueue did not run");
+	const persistedB = await recordB;
 
 	const sequences = database
 		.prepare("SELECT intent_sequence FROM mutation_outbox WHERE target_ref = ? ORDER BY intent_sequence")
 		.all(TARGET)
 		.map((row) => (row as { intent_sequence: number }).intent_sequence);
-	expect(new Set(sequences).size).toBe(sequences.length);
+	expect([recordA.intentSequence, persistedB.intentSequence].sort()).toEqual([1, 2]);
+	expect(sequences).toEqual([1, 2]);
+	expect(database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+		last_sequence: 2,
+	});
+});
+
+test("enqueueIntent rolls back when target sequence uniqueness rejects a duplicate", async () => {
+	const first = await storage.enqueueIntent(intent("keep the first sequence"));
+	database.prepare("UPDATE mutation_sequence SET last_sequence = 0 WHERE target_ref = ?").run(TARGET);
+
+	await expect(storage.enqueueIntent(intent("duplicate the first sequence"))).rejects.toThrow();
+
+	expect(rawRow("mutation_outbox", first.clientMutationId)).toBeDefined();
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all(TARGET)).toHaveLength(1);
+	expect(database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+		last_sequence: 0,
+	});
 });
 
 test("markAttempted flips a submitting record's attempted flag and refuses a non-submitting one", async () => {
@@ -239,11 +249,12 @@ test("markUnknown sets the given state and its onlyAttempted guard refuses an un
 test("settleReceipt moves a pending, input-carrying record into the optimistic table", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("pending incorporation"),
+		composerText: "composer-only source text",
 		optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "pending incorporation" }] },
 	});
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
-	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted" });
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted", composer_text: null });
 });
 
 // Oracle: "a pending receipt settles a receipt-only control without creating
