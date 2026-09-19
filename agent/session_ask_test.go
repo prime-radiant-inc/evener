@@ -2085,6 +2085,7 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 
 	markerFailure := errors.New("answered-round interrupt marker sync failure")
 	markerFaultHit := false
+	// TRIPWIRE: the local scripted reply cancels at the post-tool hook; 30s only guards a hang.
 	replyCtx, cancelReply := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReply()
 	replyCtx = context.WithValue(replyCtx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
