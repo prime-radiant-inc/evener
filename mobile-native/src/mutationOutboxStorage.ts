@@ -1,5 +1,5 @@
 // D25d-1: the phone's implementation of the package's MutationOutboxStorage
-// port (appwire-client/typescript/state/mutation/outbox.ts) - the 13 calls
+// port (appwire-client/typescript/state/mutation/outbox.ts) - the 14 calls
 // the outbox's discovery and the dispatcher make - over expo-sqlite, the
 // same storage draftRepository.ts already persists drafts through. No host
 // global is named in the package; this adapter is where the sqlite handle
@@ -10,11 +10,13 @@
 // describe("MutationOutboxIndexedDB", ...) block. This mirrors its
 // contracts (gap-free per-target sequencing, settleReceipt's
 // pending-input-carrying-record-becomes-optimistic rule, markUnknown's
-// onlyAttempted guard, nextDispatchable blocked by an earlier blockedUnknown
-// on the same target only, restoreProvenAbsent reopening only what the
-// authoritative snapshot omits) without the web's Blob handling, cross-tab
-// identity or shared-notes recovery-superseding, none of which the port
-// declares.
+// onlyAttempted guard, enqueueInterruptAndCancel's cancel-and-interrupt
+// Stop write with the stop-epoch barrier enqueueIntent compares at commit,
+// nextDispatchable blocked by an earlier blockedUnknown on the same target
+// only while skipping canceled rows, restoreProvenAbsent reopening only
+// what the authoritative snapshot omits) without the web's Blob handling,
+// cross-tab identity or shared-notes recovery-superseding, none of which
+// the port declares.
 import * as Crypto from "expo-crypto";
 import type {
 	MutationAttachmentRef,
@@ -26,6 +28,7 @@ import type {
 	MutationRecord,
 	MutationRecoveryKind,
 	MutationRecoveryRecord,
+	MutationStopBarrier,
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import { createSecureUUID } from "@evener/appwire-client/state/mutation";
@@ -185,23 +188,34 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
 		);
 		this.db.execSync(
-			"CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL)",
+			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
+			 stop_epoch INTEGER NOT NULL DEFAULT 0)`,
 		);
+		// The ref's durable stop epoch (§4's stop barrier) rides the sequence
+		// row - the same seat the web adapter's sequences store gives it. A
+		// database created before the barrier lacks the column, and ALTER
+		// TABLE has no IF NOT EXISTS, so check the table's columns first: the
+		// additive default-0 column is the whole migration, no data rewrite,
+		// and existing rows read as "never stopped".
+		const sequenceColumns = this.db.getAllSync<{ name: string }>("PRAGMA table_info(mutation_sequence)");
+		if (!sequenceColumns.some((column) => column.name === "stop_epoch")) {
+			this.db.execSync("ALTER TABLE mutation_sequence ADD COLUMN stop_epoch INTEGER NOT NULL DEFAULT 0");
+		}
 	}
 
-	async enqueueIntent(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>> {
+	async enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>> {
 		if (!intent.targetRef.trim()) throw new Error("targetRef is required");
 		return this.transaction("mutation_outbox_enqueue", () => {
+			// §4's stop barrier: a Stop whose cancel transaction committed while
+			// this submission was in flight - after the click, before this
+			// write - left the ref's durable stop epoch past the click-time
+			// capture. The row commits born-"canceled": never dispatched,
+			// released only by an explicit Retry.
+			const canceledByBarrier =
+				barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
 			// Allocate and persist the next sequence in one write so a reentrant
 			// enqueue cannot reuse a value read before another allocation.
-			const sequenceRow = this.db.getFirstSync<{ last_sequence: number }>(
-				`INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 1)
-				 ON CONFLICT (target_ref) DO UPDATE SET last_sequence = last_sequence + 1
-				 RETURNING last_sequence`,
-				intent.targetRef,
-			);
-			if (!sequenceRow) throw new Error("failed to allocate intent sequence");
-			const intentSequence = sequenceRow.last_sequence;
+			const intentSequence = this.allocateSequence(intent.targetRef);
 			const clientMutationId = this.#createMutationId();
 			const record: MutationOutboxRecord<A> = {
 				...intent,
@@ -215,12 +229,66 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				originClientId: this.#getOwnClientId(),
 				intentSequence,
 				createdAt: this.#now(),
+				state: canceledByBarrier ? "canceled" : "submitting",
+				attempted: false,
+			};
+			this.insertNew(TABLES.outbox, record);
+			return record;
+		});
+	}
+
+	// Stop's combined durable write (the port's enqueueInterruptAndCancel):
+	// the ref's cancelable rows turn "canceled" in the same savepoint that
+	// enqueues the turn/interrupt record, so the user's click is the cancel
+	// moment and both land or neither does. The cancellations are written
+	// before the interrupt is added so the scan cannot cancel the interrupt
+	// itself, and the same savepoint bumps the ref's stop epoch (§5) - the
+	// fence a later enqueue's click-time capture compares against - so the
+	// scan and the fence commit as one durable fact.
+	async enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>> {
+		if (!intent.targetRef.trim()) throw new Error("targetRef is required");
+		return this.transaction("mutation_outbox_enqueue_interrupt", () => {
+			// The rows a Stop may honestly cancel: still waiting ("submitting"
+			// or "blockedUnknown") and proven unattempted by the flag the
+			// dispatcher's pre-transport write sets. An attempted row may
+			// already be on the wire; it stays in-flight/uncertain, not canceled.
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET state = 'canceled'
+				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown') AND attempted = 0`,
+				intent.targetRef,
+			);
+			// One Stop, one bump, inside the Stop's own cancel transaction.
+			this.db.runSync(
+				`INSERT INTO mutation_sequence (target_ref, last_sequence, stop_epoch) VALUES (?, 0, 1)
+				 ON CONFLICT (target_ref) DO UPDATE SET stop_epoch = stop_epoch + 1`,
+				intent.targetRef,
+			);
+			const intentSequence = this.allocateSequence(intent.targetRef);
+			const clientMutationId = this.#createMutationId();
+			const record: MutationOutboxRecord<A> = {
+				...intent,
+				payload: { ...intent.payload, clientMutationId },
+				version: 1,
+				clientMutationId,
+				originClientId: this.#getOwnClientId(),
+				intentSequence,
+				createdAt: this.#now(),
+				// The Stop's own interrupt passes no barrier: it IS the click
+				// the epoch records.
 				state: "submitting",
 				attempted: false,
 			};
 			this.insertNew(TABLES.outbox, record);
 			return record;
 		});
+	}
+
+	// The click-time half of §4's stop barrier: what an enqueuing caller reads
+	// at the user's click, before the durable write issues. Fresh from the
+	// ref's sequence row, never cached - the comparison in enqueueIntent is
+	// commit-order, so a capture that never left memory fences nothing.
+	async readStopEpoch(targetRef: string): Promise<number> {
+		return this.stopEpochOf(targetRef);
 	}
 
 	// Commits attempt evidence before transport so another dispatch pass or a
@@ -244,7 +312,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return (
 			changedRows(
 				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET state = ? WHERE client_mutation_id = ? AND (? = 0 OR attempted = 1)`,
+					// A canceled row is the user's durable decision (only an
+					// explicit user Retry releases it); an uncertain-outcome
+					// write must not reclassify it into something
+					// restoreProvenAbsent could reopen.
+					`UPDATE ${TABLES.outbox} SET state = ? WHERE client_mutation_id = ? AND state != 'canceled'
+					 AND (? = 0 OR attempted = 1)`,
 					state,
 					clientMutationId,
 					options?.onlyAttempted ? 1 : 0,
@@ -354,13 +427,18 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
 	}
 
-	// The lowest-sequence outbox record for this target, or undefined if that
-	// record is not (or no longer) submitting - a blockedUnknown record at the
-	// head of the sequence blocks every later one on the SAME target, never
-	// another target's.
+	// The lowest-sequence submitting outbox record for this target. A
+	// canceled row provably never left the client, so it cannot be reordered
+	// against the daemon and must not park what follows it - including the
+	// interrupt that canceled it. A blockedUnknown head is different: the
+	// daemon may already have applied it, so the FIFO stays closed behind it
+	// and every later one on the SAME target, never another target's.
 	async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined> {
-		const first = this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef)[0];
-		return first?.state === "submitting" ? first : undefined;
+		for (const record of this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef)) {
+			if (record.state === "submitting") return record;
+			if (record.state === "blockedUnknown") return undefined;
+		}
+		return undefined;
 	}
 
 	// Reopens every blockedUnknown record for this target the authoritative
@@ -395,6 +473,31 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	// Below: shared plumbing D25d-1a's write methods above call (D25d-1b's
 	// read methods, stacked on this, reuse insertValues/get/list too).
+	// Allocates and persists the next sequence in one write so a reentrant
+	// enqueue cannot reuse a value read before another allocation. The upsert
+	// touches only last_sequence, so the ref's stop epoch survives every
+	// allocation - the same preservation the web adapter's spread carries.
+	protected allocateSequence(targetRef: string): number {
+		const sequenceRow = this.db.getFirstSync<{ last_sequence: number }>(
+			`INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 1)
+			 ON CONFLICT (target_ref) DO UPDATE SET last_sequence = last_sequence + 1
+			 RETURNING last_sequence`,
+			targetRef,
+		);
+		if (!sequenceRow) throw new Error("failed to allocate intent sequence");
+		return sequenceRow.last_sequence;
+	}
+
+	// The ref's durable stop epoch as the caller's current transaction sees
+	// it - a ref with no sequence row yet counts as never stopped.
+	protected stopEpochOf(targetRef: string): number {
+		const row = this.db.getFirstSync<{ stop_epoch: number }>(
+			"SELECT stop_epoch FROM mutation_sequence WHERE target_ref = ?",
+			targetRef,
+		);
+		return row?.stop_epoch ?? 0;
+	}
+
 	// A fresh clientMutationId has never been seen before, so a primary-key
 	// collision (the id generator repeating, the documented insecure
 	// fallback under adversarial conditions) means something is wrong with
