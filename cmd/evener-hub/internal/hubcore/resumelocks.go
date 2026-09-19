@@ -768,6 +768,20 @@ func (r *ResumeLocks) ResolvedSessionID(sessionID string) string {
 	return ""
 }
 
+// RecoverySettled reports whether sessionID is still a settled session: it is
+// neither stopping nor awaiting an explicit resume. A completed recovery
+// redirect (RecordResolvedSession) names the session a resume settled on, and
+// is written once and never cleared. Once that named session ends it is no
+// longer a settled target, so a consumer that would branch it falls back to the
+// alias rather than resolving into the ended session's recovery fence — which
+// nothing would ever clear short of a hub restart.
+func (r *ResumeLocks) RecoverySettled(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.recovery[sessionID]
+	return !state.ResumeRequired && state.Stopping == 0
+}
+
 // RecoverySequence is captured once when a transport is established. A
 // request read later cannot turn unread pre-recovery input into fresh intent.
 func (r *ResumeLocks) RecoverySequence() uint64 {

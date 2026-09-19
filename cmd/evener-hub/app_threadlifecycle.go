@@ -1409,6 +1409,16 @@ func forkTargetFromRendezvous(cfg hubcore.WebConfig, threadID string) (string, e
 // whatever a corrupted chain answers they answer alike and no fork is refused
 // for an ownership change that did not happen; whether that id can be forked at
 // all is still ownershipEntry's to decide.
+//
+// A completed redirect is followed only while the session it names is still
+// settled. RecordResolvedSession writes it once and never clears it, so once
+// that session has itself ended — it is stopping or awaiting an explicit
+// resume — following the hop would route every fork into the ended session's
+// recovery fence forever. The alias falls back to itself there; whether the
+// alias can be forked is still the fence and ownership checks' to decide. A
+// durable, still-pending recovery target (ResumeSessionID) is not retired: it
+// is the live obligation, and the fork is refused through the target's own
+// fence until that resume completes.
 func forkRedirectSessionID(cfg hubcore.WebConfig, threadID string) string {
 	if cfg.ResumeLocks == nil {
 		return threadID
@@ -1416,10 +1426,13 @@ func forkRedirectSessionID(cfg hubcore.WebConfig, threadID string) string {
 	current := threadID
 	seen := map[string]bool{current: true}
 	for {
-		next := cmp.Or(
-			cfg.ResumeLocks.RecoveryState(current).ResumeSessionID,
-			cfg.ResumeLocks.ResolvedSessionID(current),
-		)
+		next := cfg.ResumeLocks.RecoveryState(current).ResumeSessionID
+		if next == "" {
+			next = cfg.ResumeLocks.ResolvedSessionID(current)
+			if next != "" && !cfg.ResumeLocks.RecoverySettled(next) {
+				return current
+			}
+		}
 		if next == "" || next == current || seen[next] {
 			return current
 		}
