@@ -1455,21 +1455,6 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 
-	// Read the authored layer before anything is deleted: this is a pure read,
-	// so a failure here leaves nothing to undo, and it happens inside c.mu, so
-	// the layer it returns is still the one this removal edits. before is an
-	// independent parse of the same file - a fresh read sharing no maps with
-	// l - so the reload rollback below writes back exactly what was on disk
-	// before this call (Edit's own rollback input).
-	before, _, err := c.read()
-	if err != nil {
-		return err
-	}
-	l, _, err := c.read()
-	if err != nil {
-		return err
-	}
-
 	// Held exclusively across the credential cleanup, the providers.toml write
 	// and the reload that follows it, the way a rename holds it across its
 	// check and re-key (see hubAuthController.credMu). A credential writer
@@ -1497,11 +1482,30 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(locked) {
-		// The same caller-fixable condition the pre-lock check classified as
-		// InvalidParams, so the locked re-check answers the same way rather than
-		// letting a concurrent credential clear change the wire class of one
-		// refusal (see Remove's doc comment).
+		// The refusal Remove's doc comment promises for an environment-only row:
+		// appwire.InvalidParams, with the remedy describeImplicit and
+		// removalRemedy build. It is asked HERE, before either parse of
+		// providers.toml, so a config the hub cannot read (an old-schema file,
+		// say) cannot preempt the documented refusal with a read error and take
+		// the remedy away from the caller - and under the credential lock, so a
+		// writer that has just made the row the user's is not refused on the
+		// stale source an unlocked read would have seen.
 		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); %s", name, describeImplicit(locked), removalRemedy(locked)))
+	}
+
+	// Read the authored layer before anything is deleted, and only now: this is
+	// a pure read, so a failure here leaves nothing to undo, and it runs under
+	// both locks, so the layer it returns is still the one this removal edits.
+	// before is an independent parse of the same file - a fresh read sharing no
+	// maps with l - so the reload rollback below writes back exactly what was on
+	// disk before this call (Edit's own rollback input).
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
+	l, _, err := c.read()
+	if err != nil {
+		return err
 	}
 
 	// The confirmation this removal carries names the row the client listed, so
@@ -1524,21 +1528,30 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// removal failed, so the instance the caller still has must still
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
-	// Whether the config authored this instance is read before the cleanup, so
-	// its failure below is classified by the same question every later branch
-	// asks: an authored entry resolves from the config, an implicit instance
-	// from the layer supplyOf names. A pure map read, so moving it ahead of the
-	// cleanup changes nothing it observes.
-	_, authored := before.Providers[name]
-
-	// The removal records the KIND of the aside it makes from the layer that
-	// still holds the name: an authored [providers.<name>] entry or a `default`
-	// pointer naming this instance means this removal writes providers.toml
-	// (configBacked), anything else is a credential-only removal. A crash after
-	// that write but before the commit mark must not leave a credential-only
-	// in-flight copy, which startup would restore and thereby resurrect the
-	// removed instance (setAsideOAuthFile, restoreUncommittedOAuthAsides).
-	configBacked := configCarriesName(before, name)
+	// The removal's KIND and its decision to write providers.toml are ONE
+	// answer, read from ONE parse: l, the layer this removal mutates and writes.
+	// `before` is the pristine parse the reload rollback writes back, and
+	// providers.toml is user-editable, so an out-of-process save between the two
+	// reads can make them disagree. A kind read from `before` while the write
+	// was decided from `l` would be exactly the resurrection the kind exists to
+	// prevent: a crash after that write but before the commit mark would leave a
+	// credential-only in-flight copy, which startup restores unconditionally
+	// when the record path is free (setAsideOAuthFile,
+	// restoreUncommittedOAuthAsides).
+	//
+	// An authored [providers.<name>] entry or a `default` pointer naming this
+	// instance means the removal drops something from providers.toml, so it
+	// writes the file and the aside is configBacked; anything else is
+	// credential-only and writes nothing.
+	//
+	// Whether the config authored this instance is asked of the same parse, for
+	// the same reason: it decides which frame a failed restore reports, and it
+	// has to describe the layer whose view this call acted on.
+	_, authored := l.Providers[name]
+	configBacked := configCarriesName(l, name)
+	// The write decision is that same answer, taken once: this removal rewrites
+	// providers.toml exactly when the parse it writes carried the name.
+	configChanged := configBacked
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
 	oauthAside, err := c.setAsideOAuthFile(name, configBacked)
 	if err != nil {
@@ -1588,7 +1601,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if l.Default == name {
 		l.Default = ""
 	}
-	configChanged := authored || l.Default != before.Default
+	// configChanged was taken above, from the same parse as the kind.
 	if configChanged {
 		if err := c.writeLoadable(l); err != nil {
 			// The config write never landed, so a clean restore leaves
@@ -3471,11 +3484,23 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 		// the removal's commit point comes back unchanged.
 		committedPath, markErr := commitOAuthAside(path)
 		if delErr := c.auth.deleteAside(committedPath); delErr != nil {
-			remaining = append(remaining, fmt.Sprintf("%s (%v)", committedPath, delErr))
-			if markErr != nil {
-				// The copy is on disk in its in-flight shape, so startup would put
-				// it back; name the unset crash mark beside the failed delete.
-				remaining = append(remaining, fmt.Sprintf("%s could not be marked committed first (%v)", path, markErr))
+			// A copy that is already gone is not a leftover. The startup sweep
+			// asks the same question of its own deletes the same way
+			// (restoreUncommittedOAuthAsides reports a delete failure only when
+			// it is not os.ErrNotExist), and a benign external delete must not
+			// have a standing removal tell the caller a credential is still on
+			// disk when there is nothing there. The crash mark goes with it: a
+			// copy that is not on disk is nothing for a crash to put back and
+			// nothing for the sweep to judge, so a mark that failed beside it is
+			// not a leftover either.
+			if !errors.Is(delErr, os.ErrNotExist) {
+				remaining = append(remaining, fmt.Sprintf("%s (%v)", committedPath, delErr))
+				if markErr != nil {
+					// The copy is on disk in its in-flight shape, so startup
+					// would put it back; name the unset crash mark beside the
+					// failed delete.
+					remaining = append(remaining, fmt.Sprintf("%s could not be marked committed first (%v)", path, markErr))
+				}
 			}
 			continue
 		}

@@ -2609,3 +2609,82 @@ func TestInstances_EditRenameLeavesAnUnrankableOAuthCopyUncarried(t *testing.T) 
 		t.Fatalf("the unorderable copy %s was taken (%v), want it left for a later pass", source, statErr)
 	}
 }
+
+// recordedAsideKinds reports, for one instance name, whether a committed copy of
+// its record was filed with the config-backed marker and whether one was filed
+// with the credential-only marker.
+func recordedAsideKinds(t *testing.T, f *instancesFixture, inst string) (cfg, plain bool) {
+	t.Helper()
+	for _, name := range authDirEntries(t, f) {
+		who, committed, configBacked, aside := oauthAsideInstance(name)
+		if !aside || !committed || who != inst {
+			continue
+		}
+		if configBacked {
+			cfg = true
+		} else {
+			plain = true
+		}
+	}
+	return cfg, plain
+}
+
+// TestInstances_RemovalRecordsTheKindFromTheLayerItWrites: the marker baked into
+// a record's aside name and the decision to rewrite providers.toml are ONE
+// answer, taken from ONE parse of the file. A kind that disagreed with the write
+// is the resurrection the kind exists to prevent: a crash after the write but
+// before the commit mark would leave a credential-only in-flight copy, which
+// startup restores unconditionally when the record path is free, bringing back
+// the instance the user just removed. This pins both observable cases in one
+// place - a `default` pointer the removal drops (config-backed, with the pointer
+// really cleared) and a name nothing in providers.toml carries (credential-only,
+// with the file really untouched).
+//
+// The disagreeing-parse case itself cannot be forced from a test: it needs an
+// out-of-process save landing between Remove's two reads, and the removal takes
+// no seam between them. What holds it shut is structural, in Remove: the kind
+// and the write decision are one value, read from the parse the removal writes.
+func TestInstances_RemovalRecordsTheKindFromTheLayerItWrites(t *testing.T) {
+	// (a) The pointer is the only thing carrying the name, so the removal drops
+	// it: providers.toml is rewritten and the copy must be config-backed.
+	cfgCase := newInstancesFixture(t, nil)
+	if err := os.WriteFile(cfgCase.tomlPath, []byte("default = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	seedOAuthRecord(t, cfgCase, "openai-codex", "codex@example.com")
+	// The reclaim cannot delete, so the committed copy stays on disk to inspect.
+	cfgCase.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+	if err := cfgCase.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err == nil {
+		t.Fatal("Remove = nil, want the sweep failure reported")
+	}
+	cfg, plain := recordedAsideKinds(t, cfgCase, "openai-codex")
+	if !cfg || plain {
+		t.Fatalf("the default-pointer removal filed cfg=%v plain=%v, want one config-backed copy: it rewrote providers.toml", cfg, plain)
+	}
+	l, exists, err := registry.ReadConfigFile(cfgCase.tomlPath)
+	if err != nil || !exists {
+		t.Fatalf("ReadConfigFile = (%v, %v, %v), want the written config", l, exists, err)
+	}
+	if l.Default != "" {
+		t.Fatalf("default = %q, want the removal to have cleared the pointer", l.Default)
+	}
+
+	// (b) Nothing in providers.toml carries the name, so the removal writes
+	// nothing and the copy must be credential-only - and the file it did not
+	// write must be exactly as the removal found it.
+	plainCase := newInstancesFixture(t, nil)
+	seedOAuthRecord(t, plainCase, "openai-codex", "codex@example.com")
+	before, beforeErr := os.ReadFile(plainCase.tomlPath)
+	plainCase.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+	if err := plainCase.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err == nil {
+		t.Fatal("Remove = nil, want the sweep failure reported")
+	}
+	cfg, plain = recordedAsideKinds(t, plainCase, "openai-codex")
+	if cfg || !plain {
+		t.Fatalf("the credential-only removal filed cfg=%v plain=%v, want one credential-only copy: it wrote no config", cfg, plain)
+	}
+	after, afterErr := os.ReadFile(plainCase.tomlPath)
+	if (afterErr == nil) != (beforeErr == nil) || !bytes.Equal(before, after) {
+		t.Fatalf("providers.toml = %q (err %v), want it untouched (before: %q, err %v)", after, afterErr, before, beforeErr)
+	}
+}

@@ -5708,3 +5708,62 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 // list itself is still computed at load, which is why a credential-only instance
 // whose record came back needs the reload runMain adds; that half is pinned by
 // TestRestoreUncommittedOAuthAsidesNeedsAReloadForACredentialOnlyInstance.
+
+// TestInstances_RemoveIgnoresACopyThatIsAlreadyGone: the reclaim deletes the
+// copies the removal set aside, and a delete that finds nothing there is not a
+// leftover. The startup sweep asks the same question of its own deletes the same
+// way (restoreUncommittedOAuthAsides reports a delete failure only when it is
+// not os.ErrNotExist), so an external delete between the commit mark and the
+// reclaim must leave a standing removal reported as clean: a caller told a
+// credential is still on disk has no reason to look for one that is not there.
+func TestInstances_RemoveIgnoresACopyThatIsAlreadyGone(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	seedOAuthRecord(t, f, "groq", "")
+	f.ctl.auth.deleteAside = func(string) error { return os.ErrNotExist }
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove = %v, want no leftover reported for a copy that is already gone", err)
+	}
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the removal did not delete the credential: %q", v)
+	}
+	if listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("the removal did not remove the instance")
+	}
+}
+
+// TestInstances_RemoveRefusesAnEnvironmentOnlyInstanceWithAnUnreadableConfig:
+// the refusal Remove's doc comment promises for a row the environment supplies
+// is appwire.InvalidParams, carrying the remedy that names what to unset or
+// clear instead. It is asked before either parse of providers.toml, so a config
+// the hub cannot read cannot preempt it with the read error and take the remedy
+// away from the caller.
+func TestInstances_RemoveRefusesAnEnvironmentOnlyInstanceWithAnUnreadableConfig(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"OPENAI_API_KEY": "env-key"})
+	inst, ok := f.ctl.reg.Get().Instance("openai")
+	if !ok || inst.CredentialSource != "env:OPENAI_API_KEY" {
+		t.Fatalf("fixture: openai = %+v (ok = %v), want an instance resolving the variable", inst, ok)
+	}
+	// A directory at the config path: every read of providers.toml refuses.
+	if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", f.tomlPath, err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the environment refusal")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Remove = %v (%T), want appwire.InvalidParams, not the read error", err, err)
+	}
+	if !strings.Contains(err.Error(), "exists from the environment") {
+		t.Fatalf("Remove = %v, want the environment refusal", err)
+	}
+	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatalf("Remove = %v, want the remedy naming the variable the row reads", err)
+	}
+}
