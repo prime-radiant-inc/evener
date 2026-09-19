@@ -28,6 +28,7 @@ import { ConnectionStatus } from "./ConnectionStatus";
 import {
   isReady,
   useConnectionDisplay,
+  useLiveReadiness,
   useRenderClient,
   whenReady,
 } from "./connectionDisplay";
@@ -61,6 +62,7 @@ export function PluginsScreen({
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
   const display = useConnectionDisplay(state, fatal);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
   // hubConnection.ts), but a manual retry briefly clears it while it opens a
   // fresh one; the last client this screen had keeps the list mounted
@@ -85,6 +87,7 @@ export function PluginsScreen({
         key={activeProfile.id}
         client={renderClient}
         connectionState={state}
+        canUseConnection={canUseConnection}
         hubName={activeProfile.name}
         gate={gate}
       />
@@ -97,11 +100,13 @@ function Plugins({
   hubName,
   gate,
   connectionState,
+  canUseConnection,
 }: {
   client: ConversationClientLike;
   hubName: string;
   gate: PluginMutationGate;
   connectionState: ConnectionState;
+  canUseConnection: () => boolean;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
@@ -149,7 +154,7 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    const outcome = await runGatedMutation(gate, ready, action);
+    const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
@@ -159,7 +164,7 @@ function Plugins({
     else if (success) setNotice(success);
   }
   function remove() {
-    if (!selected || busy) return;
+    if (!selected || busy || !canUseConnection()) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -206,6 +211,7 @@ function Plugins({
           installed={model}
           gate={gate}
           ready={ready}
+          canUseConnection={canUseConnection}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
@@ -221,7 +227,7 @@ function Plugins({
           keyboardShouldPersistTaps="handled"
           refreshing={state.pluginsLoading}
           onRefresh={() => {
-            if (ready) void state.fetchPlugins();
+            if (canUseConnection()) void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -243,7 +249,7 @@ function Plugins({
               {listError && (
                 <Action
                   disabled={!ready}
-                  onPress={whenReady(ready, () => {
+                  onPress={whenReady(canUseConnection, () => {
                     void state.fetchPlugins();
                   })}
                 >

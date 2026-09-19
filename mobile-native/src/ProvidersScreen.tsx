@@ -28,7 +28,12 @@ import {
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, useConnectionDisplay, whenReady } from "./connectionDisplay";
+import {
+  isReady,
+  useConnectionDisplay,
+  useLiveReadiness,
+  whenReady,
+} from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
@@ -43,6 +48,7 @@ export function ProvidersScreen({
   const { activeProfile, client, state, fatal, retry } = useConnection();
   const display = useConnectionDisplay(state, fatal);
   const ready = isReady(state);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   const [signIn, setSignIn] = useState<{
     hubId: string;
     name: string;
@@ -83,6 +89,7 @@ export function ProvidersScreen({
         store={store}
         hubName={activeProfile.name}
         ready={ready}
+        canUseConnection={canUseConnection}
         onSignIn={(name) => {
           const flow = new ProviderSignIn(store, name);
           // Signing in must not start on a connection this screen would
@@ -90,7 +97,7 @@ export function ProvidersScreen({
           // dials, or a closed client the same generation guard keeps set) -
           // see the effect above, which applies the same rule on every later
           // transition.
-          flow.setConnection(ready ? client : null);
+          flow.setConnection(canUseConnection() ? client : null);
           setSignIn({ hubId: activeProfile.id, name, flow });
           void flow.start();
         }}
@@ -116,11 +123,13 @@ function Providers({
   store,
   hubName,
   ready,
+  canUseConnection,
   onSignIn,
 }: {
   store: CredentialInstancesStore;
   hubName: string;
   ready: boolean;
+  canUseConnection: () => boolean;
   onSignIn(name: string): void;
 }) {
   const colors = useColors();
@@ -168,7 +177,7 @@ function Providers({
     // the request anyway, and bailing before touching any state here is
     // what keeps a request that cannot be sent from clearing input the user
     // may still want once ready again.
-    if (!ready) return;
+    if (!canUseConnection()) return;
     const version = editorVersion.current;
     setActionError(null);
     try {
@@ -188,7 +197,7 @@ function Providers({
     }
   }
   function confirm(title: string, action: () => Promise<void>) {
-    if (!ready) return;
+    if (!canUseConnection()) return;
     Alert.alert(title, `${selected} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -211,7 +220,7 @@ function Providers({
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
         refreshing={state.loading}
         onRefresh={() => {
-          if (ready) void model.refresh();
+          if (canUseConnection()) void model.refresh();
         }}
         ListHeaderComponent={
           <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -220,7 +229,7 @@ function Providers({
               disabled={
                 !state.data || state.busy || state.data.writesRefused || !ready
               }
-              onPress={whenReady(ready, () => {
+              onPress={whenReady(canUseConnection, () => {
                 close();
                 setConfiguration("create");
               })}
@@ -416,7 +425,7 @@ function Providers({
                             !!state.credentialTest?.pending ||
                             !ready
                           }
-                          onPress={whenReady(ready, () => {
+                          onPress={whenReady(canUseConnection, () => {
                             void model.testCredentials(instance.name);
                           })}
                         >
@@ -431,18 +440,18 @@ function Providers({
                           )}
                         <Action
                           disabled={state.busy || state.data?.writesRefused || !ready}
-                          onPress={whenReady(ready, () => setConfiguration("edit"))}
+                          onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
                         >
                           Edit instance
                         </Action>
                         {instance.authModes?.includes("oauth") && (
                           <Action
                             disabled={state.busy || !ready}
-                            onPress={() => {
+                            onPress={whenReady(canUseConnection, () => {
                               const name = instance.name;
                               close();
                               onSignIn(name);
-                            }}
+                            })}
                           >
                             {instance.hasStoredOAuth
                               ? "Refresh sign-in"
@@ -452,7 +461,7 @@ function Providers({
                         {instance.authModes?.includes("apiKey") && (
                           <Action
                             disabled={state.busy || !ready}
-                            onPress={whenReady(ready, () => setEditingCredential("apiKey"))}
+                            onPress={whenReady(canUseConnection, () => setEditingCredential("apiKey"))}
                           >
                             {instance.hasStoredFile ? "Replace key" : "Set key"}
                           </Action>
@@ -460,7 +469,7 @@ function Providers({
                         {instance.authModes?.includes("credentialJson") && (
                           <Action
                             disabled={state.busy || !ready}
-                            onPress={whenReady(ready, () => setEditingCredential("credentialJson"))}
+                            onPress={whenReady(canUseConnection, () => setEditingCredential("credentialJson"))}
                           >
                             {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                           </Action>

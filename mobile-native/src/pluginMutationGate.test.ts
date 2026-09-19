@@ -86,7 +86,7 @@ describe("one call reduces a gated mutation to the copy's three outcomes", () =>
   test("a run resolves to ran", async () => {
     const gate = createPluginMutationGate();
     await expect(
-      runGatedMutation(gate, true, async () => undefined),
+      runGatedMutation(gate, () => true, async () => undefined),
     ).resolves.toBe("ran");
   });
 
@@ -96,14 +96,14 @@ describe("one call reduces a gated mutation to the copy's three outcomes", () =>
     void gate.run(() => first.promise);
 
     await expect(
-      runGatedMutation(gate, true, async () => undefined),
+      runGatedMutation(gate, () => true, async () => undefined),
     ).resolves.toBe("refused");
   });
 
   test("a throw resolves to failed and does not propagate its error", async () => {
     const gate = createPluginMutationGate();
     await expect(
-      runGatedMutation(gate, true, () => Promise.reject(new Error("write failed"))),
+      runGatedMutation(gate, () => true, () => Promise.reject(new Error("write failed"))),
     ).resolves.toBe("failed");
     expect(gate.isBusy()).toBe(false);
   });
@@ -115,7 +115,7 @@ describe("one call reduces a gated mutation to the copy's three outcomes", () =>
     const gate = createPluginMutationGate();
     let ran = false;
     await expect(
-      runGatedMutation(gate, false, async () => {
+      runGatedMutation(gate, () => false, async () => {
         ran = true;
       }),
     ).resolves.toBe("refused");
