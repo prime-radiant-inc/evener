@@ -6,11 +6,12 @@
 //   showSteer = busy && capabilities.steer
 //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
 //
-// Two of the hub's capabilities are themselves defined by whether a turn is
-// in flight (server/appwire_runtime.go's appCapabilities: Send is !active,
-// Queue is active; Steer is harness support alone and the composer applies
-// the status), so a snapshot cut before the turn says queue=false about the
-// turn that follows. Reading it back once
+// Send is the hub capability defined by whether a turn is in flight
+// (server/appwire_runtime.go's appCapabilities: Send is !active), while Steer,
+// Interrupt and Queue advertise harness support and the composer applies the
+// status itself. A snapshot cut before the turn therefore says send=true about
+// a session that is running by the time the status frame lands. Reading the
+// stale set back once
 // the status has moved on produced kata 06t8's report exactly: submit a reply,
 // and the session it KNOWS is running shows no Steer, no Stop, and a Send that
 // stays grey however much you type — until a reload re-reads the snapshot from
@@ -104,9 +105,9 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
 };
 
 // What a LIVE daemon with every callback wired advertises, verbatim from
-// server/appwire_runtime.go's appCapabilities. `active` is the whole
-// difference, and it is the reason a snapshot cannot be reused across a
-// status change. Steer is harness support and does not move with it.
+// server/appwire_runtime.go's appCapabilities. `active` moves Send alone;
+// Steer, Interrupt and Queue are harness support and do not move with it. The
+// difference is still why a snapshot cannot be reused across a status change.
 function daemonCapabilities(active: boolean): ThreadCapabilities {
   return {
     send: !active,
@@ -118,7 +119,7 @@ function daemonCapabilities(active: boolean): ThreadCapabilities {
     shutdown: true,
     changeModel: true,
     changeVisionModel: true,
-    queue: active,
+    queue: true,
     goal: true,
     sharedNotes: true,
     rename: true,
@@ -265,8 +266,14 @@ test("a resumed cold session's controls follow the turn it is running", async ()
 test("a live idle session's controls follow the turn its own send starts", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
 
-  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  // Queue advertises harness support, so an idle snapshot on a queue-capable
+  // harness reads true (#1375) and the composer is still a plain send: the
+  // status, not the bit, decides which control that is.
+  expect(threadsStore.getState().threads.get(REF)?.capabilities.queue).toBe(true);
   await type("another thought");
+  expect(submitButton().disabled).toBe(false);
+
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
 
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
