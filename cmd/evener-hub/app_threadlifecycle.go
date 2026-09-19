@@ -365,9 +365,12 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", logSessionID, nil)
 	// These deferred stages use the final local trace after alias resolution,
 	// while retaining their original start times and immutable context snapshots.
+	requestCtx := ctx
 	requestStarted := time.Now()
-	trace.record(ctx, "request", "begin", requestStarted, nil, 0, 0)
-	defer func() { trace.record(ctx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
+	trace.record(requestCtx, "request", "begin", requestStarted, nil, 0, 0)
+	defer func() { trace.record(requestCtx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
+	var cleanupErr error
+	var activeResume *hubcore.ActiveResume
 	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -393,6 +396,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
 	}
 	requestedID := sessionID
+	var ownershipAliases []string
 	if cfg.ResumeLocks != nil {
 		epoch := sessionRequestRecoveryEpoch(ctx, cfg, "", requestedID)
 		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
@@ -404,25 +408,55 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
+		ownershipAliases = aliases
+		if err := cfg.ResumeLocks.ResumeCleanupError(aliases); err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
 		epochs := make(map[string]uint64, len(aliases))
 		for _, id := range aliases {
 			epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, "", id)
 		}
 		epochs[requestedID] = epoch
-		// Use force stop's sorted ownership order, retaining the original mutexes.
+		// Registration now takes the same per-alias ownership tokens as the
+		// confirmed-stopped no-op, so the wait for those tokens can start here.
 		lockDone := trace.stage(ctx, "lock_wait")
-		for _, id := range aliases {
-			cfg.ResumeLocks.For(id).Lock()
+		active, err := cfg.ResumeLocks.RegisterResume(ctx, target, aliases, epochs)
+		if err != nil {
+			lockDone(err)
+			if errors.Is(err, hubcore.ErrResumeInvalidated) {
+				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable(err.Error())}
+			}
+			return appwire.ThreadResumeResponse{}, err
+		}
+		activeResume = active
+		ctx = active.Context()
+		// Register before waiting for ownership; complete after every subsequent
+		// defer has released ownership and the launcher has confirmed cleanup.
+		defer func() { active.Complete(cleanupErr) }()
+		var heldStarted time.Time
+		defer func() {
+			// AcquireOwnership and ReleaseOwnership bracket the same span the
+			// reacquire loop used to, in the registration's sorted ownership
+			// order, and hubcore records the hold so a concurrent force stop
+			// can tell this launch's reservation from an unrelated action's.
+			active.ReleaseOwnership()
+			if !heldStarted.IsZero() {
+				trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
+			}
+		}()
+		if err := active.AcquireOwnership(ctx); err != nil {
+			lockDone(err)
+			return appwire.ThreadResumeResponse{}, err
 		}
 		lockDone(nil)
-		heldStarted := time.Now()
+		heldStarted = time.Now()
 		trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
-		defer func() {
-			for _, id := range slices.Backward(aliases) {
-				cfg.ResumeLocks.For(id).Unlock()
-			}
-			trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
-		}()
+		// A deletion record may name any alias in the resolved ownership
+		// group, so the whole group is fenced here, under the locks that make
+		// the check final, before live-owner reuse or launching below.
+		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
 		for _, id := range aliases {
 			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
 				return appwire.ThreadResumeResponse{}, err
@@ -460,20 +494,14 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()
-		if requestedID != sessionID {
-			// resumeThreadLocked fences the resolved target and the ref; keep
-			// the original request's deletion fence under the same ownership
-			// locks.
-			if err := deletionFenceError(cfg, "", requestedID, ""); err != nil {
-				return appwire.ThreadResumeResponse{}, err
-			}
-		}
-
 	}
 
 	lockedParams := params
 	lockedParams.Session = sessionID
-	return resumeThreadLocked(ctx, cfg, sources, lockedParams)
+	launch := resumeLaunch{active: activeResume, completionOwned: !automatic, aliases: ownershipAliases}
+	launched, launchErr := resumeThreadLockedLaunch(ctx, cfg, sources, lockedParams, &launch)
+	cleanupErr = launch.cleanupErr
+	return launched, launchErr
 }
 
 // resumeThreadLocked runs the discovery-and-spawn half of resumeThread with
@@ -481,7 +509,34 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 // wrapper's alias locks, or the retirement path's). The resolved ownership
 // target arrives as params.Session; the session is re-derived from params the
 // same way the wrapper resolves it, without re-walking ownership aliases.
+//
+// The retirement path holds no explicit Resume to own: it launches with no
+// active resume lifetime and the configured startup budget, exactly as an
+// automatic resume does.
 func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return resumeThreadLockedLaunch(ctx, cfg, sources, params, &resumeLaunch{})
+}
+
+// resumeLaunch is the explicit Resume's registered launch lifetime, threaded
+// from the wrapper that registered it to the locked half that launches the
+// child. The launcher writes its cleanup classification back through cleanupErr
+// so the registering wrapper can report it to ActiveResume.Complete, which must
+// run only after every defer has released ownership and the single child waiter
+// has confirmed cleanup.
+type resumeLaunch struct {
+	active          *hubcore.ActiveResume
+	completionOwned bool
+	cleanupErr      error
+	// aliases is the caller's resolved ownership group when it holds one (the
+	// explicit Resume wrapper); the retirement wrapper holds no group and
+	// leaves it nil, and the launcher falls back to the requested/resolved
+	// pair its caller always has.
+	aliases []string
+}
+
+// resumeThreadLockedLaunch is resumeThreadLocked for a caller that holds a
+// launch lifetime in hand.
+func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, launch *resumeLaunch) (appwire.ThreadResumeResponse, error) {
 	// The request's trace travels in the context, already carrying the resolved
 	// session identity the wrapper stamped. A caller that enters here without
 	// one records nothing: every stage below is nil-safe.
@@ -502,10 +557,12 @@ func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *app
 	if err := deletionFenceError(cfg, params.Ref, requestedID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	for _, id := range []string{requestedID, sessionID} {
-		if err := deletionFenceError(cfg, "", id, ""); err != nil {
-			return appwire.ThreadResumeResponse{}, err
-		}
+	group := launch.aliases
+	if len(group) == 0 {
+		group = []string{requestedID, sessionID}
+	}
+	if err := deletionFenceErrorForGroup(cfg, group); err != nil {
+		return appwire.ThreadResumeResponse{}, err
 	}
 
 	var discoveryErr error
@@ -565,18 +622,64 @@ func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *app
 		// spawning again. Only this Hub's exact flag-day protocol establishes
 		// ownership; an older daemon can be healthy while remaining unroutable
 		// through the current local source. A dead daemon may remain as a
-		// crash marker and must fall through to spawning.
+		// crash marker and must fall through to spawning. Every serving
+		// configuration builds its Roster unconditionally (the single
+		// newWebServer call in main.go), so in production this re-check always
+		// runs and a resume that queued behind a completed one reuses its
+		// daemon instead of spawning a replacement; the nil guard is for tests
+		// that construct a WebConfig without discovery.
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
 				return hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 			}
 		}
+		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
+			// A hub death between PersistForceStop and ConfirmForceStop leaves
+			// the requirement set with the exit unconfirmed, and Resume is the
+			// only action that clears ResumeRequired — refusing unconditionally
+			// strands the session. Discovery was refreshed above, before this
+			// lock: a live or unverified claim on any recovery alias keeps the
+			// refusal. Marker absence alone is still not exit proof — a denied
+			// signal or a failed wait can leave the owner running markerless —
+			// so the escape holds the authority to the Stop route's own proof
+			// class: the process controller's verified ErrExited against the
+			// identity the force stop persisted. Only then is the exit
+			// confirmed durably and the launch allowed.
+			if cfg.Roster == nil || recoveryGroupClaimExists(cfg.Roster, cfg.ResumeLocks.RecoveryAliases(sessionID)) {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			owner, ok := cfg.ResumeLocks.RecoveryOwner(sessionID)
+			if !ok {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			controller := cfg.DaemonProcesses
+			if controller == nil {
+				controller = daemonprocess.NewController()
+			}
+			process, err := controller.Open(owner)
+			if process != nil {
+				// The refusal case is exactly the one where Open returns a
+				// live process handle (a pidfd on Linux); the caller owns it.
+				defer func() { _ = process.Close() }()
+			}
+			if !errors.Is(err, daemonprocess.ErrExited) {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			if err := cfg.ResumeLocks.ConfirmForceStop(state.ResumeSessionID); err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("confirm recovery exit: " + err.Error())
+			}
+		}
 	}
+	resumeReq.CompletionOwned = launch.completionOwned
+	resumeReq.ActiveResume = launch.active
 	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	resumeDone(err)
 	if err != nil {
+		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
+			launch.cleanupErr = cleanup
+		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
@@ -965,7 +1068,11 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	lockOrder := slices.Clone(targets)
 	slices.Sort(lockOrder)
 	for _, id := range lockOrder {
-		unlockTargets = append(unlockTargets, lockDeletionTarget(cfg, refFor(id), id))
+		unlock, err := lockDeletionTarget(ctx, cfg, refFor(id), id)
+		if err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+		unlockTargets = append(unlockTargets, unlock)
 	}
 	// The target had to be resolved before the locks, so that both identities
 	// could be taken in one sorted pass. A thread/clear landing while this

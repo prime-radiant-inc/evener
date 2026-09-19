@@ -73,7 +73,10 @@ func RemoveSessionArtifacts(stateDir, sessionID string) error {
 		return err
 	}
 	base := filepath.Join(stateDir, "sessions")
-	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+	// .meta.json.lock is included: SaveSessionMeta creates it, and a rolled-back
+	// child (which never launched, so no writer can hold it) would otherwise
+	// leave a permanent empty lock file in the sessions directory.
+	for _, suffix := range []string{".meta.json", ".meta.json.lock", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
 		if err := os.Remove(filepath.Join(base, sessionID+suffix)); err != nil && !os.IsNotExist(err) {
 			return err
 		}

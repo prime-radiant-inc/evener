@@ -142,7 +142,7 @@ export interface CredentialInstancesState {
   // the add dialog, the removal report) act on the store's verdict, never on
   // the raw response.
   create(params: InstanceCreateParams): Promise<boolean>;
-  edit(params: InstanceEditParams): Promise<boolean>;
+  edit(params: InstanceEditParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
   // setModelDisabled flips one model row's disabled flag and applies the
@@ -270,6 +270,16 @@ interface MutationReconcile {
   instance: string;
   supersededFor?: (response: InstanceListResponse) => void;
   written?: { instance: string; model: string };
+}
+
+/** An edit whose answer a newer request superseded is discarded from the
+ * listing, but that answer still holds the hub's authoritative post-write row
+ * for the one instance the edit wrote. onSuperseded receives it so a caller
+ * steering on its own write can compare the listing now held against the row
+ * the edit actually produced - the authoritative endpoint identity - instead of
+ * inferring the destination from the listing's sanitized display fields. */
+export interface EditSupersededReconcile {
+  onSuperseded?: (response: InstanceListResponse) => void;
 }
 
 // withToggledFlag sets one model's disabled flag in a model list: the one
@@ -1054,12 +1064,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       return applied;
     },
 
-    async edit(params) {
+    async edit(params, reconcile) {
       const client = requireWritableClient();
       const applied = await applyMutation(
         (origin) => client.request("evener/instance/edit", { ...params, ...origin }),
         {
           instance: params.name,
+          supersededFor: reconcile?.onSuperseded,
         },
       );
       if (!applied) scheduleRefetch();
