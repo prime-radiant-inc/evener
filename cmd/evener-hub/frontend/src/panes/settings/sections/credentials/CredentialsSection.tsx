@@ -92,6 +92,16 @@ type PendingConfirm = {
 } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
+// What a confirm-gated action (Remove, Clear, Clear stored key) says when the
+// hub refuses the destination the confirmation asserted: the name moved since
+// the row was read, so nothing was sent. The credential test's own sentence
+// ends "and test again" and the sheet's save wording ends "so the change was
+// not saved" - neither fits a confirmed removal or clear, so this is the
+// actions' own wording, kept here beside them rather than in the client package
+// where only cross-client messages live.
+const ENDPOINT_CHANGED_CONFIRM_ERROR =
+  "This instance changed to a different endpoint since this confirmation was opened, so nothing was changed. The provider list was refreshed; review its destination and try again.";
+
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
 // stray OAuth record notices, and registry warnings (InstanceListResponse.
 // diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
@@ -450,6 +460,22 @@ export function CredentialsSection({
         // the listing that lands next has to capture it again, so the dialog
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // row was read, so nothing was sent. The confirmation holds that stale
+        // fingerprint, so leave the user able to retry - close the dialog, clear
+        // the selection the way the action's own success path does (a sheet left
+        // open would keep operating on the destination that moved), re-read the
+        // listing, and warn in this client's own words. The next confirmation
+        // captures the fingerprint now on screen; reported as a failed action,
+        // the open dialog would re-send the same refused assertion. Mirrors the
+        // mobile and TUI confirm paths.
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", ENDPOINT_CHANGED_CONFIRM_ERROR);
         return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";

@@ -2022,6 +2022,131 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Removed instance personal");
   });
 
+  // The confirm-gated actions assert the listed row's endpoint fingerprint, and
+  // the hub refuses a stale one with the endpoint-conflict discriminant. The
+  // confirmation holds the destination that moved, so the retry cannot succeed
+  // unless the section closes it, clears the stale selection, re-reads the
+  // listing, and lets the next confirmation capture the refreshed fingerprint -
+  // the same recovery the mobile and TUI clients make.
+  test("a removal refused for a moved endpoint closes the confirmation, re-reads, and warns", async () => {
+    const fake = connectFakeClient();
+    const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-old" };
+    const PERSONAL_MOVED = { ...PERSONAL, endpointFingerprint: "fp-new" };
+    // The first listing is the row the confirmation is opened against; the read
+    // the refusal asks for is the one that reports the row re-pointed.
+    let refused = false;
+    fake.on("evener/instance/list", () => ({
+      instances: [refused ? PERSONAL_MOVED : PERSONAL_FP],
+      availableProviders: [],
+    }));
+    fake.on("evener/instance/remove", () => {
+      refused = true;
+      throw new WireError("personal no longer resolves to the endpoint this confirmation was opened on", -32013, {
+        evenerErrorInfo: ErrorEndpointConflict,
+      });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    // The confirmation and the sheet close, and the refusal is this client's own
+    // warning - never a failed Remove, which would leave the stale assertion
+    // holding the retry open.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
+    await screen.findByText(/changed to a different endpoint/);
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    // ...and the listing was re-read, so the retry can assert where the name
+    // resolves now.
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+
+    const reopened = await openSheet(user, "personal");
+    await user.click(within(reopened).getByRole("button", { name: "Remove" }));
+    const retryDialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(retryDialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(2));
+    const removals = fake.calls.filter((call) => call.method === "evener/instance/remove");
+    expect(removals[0]?.params).toEqual({
+      name: "personal",
+      expectedEndpointFingerprint: "fp-old",
+      originClientId: "test-tab",
+    });
+    expect(removals[1]?.params).toEqual({
+      name: "personal",
+      expectedEndpointFingerprint: "fp-new",
+      originClientId: "test-tab",
+    });
+  });
+
+  test("a clear refused for a moved endpoint closes the confirmation, re-reads, and warns", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+      endpointFingerprint: "fp-old",
+    });
+    const SHADOWED_MOVED = { ...SHADOWED, endpointFingerprint: "fp-new" };
+    let refused = false;
+    fake.on("evener/instance/list", () => ({
+      instances: [refused ? SHADOWED_MOVED : SHADOWED],
+      availableProviders: [],
+    }));
+    fake.on("evener/auth/apiKey/clear", () => {
+      refused = true;
+      throw new WireError("shadowed no longer resolves to the endpoint this confirmation was opened on", -32013, {
+        evenerErrorInfo: ErrorEndpointConflict,
+      });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Clear stored key" })).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "shadowed" })).toBeNull();
+    await screen.findByText(/changed to a different endpoint/);
+    expect(screen.queryByText(/Clear stored key failed/)).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+
+    const reopened = await openSheet(user, "shadowed");
+    await user.click(within(reopened).getByRole("button", { name: "Clear stored key" }));
+    const retryDialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(retryDialog).getByRole("button", { name: "Clear" }));
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/clear")).toHaveLength(2),
+    );
+    const clears = fake.calls.filter((call) => call.method === "evener/auth/apiKey/clear");
+    expect(clears[1]?.params).toEqual({
+      provider: "shadowed",
+      expectedEndpointFingerprint: "fp-new",
+      originClientId: "test-tab",
+    });
+  });
+
   // A name the environment also supplies keeps resolving after the authored
   // entry is removed: the hub re-lists it as an implicit instance, and the
   // access it resolves is the environment's, not the removed entry's. The
