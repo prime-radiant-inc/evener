@@ -316,4 +316,43 @@ it("leaves ordinary marketplace removal failures retryable", async () => {
 	expect(renderedText(tree)).toContain("Could not confirm the change. Check its status before trying again.");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(false);
+	await confirmMarketplaceRemoval(tree);
+	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
+it("ignores an applied removal result from a replaced client", async () => {
+	harness.alerts = [];
+	let releaseOld!: () => void;
+	const oldRemoval = new Promise<never>((_resolve, reject) => {
+		releaseOld = () => reject(cloneLitterError({ marketplaces: [] }));
+	});
+	const oldHub = marketplaceClient({ remove: () => oldRemoval });
+	const newHub = marketplaceClient({
+		list: async () => ({ marketplaces: [] }),
+	});
+	harness.connection = readyConnection(oldHub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await browseMarketplace(tree);
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+	});
+	const buttons = harness.alerts.at(-1);
+	const remove = buttons?.find((button) => button.text === "Remove");
+	if (!remove?.onPress) throw new Error("Remove confirmation was not shown");
+	await act(async () => remove.onPress?.());
+
+	harness.connection = readyConnection(newHub.client);
+	await act(async () => tree.update(<PluginsScreen {...props} />));
+	await act(async () => {});
+	releaseOld();
+	await act(async () => {
+		await Promise.resolve();
+	});
+
+	expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
+	expect(newHub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(0);
 });
