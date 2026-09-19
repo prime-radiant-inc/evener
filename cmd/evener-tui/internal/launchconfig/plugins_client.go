@@ -33,8 +33,10 @@ type MarketplaceListResultMsg struct {
 // InstanceMutateResultMsg) while a passive list-load error stays local to the
 // panel.
 type MarketplaceMutateResultMsg struct {
-	List appwire.MarketplaceListResponse
-	Err  error
+	List   appwire.MarketplaceListResponse
+	Err    error
+	Action string
+	Name   string
 }
 
 // MarketplaceBrowseResultMsg carries the result of a evener/marketplace/browse
@@ -128,7 +130,7 @@ func CmdMarketplaceAdd(client *appwire.Client, params appwire.MarketplaceAddPara
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceAdd(ctx, params)
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "add"}
 	}
 }
 
@@ -137,7 +139,7 @@ func CmdMarketplaceRemove(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRemove(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "remove", Name: name}
 	}
 }
 
@@ -146,7 +148,7 @@ func CmdMarketplaceRefresh(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRefresh(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "refresh", Name: name}
 	}
 }
 
