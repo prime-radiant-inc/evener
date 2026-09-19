@@ -1214,8 +1214,12 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// one, because the issuing client cannot treat an errored mutation's echo as
 	// its own success - the broadcast can beat the failing reply, and consuming
 	// the marker then would suppress the invalidation a failed operation owes.
-	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
-		err := apply()
+	// apply performs the mutation and returns the listing to answer with, so
+	// the notify-and-answer block below is shared by every instance write. An
+	// edit passes its lock-scoped capture (see edit); the rest answer with a
+	// fresh List() via listAfter.
+	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
+		list, err := apply()
 		if writeDidApply(err) {
 			if err != nil {
 				notifyInstanceUpdated(server, "")
@@ -1226,25 +1230,37 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		return instancesController.List(), nil
+		return list, nil
+	}
+	listAfter := func(mutate func() error) func() (appwire.InstanceListResponse, error) {
+		return func() (appwire.InstanceListResponse, error) {
+			if err := mutate(); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Create(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Edit(params) })
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			var list appwire.InstanceListResponse
+			err := instancesController.edit(params, &list)
+			return list, err
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Remove(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Remove(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetDefault(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetDefault(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetModelDisabled(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetModelDisabled(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.RefreshModels(ctx, params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
 	})
 }
 
