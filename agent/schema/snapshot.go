@@ -359,14 +359,19 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 	lock := sessionMetaWriteLock(workerSessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
-	if err != nil {
-		return err
-	}
-	// Only workerSessionID is validated: it names the file being written, while
-	// observerSessionID is persisted as data and never joined into a path here.
-	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
-	return saveSessionMetaLocked(fs, dir, meta)
+	// The load must happen under the cross-process lock too: loading first and
+	// saving later would write this process's stale copy of every other field
+	// over a concurrent writer's newer one.
+	return withSessionMetaCrossProcessLock(fs, dir, workerSessionID, func() error {
+		meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
+		if err != nil {
+			return err
+		}
+		// Only workerSessionID is validated: it names the file being written, while
+		// observerSessionID is persisted as data and never joined into a path here.
+		meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
 }
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
@@ -392,6 +397,17 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 // the lock is striped, re-entering for a different session self-deadlocks only
 // on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
+}
+
+// withSessionMetaCrossProcessLock runs fn with the session's cross-process meta
+// lock held (and the sessions dir ensured). The caller must already hold the
+// in-process striped lock. The lock covers fn's whole load/merge/increment/write
+// so a caller that reads the current meta before mutating it cannot race a
+// writer in another process.
+func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() error) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
@@ -399,12 +415,18 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	// The Revision increment is a read-modify-write, and the daemon rewrites the
 	// same session's meta out of process, so the in-process striped lock alone
 	// cannot serialize it. Hold a file lock across the load/increment/rename.
-	release, _, err := lockSessionMetaCrossProcess(fs, dir, meta.ID)
+	release, _, err := lockSessionMetaCrossProcess(fs, dir, id)
 	if err != nil {
 		return fmt.Errorf("lock session meta: %w", err)
 	}
 	defer release()
+	return fn()
+}
 
+// writeSessionMetaLocked loads the current meta, unions ObservedBy, bumps
+// Revision, and writes atomically. It assumes the caller holds both locks, so
+// the read-modify-write cannot interleave with another writer.
+func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
@@ -423,7 +445,7 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}
 
-	target := filepath.Join(sessDir, meta.ID+".meta.json")
+	target := filepath.Join(dir, sessionsSubdir, meta.ID+".meta.json")
 	tmp := target + ".tmp"
 
 	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {

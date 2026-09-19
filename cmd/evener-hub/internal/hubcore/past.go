@@ -1154,13 +1154,23 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 		i.mu.RUnlock()
 		entry, found, determinate := i.probeOne(sessionID)
 		if !found {
-			if determinate {
-				// Every project was listable and the session's meta was
-				// authoritatively absent: drop any row a Rebuild published from a
-				// scan that predated the deletion. An indeterminate miss (corrupt
-				// meta, unlistable dir) must not evict a valid cached row.
-				i.evict(sessionID)
+			if !determinate {
+				// An indeterminate miss (corrupt meta, unlistable dir) is not
+				// proof of deletion; never evict a valid cached row for it.
+				return PastEntry{}, false
 			}
+			// Evict only if the index did not change during the probe: a Rebuild
+			// swap or concurrent fold may have re-indexed a newer row (a session
+			// deleted and recreated), which evicting would drop. Re-probe instead.
+			i.mu.RLock()
+			unchanged := i.rebuildGen == probeRebuildGen && i.evictGen == probeEvictGen
+			i.mu.RUnlock()
+			if !unchanged {
+				continue
+			}
+			// Authoritative absence with a stable index: drop any row a Rebuild
+			// published from a scan that predated the deletion.
+			i.evict(sessionID)
 			return PastEntry{}, false
 		}
 		if i.afterFindProbe != nil {
@@ -1190,6 +1200,10 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 // stops a later cached Find from returning the deleted row before the next tick.
 func (i *PastIndex) evict(id string) {
 	i.mu.Lock()
+	// Bump first and unconditionally: a cache-miss Find reaches eviction with the
+	// row absent from byID, yet its invalidation must still fence in-flight probes
+	// for this id, so the guard cannot depend on membership.
+	i.evictGen++
 	if _, ok := i.byID[id]; !ok {
 		i.mu.Unlock()
 		return
@@ -1203,7 +1217,6 @@ func (i *PastIndex) evict(id string) {
 	}
 	i.all = fresh
 	i.gen++ // supersede any in-flight publisher (FTS + fingerprint)
-	i.evictGen++
 	gen := i.gen
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
@@ -1215,6 +1228,15 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	defer i.mu.RUnlock()
 	e, ok := i.byID[sessionID]
 	return e, ok
+}
+
+// globBaseDir returns the directory portion of pattern before its first
+// wildcard, or the pattern's own directory when it has none.
+func globBaseDir(pattern string) string {
+	if i := strings.IndexAny(pattern, "*?["); i >= 0 {
+		return filepath.Dir(pattern[:i])
+	}
+	return filepath.Dir(pattern)
 }
 
 // probeOne looks for one session's meta across every project the glob
@@ -1234,8 +1256,17 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool, bool) {
 	if err != nil {
 		return PastEntry{}, false, false
 	}
-	var found PastEntry
 	determinate := true
+	// filepath.Glob swallows directory read errors and returns no matches, which
+	// would otherwise look like an authoritative "no such session". Verify the
+	// glob's base directory is readable so a transiently inaccessible projects
+	// root is treated as indeterminate rather than evicting valid cached rows.
+	if base := globBaseDir(i.stateGlob); base != "" {
+		if _, err := os.ReadDir(base); err != nil {
+			determinate = false
+		}
+	}
+	var found PastEntry
 	for _, project := range matches {
 		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
 			determinate = false

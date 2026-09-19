@@ -118,6 +118,8 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_DeletedSessionEvictedAfterRacedRebuildSwap,
 		fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe,
 		fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe,
+		fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe,
+		fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate,
 		fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict,
 		fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange,
 		fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild,

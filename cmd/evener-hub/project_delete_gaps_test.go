@@ -189,6 +189,34 @@ func TestRemoveFlatProjectSessionArtifactsRemovesFiles(t *testing.T) {
 	}
 }
 
+// TestRemoveFlatProjectSessionArtifactsPreservesMetaLock pins that deleting a
+// session does not unlink its cross-process meta lock file: a writer (the daemon)
+// may still hold that inode, and unlinking it lets the writer recreate the meta
+// through the old inode while a new writer locks a fresh one.
+func TestRemoveFlatProjectSessionArtifactsPreservesMetaLock(t *testing.T) {
+	dir := t.TempDir()
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaFile := filepath.Join(dir, sessionID+".meta.json")
+	lockFile := filepath.Join(dir, sessionID+".meta.json.lock")
+	for _, path := range []string{metaFile, lockFile} {
+		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removeFlatProjectSessionArtifacts(dir, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(metaFile); !os.IsNotExist(err) {
+		t.Fatal("the meta file should be removed")
+	}
+	if _, err := os.Stat(lockFile); os.IsNotExist(err) {
+		t.Fatal("the cross-process meta lock file must be preserved")
+	}
+}
+
 // TestRemoveFlatProjectSessionArtifactsPreservesDirs covers the path where
 // directories are skipped.
 func TestRemoveFlatProjectSessionArtifactsPreservesDirs(t *testing.T) {

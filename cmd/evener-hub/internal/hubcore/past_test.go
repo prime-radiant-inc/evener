@@ -307,6 +307,12 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe(t *t
 // probe that cannot read a project (unlistable sessions dir) is not proof of
 // deletion, so Find must not evict a valid cached row for it.
 func fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
@@ -390,6 +396,60 @@ func fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange(t *testing.T) {
 
 	if fired != 1 {
 		t.Fatalf("timestamp-neutral fold fired onChange %d times, want 1", fired)
+	}
+}
+
+// fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe pins Medium 2:
+// a confirmed deletion must advance evictGen even when the id is not currently
+// indexed, so an in-flight probe (which reaches eviction via a cache miss) cannot
+// pass its guard and reinsert the deleted row.
+func fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex("")
+	idx.mu.RLock()
+	before := idx.evictGen
+	idx.mu.RUnlock()
+
+	idx.evict(id) // the id is not indexed; a cache-miss Find reaches here
+
+	idx.mu.RLock()
+	after := idx.evictGen
+	idx.mu.RUnlock()
+	if after == before {
+		t.Fatal("evicting an absent id did not bump evictGen")
+	}
+	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id}}, 0, before) {
+		t.Fatal("foldOne accepted an in-flight probe that predates the eviction")
+	}
+}
+
+// fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate pins Medium 3: an
+// inaccessible projects root makes filepath.Glob return no matches with no
+// error, which must not read as an authoritative absence.
+func fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(projects, "*"))
+	if err := os.Chmod(projects, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(projects, 0o755) })
+
+	entry, found, determinate := idx.probeOne("02wMz5Txv1C3Hut0M8GCeB")
+	if found {
+		t.Fatalf("expected no session, got %+v", entry)
+	}
+	if determinate {
+		t.Fatal("an unreadable glob root must be an indeterminate miss")
 	}
 }
 

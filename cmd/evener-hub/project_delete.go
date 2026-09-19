@@ -678,8 +678,13 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 	}
 	prefix := sessionID + "."
 	apiLogName := sessionID + ".api.jsonl"
+	// Leave the cross-process meta lock file in place: deleting its inode while a
+	// writer (the daemon) still holds it would let that writer recreate the meta
+	// through the old inode while a new writer locks a fresh one, defeating the
+	// serialization and resurrecting a deleted session.
+	metaLockName := sessionID + ".meta.json.lock"
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == apiLogName || !strings.HasPrefix(entry.Name(), prefix) {
+		if entry.IsDir() || entry.Name() == apiLogName || entry.Name() == metaLockName || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		if err := removeProjectSessionFile(filepath.Join(sessionsDir, entry.Name())); err != nil && !os.IsNotExist(err) {
