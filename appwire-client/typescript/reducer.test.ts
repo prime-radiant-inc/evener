@@ -3216,7 +3216,67 @@ test("mergeOlderItemPage keeps normalized fresh traversal when an older bridge j
     id: "item_tool_1_0",
     output: "later",
   });
-||||||| parent of d844ca997 (feat(appwire): expose transcript history merge contract)
+test("mergeTurnHistory keeps a fresh completed call ahead of an older partial result", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-public-A", {
+        id: "item_tool_result_0_0",
+        callId: "call-public-A",
+        output: "older output",
+        completedAt: new Date(10).toISOString(),
+      }),
+    ],
+    [
+      toolModelTurn("turn-public-A", {
+        id: "item_tool_1_0",
+        callId: "call-public-A",
+        output: "fresh output",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh output",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeTurnHistory keeps a fresh result ahead of an older call", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-public-B", {
+        id: "item_tool_1_0",
+        callId: "call-public-B",
+        status: "inProgress",
+        startedAt: new Date(10).toISOString(),
+      }),
+    ],
+    [
+      toolModelTurn("turn-public-B", {
+        id: "item_tool_result_2_0",
+        callId: "call-public-B",
+        output: "fresh result",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+    startedAt: new Date(10).toISOString(),
+  });
+});
+
 test("mergeTurnHistory keeps older fallback fields and fragments while fresh fields win", () => {
   const older: TurnModel[] = [
     {
