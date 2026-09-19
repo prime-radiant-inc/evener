@@ -32,9 +32,10 @@ func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 func foldNow(t *testing.T, idx *PastIndex, entry PastEntry) {
 	t.Helper()
 	idx.mu.RLock()
-	gen := idx.rebuildGen
+	rebuildGen := idx.rebuildGen
+	evictGen := idx.evictGen
 	idx.mu.RUnlock()
-	if !idx.foldOne(entry, gen) {
+	if !idx.foldOne(entry, rebuildGen, evictGen) {
 		t.Fatalf("foldOne declined for %s with no racing Rebuild", entry.ID)
 	}
 }
@@ -162,6 +163,32 @@ func fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow(t *testing.T) {
 	}
 	if got.Meta.Name != "newer" {
 		t.Fatalf("stale UpdateMeta clobbered the newer indexed row: Name=%q, want %q", got.Meta.Name, "newer")
+	}
+}
+
+// fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe pins that an eviction
+// invalidates a probe that read the session before it: foldOne must decline for a
+// probe whose evictGen predates the eviction, so a concurrent Find cannot
+// reinsert the deleted row after another Find evicted it.
+func fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "seeded", UpdatedAt: base}})
+
+	idx.mu.RLock()
+	probeRebuildGen := idx.rebuildGen
+	probeEvictGen := idx.evictGen
+	idx.mu.RUnlock()
+
+	idx.evict(id) // another Find confirmed the disk no longer holds it
+
+	// The in-flight probe's entry (read before the eviction) must not be folded.
+	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base}}, probeRebuildGen, probeEvictGen) {
+		t.Fatal("foldOne accepted an in-flight probe that predates the eviction")
+	}
+	if _, ok := idx.findCached(id); ok {
+		t.Fatal("the evicted session was reinserted by the stale probe")
 	}
 }
 
