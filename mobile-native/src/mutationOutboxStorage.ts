@@ -21,6 +21,7 @@ import type {
 	MutationIntent,
 	MutationOptimisticRecord,
 	MutationOutboxRecord,
+	MutationOutboxStorage,
 	MutationOutboxState,
 	MutationRecord,
 	MutationRecoveryKind,
@@ -149,7 +150,9 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 // over one synchronous database handle, wrapped in resolved promises
 // (outbox.ts's own comment: "a host with a synchronous store returns
 // resolved promises").
-export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAttachmentRef> {
+export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAttachmentRef>
+	implements MutationOutboxStorage<A>
+{
 	readonly db: MutationOutboxDatabase;
 	readonly #createMutationId: () => string;
 	readonly #now: () => number;
