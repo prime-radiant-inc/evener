@@ -27,6 +27,18 @@ func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 	}
 }
 
+// foldNow folds entry against the index's current rebuildGen, the way a Find
+// probe that observed no racing Rebuild would.
+func foldNow(t *testing.T, idx *PastIndex, entry PastEntry) {
+	t.Helper()
+	idx.mu.RLock()
+	gen := idx.rebuildGen
+	idx.mu.RUnlock()
+	if !idx.foldOne(entry, gen) {
+		t.Fatalf("foldOne declined for %s with no racing Rebuild", entry.ID)
+	}
+}
+
 // fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow pins a Rebuild swapping in
 // the row it scanned (v1) after a Find's probe already read the newer on-disk
 // meta (v2): foldOne must replace the stale indexed row, not keep it.
@@ -50,7 +62,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow(t *testing.T) {
 	if !ok {
 		t.Fatal("expected probeOne to read the session")
 	}
-	idx.foldOne(probe, 0)
+	foldNow(t, idx, probe)
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -75,13 +87,13 @@ func fuzzScenarioPastIndex_RenameOrdersByEqualRevisionNameUpdatedAt(t *testing.T
 	idx := NewPastIndex("")
 	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "old", UpdatedAt: base, NameUpdatedAt: base, Revision: 7}})
 
-	idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{
+	foldNow(t, idx, PastEntry{ID: id, Meta: schema.SessionMeta{
 		ID:            id,
 		Name:          "new",
 		UpdatedAt:     base,
 		NameUpdatedAt: base.Add(time.Minute),
 		Revision:      7,
-	}}, 0)
+	}})
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -118,7 +130,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	if !ok {
 		t.Fatal("expected probeOne to read the session")
 	}
-	idx.foldOne(probe, 0)
+	foldNow(t, idx, probe)
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -199,13 +211,13 @@ func fuzzScenarioPastIndex_LegacyFirstResaveBeatsItsLegacyRow(t *testing.T) {
 
 	// The first re-save (an AppendSessionObservedBy) bumps Revision to 1 with the
 	// same timestamps.
-	idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{
+	foldNow(t, idx, PastEntry{ID: id, Meta: schema.SessionMeta{
 		ID:         id,
 		Name:       "legacy",
 		UpdatedAt:  base,
 		Revision:   1,
 		ObservedBy: []string{"02wMz5Txv8Vo4rqb3QYZuV"},
-	}}, 0)
+	}})
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -226,7 +238,7 @@ func fuzzScenarioPastIndex_LegacyRowOrdersByTimestampAgainstRevisioned(t *testin
 	idx := NewPastIndex("")
 	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "indexed", UpdatedAt: base, Revision: 5}})
 
-	idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base.Add(time.Minute)}}, 0)
+	foldNow(t, idx, PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base.Add(time.Minute)}})
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -269,7 +281,7 @@ func fuzzScenarioPastIndex_StaleProbeDoesNotClobberNewerIndexedRow(t *testing.T)
 		t.Fatalf("setup: the index did not take the re-save: ForkLabel=%q", got.Meta.ForkLabel)
 	}
 
-	idx.foldOne(probe, 0) // stale v1 must not clobber the indexed v2
+	foldNow(t, idx, probe) // stale v1 must not clobber the indexed v2
 
 	got, ok := idx.findCached(id)
 	if !ok {
@@ -330,7 +342,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowWithoutTimestampChange(t 
 			if !ok {
 				t.Fatal("expected probeOne to read the session")
 			}
-			idx.foldOne(probe, 0)
+			foldNow(t, idx, probe)
 
 			got, ok := idx.findCached(id)
 			if !ok {
@@ -359,11 +371,11 @@ func fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold(t *testing.T) {
 
 	idx.afterFindProbe = func() {
 		// A concurrent writer indexed a newer row for the same id first.
-		idx.foldOne(PastEntry{
+		foldNow(t, idx, PastEntry{
 			ID:       id,
 			Meta:     schema.SessionMeta{ID: id, Name: "live-v2", UpdatedAt: base.Add(time.Minute), Revision: 2},
 			StateDir: proj,
-		}, 0)
+		})
 	}
 	defer func() { idx.afterFindProbe = nil }()
 
