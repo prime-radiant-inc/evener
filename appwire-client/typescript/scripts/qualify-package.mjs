@@ -51,6 +51,7 @@ async function qualify() {
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
+assert.deepEqual(client.mergeTurnHistory([], []).turns, []);
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 const askItem = {
