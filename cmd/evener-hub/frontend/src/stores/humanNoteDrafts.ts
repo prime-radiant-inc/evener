@@ -203,6 +203,18 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       if (failure) throw failure.error;
       const active = get(ref);
       if (!active?.dirty || active.focusOwners.size || active.generation !== current.generation) return;
+      // The live draft may no longer be in the state this save was armed for:
+      // another connection can accept the blocked save while the debounce (or
+      // this very await) was open, and the persistence refresh maps that
+      // accepted row to the draft's pending state without touching the armed
+      // timer. A same-generation draft that is already submitting has its
+      // write durable and waiting on canonical reflection - the blur-time
+      // guard above refuses to arm for exactly this state, and the fire-time
+      // save must recheck it live the same way. Skipping the recheck sent the
+      // save past the blocked-retry branch to a duplicate notes/human/set
+      // whose onEnqueue replaced the submitted identity the original save's
+      // acknowledgement arrives under.
+      if (active.submitted?.generation === active.generation && active.submitted.state === "submitting") return;
       if (current.submitted?.generation === current.generation && current.submitted.state === "blockedUnknown") {
         const blockedId = current.submitted.id;
         await retryBlockedMutation(blockedId, "backgroundNote");

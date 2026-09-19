@@ -585,6 +585,58 @@ test("a blocked note accepted by another connection updates the draft through th
   expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
 });
 
+// RoboRev Medium (PR 1393 fresh review, b04a358): the accepted-row mapping the
+// persistence refresh applies can land while a blocked draft's blur-save timer
+// is still armed. When the timer then fires, the save read "submitting", skipped
+// the blocked-retry branch, and enqueued a duplicate notes/human/set whose
+// onEnqueue replaced the draft's submitted identity - the identity the original
+// save's canonical acknowledgement arrives under. The fire-time save must
+// recheck the live same-generation submitted state and refuse exactly as the
+// blur-time guard (humanNoteDrafts.ts) refuses to arm for it.
+test("a blur-save timer armed on a blocked note does not duplicate the save another connection accepted", async () => {
+  const { fake, seen } = noteHarness();
+  const ref = "ref-a";
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // The blur arms the 10s debounce while the save is still blocked here.
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  // During the debounce window, another connection ACCEPTS the blocked save
+  // (settleReceipt moves the row outbox -> optimistic, the retention notes
+  // carry since e7a2098d5) and the persistence refresh - the one every
+  // notification and pane mount drives - maps the accepted row to the draft's
+  // pending state, the flip 4d9873546 pinned. The timer stays armed through it.
+  await act(async () => {
+    await storage.settleReceipt(original.clientMutationId, "pending");
+  });
+  act(() => syncHumanNote("ref-b", ""));
+  await waitFor(() => expect(result.current?.submitted?.state).toBe("submitting"));
+  expect(result.current?.submitted?.id).toBe(original.clientMutationId);
+  // The timer fires inside that window. The live draft is same-generation
+  // submitting - the write is durable and waiting on its canonical
+  // reflection - so the save must not mint a second notes/human/set, and it
+  // must not replace the submitted identity the acknowledgement will match.
+  await advance(10_000);
+  const rows = (await storage.listOutbox()).filter((record) => record.method === "notes/human/set");
+  expect(rows).toHaveLength(0);
+  expect(seen).toHaveLength(0);
+  expect(result.current).toMatchObject({
+    text: "retained blocked note",
+    dirty: true,
+    saved: false,
+    submitted: { id: original.clientMutationId, state: "submitting" },
+  });
+});
+
 // A resumeRequired session presents as a live, idle thread with the
 // SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
 // is not zeroed by the recovery fence), so the status/capability pair alone
