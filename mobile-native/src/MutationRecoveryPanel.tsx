@@ -1,4 +1,7 @@
-import type { MutationAttachmentRef, MutationRecord } from "@evener/appwire-client/state/mutation";
+import type {
+	MutationAttachmentRef,
+	MutationRecord,
+} from "@evener/appwire-client/state/mutation";
 import { View } from "react-native";
 import type { NativeMutationPersistenceSnapshot } from "./nativeMutationRuntime";
 import { Action, Copy, styles, useColors } from "./ui";
@@ -11,7 +14,8 @@ export type NativeMutationRecoveryStatus =
 	| "orphaned";
 
 export type NativeMutationRecoveryAction = "restore" | "dismiss" | "copy";
-export type NativeMutationRecoveryRecord = MutationRecord<MutationAttachmentRef>;
+export type NativeMutationRecoveryRecord =
+	MutationRecord<MutationAttachmentRef>;
 
 export interface NativeMutationRecoveryRow {
 	targetKey: string;
@@ -25,20 +29,28 @@ export interface NativeMutationRecoveryRow {
 }
 
 export interface MutationRecoveryActions {
+	// The screen supplies the real converter boundary so unsupported payloads
+	// never advertise an action that cannot restore them.
+	canRestore(row: NativeMutationRecoveryRow): boolean;
 	onRestore(row: NativeMutationRecoveryRow): void;
 	onDismiss(row: NativeMutationRecoveryRow): void;
 	onCopy(row: NativeMutationRecoveryRow): void;
 }
 
 const labels = {
-	sending: "Sending", accepted: "Accepted", deliveryUnconfirmed: "Delivery unconfirmed",
-	rejected: "Rejected", orphaned: "Needs review",
+	sending: "Sending",
+	accepted: "Accepted",
+	deliveryUnconfirmed: "Delivery unconfirmed",
+	rejected: "Rejected",
+	orphaned: "Needs review",
 } satisfies Record<NativeMutationRecoveryStatus, string>;
 
 export function nativeMutationRecoveryActions(
 	status: NativeMutationRecoveryStatus,
+	canRestore = true,
 ): readonly NativeMutationRecoveryAction[] {
-	if (status === "rejected") return ["restore", "dismiss"];
+	if (status === "rejected")
+		return canRestore ? ["restore", "dismiss"] : ["dismiss"];
 	if (status === "orphaned") return ["copy", "dismiss"];
 	return [];
 }
@@ -72,18 +84,19 @@ export function projectNativeMutationRecovery(
 			row(
 				targetKey,
 				record,
-				record.state === "blockedUnknown"
-					? "deliveryUnconfirmed"
-					: "sending",
+				record.state === "blockedUnknown" ? "deliveryUnconfirmed" : "sending",
 			),
 		);
 	}
 	for (const record of snapshot.optimistic) {
-		if (record.targetRef === targetKey) rows.push(row(targetKey, record, "accepted"));
+		if (record.targetRef === targetKey)
+			rows.push(row(targetKey, record, "accepted"));
 	}
 	for (const record of snapshot.recovery) {
 		if (record.targetRef !== targetKey) continue;
-		rows.push(row(targetKey, record, record.recoveryKind, record.recoveryReason));
+		rows.push(
+			row(targetKey, record, record.recoveryKind, record.recoveryReason),
+		);
 	}
 	return rows.sort(
 		(left, right) =>
@@ -103,7 +116,19 @@ export function MutationRecoveryPanel({
 }) {
 	const colors = useColors();
 	if (snapshot === null) return <Copy muted>Loading delivery status…</Copy>;
-	const rows = projectNativeMutationRecovery(targetKey, snapshot);
+	const rows = projectNativeMutationRecovery(targetKey, snapshot).map((row) =>
+		row.status === "rejected"
+			? {
+					...row,
+					actions: nativeMutationRecoveryActions(
+						"rejected",
+						row.record.method !== "turn/interrupt" &&
+							typeof row.record.composerText === "string" &&
+							actions.canRestore(row),
+					),
+				}
+			: row,
+	);
 	if (rows.length === 0) return null;
 	return (
 		<View style={{ gap: 12 }}>

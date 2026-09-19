@@ -1,21 +1,23 @@
-import type { ComponentProps } from "react";
-import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
 import type {
 	MutationAttachmentRef,
 	MutationOptimisticRecord,
 	MutationOutboxRecord,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
-import type { NativeMutationPersistenceSnapshot } from "./nativeMutationRuntime";
+import type { ComponentProps } from "react";
+import { act } from "react-test-renderer";
+import { expect, it, vi } from "vitest";
 import {
 	MutationRecoveryPanel,
 	nativeMutationRecoveryActions,
 	projectNativeMutationRecovery,
 } from "./MutationRecoveryPanel";
+import type { NativeMutationPersistenceSnapshot } from "./nativeMutationRuntime";
 import { render } from "./renderNative.testkit";
 
-vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
+vi.mock("react-native", async () =>
+	(await import("./renderNative.testkit")).nativeModuleMock(),
+);
 
 const TARGET_A = JSON.stringify(["hub-a", "ref-a"]);
 const TARGET_B = JSON.stringify(["hub-b", "ref-b"]);
@@ -95,8 +97,14 @@ it("assigns only the approved actions to each durable state", () => {
 	expect(nativeMutationRecoveryActions("sending")).toEqual([]);
 	expect(nativeMutationRecoveryActions("accepted")).toEqual([]);
 	expect(nativeMutationRecoveryActions("deliveryUnconfirmed")).toEqual([]);
-	expect(nativeMutationRecoveryActions("rejected")).toEqual(["restore", "dismiss"]);
-	expect(nativeMutationRecoveryActions("orphaned")).toEqual(["copy", "dismiss"]);
+	expect(nativeMutationRecoveryActions("rejected")).toEqual([
+		"restore",
+		"dismiss",
+	]);
+	expect(nativeMutationRecoveryActions("orphaned")).toEqual([
+		"copy",
+		"dismiss",
+	]);
 });
 
 it("invokes typed rejected actions and exposes no orphaned restore", () => {
@@ -109,7 +117,7 @@ it("invokes typed rejected actions and exposes no orphaned restore", () => {
 			record(TARGET_A, "rejected", 1, "rejected"),
 			record(TARGET_A, "orphaned", 2, "orphaned"),
 		]),
-		actions: { onRestore, onDismiss, onCopy },
+		actions: { onRestore, onDismiss, onCopy, canRestore: () => true },
 	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
 	const tree = render(<MutationRecoveryPanel {...props} />);
 	const buttons = tree.root.findAllByProps({ accessibilityRole: "button" });
@@ -121,14 +129,63 @@ it("invokes typed rejected actions and exposes no orphaned restore", () => {
 		buttons[0]?.props.onPress();
 		buttons[2]?.props.onPress();
 	});
-	expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({
-		clientMutationId: "rejected",
+	expect(onRestore).toHaveBeenCalledWith(
+		expect.objectContaining({
+			clientMutationId: "rejected",
+			targetKey: TARGET_A,
+			status: "rejected",
+		}),
+	);
+	expect(onCopy).toHaveBeenCalledWith(
+		expect.objectContaining({
+			clientMutationId: "orphaned",
+			targetKey: TARGET_A,
+			status: "orphaned",
+		}),
+	);
+});
+
+it("keeps rejected interrupts dismiss-only even when recovery is reported possible", () => {
+	const interrupt = {
+		...record(TARGET_A, "interrupt", 1, "rejected"),
+		method: "turn/interrupt",
+		composerText: undefined,
+	};
+	const props = {
 		targetKey: TARGET_A,
-		status: "rejected",
-	}));
-	expect(onCopy).toHaveBeenCalledWith(expect.objectContaining({
-		clientMutationId: "orphaned",
+		snapshot: snapshot([interrupt]),
+		actions: {
+			onRestore: vi.fn(),
+			onDismiss: vi.fn(),
+			onCopy: vi.fn(),
+			canRestore: () => true,
+		},
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+
+	expect(
+		tree.root
+			.findAllByProps({ accessibilityRole: "button" })
+			.map((button) => button.props.accessibilityLabel),
+	).toEqual(["Dismiss"]);
+});
+
+it("hides restore when the recovery converter rejects the record", () => {
+	const props = {
 		targetKey: TARGET_A,
-		status: "orphaned",
-	}));
+		snapshot: snapshot([record(TARGET_A, "unsupported", 1, "rejected")]),
+		actions: {
+			onRestore: vi.fn(),
+			onDismiss: vi.fn(),
+			onCopy: vi.fn(),
+			canRestore: () => false,
+		},
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+
+	expect(
+		tree.root
+			.findAllByProps({ accessibilityRole: "button" })
+			.map((button) => button.props.accessibilityLabel),
+	).toEqual(["Dismiss"]);
 });
