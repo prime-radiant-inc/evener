@@ -146,6 +146,44 @@ it("keeps an unavailable applied removal fenced across browser remounts", async 
 });
 
 
+it("records an applied removal after selection changes while the request is pending", async () => {
+  let releaseRemoval!: () => void;
+  const pendingRemoval = new Promise<never>((_resolve, reject) => {
+    releaseRemoval = () => reject(cloneLitterError(null, false));
+  });
+  const hub = marketplaceClient({ remove: () => pendingRemoval });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+  });
+  const request = alertRequests.at(-1);
+  const remove = request?.buttons?.find((button) => button.text === "Remove");
+  if (!remove?.onPress) throw new Error("Remove confirmation was not shown");
+  await act(async () => remove.onPress?.());
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+  });
+  releaseRemoval();
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const removeButton = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(removeButton.props.disabled).toBe(true);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+});
 it("ignores an applied removal result from a replaced client", async () => {
   let releaseOld!: () => void;
   const oldRemoval = new Promise<never>((_resolve, reject) => {
