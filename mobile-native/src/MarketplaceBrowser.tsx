@@ -72,10 +72,16 @@ export function MarketplaceBrowser({
   connectionState: ConnectionState;
   onOpenPlugin(target: PluginRefParams): void;
   appliedRemovalNames: ReadonlySet<string>;
-  onAppliedRemoval(name: string, owner: ConversationClientLike): boolean;
+  onAppliedRemoval(
+    name: string,
+    owner: ConversationClientLike,
+    marketplaces: readonly MarketplaceEntry[] | null,
+    publicationVersion: number,
+  ): boolean;
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],
     owner: ConversationClientLike,
+    publicationVersion: number,
   ): void;
 }) {
   const colors = useColors();
@@ -92,8 +98,17 @@ export function MarketplaceBrowser({
   const revision = useRef(0);
   useEffect(() => {
     if (state.marketplaces !== null)
-      onAuthoritativeMarketplaces(state.marketplaces, client);
-  }, [client, onAuthoritativeMarketplaces, state.marketplaces]);
+      onAuthoritativeMarketplaces(
+        state.marketplaces,
+        client,
+        state.marketplacesPublicationVersion,
+      );
+  }, [
+    client,
+    onAuthoritativeMarketplaces,
+    state.marketplaces,
+    state.marketplacesPublicationVersion,
+  ]);
   useEffect(() => {
     void marketplaces.getState().fetchMarketplaces();
     return () => {
@@ -196,9 +211,21 @@ export function MarketplaceBrowser({
             if (outcome.status !== "failed") return;
             const removal = marketplaceRemovalOutcome(outcome.error);
             if (removal !== undefined) {
-              if (!onAppliedRemoval(name, client)) return;
-              if (removal.kind === "unavailable" && canUseConnection())
-                void state.fetchMarketplaces();
+              const current = marketplaces.getState();
+              if (
+                !onAppliedRemoval(
+                  name,
+                  client,
+                  current.marketplaces,
+                  current.marketplacesPublicationVersion,
+                )
+              )
+                return;
+              const needsReconciliation =
+                current.marketplaces === null ||
+                current.marketplaces.some((item) => item.name === name);
+              if (needsReconciliation && canUseConnection())
+                void current.fetchMarketplaces();
               return;
             }
             if (revision.current !== version) return;

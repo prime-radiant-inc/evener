@@ -55,7 +55,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type AppliedRemovalGuard = {
   client: ConversationClientLike;
-  names: ReadonlySet<string>;
+  publicationVersions: ReadonlyMap<string, number>;
 };
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
@@ -147,11 +147,11 @@ function Plugins({
   const [appliedRemovalGuard, setAppliedRemovalGuard] =
     useState<AppliedRemovalGuard>(() => ({
       client,
-      names: new Set(),
+      publicationVersions: new Map(),
     }));
   const appliedRemovalNames =
     appliedRemovalGuard.client === client
-      ? appliedRemovalGuard.names
+      ? new Set(appliedRemovalGuard.publicationVersions.keys())
       : EMPTY_APPLIED_REMOVALS;
   const visibleMarketplaceWarning =
     marketplaceWarningClient === client ? MARKETPLACE_CLEANUP_WARNING : null;
@@ -168,7 +168,9 @@ function Plugins({
   );
   useEffect(() => {
     setAppliedRemovalGuard((current) =>
-      current.client === client ? current : { client, names: new Set() },
+      current.client === client
+        ? current
+        : { client, publicationVersions: new Map() },
     );
     setMarketplaceWarningClient((current) =>
       current === client ? current : null,
@@ -178,27 +180,42 @@ function Plugins({
     (
       marketplaces: readonly MarketplaceEntry[],
       owner: ConversationClientLike,
+      publicationVersion: number,
     ): void => {
       if (currentClient.current !== owner) return;
       const currentNames = new Set(marketplaces.map((item) => item.name));
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
-        const next = new Set([...current.names].filter((name) => currentNames.has(name)));
-        return next.size === current.names.size
+        const next = new Map(current.publicationVersions);
+        for (const [name, baseline] of next) {
+          if (!currentNames.has(name) || publicationVersion > baseline)
+            next.delete(name);
+        }
+        return next.size === current.publicationVersions.size
           ? current
-          : { client: owner, names: next };
+          : { client: owner, publicationVersions: next };
       });
     },
     [],
   );
   const markAppliedRemoval = useCallback(
-    (name: string, owner: ConversationClientLike): boolean => {
+    (
+      name: string,
+      owner: ConversationClientLike,
+      marketplaces: readonly MarketplaceEntry[] | null,
+      publicationVersion: number,
+    ): boolean => {
       if (currentClient.current !== owner) return false;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
-        const names = new Set(current.names);
-        names.add(name);
-        return { client: owner, names };
+        const publicationVersions = new Map(current.publicationVersions);
+        if (
+          marketplaces === null ||
+          marketplaces.some((item) => item.name === name)
+        )
+          publicationVersions.set(name, publicationVersion);
+        else publicationVersions.delete(name);
+        return { client: owner, publicationVersions };
       });
       setMarketplaceWarningClient(owner);
       return true;
