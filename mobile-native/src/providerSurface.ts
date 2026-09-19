@@ -179,17 +179,23 @@ export function useProviderSurface(
     });
   }, [store]);
 
-  // A superseded instance write deferred its reconcile because a listing read
-  // was already out. That read snapshotted the write's landing before it
-  // happened, so it cannot reconcile the write; once it settles, chain the read
-  // the write needs.
+  // A refresh or probe recovery that could not start because a listing read was
+  // already out is run once that read settles. Draining on subscription setup
+  // too means a read queued before a remount is not left pending until some
+  // later, unrelated store change. (Superseded instance writes are reconciled
+  // by the credential core's own scheduled read, so this slot no longer carries
+  // them: a write resolving after a remount cannot strand a row.)
   useEffect(() => {
-    return store.subscribe((state) => {
-      if (!recovery.pendingRead || state.loading || disposed.current) return;
+    const drain = () => {
+      if (!recovery.pendingRead || store.getState().loading || disposed.current)
+        return;
       recovery.pendingRead = false;
       void store.getState().fetch().catch(() => {});
-    });
-  }, [store]);
+    };
+    const unsubscribe = store.subscribe(drain);
+    drain();
+    return unsubscribe;
+  }, [store, recovery]);
 
   // A listing the store already holds for this connection - a list remounted
   // after a sign-in, say - is adopted as it is, with the read state it came
@@ -234,7 +240,6 @@ export function useProviderSurface(
   async function mutate<T>(
     action: () => Promise<T>,
     writesConfiguration: boolean,
-    reconcilesOnUnconfirmed = false,
   ): Promise<T> {
     if (disposed.current) throw new Error("Provider screen is closed");
     if (gate.active())
@@ -251,22 +256,11 @@ export function useProviderSurface(
     gate.setActive(true);
     clearCredentialTest();
     try {
-      const result = await action();
-      // An instance mutation that answers false was superseded: its answer is
-      // not the listing the store now holds, so reconcile with an authoritative
-      // read before the caller reports an unconfirmed save. This is the single
-      // owner of that recovery read (the screen does not also fetch), and a
-      // screen that is gone reconciles nothing.
-      if (
-        result === false &&
-        reconcilesOnUnconfirmed
-      ) {
-        // A read already in flight cannot reconcile this write: it snapshotted
-        // the write's landing before the write bumped it. Defer the reconcile
-        // to once that read settles.
-        queueRead();
-      }
-      return result;
+      // A superseded instance write (a false verdict) is reconciled by the
+      // credential core itself - create/edit/remove schedule the store's own
+      // read, as setDefault does - so this gate adds no recovery read of its
+      // own and a remount cannot lose the reconcile.
+      return await action();
     } finally {
       // Released even for a screen that is gone: the gate outlives it, and a
       // remounted screen must not inherit a write that has already settled.
@@ -332,13 +326,12 @@ export function useProviderSurface(
     credentialTest,
     refresh,
     create: (params: InstanceCreateParams) =>
-      mutate(() => store.getState().create(params), true, true),
+      mutate(() => store.getState().create(params), true),
     edit: (params: InstanceEditParams) =>
-      mutate(() => store.getState().edit(params), true, true),
+      mutate(() => store.getState().edit(params), true),
     remove: (name: string, expectedEndpointFingerprint?: string) =>
       mutate(
         () => store.getState().remove(name, expectedEndpointFingerprint),
-        true,
         true,
       ),
     setDefault: (name: string) =>

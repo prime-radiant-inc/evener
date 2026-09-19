@@ -136,6 +136,33 @@ describe("listing reads and writes", () => {
     });
   });
 
+  test("a superseded instance write schedules the core's own reconcile read", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    const readAnswer = deferred<InstanceListResponse>();
+    fake.on("evener/instance/list", () =>
+      listReads(fake) === 1 ? LISTING : readAnswer.promise,
+    );
+    const write = deferred<InstanceListResponse>();
+    fake.on("evener/instance/remove", () => write.promise);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const remove = store.getState().remove("work");
+    // A read starts after the write and supersedes its answer.
+    const read = store.getState().fetch();
+    write.resolve(LISTING);
+    expect(await remove).toBe(false);
+    const reads = listReads(fake);
+    readAnswer.resolve(LISTING);
+    await read;
+    // The core scheduled the reconcile read itself; no caller had to ask, so a
+    // screen that issued the write and then unmounted cannot strand it.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads + 1);
+  });
+
   test("a write from a replaced connection's listing is refused with the shared words until this connection reads", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     store.connectionChanged(readyClient(), "ready");
@@ -1006,6 +1033,10 @@ describe("instance mutations and their own echo", () => {
     const afterFirstEcho = store.getState().selfRefresh;
     slow.resolve(LISTING);
     await a;
+    // A's superseded answer schedules the core's own reconcile read. Let it run
+    // now, so it does not coalesce with the echo's refetch below and mark that
+    // read foreign.
+    await vi.advanceTimersByTimeAsync(300);
     fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
     await vi.advanceTimersByTimeAsync(300);
     expect(store.getState().selfRefresh).toBeGreaterThan(afterFirstEcho);

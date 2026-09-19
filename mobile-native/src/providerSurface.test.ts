@@ -497,7 +497,8 @@ it("reads a listing on mount when the store holds none", async () => {
   ).toHaveLength(1);
 });
 
-it("reconciles a superseded instance write with a listing read", async () => {
+it("reconciles a superseded instance write with the core's own scheduled read", async () => {
+  vi.useFakeTimers();
   const { io, store, requests } = boundary();
   await store.getState().fetch();
   const pendingRemove = deferred<InstanceListResponse>();
@@ -521,7 +522,10 @@ it("reconciles a superseded instance write with a listing read", async () => {
   await act(async () => {
     expect(await applied).toBe(false);
   });
-  // The unconfirmed write reconciles against exactly one authoritative read.
+  // The credential core schedules the reconcile read itself.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
   expect(
     requests.filter((request) => request.method === "evener/instance/list")
       .length,
@@ -529,6 +533,7 @@ it("reconciles a superseded instance write with a listing read", async () => {
 });
 
 it("chains a superseded write's reconcile after an in-flight read settles", async () => {
+  vi.useFakeTimers();
   const { io, store, requests } = boundary();
   await store.getState().fetch();
   const write = deferred<unknown>();
@@ -553,7 +558,7 @@ it("chains a superseded write's reconcile after an in-flight read settles", asyn
   await act(async () => {
     expect(await applied).toBe(false);
   });
-  // The in-flight read settles first: the reconcile read chains after it.
+  // The core scheduled its own reconcile read; it has not run yet.
   expect(
     requests.filter((request) => request.method === "evener/instance/list")
       .length,
@@ -563,8 +568,9 @@ it("chains a superseded write's reconcile after an in-flight read settles", asyn
   await act(async () => {
     await read;
   });
-  await act(async () => {});
-  await act(async () => {});
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
   expect(
     requests.filter((request) => request.method === "evener/instance/list")
       .length,
@@ -672,6 +678,7 @@ it("a refresh coalesces with an in-flight restore read and re-reads once it sett
 });
 
 it("performs a superseded write's reconcile after a remount once the read settles", async () => {
+  vi.useFakeTimers();
   const { io, store, requests } = boundary();
   await store.getState().fetch();
   const write = deferred<unknown>();
@@ -690,8 +697,7 @@ it("performs a superseded write's reconcile after a remount once the read settle
   expect(store.getState().loading).toBe(true);
   // The list remounts while the write is still out; its response is superseded.
   first.unmount();
-  const second = renderHook(() => useProviderSurface(store));
-  expect(second.result.current.busy).toBe(true);
+  renderHook(() => useProviderSurface(store));
   write.resolve(listing(["written"]));
   await act(async () => {
     expect(await applied).toBe(false);
@@ -704,8 +710,10 @@ it("performs a superseded write's reconcile after a remount once the read settle
   await act(async () => {
     await read;
   });
-  await act(async () => {});
-  await act(async () => {});
+  // The core's scheduled read — not the unmounted hook's — reconciles it.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
   expect(
     requests.filter((request) => request.method === "evener/instance/list")
       .length,

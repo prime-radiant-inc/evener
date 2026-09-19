@@ -1038,21 +1038,31 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async create(params) {
       const client = requireWritableClient();
-      return applyMutation((origin) => client.request("evener/instance/create", { ...params, ...origin }), {
+      const applied = await applyMutation((origin) => client.request("evener/instance/create", { ...params, ...origin }), {
         instance: params.name,
       });
+      // Like setDefault: a superseded response lost the store's ordering race,
+      // and a read may have snapshotted before this write landed, so that read
+      // cannot reconcile the write. Schedule the store's own read to land the
+      // post-mutation view. Owning it in the core - a timer on the store, not a
+      // subscription in the issuing screen - is what makes it survive that
+      // screen unmounting and remounting around this store.
+      if (!applied) scheduleRefetch();
+      return applied;
     },
 
     async edit(params) {
       const client = requireWritableClient();
-      return applyMutation((origin) => client.request("evener/instance/edit", { ...params, ...origin }), {
+      const applied = await applyMutation((origin) => client.request("evener/instance/edit", { ...params, ...origin }), {
         instance: params.name,
       });
+      if (!applied) scheduleRefetch();
+      return applied;
     },
 
     async remove(name, expectedEndpointFingerprint) {
       const client = requireWritableClient();
-      return applyMutation(
+      const applied = await applyMutation(
         (origin) =>
           client.request("evener/instance/remove", {
             name,
@@ -1061,6 +1071,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
           }),
         { instance: name },
       );
+      if (!applied) scheduleRefetch();
+      return applied;
     },
 
     async setDefault(name) {
