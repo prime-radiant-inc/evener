@@ -1881,6 +1881,232 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 	}
 }
 
+// TestAskUser_InterruptMarkerWriteFailurePreservesBoundary keeps an ask_user
+// question pending when cancellation reaches the interrupt marker but the
+// marker cannot be recorded. The queued input proves the failed marker does
+// not open the autonomous drain, while restore proves the live boundary and
+// the transcript-derived boundary agree.
+func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer parentCancel()
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	ask := askUserCall("ask1", askUserArgsValid())
+	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	modelCalls := 0
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				modelCalls++
+				return toolCallResponse(ask, triggerCancel)
+			},
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a second LLM call after an unrecorded interrupt marker")
+				return llm.Response{}
+			},
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "queued-behind-unrecorded-interrupt",
+		Input:            []appwire.InputItem{{Type: "text", Text: "wait for the pending answer"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("queue depth before cancellation = %d, want 1", got)
+	}
+	drainPendingEvents(sess)
+
+	// Use the real transcript file and arm the fault only after ask_user's
+	// successful tool-results turn has been persisted. A cleanly rolled-back
+	// marker write is not a retained record, so the marker must not be announced
+	// or adopted.
+	fs := attachEnvironmentFailureFS(t, sess)
+	markerFaultHit := false
+	markerFailure := errors.New("injected interrupt marker write failure")
+	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			return "cancel after the tool results are durable", nil
+		})
+	processCtx := context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
+		beforeSteering: func() {
+			fs.mu.Lock()
+			fs.failure = markerFailure
+			fs.onFailure = func() { markerFaultHit = true }
+			fs.mu.Unlock()
+			cancel()
+		},
+	})
+
+	_, err = sess.ProcessInput(processCtx, "which db should we use?", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessInput err = %v, want context.Canceled", err)
+	}
+	if !markerFaultHit {
+		t.Fatal("the injected filesystem failure did not reach the interrupt marker write")
+	}
+	if !errors.Is(err, markerFailure) {
+		t.Fatalf("ProcessInput err = %v, want the interrupt marker write failure", err)
+	}
+	if modelCalls != 1 {
+		t.Fatalf("model calls = %d, want 1 (failed marker must not drain queued input)", modelCalls)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after failed interrupt marker = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after failed interrupt marker = %q, want %q", got, SessionAwaiting)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("live wire state after failed interrupt marker = %q, want %q", got, SessionAwaiting)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("queue depth after failed interrupt marker = %d, want 1", got)
+	}
+	for _, turn := range sessionHistory(sess) {
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			t.Fatal("unrecorded interrupt marker appeared in live history")
+		}
+	}
+	for _, ev := range drainPendingEvents(sess) {
+		if ev.Kind != events.EventSteeringInjected {
+			continue
+		}
+		data, ok := ev.Data.(events.SteeringInjectedData)
+		if ok && data.Kind == events.SteeringKindInterrupted {
+			t.Fatal("unrecorded interrupt marker was announced to live subscribers")
+		}
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored pending count = %d, want 1", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q", got, SessionAwaiting)
+	}
+	if got := restored.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
+	}
+	if got := restored.QueueDepth(); got != 1 {
+		t.Fatalf("restored queue depth = %d, want 1", got)
+	}
+	for _, turn := range sessionHistory(restored) {
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			t.Fatal("unrecorded interrupt marker appeared after restore")
+		}
+	}
+}
+
+// TestAskUser_InterruptMarkerRetainedWriteIsAdopted covers the other durable
+// pair outcome: the whole marker line remains after its first sync and rollback
+// both fail, so the recovery barrier confirms it and the owner adopts it once.
+func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer parentCancel()
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	ask := askUserCall("ask1", askUserArgsValid())
+	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask, triggerCancel) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) { return "cancel after the tool results are durable", nil })
+	fs := attachEnvironmentFailureFS(t, sess)
+	syncFailure := errors.New("retained interrupt marker sync failure")
+	rollbackFailure := errors.New("retained interrupt marker rollback failure")
+	processCtx := context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
+		beforeSteering: func() {
+			fs.mu.Lock()
+			fs.failure = syncFailure
+			fs.rollbackFailure = rollbackFailure
+			fs.mu.Unlock()
+			cancel()
+		},
+	})
+
+	_, processErr := sess.ProcessInput(processCtx, "which db should we use?", nil)
+	if !errors.Is(processErr, context.Canceled) {
+		t.Fatalf("ProcessInput err = %v, want context.Canceled", processErr)
+	}
+	if errors.Is(processErr, syncFailure) {
+		t.Fatalf("retained marker was rejected instead of adopted: %v", processErr)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after retained interrupt marker = %d, want 0", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("live state after retained interrupt marker = %q, want %q", got, SessionIdle)
+	}
+	marker := false
+	for _, turn := range sessionHistory(sess) {
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			marker = true
+		}
+	}
+	if !marker {
+		t.Fatal("retained interrupt marker was not adopted into live history")
+	}
+	markerEvent := false
+	for _, ev := range drainPendingEvents(sess) {
+		if data, ok := ev.Data.(events.SteeringInjectedData); ev.Kind == events.EventSteeringInjected && ok && data.Kind == events.SteeringKindInterrupted {
+			markerEvent = true
+		}
+	}
+	if !markerEvent {
+		t.Fatal("retained interrupt marker emitted no interrupted steering event")
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state after retained interrupt marker = %q, want %q", got, SessionIdle)
+	}
+	for _, turn := range sessionHistory(restored) {
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			return
+		}
+	}
+	t.Fatal("retained interrupt marker was not present after restore")
+}
+
 // TestAskUser_RestoreResolvesAcrossUserSteer covers the accepted-user-steer
 // half of the same boundary: a steer enters processOneInput as EntryUserInput,
 // which clears s.askPending unconditionally on entry. Driven through the real
