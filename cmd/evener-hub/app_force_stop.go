@@ -464,6 +464,10 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	aliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(aliases)
 	var fence *hubcore.ForceStopFence
+	// canceled reports whether the drain below stopped an active Resume: a
+	// post-drain outcome keeps this fence's advance only when it did, because
+	// the stop attempt then already mutated the world those epochs guard.
+	var canceled bool
 	if stopResumes {
 		fence = cfg.ResumeLocks.BeginForceStop(aliases)
 		defer fence.Finish(false)
@@ -523,11 +527,29 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 				return confirmedStoppedDecision{}, err
 			}
 		}
-		releaseResumes, _, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+		releaseResumes, drainCanceled, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
 			return confirmedStoppedDecision{}, err
 		}
+		canceled = drainCanceled
 		defer releaseResumes()
+	}
+	// refuseAfterDrain wraps every post-drain return other than the proven
+	// no-op. A refusal — or the {stopped:false} claim handoff, whose caller
+	// installs its own fence next — must be admission-neutral when the drain
+	// canceled nothing, exactly like the pre-cancellation refusals above:
+	// otherwise a refused shortcut permanently advanced every alias's Epoch
+	// and LastRecoverySequence, because forceStopThread's refusal paths reject
+	// only the fences they hold themselves and cannot reach this one. A drain
+	// that canceled a Resume keeps the advance — the stop attempt already
+	// mutated the world those epochs guard. The proven no-op at the end never
+	// passes through here: its advance is the admission invalidation that
+	// re-admits waiting registrations on a post-decision snapshot.
+	refuseAfterDrain := func(decision confirmedStoppedDecision, err error) (confirmedStoppedDecision, error) {
+		if fence != nil && !canceled {
+			fence.Reject()
+		}
+		return decision, err
 	}
 	// Capture after our own fences and cancellations, then compare the entire
 	// authority (including epochs/group identity) after acquiring ownership.
@@ -538,14 +560,14 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			if !stopResumes {
 				return confirmedStoppedDecision{}, nil
 			}
-			return confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop")
+			return refuseAfterDrain(confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop"))
 		}
 		expected[alias] = current
 	}
 	if !reservationsHeld {
 		for _, alias := range aliases {
 			if err := cfg.ResumeLocks.For(alias).LockContext(ctx); err != nil {
-				return confirmedStoppedDecision{}, err
+				return refuseAfterDrain(confirmedStoppedDecision{}, err)
 			}
 			acquired++
 		}
@@ -555,7 +577,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	// deletion of another alias in the same group is bypassed and reported as
 	// success.
 	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
-		return confirmedStoppedDecision{}, err
+		return refuseAfterDrain(confirmedStoppedDecision{}, err)
 	}
 	currentAliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(currentAliases)
@@ -563,21 +585,21 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		if !stopResumes {
 			return confirmedStoppedDecision{}, nil
 		}
-		return confirmedStoppedDecision{}, appwire.Unavailable("session recovery aliases changed; retry force stop")
+		return refuseAfterDrain(confirmedStoppedDecision{}, appwire.Unavailable("session recovery aliases changed; retry force stop"))
 	}
 	for _, alias := range aliases {
 		if cfg.ResumeLocks.RecoveryState(alias) != expected[alias] {
 			if !stopResumes {
 				return confirmedStoppedDecision{}, nil
 			}
-			return confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop")
+			return refuseAfterDrain(confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop"))
 		}
 	}
 	if !stopResumes && cfg.ResumeLocks.HasActiveResume(aliases) {
 		return confirmedStoppedDecision{}, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return confirmedStoppedDecision{}, err
+		return refuseAfterDrain(confirmedStoppedDecision{}, err)
 	}
 	entries, err := rendezvous.ListStrict(cfg.RunDir)
 	if err != nil {
@@ -597,14 +619,16 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			cfg.ResumeLocks.InvalidateResumeAdmission(aliases)
 			return confirmedStoppedDecision{discoveryUncertain: true}, nil
 		}
-		return confirmedStoppedDecision{}, appwire.Unavailable(err.Error())
+		return refuseAfterDrain(confirmedStoppedDecision{}, appwire.Unavailable(err.Error()))
 	}
 	for _, entry := range entries {
 		for _, alias := range forceStopAliases(entry) {
 			if slices.Contains(aliases, alias) {
 				// An existing claim, even foreign or stale, must take the ordinary
 				// verified process path. Never turn its eventual error into success.
-				return confirmedStoppedDecision{}, nil
+				// The caller installs its own fence next, so hand the admissions
+				// this fence advanced back unless the drain canceled a Resume.
+				return refuseAfterDrain(confirmedStoppedDecision{}, nil)
 			}
 		}
 	}
