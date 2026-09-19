@@ -80,6 +80,8 @@ function reconcileRetainedDraftProjection(
 	let draft = keybindings.draft;
 	let writeUncertain = keybindings.writeUncertain;
 	let storageUnavailable = keybindings.storageUnavailable;
+	let conflict = keybindings.conflict;
+	let error = keybindings.error;
 	switch (result.outcome) {
 		case "storageUnavailable":
 			storageUnavailable = true;
@@ -88,24 +90,34 @@ function reconcileRetainedDraftProjection(
 			draft = null;
 			writeUncertain = false;
 			storageUnavailable = false;
+			conflict = false;
+			if (keybindings.storageUnavailable) error = null;
 			break;
 		case "unreadable":
 			draft = null;
 			writeUncertain = false;
 			storageUnavailable = true;
+			conflict = false;
 			break;
 		case "readable": {
 			const fields = decodeKeybindingDraftFields(result.value);
 			draft = fields.draft;
 			writeUncertain = fields.writeUncertain;
 			storageUnavailable = false;
+			conflict =
+				draft !== null &&
+				keybindings.confirmed !== null &&
+				draft.revision !== keybindings.confirmed.revision;
+			if (keybindings.storageUnavailable) error = null;
 			break;
 		}
 	}
 	if (
 		keybindings.draft === draft &&
 		keybindings.writeUncertain === writeUncertain &&
-		keybindings.storageUnavailable === storageUnavailable
+		keybindings.storageUnavailable === storageUnavailable &&
+		keybindings.conflict === conflict &&
+		keybindings.error === error
 	)
 		return snapshot;
 	return {
@@ -115,6 +127,8 @@ function reconcileRetainedDraftProjection(
 			draft,
 			writeUncertain,
 			storageUnavailable,
+			conflict,
+			error,
 		},
 	};
 }
