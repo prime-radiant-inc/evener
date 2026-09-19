@@ -27,6 +27,7 @@ import {
   styleInfoText,
 } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import { appliedInstanceWrite } from "./appliedInstanceWrite";
 import { useConnection } from "./ConnectionProvider";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
@@ -34,7 +35,23 @@ import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderInstances } from "./providerInstances";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import {
+  Action,
+  Copy,
+  ErrorMessage,
+  WarningMessage,
+  styles,
+  useColors,
+} from "./ui";
+
+// The warnings shown when the hub reports a provider-instance write it APPLIED
+// before a later step failed. They are this client's own wording: the
+// rejection's text came from the hub and can echo submitted credentials, so it
+// must never reach the screen (the same rule the catch's generic error keeps).
+const APPLIED_REMOVAL_WARNING =
+  "The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
+const APPLIED_RENAME_WARNING =
+  "The instance was renamed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
 
 export function ProvidersScreen({
   route,
@@ -118,6 +135,7 @@ function Providers({
   const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionWarning, setActionWarning] = useState<string | null>(null);
   const instance = state.data?.instances.find((item) => item.name === selected);
   useEffect(() => {
     model.start();
@@ -149,13 +167,32 @@ function Providers({
   async function act(action: () => Promise<void>, secret = false) {
     const version = editorVersion.current;
     setActionError(null);
+    setActionWarning(null);
     try {
       await action();
       if (version !== editorVersion.current) return;
       setEditingCredential(null);
       setKey("");
-    } catch {
+    } catch (err) {
       if (version !== editorVersion.current) return;
+      const applied = appliedInstanceWrite(err);
+      if (applied !== null) {
+        // The write stands - the removal deleted the instance's credential (or
+        // its config entry), or the rename is in providers.toml - so reporting
+        // the generic failure would send the user to retry an operation whose
+        // target is already gone. Close the editor and its selection the way a
+        // completed write does, re-read the provider list instead of waiting
+        // for the passive evener/auth/updated notification, and warn with our
+        // own sentence rather than the rejection's text.
+        close();
+        setActionWarning(
+          applied === "remove"
+            ? APPLIED_REMOVAL_WARNING
+            : APPLIED_RENAME_WARNING,
+        );
+        void model.refresh();
+        return;
+      }
       // Provider/transport errors may echo submitted credentials. Keep the
       // editor's error independent of upstream response text.
       setActionError(
@@ -203,6 +240,7 @@ function Providers({
               Add provider instance
             </Action>
             <ErrorMessage message={state.error} />
+            <WarningMessage message={actionWarning} />
             {state.data?.diagnostics?.map((message) => (
               <Copy key={message}>{message}</Copy>
             ))}

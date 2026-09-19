@@ -185,6 +185,13 @@ type InstanceRemoveMsg struct {
 type InstanceMutateResultMsg struct {
 	List appwire.InstanceListResponse
 	Err  error
+	// RenameTo is the new name an edit submitted (InstanceEditParams.NewName),
+	// carried on the result whether or not the edit applied. The hub answers a
+	// rename that stood before a later step failed with
+	// ErrorInstanceRenamePersisted and no listing, so the model can only follow
+	// the instance to its new name when the request's own target travels with
+	// the result.
+	RenameTo string
 }
 
 func CmdInstanceList(client *appwire.Client) tea.Cmd {
@@ -213,7 +220,7 @@ func CmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) 
 		defer cancel()
 		var resp appwire.InstanceListResponse
 		err := client.Request(ctx, appwire.MethodEvenerInstanceEdit, params, &resp)
-		return InstanceMutateResultMsg{List: resp, Err: err}
+		return InstanceMutateResultMsg{List: resp, Err: err, RenameTo: params.NewName}
 	}
 }
 

@@ -1633,12 +1633,19 @@ func supplyOf(inst registry.Instance) removalSupply {
 // deleted credential that stays deleted is a change other clients are stale
 // against even though the instance itself is carried again. On a restore that
 // does not carry the instance, the returned error folds cause, frame, and the
-// layers that could not be put back, and answers writeApplied too. frame names
-// the state - whether the entry is still authored or the removal stood - so
-// the message reads as correct English for the failure that produced it. Its
-// callers pass only the layers the failure actually deleted, so this never
-// rewrites - and never reports a failure to rewrite - a credential that is
-// still where it was.
+// layers that could not be put back, and answers writeApplied too. When the
+// failed restore took the layer that carries the instance - a stored key or
+// OAuth record (supplyStoredKey/supplyOAuth) - it also carries the
+// standing-removal discriminator, because the instance no longer resolves and
+// clients must reconcile the removal. supplyAny/supplyConfig are the
+// config-backed question: the authored entry or its provider still carries the
+// instance, so the removal did not stand and a plain applied write is reported
+// (the caller that knows the config IS gone marks removeApplied itself). frame
+// names the state - whether the entry is still authored or the removal stood -
+// so the message reads as correct English for the failure that produced it and
+// never contradicts the wire class. Its callers pass only the layers the
+// failure actually deleted, so this never rewrites - and never reports a
+// failure to rewrite - a credential that is still where it was.
 func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
 	storedKeyRestored := true
@@ -1669,7 +1676,11 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		carried = len(problems) == 0
 	}
 	if !carried {
-		return false, writeApplied(removeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))))
+		standing := fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
+		if supplies == supplyStoredKey || supplies == supplyOAuth {
+			return false, writeApplied(removeApplied(standing))
+		}
+		return false, writeApplied(standing)
 	}
 	if len(problems) > 0 {
 		// The instance is carried again, but a stray layer stayed deleted: a

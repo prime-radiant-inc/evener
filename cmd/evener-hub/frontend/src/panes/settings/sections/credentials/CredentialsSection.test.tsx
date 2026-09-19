@@ -572,9 +572,9 @@ describe("the detail sheet", () => {
   // The hub deletes the instance's credentials first and its config entry
   // after; a failure that cannot put the deleted credential back leaves the
   // removal standing. The hub marks that with its own discriminator, so the
-  // section reconciles - closes the confirmation, re-reads the listing, and
-  // tells the guided owner the instance is gone - rather than report a failed
-  // Remove whose retry targets a missing instance.
+  // section reconciles - closes the confirmation and the sheet, re-reads the
+  // listing, and tells the guided owner the instance is gone - rather than
+  // report a failed Remove whose retry targets a missing instance.
   test("an applied removal reported by the hub is reconciled, not failed", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
@@ -602,6 +602,10 @@ describe("the detail sheet", () => {
     await waitFor(() => expect(onInstanceRemoved).toHaveBeenCalledWith("personal"));
     // ...the confirmation closes instead of hanging over a removed instance...
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    // ...the sheet closes too: the listing here still holds the row (a stale or
+    // lost refresh is exactly the hazard), and a sheet left open on it would
+    // keep the removed instance's draft and let a save re-author the name...
+    expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
     // ...the listing is re-read...
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
     // ...and the hub's own message is a warning naming what was left behind,

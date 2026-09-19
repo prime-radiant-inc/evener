@@ -213,8 +213,12 @@ func TestInstances_RemoveMarksAppliedWhenTheDeletedCredentialCannotBeRestored(t 
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted", err, err)
 	}
-	if _, applied := errors.AsType[removeAppliedError](err); !applied {
-		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying credential is gone", err, err)
+	// supplyAny here: the authored entry never moved, so the instance is still
+	// configured (a Codex OAuth record carries it). The applied marker is owed
+	// for the broadcast, but the standing-removal discriminator is not - the
+	// removal did not stand.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: [providers.work] never moved", err, err)
 	}
 }
 
@@ -252,6 +256,11 @@ func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCann
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the credentials stayed deleted", err, err)
+	}
+	// The config write failed, so the authored entry is still there and the
+	// instance still resolves: a plain applied write, not a standing removal.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: [providers.work] never moved", err, err)
 	}
 }
 
@@ -310,6 +319,11 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted despite the config rollback", err, err)
+	}
+	// The config rolled back, so the instance is configured again: the removal
+	// did not stand, and the client must not be steered off a live instance.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: the config rollback left it configured", err, err)
 	}
 }
 
@@ -394,6 +408,11 @@ func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the carrying record stayed deleted", err, err)
+	}
+	// The layer that carried the instance is gone, so the removal stands: this
+	// is one of the two supplies that must carry the discriminator.
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying record is gone", err, err)
 	}
 	if info, statErr := os.Stat(authPath); statErr != nil || !info.IsDir() {
 		t.Fatalf("auth path = %v (err %v), want the record still not restored", info, statErr)

@@ -101,6 +101,39 @@ func (m hubModel) handleInstanceList(msg launchconfig.InstanceListResultMsg) (te
 
 func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
+		switch instanceAppliedErrorInfo(msg.Err) {
+		case appwire.ErrorInstanceRemoveApplied:
+			// The removal stands: the hub deleted the instance's credential
+			// (or its config entry) before a later step failed, and answered
+			// with no listing. Reconcile it - refresh the list the mutation
+			// could not answer with, let the panel clamp its selection as a
+			// removal does, and warn - rather than report a failed remove
+			// whose retry targets a missing instance while waiting on the
+			// passive evener/auth/updated notification.
+			m.err = nil
+			m.addInstanceWriteAppliedNotice(
+				"Instance removal applied",
+				"The instance was removed on the hub before a later step failed; the removal stands.",
+				msg.Err,
+			)
+			return m, m.refreshInstanceListAfterAppliedWrite()
+		case appwire.ErrorInstanceRenamePersisted:
+			// providers.toml carries the new name, so the save is not a
+			// failure. Follow the instance to the name the edit submitted -
+			// the hub's refreshed registry can still omit the new row, so the
+			// follow must not be gated on one listing - and warn.
+			m.err = nil
+			newName := strings.TrimSpace(msg.RenameTo)
+			if m.credentialsPanel != nil && newName != "" {
+				m.credentialsPanel.FollowInstance(newName)
+			}
+			summary := "The instance was renamed on the hub before a later step failed; the rename stands."
+			if newName != "" {
+				summary = fmt.Sprintf("The instance is now %q on the hub; a later step failed, but the rename stands.", newName)
+			}
+			m.addInstanceWriteAppliedNotice("Instance rename applied", summary, msg.Err)
+			return m, m.refreshInstanceListAfterAppliedWrite()
+		}
 		m.err = msg.Err
 		return m, nil
 	}
@@ -113,6 +146,61 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 		return m, cmd
 	}
 	return m, nil
+}
+
+// instanceAppliedErrorInfo returns the provider-instance applied-write
+// discriminator err carries (ErrorInstanceRemoveApplied or
+// ErrorInstanceRenamePersisted), or "" for an ordinary failure. A wire error
+// decoded by the client holds its ErrorData as a map, while one built
+// in-process holds the typed struct, so both shapes are read - the same
+// classification isQueuedDrainPartial performs for its own discriminator.
+func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return ""
+	}
+	var info appwire.ErrorInfo
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		info = data.EvenerErrorInfo
+	case map[string]any:
+		if raw, ok := data["evenerErrorInfo"].(string); ok {
+			info = appwire.ErrorInfo(raw)
+		}
+	}
+	switch info {
+	case appwire.ErrorInstanceRemoveApplied, appwire.ErrorInstanceRenamePersisted:
+		return info
+	}
+	return ""
+}
+
+// refreshInstanceListAfterAppliedWrite re-reads the instance list an applied
+// mutation could not answer with: the hub returns no listing beside the
+// discriminator. The panel owns the rows, so a model without one has nothing
+// to refresh.
+func (m hubModel) refreshInstanceListAfterAppliedWrite() tea.Cmd {
+	if m.credentialsPanel != nil && m.client != nil {
+		return launchconfig.CmdInstanceList(m.client)
+	}
+	return nil
+}
+
+// addInstanceWriteAppliedNotice reports a provider-instance write that stood
+// before a later step failed. The hub answers such a write with an applied
+// discriminator, so it is not a failure the user can retry; the notice wears
+// the warning tone rather than the error line's plain failure, and repeats the
+// hub's own account of what was left behind.
+func (m *hubModel) addInstanceWriteAppliedNotice(title, summary string, err error) {
+	m.addNotice(noticePanel{
+		Title:      title,
+		Category:   "instance",
+		Summary:    summary,
+		Source:     m.sourceLabelForNotice(),
+		Reason:     err.Error(),
+		NextAction: "The provider list was refreshed; reopen it to check the standing write.",
+		State:      "warning",
+	})
 }
 
 func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMsg) (tea.Model, tea.Cmd) {

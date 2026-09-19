@@ -428,13 +428,17 @@ export function CredentialsSection({
     } catch (err) {
       // The removal applied before it failed: the hub deleted the instance's
       // credential (or its config entry) and could not put it back, so the
-      // removal stands. Reconcile it - close the confirmation, re-read the
-      // listing, tell the owning editor the instance is gone - rather than
-      // report a failed Remove whose retry would target a missing instance.
-      // The discriminator is authoritative, so this does not wait on the
-      // listing to confirm it.
+      // removal stands. Reconcile it - close the confirmation and the sheet,
+      // re-read the listing, tell the owning editor the instance is gone -
+      // rather than report a failed Remove whose retry targets a missing
+      // instance. The discriminator is authoritative, so this does not wait on
+      // the listing to confirm it, and the selection is cleared the way the
+      // success path clears it: a sheet left open on the name keeps the removed
+      // instance's dirty draft attached to a row the user never edited, and a
+      // save from it would author a new override out of that draft.
       if (kind === "remove" && isInstanceRemoveApplied(err)) {
         setPendingConfirm(null);
+        setSelectedInstance(null);
         await refreshListingAfterMutation();
         toast.push("warning", friendlyErrorMessage(err));
         onInstanceRemoved?.(name);
