@@ -549,7 +549,11 @@ function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {
   return left.items.some((leftItem) => right.items.some((rightItem) => itemIdentityMatches(leftItem, rightItem)));
 }
 
-function turnsMatch(left: TurnModel, right: TurnModel): boolean {
+// Two turns are the same turn across a page/reread merge: matching ids, or
+// sharing an item's identity (itemIdentityMatches) — thread/turns/list is
+// itself item-paginated, so a turn can split into fragments across a page
+// boundary and carry a different id per fragment.
+export function turnsMatch(left: TurnModel, right: TurnModel): boolean {
   return left.id === right.id || turnsShareItemIdentity(left, right);
 }
 
