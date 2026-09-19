@@ -35,7 +35,7 @@ import {
   discardStoredDraft,
   UnreadableDraftError,
 } from "./draftCheckpointPort";
-import { errorText, WireError } from "./errors";
+import { errorText, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
@@ -468,17 +468,14 @@ export function decodeKeybindingDraftFields(value: unknown): {
   }
 }
 
-/** Extracts a payload the hub attached to a rejection under `key` when the
- * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
- * `current` (the server's state after a lost revision race) and the
- * post-rename durable failure's `applied` (the hub's rename already published
- * the patch and only a follow-up sync failed, so the write must be treated as
- * applied - not as a hubError that leaves editing disabled over live new
- * bindings; roborev PR #884 round 2). The discriminator is the string, never
- * the code - siblings share a code. */
+/** The conflict rejection's `current` (the server's state after a lost
+ * revision race) and the post-rename durable failure's `applied` (the hub's
+ * rename already published the patch and only a follow-up sync failed, so the
+ * write must be treated as applied - not as a hubError that leaves editing
+ * disabled over live new bindings; roborev PR #884 round 2), both decoded via
+ * wireRejectionPayload - see its own doc. */
 function rejectionPayload(error: unknown, info: string, key: string): KeybindingsOverrides | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
-  return fromWireOverrides((error.data as Record<string, unknown>)[key]);
+  return wireRejectionPayload(error, info, key, fromWireOverrides);
 }
 
 /** What applying a confirmed payload does to the host's bindings. The
