@@ -10,6 +10,7 @@ import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
+  foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
   mergeOlderItemPage,
@@ -4277,6 +4278,25 @@ function recordStringifyOutputLengths(): { lengths: number[]; restore: () => voi
   });
   return { lengths, restore: () => spy.mockRestore() };
 }
+
+test("foldWarningParams scans each stored warning string once", () => {
+  const scannedLengths: number[] = [];
+  const originalExec = RegExp.prototype.exec;
+  const spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (this: RegExp, value: string) {
+    if (this.source === "\\S") scannedLengths.push(value.length);
+    return originalExec.call(this, value);
+  });
+
+  let folded: ReturnType<typeof foldWarningParams>;
+  try {
+    folded = foldWarningParams({ threadId: "thr_t", ref: "ref_t", title: "Title", hint: "Hint", source: "Source" });
+  } finally {
+    spy.mockRestore();
+  }
+
+  expect(folded).toEqual({ text: "", title: "Title", hint: "Hint", source: "Source" });
+  expect(scannedLengths).toEqual(["Title".length, "Hint".length, "Source".length]);
+});
 
 test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
   let model = warningTurnModel();

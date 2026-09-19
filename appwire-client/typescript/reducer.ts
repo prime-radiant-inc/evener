@@ -994,13 +994,18 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 // here. `message` wins when non-blank; otherwise `warning` counts when it is
 // itself a non-blank string, or an object (and not an array) whose own
 // `message` is a non-blank string. Every other shape carries no message.
+// Returned strings are bounded from their first non-whitespace content so the
+// fold does not scan and bound the selected message a second time.
 function warningMessage(params: WarningParams): string {
-  if (hasWarningText(params.message)) return params.message;
+  const message = boundedWarningText(params.message);
+  if (message !== undefined) return message;
   const warning = params.warning;
-  if (hasWarningText(warning)) return warning;
+  const warningText = boundedWarningText(warning);
+  if (warningText !== undefined) return warningText;
   if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
     const nested = (warning as { message?: unknown }).message;
-    if (hasWarningText(nested)) return nested;
+    const nestedMessage = boundedWarningText(nested);
+    if (nestedMessage !== undefined) return nestedMessage;
   }
   return "";
 }
@@ -1056,7 +1061,7 @@ const RAW_WARNING_FRAME_MAX_NODES = 500;
 // `start` lets a caller bound a WINDOW rather than always the leading
 // prefix: the string from `start` onward is what's kept, sliced in one
 // already-bounded copy (at most maxCodePoints * 2 UTF-16 units), never the
-// whole `start`-to-end remainder — boundedContent below relies on this to
+// whole `start`-to-end remainder — boundedWarningText below relies on this to
 // stay bounded even when `start` is itself deep into a multi-megabyte
 // string.
 function boundedPrefix(s: string, maxCodePoints: number, start = 0): string {
@@ -1156,9 +1161,9 @@ function boundedCodePoints(s: string): string {
 // index without copying anything, then boundedPrefix takes its own single,
 // already-bounded slice starting there, so the window kept always contains
 // the actual content instead of the padding in front of it. undefined when
-// value isn't a non-blank string at all — hasWarningText above and
-// boundedContent below are both built on this one walk, instead of each
-// asking "is there content" and "bound it" as two separate scans. The fast
+// value isn't a non-blank string at all — hasWarningText and the fold are both
+// built on this one walk, instead of each asking "is there content" and
+// "bound it" as two separate scans. The fast
 // path only skips leading padding when truncation is actually needed
 // (matching boundedPrefix's own fast path): a short value already within the
 // bound is returned unchanged, leading whitespace included, since nothing
@@ -1169,14 +1174,6 @@ function boundedWarningText(value: unknown): string | undefined {
   if (match === null) return undefined;
   if (value.length <= RAW_WARNING_FRAME_MAX_CHARS) return value;
   return boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS, match.index);
-}
-
-// boundedContent is boundedWarningText for a value the caller already knows
-// is a plain string and wants back verbatim (never undefined) when it's
-// blank — the `text` field's own contract, since WarningFold.text is a
-// string, not string-or-absent like title/hint/source.
-function boundedContent(s: string): string {
-  return boundedWarningText(s) ?? s;
 }
 
 function rawWarningFrame(params: WarningParams): string {
@@ -1200,29 +1197,26 @@ export interface WarningFold {
 }
 
 export function foldWarningParams(params: WarningParams): WarningFold {
-  const text =
-    warningMessage(params) ||
-    (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params));
+  const text = warningMessage(params);
+  const title = boundedWarningText(params.title);
+  const hint = boundedWarningText(params.hint);
+  const source = boundedWarningText(params.source);
+  const foldedText = text || (title !== undefined || hint !== undefined ? "" : rawWarningFrame(params));
   return {
-    // Bounded even though rawWarningFrame's own branch already is: a huge
-    // message (warningMessage's own return) is a separate, previously
-    // unbounded path into the model — one call here covers both. Stored
-    // warning strings are the bounded prefix of the CONTENT, never of the
-    // padding in front of it — boundedContent, not boundedCodePoints, keeps
-    // that true when a value has more leading blank code points than the
-    // bound itself.
-    text: boundedContent(text),
+    // warningMessage and rawWarningFrame already bound the selected text;
+    // keeping that result avoids rescanning it during the fold.
+    text: foldedText,
     // Blank is absent too, not just "not a string" — hasWarningText's own
     // reading, which every consumer must apply anyway. Normalizing it here
     // means a future reader is never one missed hasWarningText call away
     // from rendering blank content. Bounded for the same reason as text:
     // an oversized title/hint/source reaching ItemModel.warning verbatim is
     // the same class of vector rawWarningFrame closes for the fallback.
-    // boundedWarningText answers both in the one walk, rather than
-    // hasWarningText's scan followed by boundedContent's own second one.
-    title: boundedWarningText(params.title),
-    hint: boundedWarningText(params.hint),
-    source: boundedWarningText(params.source),
+    // These values are reused for the title/hint presence check above, so
+    // each field is scanned and bounded once.
+    title,
+    hint,
+    source,
   };
 }
 
