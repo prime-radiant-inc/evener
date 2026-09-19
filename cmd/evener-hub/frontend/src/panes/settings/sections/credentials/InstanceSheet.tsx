@@ -309,14 +309,20 @@ export function InstanceSheet({
   const [draft, setDraft] = useState<InstanceDraft | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // The instance a rename of this sheet's own went out for, held for the span
-  // of the request: the old name leaves the store when the response lands, a
-  // beat before the section re-selects the new one, so for that beat the
-  // sheet's subject is in neither place. Keeping it here is what carries the
-  // sheet across - an `open` that dips false unmounts the panel, replaying
-  // its slide-in from off-screen and throwing focus out of the form - and it
-  // is also the guard that keeps that vanish from closing the sheet.
-  const [renamingFrom, setRenamingFrom] = useState<InstanceEntry | undefined>(undefined);
+  // The rename of this sheet's own that went out, held with the request that
+  // carries its destination. The old name leaves the store when the response
+  // lands, a beat before the section re-selects the new one, so for that beat
+  // the sheet's subject is in neither place; keeping the entry is what carries
+  // the sheet across, and an `open` that dips false would unmount the panel,
+  // replaying its slide-in from off-screen and throwing focus out of the form.
+  // The held entry is also the identity the listing's row at the destination
+  // must answer to: the destination name is not reserved, so a row there that
+  // is not this rename's own (an implicit curated row the environment
+  // re-derived, another instance that took the freed name) must not become the
+  // sheet's subject - the held entry stays until the expected row appears.
+  const [renamingFrom, setRenamingFrom] = useState<{ entry: InstanceEntry; params: InstanceEditParams } | undefined>(
+    undefined,
+  );
   // The name the section has the sheet on right now, readable from a save
   // still in flight: handleSave captured `name` from the render it ran in, and
   // the user is free to dismiss the sheet or pick another row before the
@@ -330,7 +336,15 @@ export function InstanceSheet({
   const seededIdentity = useRef<string | null>(null);
 
   const stored = name === null ? undefined : instances.find((i) => i.name === name);
-  const instance = stored ?? renamingFrom;
+  // The section is on this rename's destination. The listing's row there is
+  // this rename's own only when it passes renamedInstanceLanded's identity
+  // checks; while it does not - absent, an impostor, or an implicit
+  // re-derivation - the held entry stays the subject so edits never target the
+  // wrong configuration.
+  const atRenameDestination = renamingFrom !== undefined && name === renamingFrom.params.newName;
+  const renameLandedHere =
+    atRenameDestination && renamedInstanceLanded(instances, renamingFrom.entry, renamingFrom.params) === name;
+  const instance = atRenameDestination && !renameLandedHere ? renamingFrom.entry : (stored ?? renamingFrom?.entry);
   const template = instance === undefined ? undefined : availableProviders.find((p) => p.id === instance.providerId);
 
   function seed(inst: InstanceEntry): void {
@@ -364,23 +378,29 @@ export function InstanceSheet({
   useEffect(() => {
     if (name !== null && instance === undefined) onClose();
   }, [name, instance, onClose]);
-  // The section moved the selection: the held instance has done its job once
-  // the section is on a name the listing can carry, and holding it longer
-  // would keep a ghost on screen. It has NOT done its job when the selection
-  // moved to a name the listing does not carry yet - a rename the hub persisted
-  // while its registry is on a fallback listing omits the new row, and dropping
-  // the held entry then leaves `instance` undefined, so the sheet closes on
-  // itself the moment it steers. Hold it until the listing catches up (stored
-  // appears), the section moves to a different name, or the sheet is dismissed.
-  // `name === renamingFrom?.name` is the rename still in flight: the sheet is
-  // on the old name and the held entry is what carries the store's own gap
-  // between the write landing and the section re-selecting, so a listing churn
-  // under that same name must not release it.
+  // The section moved the selection: the held entry has done its job once the
+  // listing can stand in for it, and holding it longer would keep a ghost on
+  // screen. On this rename's destination that means the listing's row must be
+  // this rename's own row (renamedInstanceLanded): an impostor - implicit,
+  // stale, or a different instance wearing the freed name - or an absent row
+  // keeps the held entry as the sheet's subject. Anywhere else the held entry
+  // is released once the store carries the selected name; it is kept while the
+  // rename is still in flight under the held name, which is the gap between the
+  // write landing and the section re-selecting.
   useEffect(() => {
-    if (name === null || (stored !== undefined && name !== renamingFrom?.name)) {
+    if (renamingFrom === undefined) return;
+    if (name === null) {
       setRenamingFrom(undefined);
+      return;
     }
-  }, [name, stored, renamingFrom]);
+    if (name === renamingFrom.params.newName) {
+      if (renamedInstanceLanded(instances, renamingFrom.entry, renamingFrom.params) === name) {
+        setRenamingFrom(undefined);
+      }
+      return;
+    }
+    if (name !== renamingFrom.entry.name && stored !== undefined) setRenamingFrom(undefined);
+  }, [name, stored, instances, renamingFrom]);
   // A layout effect, not the passive one above: a response can land between
   // the commit that dismissed the sheet and a passive effect, and a mirror
   // that is one beat stale lets exactly the save this guards slip through.
@@ -441,7 +461,7 @@ export function InstanceSheet({
     }
     setFormError(null);
     setBusy(true);
-    if (params.newName !== undefined) setRenamingFrom(instance);
+    if (params.newName !== undefined) setRenamingFrom({ entry: instance, params });
     try {
       // The store's verdict, not the response, says what landed: a refresh
       // that started after this save answers first, and the store discards

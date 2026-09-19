@@ -2322,6 +2322,112 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
   });
 
+  // The rename frees the old name, and the destination name is not reserved:
+  // another instance can wear it - an implicit curated row the environment
+  // re-derived there, or a different authored instance that took the held
+  // original's place. The held entry must stay the sheet's subject until the
+  // listing's row at the destination is this rename's own, or edits typed for
+  // the renamed instance land on a stranger's configuration.
+  test("a persisted rename does not adopt an impostor row at the destination name", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    // The impostor: an implicit row re-derived under the freed name, with a
+    // different endpoint. It is not the row this rename authored.
+    const IMPOSTOR = instance({
+      name: "work2",
+      providerId: "openai",
+      baseUrl: "https://impostor.example.test",
+      implicit: true,
+      activeSource: "env:WORK2_KEY",
+    });
+    let listing: InstanceListResponse = LIST;
+    fake.on("evener/instance/list", () => listing);
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    await screen.findByText(/OAuth record not read/);
+
+    // An impostor appears at the destination. The sheet stays the held
+    // original: it neither titles itself with the impostor nor adopts its
+    // values.
+    listing = { instances: [IMPOSTOR, PERSONAL], availableProviders: [] };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const held = screen.getByRole("dialog", { name: "work" });
+    expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
+    expect((within(held).getByLabelText("Base URL") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByDisplayValue("https://impostor.example.test")).toBeNull();
+
+    // The real renamed row appears: the sheet follows to the new name.
+    listing = { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+  });
+
+  // The same hazard with an authored row: a different instance that took the
+  // freed name (renamed onto it, or recreated under it). The identity checks
+  // reject it on its own fields, not only on implicitness.
+  test("a persisted rename does not adopt a different authored row at the destination name", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    const IMPOSTOR = instance({
+      name: "work2",
+      providerId: "openai",
+      baseUrl: "https://impostor.example.test",
+      activeSource: "store",
+    });
+    let listing: InstanceListResponse = LIST;
+    fake.on("evener/instance/list", () => listing);
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    await screen.findByText(/OAuth record not read/);
+
+    listing = { instances: [IMPOSTOR, PERSONAL], availableProviders: [] };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const held = screen.getByRole("dialog", { name: "work" });
+    expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
+    expect((within(held).getByLabelText("Base URL") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByDisplayValue("https://impostor.example.test")).toBeNull();
+
+    listing = { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+  });
+
   // A refusal carries no such discriminator, so it stays the plain save failure
   // it was, with the sheet left where it was.
   test("a rename error without the persisted discriminator stays a plain failure", async () => {
