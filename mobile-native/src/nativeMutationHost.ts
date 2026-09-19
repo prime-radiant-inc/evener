@@ -1,0 +1,67 @@
+import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
+import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import {
+	NativeMutationRuntime,
+	type NativeMutationReadLease,
+} from "./nativeMutationRuntime";
+
+export interface NativeMutationHost {
+	readonly submitter: ConversationMutationSubmitter;
+	start(): Promise<void>;
+	beginRead(
+		targetRef: string,
+		expectedThreadId?: string,
+	): NativeMutationReadLease | undefined;
+	reconcileRead(
+		lease: NativeMutationReadLease | undefined,
+		response: ThreadReadResponse,
+	): Promise<"reconciled" | "blocked" | "stale">;
+	dispose(): void;
+}
+
+export function createNativeMutationHost(
+	runtime: NativeMutationRuntime,
+	hubId: string,
+	targetRef: string,
+	client: AppwireClientLike,
+): NativeMutationHost {
+	let unregister: (() => void) | undefined;
+	let startPromise: Promise<void> | undefined;
+	let lifecycleGeneration = 0;
+	return {
+		submitter: runtime,
+		start: () => {
+			if (startPromise !== undefined) return startPromise;
+			const generation = lifecycleGeneration;
+			unregister = runtime.registerTarget(hubId, targetRef, client);
+			startPromise = runtime.start().catch((error) => {
+				if (lifecycleGeneration === generation) {
+					unregister?.();
+					unregister = undefined;
+					startPromise = undefined;
+				}
+				throw error;
+			});
+			return startPromise;
+		},
+		beginRead: (readTargetRef, expectedThreadId) =>
+			unregister === undefined
+				? undefined
+				: runtime.beginAuthoritativeRead(
+						hubId,
+						readTargetRef,
+						client,
+						expectedThreadId,
+					),
+		reconcileRead: (lease, response) =>
+			lease === undefined
+				? Promise.resolve("stale")
+				: runtime.reconcileAuthoritativeRead(lease, response),
+		dispose: () => {
+			lifecycleGeneration += 1;
+			unregister?.();
+			unregister = undefined;
+			startPromise = undefined;
+		},
+	};
+}
