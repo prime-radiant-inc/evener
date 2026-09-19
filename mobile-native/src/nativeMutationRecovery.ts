@@ -17,6 +17,13 @@ interface RecoverableImage {
 	name?: string;
 }
 
+const RECOVERABLE_METHODS = new Set([
+	"turn/start",
+	"turn/queue",
+	"turn/steer",
+	"turn/drainAsSteer",
+]);
+
 function recoverableImages(input: unknown[]): RecoverableImage[] | undefined {
 	const images: RecoverableImage[] = [];
 	for (const item of input) {
@@ -60,7 +67,14 @@ function validAttachment(value: unknown): value is MutationAttachmentRef {
 export function recoveryToNativeDraft(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
 ): RecoveredNativeDraft | null {
-	if (typeof record.composerText !== "string" || !Array.isArray(record.attachments)) return null;
+	if (
+		record.recoveryKind !== "rejected" ||
+		record.state !== "submitting" ||
+		!RECOVERABLE_METHODS.has(record.method) ||
+		typeof record.composerText !== "string" ||
+		!Array.isArray(record.attachments)
+	)
+		return null;
 	if (!isRecord(record.payload) || !Array.isArray(record.payload.input)) return null;
 	if (record.attachments.length > MAX_ATTACHMENTS) return null;
 

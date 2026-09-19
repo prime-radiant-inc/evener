@@ -86,8 +86,33 @@ describe("recoveryToNativeDraft", () => {
 		]);
 	});
 
-	test.each([
+	test("uses durable metadata when optional wire image fields are absent", () => {
+		const result = recoveryToNativeDraft(
+			recovery({
+				composerText: "[image 1]",
+				payload: { input: [{ type: "image", data: "AQID" }] },
+				attachments: [
+					{ presentationId: "stored-image", marker: 1, mediaType: "image/png", name: "stored.png" },
+				],
+			}),
+		);
+
+		expect(result?.images).toEqual([
+			{
+				id: "stored-image",
+				marker: 1,
+				mediaType: "image/png",
+				name: "stored.png",
+				data: "AQID",
+			},
+		]);
+	});
+
+	const invalidCases: Array<[string, Partial<MutationRecoveryRecord<MutationAttachmentRef>>]> = [
 		["missing composer text", { composerText: undefined }],
+		["orphaned recovery", { recoveryKind: "orphaned" }],
+		["interrupt recovery", { method: "turn/interrupt" }],
+		["blocked recovery state", { state: "blockedUnknown" }],
 		[
 			"unsupported skill item",
 			{ payload: { input: [{ type: "skill", name: "review" }] } },
@@ -106,7 +131,9 @@ describe("recoveryToNativeDraft", () => {
 				attachments: [{ presentationId: "image-1", marker: 1, mediaType: "image/png", name: "one" }],
 			},
 		],
-	])("rejects %s without inventing recovery data", (_name, overrides) => {
+	];
+
+	test.each(invalidCases)("rejects %s without inventing recovery data", (_name, overrides) => {
 		expect(recoveryToNativeDraft(recovery(overrides))).toBeNull();
 	});
 });
