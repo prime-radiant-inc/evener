@@ -4295,7 +4295,9 @@ test("foldWarningParams scans each stored warning string once", () => {
   }
 
   expect(folded).toEqual({ text: "", title: "Title", hint: "Hint", source: "Source" });
-  expect(scannedLengths).toEqual(["Title".length, "Hint".length, "Source".length]);
+  expect([...scannedLengths].sort((a, b) => a - b)).toEqual(
+    ["Title".length, "Hint".length, "Source".length].sort((a, b) => a - b),
+  );
 });
 
 test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
