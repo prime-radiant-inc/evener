@@ -180,6 +180,12 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := fenceDescendants(ctx); err != nil {
 		return err
 	}
+	// preCancellationDescendants are the descendant fences installed before
+	// the drain below: a post-drain refusal that canceled nothing rejects
+	// exactly these alongside its own recovery fence. The post-termination
+	// scan below appends to descendantFences only after termination was
+	// attempted; its fences are never rejected.
+	preCancellationDescendants := slices.Clone(descendantFences)
 	aliases := forceStopAliases(entry)
 	// The deletion fence covers the entry-active Resume's ownership group as
 	// well: a record naming one of its aliases must refuse this request the
@@ -255,10 +261,18 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// A refusal after the drain keeps the fence's advance only when the drain
 	// actually stopped a Resume. A drain that canceled nothing leaves the
 	// refusal admission-neutral, the way the pre-cancellation refusals above
-	// are: the epochs and the connection-level sequence this fence advanced
-	// roll back before the release below.
+	// are: the epochs and the connection-level sequences this fence advanced
+	// — and the pre-cancellation descendant fences advanced — roll back
+	// before the release below. The post-termination scan's fences are
+	// excluded: termination was attempted and the stop's follow-through must
+	// stale connections admitted before it.
 	refuseStop := func(err error) error {
 		if !canceledResumes {
+			// The refusal canceled nothing, so it must not leave the descendant
+			// fences' advance behind either.
+			for _, fence := range preCancellationDescendants {
+				fence.Reject()
+			}
 			fenceRecovery.Reject()
 		}
 		return err

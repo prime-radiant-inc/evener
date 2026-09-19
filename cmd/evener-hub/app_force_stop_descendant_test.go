@@ -394,3 +394,59 @@ func TestForceStopRefusalRejectsDescendantFences(t *testing.T) {
 		})
 	}
 }
+
+// TestForceStopPostDrainRefusalRejectsPreCancellationDescendantFences is the
+// Medium RoboRev reported against the post-drain refusal path: refuseStop
+// rejected only the main recovery fence when the drain canceled nothing, so
+// the descendant fences installed before the cancellation stayed advanced and
+// a refused stop permanently staled existing descendant clients — their Epoch
+// and connection-level recovery sequence kept the advance the refusal should
+// have rolled back, exactly as TestForceStopRefusedAfterUncanceledDrainRollsBackFence
+// pins for the main fence. A post-drain refusal that canceled nothing must
+// reject the fences installed before the drain alongside its own; fences the
+// post-termination scan installs later stay non-rejected.
+func TestForceStopPostDrainRefusalRejectsPreCancellationDescendantFences(t *testing.T) {
+	stateDir, runDir := t.TempDir(), t.TempDir()
+	parent := buildRPCParentSession(t, stateDir)
+	child := buildUpgradeDelegate(t, stateDir, parent)
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: parent, ThreadID: parent, StateDir: stateDir, StartedAt: time.Now()})
+	locks := hubcore.NewResumeLocks()
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := deletionTargetState
+	calls := 0
+	// The request's entry fence check (call 1) and the pre-cancellation check
+	// under the alias reservations (call 2) pass; the deletion publishes after
+	// the uncanceled drain, so the post-ownership re-validation (call 3)
+	// refuses through refuseStop.
+	deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+		calls++
+		return hubcore.DeletionStateDeleting, calls > 2
+	}
+	defer func() { deletionTargetState = original }()
+	var events []string
+	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, ResumeLocks: locks, DeletionStore: store,
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			return &forceStopProcess{events: &events}, nil
+		})}
+	beforeParent, beforeChild := locks.RecoveryState(parent), locks.RecoveryState(child)
+	stopped := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + parent}, nil)
+	if stopped == nil {
+		t.Fatal("force stop with a post-drain deletion succeeded")
+	}
+	if !isTargetDeletedError(stopped) {
+		t.Fatalf("force stop error = %v, want the target-deleted refusal", stopped)
+	}
+	if after := locks.RecoveryState(child); after != beforeChild {
+		t.Fatalf("refused force stop left the descendant fence applied: before=%+v, after=%+v", beforeChild, after)
+	}
+	if after := locks.RecoveryState(parent); after != beforeParent {
+		t.Fatalf("refused force stop left the recovery fence applied: before=%+v, after=%+v", beforeParent, after)
+	}
+	if slices.Contains(events, "kill") {
+		t.Fatalf("a refused force stop reached process control: %v", events)
+	}
+}
