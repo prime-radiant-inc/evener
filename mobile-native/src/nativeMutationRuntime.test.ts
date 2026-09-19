@@ -108,6 +108,53 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.stop();
 });
 
+test("readTargetRecords and storage subscriptions expose a scoped rejection without changing origin identity", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+		getOwnClientId: () => "origin-a",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		throw new WireError("turn is not active", -32000, {
+			clientMutationId,
+			mutationOutcome: "notAccepted",
+		});
+	});
+	runtime.registerTarget("hub-a", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => {
+		changes.push([...targetRefs]);
+	});
+
+	await runtime.submit({ ...request("send"), hubId: "hub-a" });
+	expect(changes).toEqual([[targetKey]]);
+	const lease = runtime.beginAuthoritativeRead("hub-a", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getRecovery("mutation-1")).toMatchObject({
+			targetRef: targetKey,
+			originClientId: "origin-a",
+			recoveryKind: "rejected",
+		});
+	});
+
+	const snapshot = await runtime.readTargetRecords(targetKey);
+	expect(snapshot.outbox).toEqual([]);
+	expect(snapshot.optimistic).toEqual([]);
+	expect(snapshot.recovery).toMatchObject([{ clientMutationId: "mutation-1", targetRef: targetKey }]);
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+
+	const changeCount = changes.length;
+	unsubscribe();
+	await runtime.submit({ ...request("send"), hubId: "hub-a" });
+	expect(changes).toHaveLength(changeCount);
+	await runtime.stop();
+});
+
 test.each([
 	["non-authoritative", { authoritative: false }],
 	["not-loaded", { status: "notLoaded" }],
