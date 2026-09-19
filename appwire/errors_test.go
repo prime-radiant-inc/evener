@@ -28,6 +28,7 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"HubLaunchError", HubLaunchError("launch"), -32014, ErrorHubLaunch, "launch"},
 		{"QueuedDrainPartial", QueuedDrainPartial("partial"), -32013, ErrorQueuedDrainPartial, "partial"},
 		{"InstanceRenamePersisted", InstanceRenamePersisted("leftover"), -32603, ErrorInstanceRenamePersisted, "leftover"},
+		{"InstanceRemoveApplied", InstanceRemoveApplied("leftover"), -32603, ErrorInstanceRemoveApplied, "leftover"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.err.Code != c.wantCode {

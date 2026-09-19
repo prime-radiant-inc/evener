@@ -26,7 +26,7 @@
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
-**ChatGPT / Codex** sign-in are separate connections. For the latter, choose its
+**OpenAI Codex** sign-in are separate connections. For the latter, choose its
 sign-in route and follow the device or browser/redirect instructions instead of
 pasting an API key. Availability depends on your account and provider terms.
 

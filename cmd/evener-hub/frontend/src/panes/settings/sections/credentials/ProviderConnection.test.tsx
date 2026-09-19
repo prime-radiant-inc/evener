@@ -111,6 +111,32 @@ test("popular grid offers OpenAI Codex and starts its sign-in", async () => {
   expect(starts[0]!.params).toMatchObject({ provider: "openai-codex" });
 });
 
+// Codex's auth modes are oauth-only, so the key link has nothing to point at -
+// but the billing line is exactly the help a subscription user needs: it says
+// to sign in instead of pasting a key. It must render even though the provider
+// never offers the API-key branch.
+test("an oauth-only provider renders its billing line without a key link", async () => {
+  const { user } = setup();
+  await choose(user, "OpenAI Codex");
+  expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+  expect(
+    screen.getByText("Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key."),
+  ).toBeTruthy();
+});
+
+// The apiKey providers keep both halves: the key link and the billing line.
+test("an apiKey provider still renders its key link and its billing line", async () => {
+  const { user } = setup();
+  await choose(user, "Anthropic");
+  expect(screen.getByRole("link", { name: "Get an API key" }).getAttribute("href")).toBe(
+    "https://console.anthropic.com/settings/keys",
+  );
+  expect(
+    screen.getByText("Claude subscriptions do not include API billing. API usage is billed separately."),
+  ).toBeTruthy();
+});
+
 test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
   const custom = provider("constructor", "Custom endpoint");
   const { user } = setup({ instances: [], availableProviders: [custom] });

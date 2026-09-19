@@ -37,6 +37,13 @@ const (
 	// name is gone and re-issuing the rename can only fail on a missing
 	// instance.
 	ErrorInstanceRenamePersisted ErrorInfo = "instanceRenamePersisted"
+	// ErrorInstanceRemoveApplied marks a provider-instance removal whose
+	// credential deletion APPLIED (the instance's stored key or OAuth record is
+	// gone, or its config entry is) before a later step failed; the message
+	// names what was left behind. The removal stands, so clients reconcile it
+	// - dropping the confirmation and any state retained for the name - rather
+	// than report a failed remove whose retry targets a missing instance.
+	ErrorInstanceRemoveApplied ErrorInfo = "instanceRemoveApplied"
 )
 
 type MutationOutcome string
@@ -203,5 +210,18 @@ func InstanceRenamePersisted(message string) WireError {
 		Code:    CodeInternalError,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRenamePersisted},
+	}
+}
+
+// InstanceRemoveApplied reports a provider-instance removal that stood but
+// could not put back what it deleted: the config entry is gone, or a credential
+// it removed stayed deleted, so the instance no longer resolves. The message
+// names what was left; the removal itself is not a failure the caller can
+// retry.
+func InstanceRemoveApplied(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemoveApplied},
 	}
 }

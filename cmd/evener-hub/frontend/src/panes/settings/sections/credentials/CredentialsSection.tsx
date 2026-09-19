@@ -33,6 +33,7 @@ import {
   fromEnvironment,
   groupByProvider,
   isEndpointConflict,
+  isInstanceRemoveApplied,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -425,6 +426,20 @@ export function CredentialsSection({
       }
       setPendingConfirm(null);
     } catch (err) {
+      // The removal applied before it failed: the hub deleted the instance's
+      // credential (or its config entry) and could not put it back, so the
+      // removal stands. Reconcile it - close the confirmation, re-read the
+      // listing, tell the owning editor the instance is gone - rather than
+      // report a failed Remove whose retry would target a missing instance.
+      // The discriminator is authoritative, so this does not wait on the
+      // listing to confirm it.
+      if (kind === "remove" && isInstanceRemoveApplied(err)) {
+        setPendingConfirm(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", friendlyErrorMessage(err));
+        onInstanceRemoved?.(name);
+        return;
+      }
       if (recoverStaleListing(err)) {
         // The confirmation holds the destination fingerprint the row showed when
         // it was opened, which is the connection that is gone: a retry against

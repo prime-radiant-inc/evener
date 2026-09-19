@@ -1207,6 +1207,21 @@ func instanceRenameError(err error) (bool, error) {
 	return false, err
 }
 
+// instanceRemoveError is what the Remove handler returns to the client. A
+// removal whose credential deletion applied before a later step failed carries
+// ErrorInstanceRemoveApplied, so the client reconciles the standing removal -
+// closing the confirmation, re-reading the listing, and dropping what it
+// retained for the name - instead of presenting a failed remove whose retry
+// targets an instance that is already gone. Every other failure is returned
+// unchanged. The bool says whether the removal stood, which is also what the
+// handler broadcasts on.
+func instanceRemoveError(err error) (bool, error) {
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		return true, appwire.InstanceRemoveApplied(err.Error())
+	}
+	return false, err
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1251,7 +1266,18 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.Remove(params) })
+		return instanceWrite(func() error {
+			// A removal whose credential deletion applied before it failed is a
+			// write that stands, so it is announced (writeApplied, which
+			// instanceWrite broadcasts on) and the error goes back carrying
+			// ErrorInstanceRemoveApplied, so the client that asked reconciles the
+			// standing removal rather than a failed remove it would retry.
+			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
+			if applied {
+				return writeApplied(wireErr)
+			}
+			return wireErr
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(func() error { return instancesController.SetDefault(params) })

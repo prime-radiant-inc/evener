@@ -109,6 +109,7 @@ var frameErrorInfos = []ErrorInfo{
 	ErrorInvalidParams, ErrorMethodNotFound, ErrorProviderUnavailable,
 	ErrorSessionUnavailable, ErrorConflict, ErrorActionUnavailable,
 	ErrorHubLaunch, ErrorQueuedDrainPartial, ErrorInternal,
+	ErrorInstanceRemoveApplied,
 }
 
 // generateError builds a WireError-shaped object: an int code and string message

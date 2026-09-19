@@ -62,6 +62,27 @@ export function isInstanceRenamePersisted(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
 }
 
+// ErrorInstanceRemoveApplied is the hub's discriminator for a provider-instance
+// removal that APPLIED before a later step failed
+// (appwire.ErrorInstanceRemoveApplied, appwire/errors.go): the instance's
+// credential deletion (or its config entry) reached the store, so the removal
+// stands and the hub's message names what was left behind. Clients close the
+// confirmation, re-read the listing, and drop any state retained for the name
+// rather than report a failed remove whose retry targets a missing instance.
+// The binding test (errors.test.ts) reads the Go constant, so a hub-side rename
+// breaks there instead of silently leaving the standing removal read as a plain
+// failure.
+export const ErrorInstanceRemoveApplied = "instanceRemoveApplied";
+
+// isInstanceRemoveApplied reports whether a rejection is the hub reporting a
+// provider-instance removal that APPLIED before a later step failed
+// (ErrorInstanceRemoveApplied above). The discriminator is that string, never
+// the code - siblings share the code - so this is the one definition every
+// client matches against.
+export function isInstanceRemoveApplied(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemoveApplied;
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

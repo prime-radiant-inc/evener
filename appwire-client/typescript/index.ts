@@ -139,6 +139,7 @@ export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./e
 export {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   errorKind,
   errorText,
@@ -147,6 +148,7 @@ export {
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
   isHubLaunchError,
+  isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isStaleCursorError,
   mutationErrorData,

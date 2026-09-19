@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,23 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	if !strings.Contains(err.Error(), "the removal stands in the config") {
 		t.Fatalf("evener/instance/remove = %v, want the double failure this test is about", err)
 	}
+	// The removal stood, so the client is told so through the wire data rather
+	// than left to retry a failed remove against an instance that is gone.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode remove-applied error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRemoveApplied {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRemoveApplied)
+	}
 	waitForAuthUpdatedBroadcast(t, client, "a removal whose rollback could not be written")
 }
 
@@ -194,6 +212,9 @@ func TestInstances_RemoveMarksAppliedWhenTheDeletedCredentialCannotBeRestored(t 
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted", err, err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying credential is gone", err, err)
 	}
 }
 

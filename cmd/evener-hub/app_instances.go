@@ -1170,6 +1170,29 @@ func (e renamePersistedError) Error() string { return e.err.Error() }
 
 func (e renamePersistedError) Unwrap() error { return e.err }
 
+// removeAppliedError is a removal whose credential deletion reached the store
+// (or whose config entry left it) before a later step failed: the instance's
+// stored key or OAuth record is gone, so the removal stands even though the
+// call returns an error. Every other client's list is stale by exactly as much
+// as after a clean removal, so the RPC handler broadcasts on it and still
+// returns it, leaving the client that asked with what was left behind to
+// reconcile rather than retry against a missing instance.
+type removeAppliedError struct{ err error }
+
+func (e removeAppliedError) Error() string { return e.err.Error() }
+
+func (e removeAppliedError) Unwrap() error { return e.err }
+
+// removeApplied wraps err as a standing removal unless it already carries the
+// discriminator - restoreFailedRemoval marks its own result, and the config
+// rollback path wraps that result again.
+func removeApplied(err error) error {
+	if _, ok := errors.AsType[removeAppliedError](err); ok {
+		return err
+	}
+	return removeAppliedError{err}
+}
+
 // moveCredentials carries an instance's stored key and OAuth record to its
 // new name after a rename. It runs once providers.toml is written and
 // reloaded, with credMu held by the caller: the config is already renamed, so
@@ -1509,7 +1532,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config", supplyAny)
-			return writeApplied(standingErr)
+			return writeApplied(removeApplied(standingErr))
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1646,7 +1669,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		carried = len(problems) == 0
 	}
 	if !carried {
-		return false, writeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and ")))
+		return false, writeApplied(removeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))))
 	}
 	if len(problems) > 0 {
 		// The instance is carried again, but a stray layer stayed deleted: a

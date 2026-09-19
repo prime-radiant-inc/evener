@@ -2,6 +2,7 @@ import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListR
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
@@ -566,6 +567,47 @@ describe("the detail sheet", () => {
     // The row is gone on the host: re-issuing the remove could only fail, so
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+  });
+
+  // The hub deletes the instance's credentials first and its config entry
+  // after; a failure that cannot put the deleted credential back leaves the
+  // removal standing. The hub marks that with its own discriminator, so the
+  // section reconciles - closes the confirmation, re-reads the listing, and
+  // tells the guided owner the instance is gone - rather than report a failed
+  // Remove whose retry targets a missing instance.
+  test("an applied removal reported by the hub is reconciled, not failed", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const HUB_MESSAGE =
+      'removing "personal" failed: the instance is still configured, but its stored key could not be restored (restore refused)';
+    fake.on("evener/instance/remove", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemoveApplied });
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // The owning editor hears the instance is gone...
+    await waitFor(() => expect(onInstanceRemoved).toHaveBeenCalledWith("personal"));
+    // ...the confirmation closes instead of hanging over a removed instance...
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    // ...the listing is re-read...
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+    // ...and the hub's own message is a warning naming what was left behind,
+    // never a failed Remove.
+    expect(await screen.findByText(HUB_MESSAGE)).toBeTruthy();
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
   });
 
   // `implicit` is not the same as "the environment supplies it": a stored key

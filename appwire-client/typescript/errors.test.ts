@@ -5,12 +5,14 @@ import appwireErrorsGo from "../../appwire/errors.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   isHubLaunchError,
+  isInstanceRemoveApplied,
   sessionActionError,
   sessionActionHeadline,
   WireError,
@@ -35,6 +37,26 @@ function goErrorInfo(name: string): string {
 describe("the persisted rename discriminator is bound to appwire/errors.go", () => {
   test("the exported value is the hub's own constant", () => {
     expect(ErrorInstanceRenamePersisted).toBe(goErrorInfo("ErrorInstanceRenamePersisted"));
+  });
+});
+
+// The applied-removal discriminator is the removal-side sibling: a removal that
+// stood but could not put back what it deleted must be reconciled by every
+// client, not read as a retryable failure. A hub-side rename of it has to break
+// this binding.
+describe("the applied-removal discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRemoveApplied).toBe(goErrorInfo("ErrorInstanceRemoveApplied"));
+  });
+
+  test("isInstanceRemoveApplied reads only that discriminator", () => {
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRemoveApplied })),
+    ).toBe(true);
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
+    ).toBe(false);
+    expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
   });
 });
 
