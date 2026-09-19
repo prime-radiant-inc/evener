@@ -64,7 +64,7 @@ func loadEntries(path string) (entries []transcript.Entry, skipped int, err erro
 	if err != nil {
 		return nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	first := true
@@ -306,12 +306,7 @@ func measureLargeObservations(entries []transcript.Entry, threshold int) ObsRese
 
 func measureLogVolume(entries []transcript.Entry, minBytes int) LogVolumeStats {
 	st := walkObservations(entries, minBytes, func(_, _, _ string, cmdOK bool) bool { return cmdOK })
-	return LogVolumeStats{
-		Results:        st.Results,
-		TotalBytes:     st.TotalBytes,
-		ResendBytes:    st.ResendBytes,
-		ResendRequests: st.ResendRequests,
-	}
+	return LogVolumeStats(st)
 }
 
 // CompactionStats records where compaction boundaries (checkpoints and
@@ -484,7 +479,7 @@ func RunOracle(opts OracleOptions) (*OracleReport, error) {
 		entries, skipped, err := loadEntries(st.Path)
 		if err != nil {
 			// Unreadable single sessions do not sink the corpus run.
-			fmt.Fprintf(opts.Stdout, "skipping unreadable transcript %s: %v\n", st.Path, err)
+			_, _ = fmt.Fprintf(opts.Stdout, "skipping unreadable transcript %s: %v\n", st.Path, err)
 			continue
 		}
 		totalSkipped += skipped
@@ -503,7 +498,12 @@ func RunOracle(opts OracleOptions) (*OracleReport, error) {
 		logs.TotalBytes += l.TotalBytes
 		logs.ResendBytes += l.ResendBytes
 		logs.ResendRequests += l.ResendRequests
-		comp.Compactions = append(comp.Compactions, measureCompaction(entries).Compactions...)
+		s := measureCompaction(entries)
+		comp.Compactions = append(comp.Compactions, s.Compactions...)
+		// The corpus max is the largest session high-water mark, so the
+		// compaction basis reports a real number. RequestsBetween stays
+		// per-session: corpus-level gap attribution is a slice-2 decision.
+		comp.MaxPromptTokensSeen = max(comp.MaxPromptTokensSeen, s.MaxPromptTokensSeen)
 		for i := range entries {
 			if entries[i].Turn.Kind == schema.TurnAssistant {
 				totalIn += entries[i].Turn.Usage.InputTokens
@@ -522,11 +522,11 @@ func RunOracle(opts OracleOptions) (*OracleReport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open oracle ledger: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err := f.Write(append(line, '\n')); err != nil {
 			return nil, err
 		}
 	}
-	fmt.Fprint(opts.Stdout, renderReport(report))
+	_, _ = fmt.Fprint(opts.Stdout, renderReport(report))
 	return report, nil
 }

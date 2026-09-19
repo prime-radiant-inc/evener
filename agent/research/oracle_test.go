@@ -3,6 +3,7 @@ package research
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 )
 
 // writeTranscript writes a minimal valid v2 transcript: header + entries.
+// A nil entries slice still writes the header, which is a valid walkable
+// transcript that loads as zero entries.
 func writeTranscript(t *testing.T, dir, sid string, entries []transcript.Entry) string {
 	t.Helper()
 	sessions := filepath.Join(dir, "projects", "proj", "sessions")
@@ -23,14 +26,18 @@ func writeTranscript(t *testing.T, dir, sid string, entries []transcript.Entry) 
 		t.Fatal(err)
 	}
 	path := filepath.Join(sessions, sid+".transcript.jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatal(err)
+	var b strings.Builder
+	headerLine := fmt.Sprintf(`{"kind":"header","format_version":%d}`, transcript.FormatVersion)
+	fmt.Fprintf(&b, "%s\n", headerLine)
+	for i := range entries {
+		line, err := json.Marshal(transcript.Entry{Kind: "entry", Seq: i + 1, Turn: entries[i].Turn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&b, "%s\n", line)
 	}
-	defer f.Close()
-	if len(entries) == 0 {
-		// Header-only file: still valid for walking.
-		return path
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return path
 }
@@ -101,7 +108,6 @@ func TestLoadEntries_EmptyFileIsError(t *testing.T) {
 func assistantToolCallTurn(id string, calls []llm.ToolCallData, in, out int) transcript.Entry {
 	content := make([]llm.ContentPart, 0, len(calls))
 	for _, c := range calls {
-		c := c
 		content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &c})
 	}
 	return transcript.Entry{Kind: "entry", Turn: schema.Turn{
@@ -144,7 +150,6 @@ func TestMeasureAdjacency_CountsEditThenTestCycles(t *testing.T) {
 func toolResultsTurn(results ...llm.ToolResultData) transcript.Entry {
 	content := make([]llm.ContentPart, 0, len(results))
 	for _, r := range results {
-		r := r
 		content = append(content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &r})
 	}
 	return transcript.Entry{Kind: "entry", Turn: schema.Turn{
@@ -253,5 +258,120 @@ func TestRenderReport_IncludesStopOrGoVerdict(t *testing.T) {
 	text := renderReport(r)
 	if !strings.Contains(text, "under 5%") && !strings.Contains(text, "5%") {
 		t.Fatalf("rendered report lacks stop-or-go statement:\n%s", text)
+	}
+}
+
+func TestBuildReport_ZeroTrafficNoDivideByZero(t *testing.T) {
+	// An empty corpus must not divide by zero: pct projections are all 0,
+	// never NaN.
+	r := buildReport("/x", 0, 0, 0, AdjacencyStats{}, ObsResendStats{}, LogVolumeStats{}, CompactionStats{}, 0, 0)
+	for _, p := range r.Projections {
+		if p.Informational {
+			continue
+		}
+		if p.TrafficPct != 0 {
+			t.Fatalf("%s TrafficPct = %f, want 0", p.Mechanism, p.TrafficPct)
+		}
+	}
+	if text := renderReport(r); strings.Contains(text, "NaN") {
+		t.Fatalf("rendered report leaked NaN:\n%s", text)
+	}
+}
+
+func TestRunOracle_AggregatesCorpusCompactionMax(t *testing.T) {
+	dir := t.TempDir()
+	writeTranscript(t, dir, "small", []transcript.Entry{
+		assistantToolCallTurn("s1", nil, 1000, 10),
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnCheckpoint}},
+	})
+	writeTranscript(t, dir, "large", []transcript.Entry{
+		assistantToolCallTurn("l1", nil, 5000, 10),
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnSummary}},
+	})
+	rep, err := RunOracle(OracleOptions{StateBase: dir, Stdout: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The corpus max is the largest session high-water mark, so the
+	// compaction basis states a real number, not 0.
+	if got := rep.Compaction.MaxPromptTokensSeen; got != 5000 {
+		t.Fatalf("corpus MaxPromptTokensSeen = %d, want 5000 (the larger session max)", got)
+	}
+	if len(rep.Compaction.Compactions) != 2 {
+		t.Fatalf("compaction points = %d, want 2 (one per session boundary)", len(rep.Compaction.Compactions))
+	}
+	// RequestsBetween stays empty at corpus level: per-session gap
+	// attribution is a slice-2 design decision (ledgered ruling).
+	if len(rep.Compaction.RequestsBetween) != 0 {
+		t.Fatalf("corpus RequestsBetween = %v, want none in slice 1", rep.Compaction.RequestsBetween)
+	}
+}
+
+func TestRunOracle_CorpusReportAndLedger(t *testing.T) {
+	dir := t.TempDir()
+	readable := writeTranscript(t, dir, "readable", []transcript.Entry{
+		assistantToolCallTurn("a1", nil, 3000, 300),
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnCheckpoint}},
+	})
+	// One torn tail line: the lenient loader skips and counts it.
+	f, err := os.OpenFile(readable, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{not json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A corrupt session (garbage header) must be skipped with a notice, not
+	// sink the run.
+	corrupt := filepath.Join(dir, "projects", "proj", "sessions", "corrupt.transcript.jsonl")
+	if err := os.WriteFile(corrupt, []byte("{also not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout strings.Builder
+	ledger := filepath.Join(t.TempDir(), "oracle-ledger.jsonl")
+	rep, err := RunOracle(OracleOptions{StateBase: dir, OutPath: ledger, Stdout: &stdout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sessions != 2 || rep.Entries != 2 || rep.SkippedLines != 1 {
+		t.Fatalf("counts = sessions %d / entries %d / skipped %d, want 2/2/1", rep.Sessions, rep.Entries, rep.SkippedLines)
+	}
+	if !strings.Contains(stdout.String(), "skipping unreadable transcript") || !strings.Contains(stdout.String(), corrupt) {
+		t.Fatalf("stdout lacks the corrupt-session skip notice:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "oracle report") {
+		t.Fatalf("stdout lacks the rendered report:\n%s", stdout.String())
+	}
+
+	data, err := os.ReadFile(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		t.Fatal("oracle ledger is empty")
+	}
+	// One run appends exactly one record.
+	if lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n"); len(lines) != 1 {
+		t.Fatalf("ledger records = %d, want 1", len(lines))
+	}
+	var rec OracleReport
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatalf("ledger record does not decode into OracleReport: %v", err)
+	}
+	if rec.Sessions != 2 || rec.Entries != 2 || rec.SkippedLines != 1 {
+		t.Fatalf("ledger counts = %d/%d/%d, want 2/2/1", rec.Sessions, rec.Entries, rec.SkippedLines)
+	}
+	if rec.TotalInputTokens != 3000 || rec.TotalOutputTokens != 300 {
+		t.Fatalf("ledger tokens = %d in / %d out, want 3000/300", rec.TotalInputTokens, rec.TotalOutputTokens)
+	}
+	if len(rec.Compaction.Compactions) != 1 {
+		t.Fatalf("ledger compaction points = %d, want 1", len(rec.Compaction.Compactions))
+	}
+	if rec.Compaction.MaxPromptTokensSeen != 3000 {
+		t.Fatalf("ledger corpus MaxPromptTokensSeen = %d, want 3000", rec.Compaction.MaxPromptTokensSeen)
 	}
 }
