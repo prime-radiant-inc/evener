@@ -217,7 +217,7 @@ export function NativePreferencesProvider({
 				!previous ||
 				previous.hubId !== hubId ||
 				previous.client !== expectedClient ||
-				previous.client === client
+				(previous.client === client && state === "ready")
 			)
 				return previous;
 			const snapshot = reconcileRetainedDraftProjection(previous.snapshot, result);
@@ -225,7 +225,7 @@ export function NativePreferencesProvider({
 		});
 	};
 	useEffect(() => {
-		if (!hubId || !bound || bound.client === client) return;
+		if (!hubId || !bound || (bound.client === client && state === "ready")) return;
 		const expectedClient = bound.client;
 		const result = readDraftOutcomeWithValue(
 			nativeKeybindingDrafts(hubId, backend),
