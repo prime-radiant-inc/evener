@@ -6,7 +6,7 @@ import basicTurnFixture from "./fixtures/basic-turn.jsonl?raw";
 import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
-import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -194,6 +194,43 @@ function positionedFragmentTurn(
       status: "completed",
       position: { entry, item },
     })),
+  };
+}
+
+function toolWireTurn(turnId: string, itemId: string, callId: string, overrides: Partial<ThreadItem> = {}): Turn {
+  return {
+    id: turnId,
+    status: "completed",
+    itemsView: "full",
+    items: [
+      {
+        id: itemId,
+        turnId,
+        type: "commandExecution",
+        toolName: "shell",
+        callId,
+        ...overrides,
+      },
+    ],
+  };
+}
+
+function toolModelTurn(turnId: string, item: Partial<ItemModel> & Pick<ItemModel, "id" | "callId">): TurnModel {
+  const { id, callId, ...overrides } = item;
+  return {
+    id: turnId,
+    status: "completed",
+    items: [
+      {
+        ...overrides,
+        id,
+        turnId,
+        type: overrides.type ?? "commandExecution",
+        text: overrides.text ?? "",
+        toolName: overrides.toolName ?? "shell",
+        callId,
+      },
+    ],
   };
 }
 
@@ -2571,6 +2608,613 @@ test("a full turn settle that omits image fields keeps the item's images", () =>
   );
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
   expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
+test("mergeOlderItemPage keeps a fresh completed call ahead of an older standalone result", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-call", "item_tool_1_0", "call_A", {
+        output: "fresh output",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [toolWireTurn("old-result", "item_tool_result_0_0", "call_A", { output: "old output", completedAt: 10 })],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_A");
+
+  expect(item).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh output",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage fills absent fresh call fields from an older result without replacing fresh status", () => {
+  const model = testHydrate({
+    turns: [toolWireTurn("fresh-call", "item_tool_1_0", "call_B", { status: "inProgress", startedAt: 20 })],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("old-result", "item_tool_result_0_0", "call_B", {
+        output: "older output",
+        status: "completed",
+        completedAt: 10,
+        exitCode: 3,
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_B");
+
+  expect(item).toMatchObject({
+    output: "older output",
+    status: "inProgress",
+    completedAt: new Date(10).toISOString(),
+    exitCode: 3,
+  });
+});
+
+test("mergeOlderItemPage lets a fresh result settle an older call", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-result", "item_tool_result_2_0", "call_C", {
+        output: "fresh result",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [toolWireTurn("old-call", "item_tool_1_0", "call_C", { status: "inProgress", startedAt: 10 })],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_C");
+
+  expect(item).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+    startedAt: new Date(10).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage prefers the fresh result even when an older result is visited later", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("fresh-call", { id: "item_tool_1_0", callId: "call_D", status: "inProgress" }),
+    toolModelTurn("fresh-result", {
+      id: "item_tool_result_2_0",
+      callId: "call_D",
+      output: "fresh result",
+      status: "completed",
+      completedAt: new Date(20).toISOString(),
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("old-result", "item_tool_result_3_0", "call_D", {
+        output: "old result",
+        status: "completed",
+        completedAt: 10,
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_D");
+
+  expect(item).toMatchObject({ output: "fresh result", completedAt: new Date(20).toISOString() });
+});
+
+test("mergeOlderItemPage preserves same-source call/result folding", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("old-call", "item_tool_1_0", "call_E", { status: "inProgress", startedAt: 10 }),
+      toolWireTurn("old-result", "item_tool_result_2_0", "call_E", {
+        output: "same-source result",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const items = merged.turns.flatMap((turn) => turn.items).filter((item) => item.callId === "call_E");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "same-source result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage keeps the last same-source result in traversal order", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("old-call", "item_tool_1_0", "call_F", { status: "inProgress", startedAt: 10 }),
+      toolWireTurn("old-result-one", "item_tool_result_2_0", "call_F", {
+        output: "first result",
+        status: "completed",
+        completedAt: 20,
+      }),
+      toolWireTurn("old-result-two", "item_tool_result_3_0", "call_F", {
+        output: "last result",
+        status: "completed",
+        completedAt: 30,
+      }),
+    ],
+  });
+
+  const items = merged.turns.flatMap((turn) => turn.items).filter((item) => item.callId === "call_F");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ output: "last result", completedAt: new Date(30).toISOString() });
+});
+
+test("mergeOlderItemPage does not promote fields inherited by a fresh result fragment", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-provenance", {
+      id: "item_tool_1_0",
+      callId: "call-provenance",
+      output: "fresh call output",
+      status: "completed",
+    }),
+    toolModelTurn("turn-provenance", {
+      id: "item_tool_result_2_0",
+      callId: "call-provenance",
+      status: "completed",
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("turn-provenance", "item_tool_result_2_0", "call-provenance", {
+        output: "older result output",
+        status: "completed",
+      }),
+    ],
+  });
+
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-provenance");
+  expect(item).toMatchObject({ id: "item_tool_1_0", output: "fresh call output" });
+});
+
+test("mergeOlderItemPage preserves older fields through a transitive result alias", () => {
+  const model = testHydrate();
+  const freshCall = toolModelTurn("fresh-turn", {
+    id: "item_tool_0_0",
+    callId: "call-alias",
+    position: { entry: 1, item: 0 },
+  });
+  const freshResultA = toolModelTurn("fresh-turn", {
+    id: "item_tool_result_a",
+    callId: "call-alias",
+    transcriptKey: "result-key",
+    position: { entry: 1, item: 1 },
+  });
+  const freshResultB = toolModelTurn("fresh-turn", {
+    id: "item_tool_result_b",
+    callId: "call-alias",
+    transcriptKey: "result-key",
+    position: { entry: 1, item: 2 },
+  });
+  model.turns = [
+    {
+      id: "fresh-turn",
+      status: "completed",
+      items: [freshCall.items[0]!, freshResultA.items[0]!, freshResultB.items[0]!],
+    },
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("older-result", "item_tool_result_a", "call-alias", {
+        output: "older output",
+        transcriptKey: undefined,
+        status: "completed",
+        position: { entry: 1, item: 1 },
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-alias");
+
+  expect(item).toMatchObject({ id: "item_tool_0_0", output: "older output" });
+});
+
+test("mergeOlderItemPage routes a fresh result with an omitted callId through its resolved item", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-call", "item_tool_0_0", "call-routing"),
+      toolWireTurn("fresh-result", "item_tool_result_1_0", "call-routing", {
+        callId: undefined,
+        output: "fresh output",
+        status: "completed",
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("older-result", "item_tool_result_1_0", "call-routing", {
+        output: "older output",
+        status: "completed",
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-routing");
+
+  expect(merged.turns.flatMap((turn) => turn.items)).toHaveLength(1);
+  expect(item).toMatchObject({ id: "item_tool_0_0", output: "fresh output" });
+});
+
+test("mergeOlderItemPage routes a fresh call with an omitted callId through its resolved item", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-call", "item_tool_0_0", "call-routing", {
+        callId: undefined,
+        output: "fresh output",
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("older-call", "item_tool_0_0", "call-routing"),
+      toolWireTurn("older-result", "item_tool_result_1_0", "call-routing", {
+        output: "older output",
+        status: "completed",
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-routing");
+
+  expect(item).toMatchObject({ id: "item_tool_0_0", output: "fresh output" });
+});
+
+test("mergeOlderItemPage routes an older fallback with an omitted callId through its resolved item", () => {
+  const model = testHydrate();
+  const freshCall = toolModelTurn("fresh-turn", { id: "item_tool_0_0", callId: "call-routing" });
+  const freshResult = toolModelTurn("fresh-result", { id: "item_tool_result_1_0", callId: "call-routing" });
+  model.turns = [freshCall, freshResult];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("older-result", "item_tool_result_1_0", "call-routing", {
+        callId: undefined,
+        output: "older output",
+        status: "completed",
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-routing");
+
+  expect(item).toMatchObject({ id: "item_tool_0_0", output: "older output" });
+});
+
+function countIdentityReadsForMerge(count: number, includeTool: boolean): number {
+  let reads = 0;
+  const items = Array.from({ length: count }, (_, index) => {
+    const item: ItemModel = {
+      id: `message-${index}`,
+      turnId: "fresh",
+      type: "agentMessage",
+      text: "",
+    };
+    Object.defineProperty(item, "id", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return `message-${index}`;
+      },
+    });
+    return item;
+  });
+  if (includeTool) {
+    items.push(
+      {
+        id: "item_tool_0_0",
+        turnId: "fresh",
+        type: "commandExecution",
+        text: "",
+        callId: "cost-call",
+      },
+      {
+        id: "item_tool_result_1_0",
+        turnId: "fresh",
+        type: "commandExecution",
+        text: "",
+        callId: "cost-call",
+        output: "done",
+        status: "completed",
+      },
+    );
+  }
+  const model = testHydrate();
+  model.turns = [{ id: "fresh", status: "completed", items }];
+  mergeOlderItemPage(model, { data: [] });
+  return reads;
+}
+
+test("mergeOlderItemPage keeps no-tool provenance work linear as history grows", () => {
+  const smaller = countIdentityReadsForMerge(8, false);
+  const larger = countIdentityReadsForMerge(16, false);
+  expect(larger).toBeLessThanOrEqual(smaller * 3 + 16);
+});
+
+test("mergeOlderItemPage keeps one-call provenance work linear as history grows", () => {
+  const smaller = countIdentityReadsForMerge(20, true);
+  const larger = countIdentityReadsForMerge(40, true);
+  expect(larger).toBeLessThanOrEqual(smaller * 3 + 40);
+});
+
+test("mergeOlderItemPage preserves older fallback fields across distinct result fragments", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-fallback", { id: "item_tool_1_0", callId: "call-fallback" }),
+    toolModelTurn("turn-fallback", { id: "item_tool_result_2_0", callId: "call-fallback" }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("turn-fallback", "item_tool_result_0_0", "call-fallback", {
+        output: "older output",
+        error: "older error",
+        prevalOnly: false,
+        exitCode: 0,
+        completedAt: 10,
+        status: "completed",
+        outputImages: [{ source: "test", url: "older-image" }],
+        raw: { source: "older" },
+      }),
+    ],
+  });
+
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-fallback");
+  expect(item).toMatchObject({
+    output: "older output",
+    error: "older error",
+    prevalOnly: false,
+    exitCode: 0,
+    completedAt: new Date(10).toISOString(),
+    status: "completed",
+    outputImages: [{ src: "older-image" }],
+    raw: { source: "older" },
+  });
+});
+
+test("mergeOlderItemPage keeps every defined fresh call field ahead of an older result", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-fields-call", {
+      id: "item_tool_1_0",
+      callId: "call-fields-call",
+      output: "fresh output",
+      error: "fresh error",
+      prevalOnly: true,
+      exitCode: 7,
+      completedAt: new Date(20).toISOString(),
+      status: "inProgress",
+      outputImages: [{ src: "fresh-image" }],
+      raw: { source: "fresh" },
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("turn-fields-call", "item_tool_result_0_0", "call-fields-call", {
+        output: "older output",
+        error: "older error",
+        prevalOnly: false,
+        exitCode: 3,
+        completedAt: 10,
+        status: "completed",
+        outputImages: [{ source: "test", url: "older-image" }],
+        raw: { source: "older" },
+      }),
+    ],
+  });
+
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call-fields-call");
+  expect(item).toMatchObject({
+    output: "fresh output",
+    error: "fresh error",
+    prevalOnly: true,
+    exitCode: 7,
+    completedAt: new Date(20).toISOString(),
+    status: "inProgress",
+    outputImages: [{ src: "fresh-image" }],
+    raw: { source: "fresh" },
+  });
+});
+
+test("mergeOlderItemPage keeps every defined fresh result field ahead of an older call", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-fields-result", {
+      id: "item_tool_result_2_0",
+      callId: "call-fields-result",
+      output: "fresh output",
+      error: "fresh error",
+      prevalOnly: true,
+      exitCode: 7,
+      completedAt: new Date(20).toISOString(),
+      status: "completed",
+      outputImages: [{ src: "fresh-image" }],
+      raw: { source: "fresh" },
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("turn-fields-result", "item_tool_1_0", "call-fields-result", {
+        output: "older output",
+        error: "older error",
+        prevalOnly: false,
+        exitCode: 3,
+        completedAt: 10,
+        status: "inProgress",
+        outputImages: [{ source: "test", url: "older-image" }],
+        raw: { source: "older" },
+      }),
+    ],
+  });
+
+  const item = merged.turns
+    .flatMap((turn) => turn.items)
+    .find((candidate) => candidate.callId === "call-fields-result");
+  expect(item).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh output",
+    error: "fresh error",
+    prevalOnly: true,
+    exitCode: 7,
+    completedAt: new Date(20).toISOString(),
+    status: "completed",
+    outputImages: [{ src: "fresh-image" }],
+    raw: { source: "fresh" },
+  });
+});
+
+test("mergeOlderItemPage combines duplicate fresh result fragments without older fills", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-duplicate-fresh", { id: "item_tool_1_0", callId: "call-duplicate-fresh" }),
+    toolModelTurn("turn-duplicate-fresh", {
+      id: "item_tool_result_2_0",
+      callId: "call-duplicate-fresh",
+      output: "fresh output",
+    }),
+    toolModelTurn("turn-duplicate-fresh", {
+      id: "item_tool_result_2_0",
+      callId: "call-duplicate-fresh",
+      error: "fresh error",
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("turn-duplicate-fresh", "item_tool_result_0_0", "call-duplicate-fresh", {
+        output: "older output",
+        error: "older error",
+        raw: { source: "older" },
+      }),
+    ],
+  });
+
+  const item = merged.turns
+    .flatMap((turn) => turn.items)
+    .find((candidate) => candidate.callId === "call-duplicate-fresh");
+  expect(item).toMatchObject({ output: "fresh output", error: "fresh error", raw: { source: "older" } });
+});
+
+test("mergeOlderItemPage keeps normalized same-source result traversal for older fragments", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("turn-order-old", "item_tool_1_0", "call-order-old", { position: { entry: 1, item: 0 } }),
+      toolWireTurn("turn-order-old", "item_tool_result_3_0", "call-order-old", {
+        position: { entry: 1, item: 2 },
+        output: "later",
+      }),
+      toolWireTurn("turn-order-old", "item_tool_result_2_0", "call-order-old", {
+        position: { entry: 1, item: 1 },
+        output: "earlier",
+      }),
+    ],
+  });
+
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "later" });
+});
+
+test("mergeOlderItemPage keeps normalized fresh-only result traversal on an empty page", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_1_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 0 },
+    }),
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_result_3_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 2 },
+      output: "later",
+    }),
+    toolModelTurn("turn-order-fresh", {
+      id: "item_tool_result_2_0",
+      callId: "call-order-fresh",
+      position: { entry: 1, item: 1 },
+      output: "earlier",
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, { data: [] });
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "later" });
+});
+
+test("mergeOlderItemPage keeps normalized fresh traversal when an older bridge joins fragments", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("fresh-call", {
+      id: "item_tool_1_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 0 },
+    }),
+    toolModelTurn("fresh-late", {
+      id: "item_tool_result_3_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 2 },
+      output: "later",
+    }),
+    toolModelTurn("fresh-early", {
+      id: "item_tool_result_2_0",
+      callId: "call-order-bridge",
+      position: { entry: 1, item: 1 },
+      output: "earlier",
+    }),
+  ];
+
+  const bridge = {
+    id: "old-bridge",
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items: [
+      {
+        id: "item_tool_1_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 0 },
+      },
+      {
+        id: "item_tool_result_3_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 2 },
+        output: "older late",
+      },
+      {
+        id: "item_tool_result_2_0",
+        turnId: "old-bridge",
+        type: "commandExecution",
+        callId: "call-order-bridge",
+        position: { entry: 1, item: 1 },
+        output: "older early",
+      },
+    ],
+  };
+
+  const merged = mergeOlderItemPage(model, { data: [bridge] });
+  expect(merged.turns.flatMap((turn) => turn.items).find((item) => item.callId === "call-order-bridge")).toMatchObject({
+    id: "item_tool_1_0",
+    output: "later",
+  });
 });
 
 test("mergeOlderItemPage coalesces every transitively overlapping fragment", () => {
