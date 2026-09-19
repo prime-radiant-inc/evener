@@ -481,16 +481,32 @@ func TestEveryResultVariantHasExecutableShape(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestEveryToolAcceptsDomainRejections(t *testing.T) {
+	tools := []string{
+		"artifact_publish",
+		"artifact_read",
+		"artifact_list",
+		"artifact_open",
+		"artifact_get_view",
+		"artifact_save_state",
+		"artifact_report_diagnostic",
+	}
 	codes := []ErrorCode{NotFoundOrForbidden, SourceConflict, StateConflict, MutationIDReused, UnsupportedFormat, InvalidSource, InvalidState, TooLarge, QuotaExceeded, Deleted, ServiceUnavailable, Busy}
-	for _, code := range codes {
-		retryable := code == Busy
-		versions := ""
-		if code == SourceConflict || code == StateConflict {
-			versions = `,"sourceRevision":3,"stateVersion":4`
-		}
-		raw := `{"status":"rejected","error":{"code":"` + string(code) + `","retryable":` + strconv.FormatBool(retryable) + versions + `}}`
-		if err := ValidateResult("artifact_read", []byte(raw)); err != nil {
-			t.Errorf("valid %s rejection: %v", code, err)
-		}
+	for _, tool := range tools {
+		t.Run(tool, func(t *testing.T) {
+			for _, code := range codes {
+				retryable := code == Busy
+				versions := ""
+				if code == SourceConflict || code == StateConflict {
+					versions = `,"sourceRevision":3,"stateVersion":4`
+				}
+				raw := `{"status":"rejected","error":{"code":"` + string(code) + `","retryable":` + strconv.FormatBool(retryable) + versions + `}}`
+				if err := ValidateResult(tool, []byte(raw)); err != nil {
+					t.Errorf("valid %s rejection: %v", code, err)
+				}
+			}
+		})
 	}
 }

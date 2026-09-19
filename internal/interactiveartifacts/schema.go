@@ -372,6 +372,9 @@ func schemaInstance(value any) any {
 }
 
 func validateResultFields(tool string, result map[string]any) error {
+	if status, ok := result["status"].(string); ok && status == string(StatusRejected) {
+		return nil
+	}
 	if tool == "artifact_open" {
 		launch := result["launch"].(map[string]any)
 		if result["artifactId"] != launch["artifactId"] {
