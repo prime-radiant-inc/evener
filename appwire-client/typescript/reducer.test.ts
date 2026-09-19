@@ -174,6 +174,29 @@ function fragmentTurn(id: string, itemIds: string[], overrides: Partial<Turn> = 
   };
 }
 
+function positionedFragmentTurn(
+  id: string,
+  items: Array<readonly [string, number]>,
+  overrides: Partial<Turn> = {},
+): Turn {
+  const turn = fragmentTurn(
+    id,
+    items.map(([itemId]) => itemId),
+    overrides,
+  );
+  return {
+    ...turn,
+    items: items.map(([itemId, entry], item) => ({
+      id: itemId,
+      turnId: id,
+      type: "agentMessage",
+      text: `${id}-${itemId}`,
+      status: "completed",
+      position: { entry, item },
+    })),
+  };
+}
+
 test("evener/goal/updated replaces and explicitly clears model.goal", () => {
   const initial = testHydrate({
     evener: { goal: { objective: "old objective", status: "active", iterations: 3 } },
@@ -2612,6 +2635,361 @@ test("mergeOlderItemPage applies fresh fields after coalescing a fragment chain"
   expect(result.turns[0]).toMatchObject({ id: "fresh-y", usage: { inputTokens: 4 } });
   expect(result.turns[0]?.items.map((item) => item.id).sort()).toEqual(["x", "y"]);
 });
+
+test("mergeOlderItemPage places a positioned retained run inside fresh anchors", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-d", [["d", 3]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-b", "fresh-d", "fresh-c"]);
+});
+
+test("mergeOlderItemPage preserves retained prefix and suffix runs", () => {
+  const model = testHydrate({
+    turns: [positionedFragmentTurn("fresh-a", [["a", 1]]), positionedFragmentTurn("fresh-c", [["c", 4]])],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-p", [["p", 0]]),
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+      positionedFragmentTurn("old-s", [["s", 5]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["old-p", "fresh-a", "old-b", "fresh-c", "old-s"]);
+});
+
+test("mergeOlderItemPage preserves fresh prefix and suffix around a retained run", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-x", [["x", 0]]),
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+      positionedFragmentTurn("fresh-y", [["y", 5]]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-x", "fresh-a", "old-b", "fresh-c", "fresh-y"]);
+});
+
+test("mergeOlderItemPage retains a warning-only run after a collapsed anchor", () => {
+  const model = testHydrate({
+    turns: [fragmentTurn("fresh-f", ["a", "c"])],
+  });
+  const warning = {
+    id: "old-b",
+    status: "completed" as const,
+    itemsView: "fragment" as const,
+    items: [
+      {
+        id: "warning-b",
+        turnId: "old-b",
+        type: "warning" as const,
+        text: "live warning",
+        status: "completed" as const,
+      },
+    ],
+  };
+
+  const result = mergeOlderItemPage(model, {
+    data: [positionedFragmentTurn("old-a", [["a", 1]]), warning, positionedFragmentTurn("old-c", [["c", 3]])],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-f", "old-b"]);
+  expect(result.turns.filter((turn) => turn.id === "old-b")).toHaveLength(1);
+  expect(result.turns[1]?.items).toMatchObject([{ id: "warning-b", type: "warning" }]);
+});
+
+test("mergeOlderItemPage places an unpositioned warning run with its next positioned turn", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-d", [["d", 3]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+    ],
+  });
+  const warning = {
+    id: "old-warning",
+    status: "completed" as const,
+    itemsView: "fragment" as const,
+    items: [
+      {
+        id: "warning-item",
+        turnId: "old-warning",
+        type: "warning" as const,
+        text: "retained warning",
+        status: "completed" as const,
+      },
+    ],
+  };
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      warning,
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-warning", "old-b", "fresh-d", "fresh-c"]);
+});
+
+test("mergeOlderItemPage keeps retained turns ordered across interleaved collapsed anchors", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-ac", [
+        ["a", 1],
+        ["c", 4],
+      ]),
+      positionedFragmentTurn("fresh-bd", [
+        ["b", 2],
+        ["d", 6],
+      ]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-x", [["x", 3]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+      positionedFragmentTurn("old-y", [["y", 5]]),
+      positionedFragmentTurn("old-d", [["d", 6]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-ac", "fresh-bd", "old-x", "old-y"]);
+});
+
+test("mergeOlderItemPage uses the earliest compatible successor anchor", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-b", [["b", 4]]),
+      positionedFragmentTurn("fresh-c", [["c", 3]]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-x", [["x", 2]]),
+      positionedFragmentTurn("old-c", [["c", 3]]),
+      positionedFragmentTurn("old-b", [["b", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-x", "fresh-b", "fresh-c"]);
+});
+
+type PlacementMatrixOlderTurn = {
+  id: string;
+  itemId: string;
+  entry?: number;
+  warning?: boolean;
+};
+
+type PlacementMatrixCase = {
+  name: string;
+  fresh: Array<[string, Array<[string, number]>]>;
+  older: PlacementMatrixOlderTurn[];
+  retainedIds: string[];
+};
+
+function placementMatrixOlderTurn(spec: PlacementMatrixOlderTurn): Turn {
+  if (spec.warning) {
+    return {
+      id: spec.id,
+      status: "completed",
+      itemsView: "fragment",
+      items: [
+        {
+          id: spec.itemId,
+          turnId: spec.id,
+          type: "warning",
+          text: "retained warning",
+          status: "completed",
+        },
+      ],
+    };
+  }
+  return spec.entry === undefined
+    ? fragmentTurn(spec.id, [spec.itemId])
+    : positionedFragmentTurn(spec.id, [[spec.itemId, spec.entry]]);
+}
+
+const placementMatrixCases: PlacementMatrixCase[] = [
+  {
+    name: "crossed partitions with a fresh-only gap turn",
+    fresh: [
+      [
+        "fresh-ac",
+        [
+          ["a", 1],
+          ["c", 4],
+        ],
+      ],
+      ["fresh-only", [["q", 3]]],
+      [
+        "fresh-bd",
+        [
+          ["b", 2],
+          ["d", 6],
+        ],
+      ],
+    ],
+    older: [
+      { id: "old-a", itemId: "a", entry: 1 },
+      { id: "old-b", itemId: "b", entry: 2 },
+      { id: "old-x", itemId: "x", entry: 3 },
+      { id: "old-c", itemId: "c", entry: 4 },
+      { id: "old-y", itemId: "y", entry: 5 },
+      { id: "old-d", itemId: "d", entry: 6 },
+    ],
+    retainedIds: ["old-x", "old-y"],
+  },
+  {
+    name: "unpositioned warning and positioned retained gaps",
+    fresh: [
+      [
+        "fresh-ac",
+        [
+          ["a", 1],
+          ["c", 4],
+        ],
+      ],
+      [
+        "fresh-bd",
+        [
+          ["b", 2],
+          ["d", 6],
+        ],
+      ],
+    ],
+    older: [
+      { id: "old-a", itemId: "a", entry: 1 },
+      { id: "old-warning", itemId: "warning", warning: true },
+      { id: "old-b", itemId: "b", entry: 2 },
+      { id: "old-x", itemId: "x", entry: 3 },
+      { id: "old-c", itemId: "c", entry: 4 },
+      { id: "old-y", itemId: "y", entry: 5 },
+      { id: "old-d", itemId: "d", entry: 6 },
+    ],
+    retainedIds: ["old-warning", "old-x", "old-y"],
+  },
+  {
+    name: "two independent crossed partitions",
+    fresh: [
+      [
+        "fresh-ac",
+        [
+          ["a", 1],
+          ["c", 4],
+        ],
+      ],
+      [
+        "fresh-bd",
+        [
+          ["b", 2],
+          ["d", 6],
+        ],
+      ],
+      [
+        "fresh-eg",
+        [
+          ["e", 7],
+          ["g", 9],
+        ],
+      ],
+      [
+        "fresh-fh",
+        [
+          ["f", 8],
+          ["h", 10],
+        ],
+      ],
+    ],
+    older: [
+      { id: "old-a", itemId: "a", entry: 1 },
+      { id: "old-b", itemId: "b", entry: 2 },
+      { id: "old-x", itemId: "x", entry: 3 },
+      { id: "old-c", itemId: "c", entry: 4 },
+      { id: "old-y", itemId: "y", entry: 5 },
+      { id: "old-d", itemId: "d", entry: 6 },
+      { id: "old-e", itemId: "e", entry: 7 },
+      { id: "old-f", itemId: "f", entry: 8 },
+      { id: "old-z", itemId: "z", entry: 8.5 },
+      { id: "old-g", itemId: "g", entry: 9 },
+      { id: "old-w", itemId: "w", entry: 9.5 },
+      { id: "old-h", itemId: "h", entry: 10 },
+    ],
+    retainedIds: ["old-x", "old-y", "old-z", "old-w"],
+  },
+];
+
+for (const placementCase of placementMatrixCases) {
+  test(`mergeOlderItemPage preserves placement invariants for ${placementCase.name}`, () => {
+    const model = testHydrate({
+      turns: placementCase.fresh.map(([id, items]) => positionedFragmentTurn(id, items)),
+    });
+    const result = mergeOlderItemPage(model, {
+      data: placementCase.older.map(placementMatrixOlderTurn),
+    });
+    const turnIds = result.turns.map((turn) => turn.id);
+    const resultItemIds = result.turns.flatMap((turn) => turn.items.map((item) => item.id));
+    const sourceItemIds = [
+      ...placementCase.fresh.flatMap(([, items]) => items.map(([itemId]) => itemId)),
+      ...placementCase.older.map(({ itemId }) => itemId),
+    ];
+    const freshIds = placementCase.fresh.map(([id]) => id);
+    const resultIndex = new Map(turnIds.map((id, index) => [id, index]));
+    const freshGroupByItem = new Map(
+      placementCase.fresh.flatMap(([id, items]) => items.map(([itemId]) => [itemId, id] as const)),
+    );
+
+    expect(new Set(resultItemIds)).toHaveLength(resultItemIds.length);
+    for (const itemId of sourceItemIds) {
+      expect(resultItemIds.filter((resultItemId) => resultItemId === itemId)).toHaveLength(1);
+    }
+    expect(turnIds.filter((id) => freshIds.includes(id))).toEqual(freshIds);
+    expect(turnIds.filter((id) => placementCase.retainedIds.includes(id))).toEqual(placementCase.retainedIds);
+    for (const retainedId of placementCase.retainedIds) {
+      const olderIndex = placementCase.older.findIndex(({ id }) => id === retainedId);
+      const retainedIndex = resultIndex.get(retainedId);
+      if (olderIndex === -1 || retainedIndex === undefined) continue;
+      for (const { itemId } of placementCase.older.slice(0, olderIndex)) {
+        const freshId = freshGroupByItem.get(itemId);
+        const freshIndex = freshId === undefined ? undefined : resultIndex.get(freshId);
+        if (freshIndex !== undefined) expect(freshIndex).toBeLessThan(retainedIndex);
+      }
+    }
+  });
+}
 
 test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
   const thread = testThread({

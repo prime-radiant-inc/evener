@@ -682,6 +682,7 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
 type TurnFragment = {
   turn: TurnModel;
   source: "older" | "fresh";
+  index: number;
   order: number;
 };
 
@@ -690,10 +691,16 @@ type TurnFragmentGroup = {
   firstOrder: number;
 };
 
-function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnModel[] {
+type CoalescedTurn = {
+  turn: TurnModel;
+  olderIndexes: number[];
+  freshIndexes: number[];
+};
+
+function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): CoalescedTurn[] {
   const groups: TurnFragmentGroup[] = [];
-  const add = (turn: TurnModel, source: TurnFragment["source"], order: number): void => {
-    const fragment = { turn, source, order } satisfies TurnFragment;
+  const add = (turn: TurnModel, source: TurnFragment["source"], index: number, order: number): void => {
+    const fragment = { turn, source, index, order } satisfies TurnFragment;
     const matching = groups.filter((group) =>
       group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
     );
@@ -713,10 +720,10 @@ function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnMode
   };
 
   older.forEach((turn, index) => {
-    add(turn, "older", index);
+    add(turn, "older", index, index);
   });
   fresh.forEach((turn, index) => {
-    add(turn, "fresh", older.length + index);
+    add(turn, "fresh", index, older.length + index);
   });
 
   return groups
@@ -724,20 +731,135 @@ function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnMode
     .flatMap((group) => {
       const olderFragments = group.fragments.filter((fragment) => fragment.source === "older");
       const freshFragments = group.fragments.filter((fragment) => fragment.source === "fresh");
+      let turn: TurnModel;
       if (olderFragments.length === 0) {
         const firstFresh = freshFragments[0]?.turn;
         if (firstFresh === undefined) return [];
-        return [
-          freshFragments.slice(1).reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstFresh),
-        ];
+        turn = freshFragments.slice(1).reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstFresh);
+      } else {
+        const firstOlder = olderFragments[0]?.turn;
+        if (firstOlder === undefined) return [];
+        const mergedOlder = olderFragments
+          .slice(1)
+          .reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstOlder);
+        turn = freshFragments.reduce((current, fragment) => mergePageTurn(current, fragment.turn), mergedOlder);
       }
-      const firstOlder = olderFragments[0]?.turn;
-      if (firstOlder === undefined) return freshFragments.map((fragment) => fragment.turn);
-      const mergedOlder = olderFragments
-        .slice(1)
-        .reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstOlder);
-      return [freshFragments.reduce((current, fragment) => mergePageTurn(current, fragment.turn), mergedOlder)];
+      return [
+        {
+          turn,
+          olderIndexes: olderFragments.map((fragment) => fragment.index),
+          freshIndexes: freshFragments.map((fragment) => fragment.index),
+        },
+      ];
     });
+}
+
+function firstTurnPosition(turn: TurnModel): NonNullable<ItemModel["position"]> | undefined {
+  return turn.items.reduce<NonNullable<ItemModel["position"]> | undefined>((first, item) => {
+    if (item.position === undefined) return first;
+    if (first === undefined) return item.position;
+    return item.position.entry < first.entry || (item.position.entry === first.entry && item.position.item < first.item)
+      ? item.position
+      : first;
+  }, undefined);
+}
+
+function compareTurnPositions(left: TurnModel, right: TurnModel): number | undefined {
+  const leftPosition = firstTurnPosition(left);
+  const rightPosition = firstTurnPosition(right);
+  if (leftPosition === undefined || rightPosition === undefined) return undefined;
+  return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
+}
+
+function nextPositionedTurn(turns: CoalescedTurn[], start: number): CoalescedTurn | undefined {
+  return turns.slice(start).find((turn) => firstTurnPosition(turn.turn) !== undefined);
+}
+
+function weaveTurnGap(
+  fresh: CoalescedTurn[],
+  older: CoalescedTurn[],
+  preferOlderWithoutPositions: boolean,
+): CoalescedTurn[] {
+  const result: CoalescedTurn[] = [];
+  let olderIndex = 0;
+  for (const freshTurn of fresh) {
+    while (olderIndex < older.length) {
+      const olderTurn = older[olderIndex];
+      if (olderTurn === undefined) break;
+      const comparisonTurn =
+        firstTurnPosition(olderTurn.turn) === undefined ? nextPositionedTurn(older, olderIndex) : olderTurn;
+      const comparison =
+        comparisonTurn === undefined ? undefined : compareTurnPositions(comparisonTurn.turn, freshTurn.turn);
+      if (comparison !== undefined ? comparison < 0 : preferOlderWithoutPositions) {
+        result.push(olderTurn);
+        olderIndex += 1;
+        continue;
+      }
+      break;
+    }
+    result.push(freshTurn);
+  }
+  result.push(...older.slice(olderIndex));
+  return result;
+}
+
+function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnModel[] {
+  const fresh = groups
+    .filter((group) => group.freshIndexes.length > 0)
+    .sort((left, right) => (left.freshIndexes[0] ?? 0) - (right.freshIndexes[0] ?? 0));
+  const retained = groups
+    .filter((group) => group.freshIndexes.length === 0)
+    .sort((left, right) => (left.olderIndexes[0] ?? 0) - (right.olderIndexes[0] ?? 0));
+  const oldAnchorFreshIndexes = new Array<number>(olderCount).fill(-1);
+  for (const [freshIndex, group] of fresh.entries()) {
+    for (const olderIndex of group.olderIndexes) {
+      oldAnchorFreshIndexes[olderIndex] = freshIndex;
+    }
+  }
+
+  const retainedByFreshGap = new Map<number, CoalescedTurn[]>();
+  for (const group of retained) {
+    const olderIndex = group.olderIndexes[0];
+    if (olderIndex === undefined) continue;
+    // Coalesced fresh groups can consume noncontiguous older anchors. Keep the
+    // retained gaps moving forward by the greatest fresh rank seen so far,
+    // then choose the earliest later rank that remains compatible with it.
+    const previousAnchor = oldAnchorFreshIndexes
+      .slice(0, olderIndex)
+      .reduce((greatest, freshIndex) => Math.max(greatest, freshIndex), -1);
+    const nextCompatibleAnchor =
+      previousAnchor === -1
+        ? undefined
+        : oldAnchorFreshIndexes
+            .slice(olderIndex + 1)
+            .reduce<number | undefined>(
+              (earliest, freshIndex) =>
+                freshIndex > previousAnchor && (earliest === undefined || freshIndex < earliest)
+                  ? freshIndex
+                  : earliest,
+              undefined,
+            );
+    const gap = previousAnchor === -1 ? 0 : (nextCompatibleAnchor ?? fresh.length);
+    const run = retainedByFreshGap.get(gap) ?? [];
+    run.push(group);
+    retainedByFreshGap.set(gap, run);
+  }
+
+  const anchors = fresh.flatMap((group, index) => (group.olderIndexes.length > 0 ? [index] : []));
+  const boundaries = [-1, ...anchors, fresh.length];
+  const result: CoalescedTurn[] = [];
+  for (let boundaryIndex = 0; boundaryIndex < boundaries.length - 1; boundaryIndex += 1) {
+    const previousAnchor = boundaries[boundaryIndex];
+    const nextAnchor = boundaries[boundaryIndex + 1];
+    if (previousAnchor === undefined || nextAnchor === undefined) continue;
+    const gapRun = retainedByFreshGap.get(previousAnchor === -1 ? 0 : nextAnchor) ?? [];
+    result.push(...weaveTurnGap(fresh.slice(previousAnchor + 1, nextAnchor), gapRun, previousAnchor === -1));
+    if (nextAnchor < fresh.length) {
+      const anchorTurn = fresh[nextAnchor];
+      if (anchorTurn !== undefined) result.push(anchorTurn);
+    }
+  }
+  return result.map((group) => group.turn);
 }
 
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
@@ -747,10 +869,11 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   // before that field existed re-derives it from its own thread id.
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
+  const coalesced = coalesceTurnFragments(olderTurns, model.turns);
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(coalesceTurnFragments(olderTurns, model.turns)),
+    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length)),
     olderCursor: resp.nextCursor,
   };
 }
