@@ -1339,14 +1339,22 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				}
 			}
 			// handleModelError owns terminal provider recovery: it emits the
-			// failed turn, blocks the active goal, and settles the session idle.
-			// Keep this generic tail for non-provider failures (and budget
-			// exhaustion), but do not duplicate provider goal/provenance effects.
+			// failed turn, blocks the active goal, and settles through the
+			// pending-aware failure boundary. Keep this generic tail for
+			// non-provider failures (and budget exhaustion), but do not duplicate
+			// provider goal/provenance effects.
 			if !isProviderTerminalError(err) {
 				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 					s.terminateGoalOnError(processCtx, err)
 				}
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// A human-note carrier's own append failure (carrierSteerUndelivered)
+				// leaves askPending set -- its entry clear never ran
+				// (steeringCarrierClaimAnswersAsk) -- so settling idle here would
+				// report a session with a genuinely unanswered question as idle,
+				// diverging from restore's deriveRestoredState for the identical
+				// transcript and, via WireState, telling a live client nothing is
+				// waiting on them.
+				s.finishProcessingAtFailureBoundary(processCtx)
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
@@ -1391,8 +1399,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
 		// pins this). askPendingCount() > 0 is checked directly alongside the
 		// state read so the gate holds regardless of which boundary state this
-		// round's own delta happened to settle on.
-		awaiting := s.State() == SessionAwaiting || s.askPendingCount() > 0
+		// round's own delta happened to settle on — awaitingOrHasPendingAsk
+		// samples both under one lock so a concurrent state transition or
+		// askPending mutation can't land between the two reads.
+		awaiting := s.awaitingOrHasPendingAsk()
 		var fu string
 		if !awaiting {
 			// Follow-ups need no such guard: they live in memory for this
@@ -1598,10 +1608,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 // fired — emits once.
 //
 // The state is read rather than asserted, the way the settled tail below reads
-// it. The failure exit settles to idle before calling this and so still reports
-// idle; a refusal can arrive with a question pending or a message still queued,
-// and a client told idle there would show a thread that is finished with
-// neither.
+// it. The failure exit settles through the pending-aware boundary before
+// calling this; a refusal can arrive with a question pending or a message
+// still queued, and a client told idle there would show a thread that is
+// finished with neither.
 func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1636,7 +1646,7 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	if !s.attachedTranscript().Poisoned() {
 		return nil
 	}
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return errTranscriptRefusesRecords()
 }
@@ -2267,7 +2277,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 		// A managed job can finish while this tool batch is running. Yield before
@@ -2275,13 +2285,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// as an EntryNotification turn. Notification turns already own their current
 		// batch and leave any later arrivals for the next wake.
 		if kind != EntryNotification && s.peekNotifications() > 0 {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
 	}
