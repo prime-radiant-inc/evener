@@ -526,6 +526,13 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			// attempt, which treats an already-exited session as a no-op.
 			// The session-action gate must not see this fall-through: it
 			// refuses every action while the session stays ResumeRequired.
+			// The tolerant attempt reacquires only the request's alias after
+			// this reservation is released, so publish the decision the way
+			// the confirmed-stopped no-op does: invalidate admission while
+			// the aliases are still reserved, so a Resume registration
+			// waiting for them re-admits on a snapshot taken after the
+			// decision instead of launching on one taken before it.
+			cfg.ResumeLocks.InvalidateResumeAdmission(aliases)
 			return confirmedStoppedDecision{discoveryUncertain: true}, nil
 		}
 		return confirmedStoppedDecision{}, appwire.Unavailable(err.Error())

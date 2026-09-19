@@ -130,9 +130,36 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 // It keeps deletion fencing and alias ownership but omits the session-action
 // recovery gate: a ResumeRequired refusal is spurious here because shutdown
 // manufactures no recovery obligation and an already-exited session reported
-// by the source is the desired end state, not an error to mask.
+// by the source is the desired end state, not an error to mask. It rechecks
+// resume admission under the reacquired ownership: the uncertain decision
+// released the whole reservation group before this reacquire, so an explicit
+// Resume can register in that window and be mid-launch here — it would finish
+// launching after shutdown reported the session stopped, or have the daemon
+// it just started shut down by the source action.
 func withShutdownDiscoveryUncertainOwnership[R any](ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, action func() (R, error)) (R, error) {
-	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", action)
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (R, error) {
+		if err := shutdownResumeActiveError(cfg, ref); err != nil {
+			var zero R
+			return zero, err
+		}
+		return action()
+	})
+}
+
+// shutdownResumeActiveError refuses shutdown while an explicit Resume is
+// registered on the session's ownership group. The uncertain-discovery path
+// rechecks it under reacquired ownership, the way shutdownCleanupError already
+// rechecks retained child cleanup: the admission decision released the whole
+// reservation group before the tolerant attempt reacquired the request's
+// alias, so a Resume registered in that window is already mid-launch and must
+// not be overlapped by the tolerant action.
+func shutdownResumeActiveError(cfg hubcore.WebConfig, ref string) error {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+		if cfg.ResumeLocks.HasActiveResume(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)) {
+			return sessionResumeRequiredError()
+		}
+	}
+	return nil
 }
 
 // shutdownCleanupError refuses shutdown while any Resume in the session's

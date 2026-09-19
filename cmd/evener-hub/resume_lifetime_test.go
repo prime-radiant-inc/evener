@@ -973,3 +973,132 @@ func TestShutdownRechecksCleanupUnderOwnership(t *testing.T) {
 		}
 	})
 }
+
+// TestShutdownUncertainDiscoveryInvalidatesWaitingResumeRegistration pins the
+// admission race RoboRev found between the uncertain-discovery decision and
+// the tolerant shutdown attempt: checkConfirmedStoppedWithoutClaim releases the
+// alias reservations when it reports the discovery uncertainty, and the
+// tolerant attempt reacquires only the request's alias afterwards, so a Resume
+// registration waiting for those reservations lands inside the gap and is
+// already registered while the source attempt runs — the session then either
+// launches after shutdown has reported success, or the daemon the Resume just
+// started gets shut down. Like the confirmed-stopped no-op, the uncertain
+// decision must publish itself while it still holds the reservations, so the
+// waiting registration re-admits on a snapshot taken after the decision instead
+// of launching on one taken before it.
+func TestShutdownUncertainDiscoveryInvalidatesWaitingResumeRegistration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish.Finish(true)
+		runDir := t.TempDir()
+		// A pid-named but undecodable rendezvous file fails the strict read, so
+		// the confirmed-exited session resolves through the uncertain path.
+		if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rendezvous.ListStrict(runDir); err == nil {
+			t.Fatal("fixture discovery did not fail")
+		}
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Block the check on its under-reservation deletion check, so it holds
+		// the alias reservation while the registration waits for it.
+		entered, release := make(chan struct{}), make(chan struct{})
+		blocked := false
+		original := deletionTargetState
+		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+			if !blocked {
+				blocked = true
+				close(entered)
+				<-release
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		source := &shutdownScriptedSource{scriptedAppSource: &scriptedAppSource{
+			id: "local",
+			thread: appwire.Thread{
+				ID:     sessionID,
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Shutdown: true}},
+			},
+		}}
+		sources := appsource.NewRegistry()
+		sources.Add(source)
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DeletionStore: store}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- shutdownThreadTolerateExited(t.Context(), cfg, sources, appwire.ThreadShutdownParams{Ref: "local:" + sessionID})
+		}()
+		<-entered // the uncertain check holds the alias reservation
+		epochs := map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch}
+		registered := make(chan error, 1)
+		go func() {
+			_, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs)
+			registered <- err
+		}()
+		synctest.Wait() // the registration is now waiting for the held alias
+		close(release)
+		if err := <-stopped; err != nil {
+			t.Fatalf("uncertain-discovery shutdown: %v", err)
+		}
+		if err := <-registered; !errors.Is(err, hubcore.ErrResumeInvalidated) {
+			t.Fatalf("registration waiting across the uncertain decision = %v, want ErrResumeInvalidated", err)
+		}
+		// The decision is published: a fresh admission snapshot registers.
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active.Complete(nil)
+	})
+}
+
+// TestShutdownUncertainOwnershipRefusesRegisteredResume pins the other half of
+// the same gap: the tolerant attempt reacquires only the request's alias after
+// the uncertain decision released the whole reservation group, so a Resume
+// admitted while that window was open can already be registered when the
+// reacquire completes. The under-ownership recheck must refuse the source
+// attempt while such a Resume is active — reporting the already-exited session
+// stopped would let the launch finish after shutdown's success, and running
+// the source action would shut down the daemon the Resume just started. The
+// refusal must be a session-recovery admission error rather than a
+// session-unavailable error, which the tolerant fallback would mask as a no-op
+// success.
+func TestShutdownUncertainOwnershipRefusesRegisteredResume(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer active.Complete(nil)
+	called := false
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+	_, err = withShutdownDiscoveryUncertainOwnership(t.Context(), cfg, "local:"+sessionID, "", func() (struct{}, error) {
+		called = true
+		return struct{}{}, nil
+	})
+	if err == nil {
+		t.Fatal("uncertain-discovery shutdown ran the tolerant source attempt while an explicit Resume was registered")
+	}
+	if called {
+		t.Fatal("uncertain-discovery shutdown invoked the source action while an explicit Resume was registered")
+	}
+	if !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("refusal = %v, want a session-recovery admission error", err)
+	}
+	if isSessionUnavailableError(err) {
+		t.Fatal("refusal is classified session-unavailable, so the tolerant fallback would mask it as a no-op success")
+	}
+}
