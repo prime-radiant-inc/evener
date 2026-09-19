@@ -404,11 +404,13 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // entry). Collapse them the way the live path already produces a single item:
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
-// dropped so its TurnSeparator does not survive. (zrzr)
+// dropped unless it was already empty or carries canonical turn metadata. (zrzr)
 // Item payloads lose page ownership during retained placement, so keep the
 // source beside each result while folding calls instead of inferring it from
 // the final traversal order.
 type ToolResultEntry = { item: ItemModel; fresh: boolean };
+
+const canonicalTurnFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
 
 function preferredToolResultField<T>(result: T | undefined, call: T | undefined, resultFirst: boolean): T | undefined {
   // Within one source the result settles the call; across sources, defined
@@ -459,7 +461,9 @@ function mergeToolCallsByCallId(turns: TurnModel[], freshItemIds?: ReadonlySet<s
       }
       items.push(item);
     }
-    if (items.length > 0) merged.push({ ...turn, items });
+    if (items.length > 0 || turn.items.length === 0 || canonicalTurnFields.some((field) => turn[field] !== undefined)) {
+      merged.push({ ...turn, items });
+    }
   }
   return merged;
 }
