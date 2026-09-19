@@ -464,6 +464,49 @@ func TestHostAuthorityFirstCreateSyncsCreatedParentBeforeLeaf(t *testing.T) {
 	}
 }
 
+func TestHostAuthorityRetriesNestedParentDurabilityObligation(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "missing", "inner", "artifacts")
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ancestorParent := filepath.Join(resolvedBase, "missing")
+	parentFault := true
+	syncDir := func(directory *os.File) error {
+		if parentFault && filepath.Clean(directory.Name()) == filepath.Clean(ancestorParent) {
+			return errors.New("nested ancestor directory barrier")
+		}
+		return directory.Sync()
+	}
+	if _, err := openHostAuthority(root, authorityHooks{SyncDir: syncDir}); err == nil {
+		t.Fatal("initial nested parent directory sync failure was hidden")
+	}
+	if _, err := openHostAuthority(root, authorityHooks{SyncDir: syncDir}); err == nil {
+		t.Fatal("retry acknowledged authority before nested parent durability barrier was released")
+	}
+	if _, err := os.Stat(filepath.Join(root, authorityFilename)); !os.IsNotExist(err) {
+		t.Fatalf("authority file appeared before nested parent durability barrier was released: %v", err)
+	}
+	parentFault = false
+	first, err := openHostAuthority(root, authorityHooks{SyncDir: syncDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := first.Installation()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.Installation(); got != installation {
+		t.Fatalf("installation changed after nested parent durability recovery: got=%+v want=%+v", got, installation)
+	}
+}
+
 func TestHostAuthorityFirstCreateFileSyncFailureLeavesNoCandidate(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "artifacts")
 	if _, err := openHostAuthority(root, authorityHooks{SyncFile: func(*os.File) error {

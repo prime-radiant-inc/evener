@@ -155,15 +155,23 @@ func openHostAuthority(privateDir string, hooks authorityHooks) (*HostAuthority,
 	if err != nil {
 		return nil, err
 	}
+	authorityPath := filepath.Join(directory, authorityFilename)
 	for _, createdDirectory := range created {
 		if err := syncDirectory(filepath.Dir(createdDirectory), hooks); err != nil {
 			return nil, fmt.Errorf("sync artifact authority parent directory: %w", err)
 		}
 	}
+	if len(created) == 0 {
+		if _, err := os.Lstat(authorityPath); errors.Is(err, os.ErrNotExist) {
+			if err := syncAuthorityParentChain(directory, hooks); err != nil {
+				return nil, fmt.Errorf("sync artifact authority parent directory: %w", err)
+			}
+		}
+	}
 	if err := syncDirectory(directory, hooks); err != nil {
 		return nil, fmt.Errorf("sync artifact authority directory: %w", err)
 	}
-	authority := &HostAuthority{directory: directory, path: filepath.Join(directory, authorityFilename), hooks: hooks}
+	authority := &HostAuthority{directory: directory, path: authorityPath, hooks: hooks}
 	authority.policy.Store(authorityPolicy{})
 	data, err := readAuthority(authority.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -670,6 +678,27 @@ func syncDirectory(path string, hooks authorityHooks) error {
 		err = directory.Sync()
 	}
 	return errors.Join(err, directory.Close())
+}
+
+// syncAuthorityParentChain revalidates every parent entry when the authority
+// file is not present. A prior failed open may have left created directories
+// visible without proving their parent entries durable, so existence alone is
+// not enough to narrow the next attempt to the leaf parent.
+func syncAuthorityParentChain(directory string, hooks authorityHooks) error {
+	parents := make([]string, 0, 8)
+	for current := directory; ; current = filepath.Dir(current) {
+		parent := filepath.Dir(current)
+		parents = append(parents, parent)
+		if parent == current {
+			break
+		}
+	}
+	for _, parent := range slices.Backward(parents) {
+		if err := syncDirectory(parent, hooks); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateRootRequest(request RootRequest) error {
