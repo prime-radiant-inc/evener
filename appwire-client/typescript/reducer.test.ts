@@ -4979,7 +4979,7 @@ test("a huge warning message is never trimmed at full size before it's bounded",
 // that bound was invisible to the check - a message with more than 2000
 // leading blank code points then real text was misclassified as blank
 // (falling back to the raw-frame JSON dump instead of storing the message).
-// boundedContent then keeps the window starting at the message's own first
+// The stored value keeps the window starting at the message's own first
 // non-whitespace code point, not the leading padding, so the real text is
 // what item.text ends up holding.
 test("a warning message with more than 2000 leading blank code points is not misclassified as blank", () => {
