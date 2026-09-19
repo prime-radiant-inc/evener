@@ -34,7 +34,7 @@ func persistedUnconfirmedRecovery(t *testing.T, sessionID string) (*hubcore.Resu
 		t.Fatal(err)
 	}
 	owner := daemonprocess.Target{PID: 4242, SessionID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now().Round(0)}
-	if err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	state := locks.RecoveryState(sessionID)
@@ -155,7 +155,7 @@ func TestResumeStillRefusesUnconfirmedExitWithUnverifiedClaim(t *testing.T) {
 	// proofless record would refuse at the earlier no-proof check and leave
 	// the claim branch unexercised.
 	locks, _, owner := persistedUnconfirmedRecovery(t, sessionID)
-	if err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false

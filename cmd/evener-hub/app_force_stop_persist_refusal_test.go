@@ -86,7 +86,7 @@ func TestResumeRefusesClaimlessRecoveryWithNonCanonicalWorkspaceClaim(t *testing
 		t.Fatal("setup did not stage an unconfirmed claim")
 	}
 	locks, _, owner := persistedUnconfirmedRecovery(t, sessionID)
-	if err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false
@@ -109,5 +109,63 @@ func TestResumeRefusesClaimlessRecoveryWithNonCanonicalWorkspaceClaim(t *testing
 	}
 	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
 		t.Fatalf("non-canonical workspace claim did not keep the refusal: %v", err)
+	}
+}
+
+// The committed-with-error counterpart: when the record's rename landed but a
+// later sync step failed, the recovery obligation IS installed (the visible
+// store carries it) even though the stop returns an error. That refusal
+// mutated the world, so the fence must publish: admissions from before the
+// stop are stale and the obligation stands. Rolling the fence back (the
+// neutral path for an uncommitted refusal) would let a pre-stop admission
+// survive the whole stop/resume cycle. RoboRev reported the
+// committed-but-error case after the uncommitted fix.
+func TestForceStopCommittedPersistErrorStillPublishesTheFence(t *testing.T) {
+	runDir := t.TempDir()
+	stateRoot := t.TempDir()
+	sessionID := hubtest.SessionID(t)
+	entry := rendezvous.Entry{
+		PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+	}
+	writeRendezvous(t, runDir, entry)
+	locks, err := hubcore.NewPersistentResumeLocks(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, HubStateRoot: stateRoot, ResumeLocks: locks, DeletionStore: store, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	before := locks.RecoveryState(sessionID)
+	// The rename lands; the AfterRename step fails: committed with error.
+	boom := errors.New("after-rename sync failed")
+	locks.SetRecoveryStoreFaultsForTest(nil, func() error { return boom })
+	err = forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+	if err == nil || !strings.Contains(err.Error(), "persist session recovery") {
+		t.Fatalf("committed-with-error did not surface as the stop's error: %v", err)
+	}
+	after := locks.RecoveryState(sessionID)
+	if after.Epoch != before.Epoch+1 {
+		t.Fatalf("committed refusal did not mint exactly one epoch advance: before=%+v after=%+v", before, after)
+	}
+	if !after.ResumeRequired || after.ResumeSessionID != sessionID {
+		t.Fatalf("committed refusal lost the recovery obligation: %+v", after)
+	}
+	if slices.Contains(events, "kill") {
+		t.Fatal("persist failure still signaled the daemon")
+	}
+	// The obligation is durable enough to restore: the renamed record carries it.
+	restored, err := hubcore.NewPersistentResumeLocks(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.RecoveryState(sessionID).ResumeRequired {
+		t.Fatal("committed record was not visible to a reload")
 	}
 }

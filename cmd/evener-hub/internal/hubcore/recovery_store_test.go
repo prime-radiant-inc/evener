@@ -523,7 +523,7 @@ func TestRecoveryStoreLoadsGroupWithNonUTCOwnerTime(t *testing.T) {
 		PID: 4242, SessionID: "B", StateDir: t.TempDir(),
 		StartedAt: time.Date(2026, 9, 19, 12, 0, 0, 0, time.FixedZone("fixture", 3600)),
 	}
-	if err := locks.PersistForceStopWithOwner([]string{"A", "B"}, "B", owner); err != nil {
+	if _, err := locks.PersistForceStopWithOwner([]string{"A", "B"}, "B", owner); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewPersistentResumeLocks(root)
