@@ -2748,6 +2748,36 @@ test("mergeTurnHistory does not fold duplicate fresh fragments when older histor
   expect(merged.transcriptOverlap).toBe(false);
 });
 
+test("mergeTurnHistory treats matching fresh fragments as one coverage window", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      usage: { inputTokens: 1 },
+      items: [{ id: "item-a", turnId: "turn-1", type: "agentMessage", text: "a", status: "completed" }],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [{ id: "item-a", turnId: "turn-1", type: "agentMessage", text: "a", status: "completed" }],
+    },
+    {
+      id: "turn-1",
+      status: "completed",
+      usage: { inputTokens: 1 },
+      items: [{ id: "item-b", turnId: "turn-1", type: "agentMessage", text: "b", status: "completed" }],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toBe(newer);
+  expect(merged.turns).toHaveLength(2);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
 test("mergeTurnHistory preserves fresh ordering when its window extends before retained turns", () => {
   const older: TurnModel[] = [
     { id: "turn-1", status: "completed", items: [], usage: { inputTokens: 1 } },

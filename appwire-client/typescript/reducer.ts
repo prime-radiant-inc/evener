@@ -627,6 +627,12 @@ function olderTurnContributes(older: TurnModel, newer: TurnModel, merged: TurnMo
   });
 }
 
+function foldMatchingTurns(turns: TurnModel[]): TurnModel | undefined {
+  const first = turns[0];
+  if (first === undefined) return undefined;
+  return turns.slice(1).reduce((current, next) => mergePageTurn(current, next), first);
+}
+
 export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
   const merged: TurnModel[] = [];
   let olderContributed = false;
@@ -643,9 +649,10 @@ export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHi
       transcriptOverlap = true;
     }
     if (olderTurnAddsCoverage(turn, matchingNewer)) olderCoverage = true;
+    const combinedNewer = foldMatchingTurns(matchingNewer);
     if (
       matchingNewer.length === 0 ||
-      matchingNewer.some((current) => olderTurnContributes(turn, current, mergePageTurn(turn, current)))
+      (combinedNewer && olderTurnContributes(turn, combinedNewer, mergePageTurn(turn, combinedNewer)))
     ) {
       olderContributed = true;
     }
