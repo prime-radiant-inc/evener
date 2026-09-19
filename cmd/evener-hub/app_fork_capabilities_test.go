@@ -926,6 +926,22 @@ func liveClaimController() daemonprocess.Controller {
 	})
 }
 
+// targetKeyedController verifies only the claims whose PID is in live and
+// reports every other target as unverifiable with err. liveClaimController
+// answers every claim alike, so it cannot express the mixed pair one alias can
+// carry — a claim that verifies beside one that does not — which
+// forkClaimIsLiveOwner must refuse rather than resolve through the claim it
+// could verify.
+func targetKeyedController(live map[int]bool, err error) daemonprocess.Controller {
+	var probes []string
+	return forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		if !live[target.PID] {
+			return nil, err
+		}
+		return &forceStopProcess{events: &probes}, nil
+	})
+}
+
 // recoveryFlagProber reports a healthy daemon whose own thread status carries a
 // recovery flag, the signal applyHubForkCapability fences fork on.
 type recoveryFlagProber struct {
@@ -1600,17 +1616,22 @@ func TestHubForkRechecksItsTargetAgainstTheRendezvousNotTheRoster(t *testing.T) 
 // chosen by filename order, and nothing downstream catches it: ownershipEntry
 // refuses a session id found in two project directories, never a second daemon
 // claiming the same alias. Both orders are exercised, and the single-claim
-// control shows the fixture forks when the alias is unambiguous.
+// control shows the fixture forks when the alias is unambiguous. The mixed pair
+// — one claim that verifies beside one that cannot be — is refused as
+// unverifiable, not resolved through the claim the hub could verify.
 func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
+	const verificationFailure = "daemon start time does not match the rendezvous"
 	for _, tc := range []struct {
 		name          string
 		firstSession  string // the entry written as 1001.json, listed first
 		secondSession string // 1002.json
+		unverifiable  string // "first" or "second": the claim whose process cannot be verified
 		wantFork      bool
 	}{
 		{name: "resolved session listed first", firstSession: "a", secondSession: "b"},
 		{name: "resolved session listed second", firstSession: "b", secondSession: "a"},
 		{name: "single claim", firstSession: "a", wantFork: true},
+		{name: "one claim cannot be verified", firstSession: "a", secondSession: "b", unverifiable: "second"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
@@ -1652,16 +1673,23 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 			}
 			t.Cleanup(func() { hubRosterList = previousList })
 
-			// Both claiming daemons are running: a marker whose process is
-			// gone is not a claim at all (forkClaimIsLiveOwner), so the
-			// ambiguity this test is about needs live ones.
-			var probes []string
+			// Both claiming daemons are live unless the row marks one
+			// unverifiable: a marker whose process is gone is not a claim at
+			// all (forkClaimIsLiveOwner), so an ambiguity needs live ones, and
+			// the mixed row needs the claim it can verify to be present beside
+			// one it cannot.
+			live := map[int]bool{1001: true, 1002: true}
+			switch tc.unverifiable {
+			case "first":
+				live[1001] = false
+			case "second":
+				live[1002] = false
+			}
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries(),
-				DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
-					return &forceStopProcess{events: &probes}, nil
-				}),
+				DaemonProcesses: targetKeyedController(live, errors.New(verificationFailure)),
 			}
+			logged := captureHubLog(t)
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
 				t.Fatal(listErr)
@@ -1692,6 +1720,17 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 			wire, ok := errors.AsType[appwire.WireError](err)
 			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
 				t.Fatalf("fork error=%v, want a retryable structured unavailable", err)
+			}
+			if tc.unverifiable != "" {
+				// The verified claim does not win: a set the hub cannot fully
+				// account for is refused as unverifiable, and the one refusal
+				// that reaches the client is traced once.
+				if !strings.Contains(wire.Message, verificationFailure) {
+					t.Errorf("refusal %q does not carry why the claim could not be verified", wire.Message)
+				}
+				if got := strings.Count(logged.String(), "fork refused:"); got != 1 {
+					t.Errorf("hub logged %d refusals for one mixed-pair fork: %q", got, logged.String())
+				}
 			}
 			if len(after) != len(before) {
 				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))

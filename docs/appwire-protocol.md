@@ -227,7 +227,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -885,6 +885,7 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -904,6 +905,7 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEntry`
@@ -960,6 +962,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceRemoveParams`
@@ -968,6 +971,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -975,6 +979,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetModelDisabledParams`
@@ -984,6 +989,7 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `ItemLifecycleParams`

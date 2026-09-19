@@ -44,6 +44,7 @@ import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css"
 import ReadOnlyTranscript from "../transcript/Transcript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
+import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
@@ -2148,6 +2149,7 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       method: "item/completed",
       params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
     });
+    fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
 
   let dock: HTMLElement | null = null;
@@ -2219,6 +2221,7 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
         method: "item/completed",
         params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
       });
+      fake.emitNotification(askPendingStatusChanged("ref_a"));
     });
 
     // The dock row is on screen (placement contract), and the last options

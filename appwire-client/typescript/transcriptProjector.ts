@@ -1,5 +1,6 @@
-import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import { hasFailureStatus, hasItemFailure, isActiveItem, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { hasWarningText } from "./reducer";
 import {
   type ContentVector,
   type HookExitDetail,
@@ -139,12 +140,6 @@ function isMessage(item: ItemModel): boolean {
   return MESSAGE_TYPES.has(item.type);
 }
 
-function isActiveItem(item: ItemModel, turn: TurnModel): boolean {
-  // The turn check covers an older or partial item frame that has not carried
-  // its item status yet.
-  return isInProgressStatus(item.status) || (isInProgressStatus(turn.status) && item.status === undefined);
-}
-
 function isTerminalTurn(turn: TurnModel): boolean {
   return turn.status === "failed" || turn.status === "interrupted";
 }
@@ -157,13 +152,20 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // carry a stale `inProgress` reasoning item in a snapshot or a race, and the
 // loader must not pulse for an agent that is no longer thinking.
 function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
-  return isInProgressStatus(turn.status) && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
+  return (
+    isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && turn.items[turn.items.length - 1] === item
+  );
 }
 
 function itemSummary(item: ItemModel): string {
   const description = item.description?.trim();
   if (description) return description;
-  const warningTitle = item.warning?.title?.trim();
+  // item.warning rides an untyped wire param map through the reducer's
+  // `warning` fold, so title can be any JSON value at runtime despite
+  // ItemModel's own type declaring it as string — hasWarningText is the
+  // same guard WarningItem.tsx takes before calling .trim().
+  const rawTitle = item.warning?.title;
+  const warningTitle = hasWarningText(rawTitle) ? rawTitle.trim() : "";
   if (warningTitle) return warningTitle;
   const text = item.text.trim();
   if (text) return text;
@@ -262,7 +264,7 @@ function decisionFor(
     const interaction = INTERACTION_TOOL_NAMES.has(item.toolName ?? "");
     const missingIntent = !item.description?.trim();
     const failure = hasItemFailure(item);
-    const active = isActiveItem(item, turn);
+    const active = isActiveItem(item, turn.status);
 
     // Questions and approvals are interaction rows at every regular level.
     if (interaction) return "critical";

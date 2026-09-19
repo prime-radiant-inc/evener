@@ -44,11 +44,10 @@ func TestInstances_RefreshModelsFetchesLiveIDs(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
-	if err != nil {
+	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"}); err != nil {
 		t.Fatalf("RefreshModels: %v", err)
 	}
-	got := entry(t, resp, "gw")
+	got := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" && !m.Disabled }) {
 		t.Fatalf("entry models = %+v, want live gpt-live listed", got.Models)
 	}
@@ -90,14 +89,9 @@ func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	type result struct {
-		resp appwire.InstanceListResponse
-		err  error
-	}
-	done := make(chan result, 1)
+	done := make(chan error, 1)
 	go func() {
-		resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
-		done <- result{resp, err}
+		done <- ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
 	}()
 	// The handler signals arrival before it blocks, so the reload lands
 	// strictly mid-fetch: no sleep, no missed interleaving.
@@ -110,16 +104,12 @@ func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	close(release)
-	res := <-done
-	if res.err != nil {
-		t.Fatalf("RefreshModels: %v", res.err)
+	if err := <-done; err != nil {
+		t.Fatalf("RefreshModels: %v", err)
 	}
 	after := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(after.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
 		t.Fatalf("entry models after mid-fetch reload = %+v, want live gpt-live carried over", after.Models)
-	}
-	if got := res.resp; !slices.ContainsFunc(entry(t, got, "gw").Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
-		t.Fatalf("refresh response models = %+v, want live gpt-live", entry(t, got, "gw").Models)
 	}
 }
 
@@ -136,10 +126,10 @@ func TestInstances_RefreshModelsFailureKeepsCatalog(t *testing.T) {
 	}
 	// A closed port fails the fetch: the error — not a silently
 	// catalog-only list — is what the sheet toasts.
-	if _, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "dead"}); err == nil {
+	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "dead"}); err == nil {
 		t.Fatal("unreachable endpoint must error")
 	}
-	if _, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "nope"}); err == nil {
+	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "nope"}); err == nil {
 		t.Fatal("unknown instance must be refused")
 	}
 }

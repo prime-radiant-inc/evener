@@ -831,3 +831,104 @@ func TestEmitInterface_OmitzeroIsOptional(t *testing.T) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// Field doc comments live in Go source, not in reflect.Type, so the generator
+// must read them back out of the source. A documented field carries its
+// comment as a JSDoc block directly above the generated field; the omitzero
+// removal-signal rule documented on appwire.ThreadItem.OutputImages is the
+// motivating case (#1637), since the frontend reads the generated TS first.
+func TestEmitCatalogCarriesFieldDocComments(t *testing.T) {
+	out := EmitCatalog()
+	body := interfaceBody(t, out, "ThreadItem")
+
+	wantDoc := "  /**\n" +
+		"   * OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.\n" +
+		"   * Images stays omitempty: nothing removes an item's input images.\n" +
+		"   */\n" +
+		"  outputImages?: OutputImage[];"
+	if !strings.Contains(body, wantDoc) {
+		t.Fatalf("ThreadItem.outputImages missing its JSDoc doc comment:\n%s", body)
+	}
+
+	// The omitempty sibling has no doc comment: it must not grow a block, so
+	// the field is still preceded directly by the previous field's semicolon.
+	if !strings.Contains(body, ";\n  images?: InputItem[];") {
+		t.Fatalf("ThreadItem.images gained a doc block it should not have:\n%s", body)
+	}
+}
+
+// writeFieldDoc renders a raw comment (one string entry per source line) as an
+// indented JSDoc block, and writes nothing at all when there is no comment —
+// that silence is what keeps types.gen.ts byte-identical for undocumented
+// fields.
+func TestWriteFieldDoc(t *testing.T) {
+	var b strings.Builder
+	writeFieldDoc(&b, "first line\nsecond line")
+	want := "  /**\n   * first line\n   * second line\n   */\n"
+	if b.String() != want {
+		t.Fatalf("writeFieldDoc got %q, want %q", b.String(), want)
+	}
+
+	// A line that would close the block comment is escaped so the emitted
+	// TypeScript stays syntactically valid.
+	b.Reset()
+	writeFieldDoc(&b, "closes */ here")
+	if got := b.String(); !strings.Contains(got, `*\/`) || strings.Contains(got, "*/ here") {
+		t.Fatalf("writeFieldDoc did not escape a block-comment terminator: %q", got)
+	}
+
+	var empty strings.Builder
+	writeFieldDoc(&empty, "")
+	if empty.String() != "" {
+		t.Fatalf("writeFieldDoc wrote %q for an empty comment, want nothing", empty.String())
+	}
+}
+
+// commentText drops the comment markers from both doc-comment spellings, so a
+// field documented with // or /* */ renders the same JSDoc.
+func TestCommentText(t *testing.T) {
+	line := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// first line"},
+		{Text: "// second line"},
+	}}
+	if got, want := commentText(line), "first line\nsecond line"; got != want {
+		t.Fatalf("commentText(line comments) = %q, want %q", got, want)
+	}
+
+	block := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "/* first line\n * second line */"},
+	}}
+	if got, want := commentText(block), "first line\nsecond line"; got != want {
+		t.Fatalf("commentText(block comment) = %q, want %q", got, want)
+	}
+}
+
+// Source resolution must not depend on the compiled-in file path: under
+// -trimpath runtime.Caller returns a module-relative path that is not a real
+// directory, and a resolver trusting it finds no sources at all — which
+// silently strips every JSDoc comment instead of failing. Pin the
+// working-directory resolution that keeps that from happening.
+func TestFindModuleRootFromWorkingDirectory(t *testing.T) {
+	root, ok := findModuleRoot(".")
+	if !ok {
+		t.Fatal("findModuleRoot did not locate this module's go.mod from the test working directory")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("findModuleRoot returned %q with no readable go.mod: %v", root, err)
+	}
+	if !declaresModule(data) {
+		t.Fatalf("findModuleRoot returned %q whose go.mod does not declare %s", root, modulePath)
+	}
+}
+
+// A nested module on the way up (agent/ declares primeradiant.com/evener/agent)
+// must not be mistaken for this module just because its path shares the prefix.
+func TestDeclaresModuleRequiresExactModulePath(t *testing.T) {
+	if declaresModule([]byte("module primeradiant.com/evener/agent\n\ngo 1.27\n")) {
+		t.Fatal("declaresModule accepted a nested module whose path merely shares the prefix")
+	}
+	if !declaresModule([]byte("module primeradiant.com/evener\n\ngo 1.27\n")) {
+		t.Fatal("declaresModule rejected this module's own go.mod")
+	}
+}

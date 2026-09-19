@@ -26,9 +26,13 @@ import (
 // (malformed path, schema shape mismatch) falls back to treating the whole
 // original string as a single top-level field name.
 //
-// constraintKeyword, when non-empty, is the failing JSON-Schema keyword's
-// name (the last segment of the deepest cause's KeywordLocation, e.g.
-// "maxLength"), supplied by the caller (offendingKeyword). When the field is
+// constraintKeywordLocation, when non-empty, is the deepest cause's
+// KeywordLocation (e.g. "properties/x/maxLength", "oneOf/0/not"), supplied by
+// the caller (offendingKeywordLocation). Its last segment names the keyword; a
+// bare keyword ("maxLength") is a single-segment location. Its root segment
+// (after a $ref wrapper) drives branch attribution: a cause under a root-level
+// oneOf is explained as that branch rule rather than by an arm-internal leaf
+// read against a top-level property (issue #621). When the field is
 // present and the keyword is a recognized value constraint (maxLength,
 // minLength, minItems, maxItems, enum), the message names the actual
 // constraint, its limit, and the offending value/length instead of the
@@ -37,8 +41,11 @@ import (
 // field never gets the "Required arguments" tail, recognized keyword or not:
 // that tail lists already-satisfied sibling fields, which is misleading
 // regardless of whether the specific constraint can be detailed.
-func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation, constraintKeyword string) string {
+func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation, constraintKeywordLocation string) string {
 	var b strings.Builder
+
+	constraintKeyword := lastKeywordSegment(constraintKeywordLocation)
+	branchKeyword := branchCombinator(constraintKeywordLocation)
 
 	containerSchema := params
 	containerPath := ""
@@ -56,6 +63,71 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 			containerSchema, containerPath, field = params, "", instanceLocation
 			_, present = args[instanceLocation]
 		}
+	}
+
+	// A branch-combinator failure is attributed to the branch, not to any single
+	// property: the deepest cause is the combinator itself (/oneOf/0/not, issue
+	// #618) or a keyword nested inside an arm
+	// (/oneOf/0/properties/sandbox/enum, issue #621 — which leaf the walk reaches
+	// depends on the arm order). Render the branch-level constraints before the
+	// present-field path below, whose constraintMessage reads a leaf keyword
+	// against the container's TOP-LEVEL property and can announce an
+	// allowed-values list — say, the top-level enum listing "off" — that the
+	// failing branch actually narrows away (issue #621).
+	//
+	// The early return is taken only when the branch prose actually covers the
+	// failure (see branchCoversFailure): a constraint on a present property is a
+	// single-argument defect the prose never names — it renders only the
+	// combinator and its arms' required/enum — so claiming the failure is "not
+	// any single argument's type or value" while showing a requirement the call
+	// already satisfied ("send all of \"x\"" when x was sent) is worse than the
+	// present-field path, which names the property and its defect (issue #621
+	// review).
+	refWrapped := refWrappedKeywordLocation(constraintKeywordLocation)
+
+	// A reference-wrapped cause always takes this path, whatever the leaf keyword
+	// or whether the property is present: its schema lives in the referenced
+	// node, so neither branchRequirement nor constraintMessage can read it
+	// safely, and the top-level required list and example describe a different
+	// schema (a /$ref/required failure would otherwise report top-level required
+	// fields the call already supplied).
+	if refWrapped {
+		return toolName + ": arguments did not match the schema."
+	}
+	if hasRefSegment(constraintKeywordLocation) && !present {
+		// A reference reached deeper in the path names no present field, so the
+		// missing-field path would invent one; stay generic.
+		return toolName + ": arguments did not match the schema."
+	}
+	if branchKeyword != "" {
+		if branchCoversFailure(params, constraintKeyword, constraintKeywordLocation, present) {
+			if msg := oneOfConstraintMessage(toolName, params, branchKeyword, constraintKeywordLocation); msg != "" {
+				return msg
+			}
+			// The combinator was identified but its branches could not be
+			// rendered: return the bare generic mismatch — no "Required arguments"
+			// tail (it would claim a supplied argument was required) and no
+			// Example (minimalExample renders only top-level required fields,
+			// which need not satisfy the combinator).
+			return toolName + ": arguments did not match the schema."
+		}
+		if !present {
+			// Attributed to a combinator, not covered by its prose, and naming no
+			// present field: a nested item/property defect the walk could not
+			// resolve. Name nothing rather than a field that does not exist
+			//.
+			return toolName + ": arguments did not match the schema."
+		}
+	}
+
+	// A constraint reached inside a root-level combinator may come from a schema
+	// node that differs from the top-level property: an arm can carry a
+	// stricter maxLength, or a narrower enum, than the top-level property, so
+	// constraintMessage would state a limit or allowed-values list that does not
+	// apply. Dropping the keyword leaves the present-field
+	// path naming the property without the false detail.
+	if branchKeyword != "" || hasRefSegment(constraintKeywordLocation) {
+		constraintKeyword = ""
 	}
 
 	// A present-but-invalid field is a value-constraint violation, never a
@@ -79,17 +151,16 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 				return specific + ctx.wrongBranchTail(args)
 			}
 		}
-		return fmt.Sprintf("%s: argument %q has the wrong type or value.\nExample: %s%s", toolName, fullPath, ctx.example(params), ctx.wrongBranchTail(args))
-	}
-
-	// A branch-combinator failure names no property: the deepest cause is the
-	// combinator (e.g. #/oneOf/0/not), so there is no field to walk and the
-	// missing-field fallback below would misreport a present, valid argument
-	// as missing (issue #618). Explain the constraint itself instead.
-	if isBranchKeyword(constraintKeyword) {
-		if msg := oneOfConstraintMessage(toolName, params, constraintKeyword); msg != "" {
-			return msg
+		// A branch-attributed failure reaches here when the branch prose could
+		// not describe it, and a failure behind a $ref reaches here because the
+		// referenced schema owns the real constraint. In both cases the example
+		// is the top-level required shape, unchecked against what actually
+		// failed — for a oneOf arm it can satisfy no branch — so this path names
+		// the field without one.
+		if branchKeyword != "" || hasRefSegment(constraintKeywordLocation) {
+			return fmt.Sprintf("%s: argument %q has the wrong type or value.%s", toolName, fullPath, ctx.wrongBranchTail(args))
 		}
+		return fmt.Sprintf("%s: argument %q has the wrong type or value.\nExample: %s%s", toolName, fullPath, ctx.example(params), ctx.wrongBranchTail(args))
 	}
 
 	switch {
@@ -700,6 +771,11 @@ func schemaIsArray(schema map[string]any) bool {
 	return t == "array"
 }
 
+func schemaIsObject(schema map[string]any) bool {
+	t, _ := schema["type"].(string)
+	return t == "object"
+}
+
 // requiredNames returns a schema's "required" list as strings, in schema
 // order (unlike requiredList, it doesn't annotate types — callers that need
 // the diff order call this; callers that render the coaching text call
@@ -729,17 +805,56 @@ func formatPath(segs []string) string {
 	return b.String()
 }
 
-// isBranchKeyword reports whether a failing JSON-Schema keyword is one of the
-// combinators whose branches oneOfConstraintMessage can describe ("oneOf",
-// and the "not" that lives inside a oneOf branch — the delegate shape). A
-// keyword outside this set has no describable branch list; widening to
-// anyOf/allOf needs per-keyword branch phrasing (issues #621-625).
-func isBranchKeyword(keyword string) bool {
-	switch keyword {
-	case "oneOf", "not":
-		return true
+// lastKeywordSegment returns the last path segment of a JSON-Schema
+// KeywordLocation ("oneOf/0/not" -> "not"). A bare keyword ("maxLength") is
+// returned unchanged, so callers that only know the segment may pass it
+// directly.
+func lastKeywordSegment(location string) string {
+	if i := strings.LastIndex(location, "/"); i >= 0 {
+		return location[i+1:]
 	}
-	return false
+	return location
+}
+
+// isBareOneOfLocation reports whether a failing KeywordLocation names the
+// schema's top-level oneOf node itself rather than a nested combinator. The
+// validator emits a JSON Pointer ("/oneOf"); a caller that only knows the
+// segment passes "oneOf". Both trim to a single "oneOf" segment, while a
+// nested failure's location ("/oneOf/0/oneOf", "/properties/x/oneOf") keeps
+// interior slashes and is not bare.
+func isBareOneOfLocation(location string) bool {
+	return strings.Trim(location, "/") == "oneOf"
+}
+
+// branchCombinator returns the root-level branch combinator a failure's
+// KeywordLocation lives under — "oneOf" for a cause inside a root-level oneOf
+// (the combinator itself, an arm, or a `not` arm) and "not" for a root-level
+// `not` — or "" when the failure is not branch-attributed.
+//
+// Attributing by the deepest cause's location prefix, not its leaf keyword, is
+// what makes arm order irrelevant: with the positive oneOf arm ordered first
+// the deepest cause is /oneOf/0/properties/sandbox/enum, whose bare "enum"
+// would be read against the TOP-LEVEL property and render an allowed-values
+// list that does not apply (issue #621). A `$ref` wrapper is skipped first:
+// jsonschema reports a combinator behind a reference as /$ref/oneOf/.... A
+// combinator nested under properties/items is not attributed (the explainer
+// reads branch lists off the top-level schema; nested combinators are issue
+// #624), and a root anyOf/allOf keeps its leaf keyword
+// until its branches can be rendered.
+func branchCombinator(keywordLocation string) string {
+	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
+	i := 0
+	for i < len(segs) && isRefSegment(segs[i]) {
+		i++
+	}
+	if i >= len(segs) {
+		return ""
+	}
+	switch segs[i] {
+	case "oneOf", "not":
+		return segs[i]
+	}
+	return ""
 }
 
 // oneOfConstraintMessage renders an honest explanation for a validation
@@ -750,13 +865,32 @@ func isBranchKeyword(keyword string) bool {
 // combination to change or omit. Returns "" when params carries no usable
 // branch list for the failing keyword or no branch can be described, letting
 // the caller fall back to the generic message.
-func oneOfConstraintMessage(toolName string, params map[string]any, keyword string) string {
+//
+// A bare top-level combinator — the deepest cause is the top-level oneOf node
+// itself, with no per-arm child causes — is the multiple-match shape: oneOf
+// means exactly-one, so the arguments matched more than one branch. There is no
+// failing branch to describe (every branch's requirements are already
+// satisfied), so enumerating them would coach nothing; name the over-match and
+// its recovery instead (issue #623). The location, not just the keyword, is
+// what distinguishes this from a *nested* oneOf failure: the deepest-first walk
+// makes a nested combinator's location "/oneOf/0/oneOf", which is not the
+// top-level list branchList can describe, so it keeps the branch enumeration.
+func oneOfConstraintMessage(toolName string, params map[string]any, keyword, keywordLocation string) string {
 	branches, source := branchList(params, keyword)
 	if len(branches) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: arguments violate a conditional rule on the combination of arguments (the schema's %s constraint), not any single argument's type or value.", toolName, source)
+	if keyword == "oneOf" && isBareOneOfLocation(keywordLocation) {
+		// The multiple-match shape: no failing branch to describe, so name the
+		// over-match and its recovery instead of enumerating requirements the
+		// arguments already satisfy. No Example either: minimalExample renders
+		// only top-level required fields and ignores the oneOf arms, so it would
+		// print an object matching zero branches, contradicting the coaching.
+		fmt.Fprintf(&b, "\nThe arguments matched more than one branch; make them satisfy exactly one.")
+		return b.String()
+	}
 	rendered := false
 	for i, br := range branches {
 		desc := branchRequirement(br)
@@ -769,23 +903,485 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword stri
 	if !rendered {
 		return ""
 	}
-	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	// The example is the top-level required shape, which minimalExample
+	// substitutes placeholders into. Emit it only when the schema's own
+	// constraints and the example's shape agree that it is valid.
+	showExample := !hasUnmodeledConstraint(params, keyword) &&
+		!examplePropertyConstrained(params) && rootAcceptsObject(params)
+	if keyword == "oneOf" {
+		// A oneOf needs the example to match exactly one branch; a `not` arm of
+		// a root oneOf keeps its template when that holds, so the shape does not
+		// lose it.
+		showExample = showExample && oneOfExampleMatchesExactlyOneBranch(params)
+	} else {
+		showExample = showExample && rootNotExampleIsValid(params)
+	}
+	if showExample {
+		fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	}
 	return b.String()
 }
 
-// branchList returns the schema's branch list for the failing combinator
-// keyword and the keyword that names it in the message. A "not" failure
-// inside a oneOf branch (the delegate shape) has no top-level "not" list —
-// the failing not's KeywordLocation path was reduced to its last segment by
-// offendingKeyword — so it falls back to the enclosing oneOf and reports
-// that as the source keyword (keyword-path walking is issues #621-625).
-func branchList(params map[string]any, keyword string) (branches []any, source string) {
-	list, _ := params[keyword].([]any)
-	if list != nil {
-		return list, keyword
+// oneOfExampleMatchesExactlyOneBranch reports whether minimalExample(params) —
+// the top-level required properties — satisfies exactly one branch of the root
+// oneOf, making it a usable template rather than one that would match zero or
+// several. It answers only when every branch it has to judge constrains nothing
+// but presence, where the answer is exact; a branch that constrains values
+// returns false rather than guess.
+func oneOfExampleMatchesExactlyOneBranch(params map[string]any) bool {
+	arms, _ := params["oneOf"].([]any)
+	if len(arms) == 0 {
+		return false
 	}
-	list, _ = params["oneOf"].([]any)
-	return list, "oneOf"
+	keys := map[string]bool{}
+	for _, name := range requiredNames(params) {
+		keys[name] = true
+	}
+	satisfiedCount := 0
+	for _, raw := range arms {
+		arm, _ := raw.(map[string]any)
+		if arm == nil {
+			return false
+		}
+		satisfied, known := armOutcome(arm, keys)
+		if !known {
+			// Whether the branch matches cannot be decided from presence, so
+			// the example cannot be shown to match exactly one.
+			return false
+		}
+		if satisfied {
+			satisfiedCount++
+		}
+	}
+	return satisfiedCount == 1
+}
+
+// armOutcome reports whether an object carrying exactly keys satisfies a
+// branch, judged from presence alone. known is false when the branch or its
+// `not` constrains a value, so the caller cannot decide and must not emit an
+// example. A `not` rejects only when its whole inner schema matches, so a
+// non-presence-only `not` (or one with no required names, which rejects
+// unconditionally) is unknown here rather than rejecting.
+func armOutcome(arm map[string]any, keys map[string]bool) (satisfied, known bool) {
+	// An arm bearing a reference defers to the referenced schema, which is not
+	// available here: whether its own sibling keywords apply depends on the
+	// dialect ($ref siblings are ignored under draft-07 and applied under
+	// 2020-12), so the branch cannot be judged from presence.
+	for key := range arm {
+		if isRefSegment(key) {
+			return false, false
+		}
+	}
+	// A missing required property fails the branch on presence alone, whatever
+	// else the branch constrains.
+	for _, name := range requiredNames(arm) {
+		if !keys[name] {
+			return false, true
+		}
+	}
+	if forbidden := schemaMap(arm, "not"); forbidden != nil {
+		if !isPresenceOnlySchema(forbidden) || len(requiredNames(forbidden)) == 0 {
+			return false, false
+		}
+		all := true
+		for _, name := range requiredNames(forbidden) {
+			if !keys[name] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return false, true
+		}
+	}
+	if !isPresenceConstraint(arm) {
+		return false, false
+	}
+	return true, true
+}
+
+// isPresenceConstraint reports whether a branch constrains only presence: a
+// required list, and a `not` whose own schema is a non-empty presence-only
+// required list. A `not` with no required names always rejects, and one that
+// constrains a value only rejects on that value, so neither is a presence
+// constraint the example can be judged against.
+func isPresenceConstraint(arm map[string]any) bool {
+	for key := range arm {
+		switch key {
+		case "required", "description", "title", "$comment":
+		case "not":
+			forbidden := schemaMap(arm, "not")
+			if !isPresenceOnlySchema(forbidden) || len(requiredNames(forbidden)) == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// hasUnmodeledConstraint reports whether params carries a constraint other than
+// the one being described that minimalExample does not model. The example is
+// the top-level required shape, so object-level cardinality and name rules, a
+// dependent requirement, a conditional, a value assertion on the object itself,
+// a sibling combinator, a $ref, or a type union it cannot render all make it
+// unsafe to suggest. Property keywords such as additionalProperties or items do
+// not: the example carries only declared required properties
+// .
+func hasUnmodeledConstraint(params map[string]any, described string) bool {
+	for key := range params {
+		if key == described {
+			continue
+		}
+		if unmodeledRootExampleKey(key) {
+			return true
+		}
+	}
+	return unresolvableType(params)
+}
+
+// rootAcceptsObject reports whether the top-level schema accepts the JSON object
+// minimalExample renders: an absent type, "object", or a union that includes it.
+// A scalar or null root would otherwise be handed an example of the wrong JSON
+// type.
+func rootAcceptsObject(params map[string]any) bool {
+	raw, ok := params["type"]
+	if !ok {
+		return true
+	}
+	if t, isString := raw.(string); isString {
+		return t == "object"
+	}
+	return slices.Contains(asStringSlice(raw), "object")
+}
+
+// unmodeledRootExampleKey reports whether a root keyword is an assertion the
+// top-level example cannot be shown to satisfy: object-level cardinality, name
+// and dependency rules, a conditional, a value assertion on the object itself,
+// or a combinator. Every reference keyword counts, so $ref, $dynamicRef and
+// $recursiveRef cannot drift apart.
+func unmodeledRootExampleKey(key string) bool {
+	if isRefSegment(key) {
+		return true
+	}
+	switch key {
+	case "minProperties", "maxProperties", "propertyNames",
+		"dependentRequired", "dependentSchemas", "dependencies", "if",
+		"patternProperties",
+		"enum", "const", "oneOf", "anyOf", "allOf", "not":
+		return true
+	}
+	return false
+}
+
+// unresolvableType reports whether a schema declares a type the placeholder
+// cannot render — a union that is not a two-member nullable scalar
+// .
+func unresolvableType(schema map[string]any) bool {
+	rawType, ok := schema["type"]
+	if !ok {
+		return false
+	}
+	if t, isString := rawType.(string); isString {
+		switch t {
+		case "string", "integer", "number", "boolean", "array", "object", "null":
+			return false
+		}
+		// Anything else the placeholder cannot render would be suggested as
+		// "...", asserting the wrong type.
+		return true
+	}
+	return exampleSchemaType(rawType) == ""
+}
+
+// hasRefSegment reports whether any segment of the keyword location is a $ref —
+// a reference on a property as well as at the root. The referenced schema owns
+// the real constraint, so the top-level property cannot be read against it and
+// any example built from it is unverified.
+func hasRefSegment(keywordLocation string) bool {
+	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
+	for i := 0; i < len(segs); i++ {
+		// A properties/patternProperties keyword is followed by exactly one
+		// property name, which may itself be spelled like a keyword; the segment
+		// after that name is a keyword again.
+		if segs[i] == "properties" || segs[i] == "patternProperties" {
+			i++
+			continue
+		}
+		if isRefSegment(segs[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRefSegment reports whether a keyword-location segment is a JSON-Schema
+// reference keyword. $dynamicRef and $recursiveRef resolve like $ref, so a
+// constraint reached through one is equally unreadable from the top-level
+// schema.
+func isRefSegment(seg string) bool {
+	switch seg {
+	case "$ref", "$dynamicRef", "$recursiveRef":
+		return true
+	}
+	return false
+}
+
+// hasUnmodeledKey reports whether a schema node declares anything the example
+// placeholder does not satisfy: a value constraint, a combinator or reference
+// the renderer does not resolve, a nested assertion, or a type union it cannot
+// render.
+func hasUnmodeledKey(schema map[string]any) bool {
+	for _, key := range []string{
+		"enum", "const", "pattern", "format",
+		"minLength", "maxLength", "minimum", "maximum",
+		"exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+		"minItems", "maxItems", "uniqueItems", "items", "prefixItems",
+		"contains", "minContains", "maxContains",
+		"minProperties", "maxProperties", "dependentRequired", "dependentSchemas", "dependencies",
+		"propertyNames", "additionalProperties", "patternProperties",
+		"oneOf", "anyOf", "allOf", "not", "if", "$ref", "$dynamicRef", "$recursiveRef",
+	} {
+		if _, ok := schema[key]; ok {
+			return true
+		}
+	}
+	return unresolvableType(schema)
+}
+
+// exampleUnconstrained reports whether the value minimalExample renders for a
+// property is free of anything the placeholder does not model. It mirrors the
+// renderer's shape: a scalar property renders as its type placeholder, while an
+// object property is expanded exactly one level, so a constraint on any of its
+// required properties — or a nested object that would render as a bare "{}"
+// despite requiring keys — makes the example unsafe.
+func exampleUnconstrained(schema map[string]any) bool {
+	if hasUnmodeledKey(schema) {
+		return false
+	}
+	if len(requiredNames(schema)) == 0 || !schemaIsObject(schema) {
+		return true
+	}
+	props := schemaProps(schema)
+	for _, name := range requiredNames(schema) {
+		prop := schemaMap(props, name)
+		if prop == nil {
+			return false
+		}
+		if hasUnmodeledKey(prop) {
+			return false
+		}
+		if schemaIsObject(prop) && len(requiredNames(prop)) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// examplePropertyConstrained reports whether any property the example will
+// carry — the top-level required ones, expanded one level deep — declares a
+// constraint the placeholder minimalExample substitutes ("...", "0", ...) would
+// violate. Such a value is unmodeled, so appending the example would coach a
+// retry that fails on a constraint the message never mentioned
+// .
+func examplePropertyConstrained(params map[string]any) bool {
+	props := schemaProps(params)
+	for _, name := range requiredNames(params) {
+		prop := schemaMap(props, name)
+		if prop == nil || !exampleUnconstrained(prop) {
+			return true
+		}
+	}
+	return false
+}
+
+// rootNotExampleIsValid reports whether minimalExample(params) satisfies the
+// root `not` being described. The example carries the top-level required
+// properties, and not/required rejects only when EVERY forbidden property is
+// present, so it is invalid exactly when the required list contains all of
+// them.
+func rootNotExampleIsValid(params map[string]any) bool {
+	forbidden := schemaMap(params, "not")
+	if forbidden == nil {
+		return true
+	}
+	names := requiredNames(forbidden)
+	if len(names) == 0 {
+		return true
+	}
+	req := requiredNames(params)
+	for _, name := range names {
+		if !slices.Contains(req, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// branchList returns the schema's branch list for the failing combinator
+// keyword and the keyword that names it in the message. A root-level "not"
+// names a single forbidden-properties schema, not a branch list, so it is
+// wrapped as one branch. There is deliberately no sibling fallback: borrowing,
+// say, the top-level oneOf's branches for an unrelated "not" failure would
+// describe a constraint the call satisfies.
+func branchList(params map[string]any, keyword string) (branches []any, source string) {
+	if keyword == "not" {
+		if notSchema, ok := params["not"].(map[string]any); ok {
+			// Wrap the not's own schema so branchRequirement describes it as the
+			// forbidden properties it is, not as a requirement to send them.
+			return []any{map[string]any{"not": notSchema}}, "not"
+		}
+		return nil, "not"
+	}
+	list, _ := params[keyword].([]any)
+	return list, keyword
+}
+
+// branchCoversFailure reports whether oneOfConstraintMessage's branch prose
+// explains this failure rather than the present-field path. The prose names
+// only the combinator and, per arm, the properties that arm requires (with
+// their enums), so it covers a branch-structural failure (present is false: the
+// combinator itself, a `not` arm, an arm's own required list) and — on a
+// supplied property — an arm enum branchRequirement will actually render. Any
+// other constraint on a present property (its type, length, a nested
+// requirement, a nested combinator, an enum the arm does not render) is a
+// single-argument defect the prose never names, so it falls through to the
+// present-field path.
+func branchCoversFailure(params map[string]any, keyword, keywordLocation string, present bool) bool {
+	if present {
+		return keyword == "enum" && branchRendersArmEnum(params, keywordLocation)
+	}
+	// present is false both for a genuinely absent field and for a terminal item
+	// or nested property the walk cannot resolve, so the location decides: only
+	// branch structure (the combinator, an arm, an arm's required list or `not`)
+	// is described by branch prose. A constraint nested beneath an arm's
+	// properties/items is a single argument's or item's defect, and claiming the
+	// branch covers it would tell the caller to supply what it already sent
+	// while naming nothing about the failing item.
+	return branchLocationIsStructural(keywordLocation)
+}
+
+// branchLocationIsStructural reports whether a keyword location names branch
+// structure: the combinator itself, an arm, an arm's own required list, or an
+// arm's `not` (plus the nested combinator node, whose outer branches the
+// explainer enumerates). A location deeper than that belongs to a property or
+// item, not to the branch.
+func branchLocationIsStructural(keywordLocation string) bool {
+	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
+	i := 0
+	for i < len(segs) && isRefSegment(segs[i]) {
+		i++
+	}
+	if i >= len(segs) {
+		return false
+	}
+	switch segs[i] {
+	case "not":
+		return len(segs) == i+1
+	case "oneOf", "anyOf", "allOf":
+	default:
+		return false
+	}
+	rest := segs[i+1:]
+	switch {
+	case len(rest) == 0:
+		return true // the bare combinator (multiple-match shape)
+	case len(rest) == 1:
+		return true // an arm node
+	case len(rest) == 2:
+		// /<combinator>/<arm>/<keyword>
+		switch rest[1] {
+		case "required", "not", "oneOf", "anyOf", "allOf":
+			return true
+		}
+	}
+	return false
+}
+
+// branchRendersArmEnum reports whether keywordLocation names an arm's own
+// property enum that branchRequirement renders. branchRequirement iterates the
+// ARM's required slice, so it renders "<prop>" must be one of ... only for a
+// direct property (/oneOf/<i>/properties/<prop>/enum) that the arm lists as
+// required; an enum deeper in the arm, or on a property the arm does not
+// require, is never rendered.
+func branchRendersArmEnum(params map[string]any, keywordLocation string) bool {
+	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
+	if len(segs) != 5 || segs[0] != "oneOf" || segs[2] != "properties" || segs[4] != "enum" {
+		return false
+	}
+	idx, err := strconv.Atoi(segs[1])
+	if err != nil || idx < 0 {
+		return false
+	}
+	branches, _ := params["oneOf"].([]any)
+	if idx >= len(branches) {
+		return false
+	}
+	branch, _ := branches[idx].(map[string]any)
+	// branchRequirement describes an arm whose `not` is presence-only, and
+	// returns nothing at all when the `not` constrains a value — so such an
+	// arm's enums are never rendered. Claiming coverage would drop the failing
+	// property behind a bare generic message instead of letting the
+	// present-field path name it.
+	if forbidden := schemaMap(branch, "not"); forbidden != nil && notProhibition(forbidden) == "" {
+		return false
+	}
+	// The location is a JSON Pointer, so a property name containing "/" or "~"
+	// arrives escaped; unescape before comparing to the arm's required names
+	// (RFC 6901: ~1 -> /, then ~0 -> ~).
+	prop := strings.ReplaceAll(segs[3], "~1", "/")
+	prop = strings.ReplaceAll(prop, "~0", "~")
+	return slices.Contains(requiredNames(branch), prop)
+}
+
+// refWrappedKeywordLocation reports whether the failing cause sits behind a
+// $ref. A combinator reached through a reference keeps its branches in the
+// referenced schema, so they cannot be read off params: rendering the
+// top-level list instead could describe an unrelated sibling combinator that
+// merely shares the keyword.
+func refWrappedKeywordLocation(keywordLocation string) bool {
+	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
+	return len(segs) > 0 && isRefSegment(segs[0])
+}
+
+// notProhibition renders a negated schema as a "do not send ..." prohibition,
+// or "" when that wording would be false. not/required rejects only when EVERY
+// listed property is present, so the presence phrasing is accurate only for a
+// schema that constrains nothing but presence — a negated schema that also
+// constrains values ({"required": ["mode"], "properties": {"mode": {"enum":
+// ["off"]}}} accepts mode="on", so "do not send mode" is wrong). Returning ""
+// lets the caller fall back to the generic mismatch rather than coach a retry
+// with the very value the example would include.
+func notProhibition(forbidden map[string]any) string {
+	if !isPresenceOnlySchema(forbidden) {
+		return ""
+	}
+	names := requiredNames(forbidden)
+	if len(names) == 0 {
+		return ""
+	}
+	// not/required rejects only when EVERY listed property is present, so
+	// forbidding each one individually would over-claim: for
+	// {"not": {"required": ["a", "b"]}}, sending just "a" is valid.
+	if len(names) > 1 {
+		return "do not send all of " + joinQuoted(names) + " together"
+	}
+	return "do not send " + joinQuoted(names)
+}
+
+// isPresenceOnlySchema reports whether a schema's only validation keyword is
+// "required". Annotations (description, title, $comment) do not constrain, so
+// they are ignored.
+func isPresenceOnlySchema(schema map[string]any) bool {
+	for key := range schema {
+		switch key {
+		case "required", "description", "title", "$comment":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // branchRequirement renders one branch's requirement in prose: the
@@ -796,13 +1392,39 @@ func branchRequirement(branch any) string {
 	if schema == nil {
 		return ""
 	}
-	if forbidden := schemaMap(schema, "not"); forbidden != nil {
-		names := requiredNames(forbidden)
-		if len(names) == 0 {
+	// A reference-bearing arm defers to the referenced schema, whose shape is
+	// not available here; under a dialect that ignores $ref siblings its own
+	// keywords do not apply, so neither requirement is described.
+	for key := range schema {
+		if isRefSegment(key) {
 			return ""
 		}
-		return "do not send " + joinQuoted(names)
 	}
+	// An arm can carry a `not` and a required list at once. Describe both: a
+	// prohibition alone would hide the missing (or ill-typed) required property
+	// the caller has to fix, leaving nothing actionable in the message
+	//.
+	described := describeRequired(schema)
+	if forbidden := schemaMap(schema, "not"); forbidden != nil {
+		prohibition := notProhibition(forbidden)
+		if prohibition == "" {
+			// The negated schema constrains values, so the arm's failure is not
+			// a presence matter and the required summary would name fields the
+			// call already supplied.
+			return ""
+		}
+		if described == "" {
+			return prohibition
+		}
+		return described + ", " + prohibition
+	}
+	return described
+}
+
+// describeRequired renders a branch's own required properties, with an enum
+// constraint on any of them. Empty when the branch requires nothing (or names
+// no properties), so callers can treat "" as "nothing to say about presence".
+func describeRequired(schema map[string]any) string {
 	req := requiredNames(schema)
 	if len(req) == 0 {
 		return ""
@@ -950,13 +1572,14 @@ func exampleObject(schema map[string]any, expandNested bool) string {
 	sort.Strings(req)
 	parts := make([]string, 0, len(req))
 	for _, name := range req {
+		propSchema := props[name]
 		typ := ""
-		if p, ok := props[name].(map[string]any); ok {
-			typ, _ = p["type"].(string)
+		if p, ok := propSchema.(map[string]any); ok {
+			typ = exampleSchemaType(p["type"])
 		}
 		placeholder := examplePlaceholder(typ)
 		if expandNested {
-			placeholder = exampleValue(props[name], typ)
+			placeholder = exampleValue(propSchema, typ)
 		}
 		parts = append(parts, fmt.Sprintf("%q: %s", name, placeholder))
 	}
@@ -987,6 +1610,8 @@ func examplePlaceholder(typ string) string {
 		return "0"
 	case "boolean":
 		return "false"
+	case "null":
+		return "null"
 	case "array":
 		return "[]"
 	case "object":

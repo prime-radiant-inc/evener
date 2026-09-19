@@ -78,6 +78,9 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+// chunkViewBackingForTests is deliberately absent here; the white-box test hook
+// is published through the non-shipped testing/reducerHooks.ts instead.
+export { pendingTextJoined } from "./chunkview";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
@@ -111,7 +114,7 @@ export {
 export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
 export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
-export { liveAskQuestions } from "./deriveAskQuestions";
+export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureState, DisclosureStore } from "./disclosure";
 export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
@@ -130,6 +133,8 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
+export { canonicalJson } from "./draftCheckpointPort";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -156,7 +161,14 @@ export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
-export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+export {
+  hasErrorText,
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+} from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type { ActionId } from "./keybindingActions";
@@ -209,7 +221,14 @@ export type {
   KeybindingsStoreState,
   KeybindingsSupport,
 } from "./keybindingsStore";
-export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
+export {
+  createKeybindingsStore,
+  decodeKeybindingDraftFields,
+  discardStoredKeybindingDraft,
+  fromWireOverrides,
+  isReadableKeybindingDraft,
+  keybindingsSupport,
+} from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,
@@ -239,6 +258,7 @@ export {
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   listSupportsExplicitEmpty,
   matchesEnvCredentialError,
@@ -282,19 +302,19 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
-// chunkViewBackingForTests is deliberately absent: it reports the reducer's
-// internal chunk storage so a test can assert the view never copies it, which
-// is a test hook rather than protocol API. It belongs with the package's test
-// support, not the entry point.
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  foldWarningParams,
+  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  itemIdentityMatches,
+  joinedReasoningParagraphs,
+  joinWarningParts,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,
-  pendingTextJoined,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
@@ -375,6 +395,8 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
@@ -404,8 +426,6 @@ export type {
   TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
-  TranscriptHookExitDetail,
-  TranscriptLevel,
   TranscriptViewportClass,
   ViewportClass,
   VisibleCategoryInventory,
@@ -414,41 +434,24 @@ export {
   accessibleConfigSummary,
   advancedEnabledCount,
   CONTENT_LEVELS,
-  categoryInventory,
   configFingerprint,
-  configFromLegacyPrefs,
   configSummary,
-  configToWire,
   contentSummary,
-  decodeConfig,
-  decodeLocal,
   decodeLocalConfig,
-  defaultsToWire,
-  defaultToWire,
   dualWriteLegacyPreferences,
-  encodeConfig,
-  encodeLocal,
   encodeLocalConfig,
-  fingerprintConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
-  fromWireTranscriptDisplayConfig,
   HOOK_EXIT_DETAILS,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
-  legacyPrefsFromConfig,
   legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
-  migrateLegacyConfig,
   normalizeConfig,
   normalizeContent,
-  parseLocalConfig,
   presetContent,
   resolveEffectiveConfig,
-  SHIPPED_DEFAULTS,
-  SHIPPED_DESKTOP_CONFIG,
-  SHIPPED_MOBILE_CONFIG,
   shippedConfig,
   shippedDefault,
   shippedDefaults,
@@ -457,11 +460,7 @@ export {
   toWireConfig,
   toWireDefault,
   toWireDefaults,
-  toWireTranscriptDisplayConfig,
   visibleCategoryInventory,
-  wireToConfig,
-  wireToDefault,
-  wireToDefaults,
 } from "./transcriptDisplayConfig";
 export type {
   ProjectedAnchor,

@@ -11,9 +11,12 @@
 // reconciles, and what a host's own store of them tracks, not where any of
 // it lives.
 
-export type { MutationDispatcherOptions } from "./dispatcher";
+export type { MutationCommit, MutationCommitFeed } from "./commitFeed";
+export { wireMutationCommitFeed } from "./commitFeed";
+export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
 export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
+  MutationClientLookup,
   MutationDiscoveryReason,
   MutationLifecycleTarget,
   MutationOutboxChannel,
@@ -21,9 +24,16 @@ export type {
   MutationOutboxStorage,
   MutationVisibilityTarget,
 } from "./outbox";
-export { MutationOutbox } from "./outbox";
+export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
-export { reconcilePendingEntries } from "./pendingEntries";
+export {
+  imagePlaceholder,
+  normalizeText,
+  queueEntryPreviewText,
+  reconcilePendingEntries,
+  skillMarkers,
+  truncateForDisplay,
+} from "./pendingEntries";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,
@@ -32,7 +42,16 @@ export type {
   PendingTurnsThreadsPort,
   SubmittedDraft,
 } from "./pendingTurns";
-export { createPendingTurnsStore } from "./pendingTurns";
+export { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
+export type {
+  MutationPersistencePort,
+  MutationPersistenceSnapshot,
+  MutationProjectionFence,
+  MutationProjectionRefresh,
+} from "./projection";
+export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
+export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
+export { createMutationProjectionWorkTracker } from "./projectionWork";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
@@ -48,3 +67,5 @@ export type {
 export { createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
+export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";
+export { createSubmissionRunner, submitWithPendingTracking } from "./submission";

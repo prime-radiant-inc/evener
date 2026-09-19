@@ -1016,9 +1016,10 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises support for turn/queue (kata 111a). True when a turn
-	// is currently in flight and the session can accept enqueued user
-	// messages for processing after the active turn completes.
+	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// when the daemon wires a queue seam and the thread is not closed, not when
+	// a turn happens to be in flight. The client applies the status, so
+	// turn/queue is still meaningful only mid-turn.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
 	// for a evener session that can accept a goal; false for sources that do not
@@ -2168,6 +2169,13 @@ type JobActivitySession struct {
 	Branch      JobActivityBranchState `json:"branch"`
 }
 
+// JobActivityTree is ONE bounded page of a session's job-activity tree, not a
+// complete snapshot: Root.Branch carries a continuation token when the page
+// stopped short of what the session retains. Revision identifies the page
+// generation the page was rendered against; a continuation is only meaningful
+// within the revision it was minted from, so a client that receives a page at a
+// different revision must discard it and fetch a fresh root page rather than
+// splice its positions into the tree it already holds.
 type JobActivityTree struct {
 	Revision uint64             `json:"revision"`
 	Root     JobActivitySession `json:"root"`
@@ -2548,14 +2556,14 @@ type ThreadStatusChangedParams struct {
 	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
-	// count rides along above: it is otherwise snapshot-only, and three of its
-	// entries — Send, Steer, Queue — are defined by whether a turn is in
-	// flight. A client that read the thread while it was idle therefore holds
-	// steer=false/queue=false for the whole turn that follows, and renders a
-	// session it KNOWS is active with no Steer, no Stop and a dead Send until
-	// the page is reloaded (kata 06t8). A status transition is exactly when
-	// those flip, so the set refreshes there and nowhere else — no polling, no
-	// re-read of the transcript.
+	// count rides along above: it is otherwise snapshot-only, and Send is the
+	// entry defined by whether a turn is in flight (Steer, Interrupt and Queue
+	// advertise harness support and do not move with the status, #1363/#1375).
+	// A client that read the thread while it was idle therefore holds send=true
+	// for the whole turn that follows, and renders a session it KNOWS is active
+	// with a Send it must not offer until the page is reloaded (kata 06t8). A
+	// status transition is exactly when Send flips, so the set refreshes there
+	// and nowhere else — no polling, no re-read of the transcript.
 	//
 	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
 	// threads may omit capabilities their source does not advertise. A client
@@ -2769,14 +2777,16 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
-	// OriginClientId is the echoed OriginClientId of the auth mutation that
-	// caused this broadcast - the identity of the client whose change it
-	// announces, so that client can recognize its own echo by id instead of
-	// by provider plus timing. Optional: a mutation from a client that sends
-	// none (an older build, the TUI) leaves the broadcast without an id, and
-	// a consumer matching a broadcast against its own mutation then falls
-	// back to provider-plus-timing correlation. Absent for a
-	// provider-instance broadcast, which echoes no auth mutation.
+	// OriginClientId is the echoed OriginClientId of the mutation that caused
+	// this broadcast - an auth write or a provider-instance CRUD change - the
+	// identity of the client whose change it announces, so that client can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: a mutation from a client that sends none (an older build, the
+	// TUI) leaves the broadcast without an id. A consumer matching a broadcast
+	// against its own mutation then falls back to provider-plus-timing
+	// correlation for a provider-bearing auth echo only; an id-less
+	// provider-instance broadcast names no provider to correlate on and is
+	// treated as a foreign change.
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
@@ -3217,6 +3227,12 @@ type InstanceCreateParams struct {
 	Vars             map[string]string `json:"vars,omitempty"`
 	APIKeyEnv        string            `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string            `json:"credentialHeader,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this create triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceEditParams is the params for evener/instance/edit. Editing an
@@ -3260,6 +3276,12 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this edit triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.
@@ -3271,11 +3293,23 @@ type InstanceRemoveParams struct {
 	// client listed, so a name another client has re-pointed since must not
 	// have its replacement instance removed. Empty asserts nothing.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this removal triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this change triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceRefreshModelsParams is the params for
@@ -3283,6 +3317,12 @@ type InstanceSetDefaultParams struct {
 // answer with the updated list (exact catalog rows plus cached live ids).
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this refresh triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceSetModelDisabledParams is the params for
@@ -3293,6 +3333,12 @@ type InstanceSetModelDisabledParams struct {
 	Name     string `json:"name"`
 	Model    string `json:"model"`
 	Disabled bool   `json:"disabled"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this toggle triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // CommandDescriptor describes one slash command — plugin-provided or

@@ -218,6 +218,36 @@ func (s *Session) liveSubagentSessions() []*Session {
 	return live
 }
 
+// liveSubagentSessionsBounded returns the live ordinary-subagent descendant
+// sessions of s, treating any session whose ID is in stopIDs as a leaf: it
+// neither reports nor descends past one. A live delegate runtime is tracked as a
+// subagent of its parent (delegateRuntime.adopt -> subagents.track), so without
+// this boundary a session would appear in the subtree of every delegate ancestor
+// and delegate-anchoring would depend on map iteration order. Passing the live
+// delegate runtime sessions as stopIDs confines each session to its NEAREST
+// delegate ancestor.
+func (s *Session) liveSubagentSessionsBounded(stopIDs map[string]struct{}) []*Session {
+	if s == nil {
+		return nil
+	}
+	var out []*Session
+	var walk func(node *Session)
+	walk = func(node *Session) {
+		for _, child := range node.liveSubagentSessions() {
+			if child == nil {
+				continue
+			}
+			if _, stop := stopIDs[child.ID()]; stop {
+				continue
+			}
+			out = append(out, child)
+			walk(child)
+		}
+	}
+	walk(s)
+	return out
+}
+
 // liveDirectSubagents returns the live (non-closed) direct-child subagents,
 // matching liveSubagentSessions's leaf-lock discipline: the manager mutex is
 // released before each sub.mu is taken, and the closed flag is read under the

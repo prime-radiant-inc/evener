@@ -1763,3 +1763,173 @@ test("a Chrome launch under a long ambient TMPDIR gets a --user-data-dir whose s
     `Chrome's derived socket path ${socket} (${Buffer.byteLength(socket)} bytes) must fit ${browserGuardProcess.CHROME_SOCKET_PATH_LIMIT} bytes`,
   );
 });
+
+// Issue #1429: a teardown signal answered with EPERM means the target still
+// exists but cannot be signaled, so cleanup must keep polling instead of treating
+// the signal as a failure. This drives the real signalProcessGroup through a
+// refused SIGTERM/SIGKILL and requires cleanup to settle once the group is gone.
+test("treats an EPERM group signal as the group still running, not a cleanup failure (#1429)", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-group-eperm-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const groupChecks = [];
+  const escalations = [];
+  const signals = [];
+  let groupRunning = true;
+  const child = new FakeChild("/fake/chrome");
+  child.pid = 6363;
+
+  const realKill = process.kill;
+  // Both the liveness probe (signal 0) and the teardown signal answer EPERM
+  // while the group exists, exactly as macOS does for a re-parented survivor.
+  process.kill = (pid, signal) => {
+    if (signal === 0 || signal === undefined) {
+      if (groupRunning) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    }
+    signals.push([pid, signal]);
+    if (groupRunning) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+  };
+  context.after(() => {
+    process.kill = realKill;
+  });
+
+  const processTarget = new EventEmitter();
+  processTarget.exit = () => {};
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    processTarget,
+    scheduleGroupCheck(callback) {
+      groupChecks.push(callback);
+      return callback;
+    },
+    cancelGroupCheck() {},
+    scheduleEscalation(callback) {
+      escalations.push(callback);
+      return callback;
+    },
+    cancelEscalation() {},
+  });
+  lifecycle.addChild(child, { processGroupId: child.pid });
+
+  const cleanup = lifecycle.cleanup();
+  // The refused SIGTERM is not an exit: cleanup keeps the profile and escalates.
+  assert.deepEqual(signals, [[-6363, "SIGTERM"]]);
+  assert.equal(existsSync(profileDir), true);
+  escalations[0]();
+  assert.deepEqual(signals, [
+    [-6363, "SIGTERM"],
+    [-6363, "SIGKILL"],
+  ]);
+
+  groupRunning = false;
+  groupChecks.at(-1)();
+  await cleanup;
+  assert.equal(existsSync(profileDir), false, "cleanup resolves once the refused group finally disappears");
+});
+
+// The same contract on the discovered-helper path: signalProfileProcess must read
+// EPERM as "the helper still exists", so killProfileProcess does not reject
+// cleanup; the ps-based running probe decides when it is gone.
+test("treats an EPERM profile-process signal as still-here, not a cleanup failure (#1429)", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-eperm-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const profileChecks = [];
+  const deadlines = [];
+  const signals = [];
+  let profileRunning = true;
+  const identity = { pid: 7001, pgid: 7002, databaseArg: `--database=${profileDir}/Crashpad` };
+
+  const realKill = process.kill;
+  process.kill = (pid, signal) => {
+    signals.push([pid, signal]);
+    throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+  };
+  context.after(() => {
+    process.kill = realKill;
+  });
+
+  const processTarget = new EventEmitter();
+  processTarget.exit = () => {};
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    processTarget,
+    findProfileProcesses: () => [identity],
+    profileProcessRunning: () => profileRunning,
+    scheduleProfileProcessCheck(callback) {
+      profileChecks.push(callback);
+      return callback;
+    },
+    cancelProfileProcessCheck() {},
+    // The exit wait arms its own "helper did not exit" deadline; capture it so
+    // this test drives the wait instead of racing a real timer.
+    scheduleEscalation(callback) {
+      deadlines.push(callback);
+      return callback;
+    },
+    cancelEscalation() {},
+  });
+
+  const cleanup = lifecycle.cleanup();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(signals, [
+    [-7002, "SIGKILL"],
+    [-7002, "SIGKILL"],
+  ]);
+
+  profileRunning = false;
+  profileChecks.at(-1)();
+  await cleanup;
+  assert.equal(existsSync(profileDir), false);
+});
+
+// A group that answers EPERM to every signal exists but can never be killed.
+// Cleanup must not wait on it forever: once signaling is exhausted (SIGTERM,
+// then SIGKILL) it gives the group one more grace, then rejects with an error
+// naming the leaked group - so the guard reports the failure by name instead of
+// hanging until the CI job timeout (#1429).
+test("reports a process group that stays unsignallable (EPERM) after SIGKILL (#1429)", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-group-eperm-stuck-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const escalations = [];
+  const signals = [];
+  const child = new FakeChild("/fake/chrome");
+  child.pid = 6464;
+
+  const realKill = process.kill;
+  process.kill = (pid, signal) => {
+    if (signal === 0 || signal === undefined) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    signals.push([pid, signal]);
+    throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+  };
+  context.after(() => {
+    process.kill = realKill;
+  });
+
+  const processTarget = new EventEmitter();
+  processTarget.exit = () => {};
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    processTarget,
+    scheduleGroupCheck() {},
+    cancelGroupCheck() {},
+    scheduleEscalation(callback) {
+      escalations.push(callback);
+      return callback;
+    },
+    cancelEscalation() {},
+  });
+  lifecycle.addChild(child, { processGroupId: child.pid });
+
+  const cleanup = lifecycle.cleanup();
+  assert.deepEqual(signals, [[-6464, "SIGTERM"]]);
+  escalations[0]();
+  assert.deepEqual(signals, [
+    [-6464, "SIGTERM"],
+    [-6464, "SIGKILL"],
+  ]);
+
+  escalations[1]();
+  await assert.rejects(cleanup, /process group 6464 did not exit after SIGKILL; private profile retained at/);
+  assert.equal(existsSync(profileDir), true, "the profile is retained when the group can never be killed");
+});

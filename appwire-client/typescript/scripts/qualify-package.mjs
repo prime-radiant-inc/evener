@@ -57,16 +57,17 @@ const askItem = {
   id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
   argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
 };
+const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
-assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
 const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
-const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions(askModel), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
-const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions({ turns: [{ items: [askItem] }] })); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
+const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions(askModel)); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
@@ -640,13 +641,32 @@ const outboxStorage: MutationOutboxStorage = {
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
 ${inertOutboxStorageMethods}
 };
-const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+// A complete ready client, type-checked here: the outbox's lookup must accept
+// a full AppwireClientLike, not just a state field. The runtime smoke below
+// repeats it in plain JavaScript, where the same object cannot be annotated.
+const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
+  connect: () => Promise.resolve({} as never),
+  request: () => Promise.resolve({} as never),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({} as never),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const outboxOptions: MutationOutboxOptions = { getClient: () => readyClient, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
 const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+// The dispatcher always supplies a target ref, so a consumer whose lookup
+// requires one must stay assignable to its port; the ref-less outbox lookup
+// (above) must not have loosened it.
+const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
 const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher;`,
+void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -732,10 +752,26 @@ const memoryOutboxStorage = {
   listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
 ${inertOutboxStorageMethods}
 };
+// A complete AppwireClientLike: the runtime consumer is plain JavaScript, so
+// the double cannot be type-annotated here, but it supplies every member so a
+// strict TypeScript consumer copying it would compile. Only its state field is
+// read by the outbox below.
+const readyClient = {
+  connect: () => Promise.resolve({}),
+  request: () => Promise.resolve({}),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({}),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
 const memoryOutbox = new client.MutationOutbox(
   memoryOutboxStorage,
   {
-    isReady: () => true,
+    getClient: () => readyClient,
     onDiscover: (targetRefs, reason) => {
       discovered.push({ targetRefs, reason });
     },

@@ -39,7 +39,11 @@ export type ActivityFetchResult =
   | { kind: "unsupported" }
   | { kind: "ended" }
   | { kind: "failed"; error: PanelLoadFailure }
-  | { kind: "continuation-failed"; nodeID: string; message: string };
+  | { kind: "continuation-failed"; nodeID: string; message: string }
+  // A continuation page minted against a different revision than the retained
+  // tree. It is not a failure to show the reader: the page is discarded and the
+  // consumer re-fetches a fresh root, so no continuation failure is recorded.
+  | { kind: "continuation-discarded"; nodeID: string };
 
 /** What a settled continuation page owes the summary store: the summary
  * generation it began under (absent when no summary entry existed then) and
@@ -234,9 +238,37 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             continuationFailures: { ...current.continuationFailures, [result.nodeID]: result.message },
             pending: undefined,
           };
+        } else if (result.kind === "continuation-discarded") {
+          // The page belongs to another revision: leave the retained tree and
+          // the badge alone (no debt) and let the caller's fresh root fetch
+          // re-anchor pagination. Clearing any prior failure for this node keeps
+          // the discard from reading as a branch error.
+          const continuationFailures = { ...current.continuationFailures };
+          delete continuationFailures[result.nodeID];
+          next = {
+            ...current,
+            continuationLoadingID: undefined,
+            continuationFailures,
+            pending: undefined,
+          };
         } else if (result.kind === "ready") {
           const previousTree = retainedTree(current.load);
-          if (previousTree) {
+          if (previousTree && result.tree.revision !== previousTree.revision) {
+            // A page from another revision is not graftable. graftContinuationTree
+            // would leave the retained tree unchanged, so recording this as a
+            // merge would claim the unchanged tree's counts as the page's result
+            // and clear any prior failure. Discard it exactly like an explicit
+            // continuation-discarded result instead; the caller owns the root
+            // refetch (ActivityPanel starts one before publishing this).
+            const continuationFailures = { ...current.continuationFailures };
+            delete continuationFailures[pending.nodeID];
+            next = {
+              ...current,
+              continuationLoadingID: undefined,
+              continuationFailures,
+              pending: undefined,
+            };
+          } else if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
             debt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);

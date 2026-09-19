@@ -51,7 +51,7 @@ build-hub: build-runtime
 ## lockfile-compatible before any web target runs.
 ## proves: The worktree has a lockfile-compatible install and a real local
 ##   TypeScript compiler.
-## trigger: Setup prerequisite for the web/build/browser gates.
+## trigger: Setup prerequisite for the web/build/browser/lint gates.
 ## requires: May run npm when the install is absent or stale; refuses an
 ##   unsafe npm ci through a mismatched shared symlink.
 ## fails-when: A missing, mismatched, or unhealthy install is nonzero;

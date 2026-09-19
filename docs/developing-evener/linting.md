@@ -1,19 +1,45 @@
 # Linting
 
 Static checks that gate merges without running tests: formatting, generated-
-output freshness, compile floors, and the repo secret scan. `make lint` is
-`LINT_TARGETS`: `lint-naming`, `lint-gofmt`, `lint-evenerfuzz`, `lint-eval`,
-`lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`,
-`lint-package-imports`, and `secret-scan`. Every one of them is required CI.
+output freshness, compile floors, the frontend Biome scopes, and the repo
+secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`, `lint-gofmt`,
+`lint-evenerfuzz`, `lint-eval`, `lint-internal`, `lint-golangci`,
+`lint-generated`, `lint-fuzz-registry`, `lint-package-imports`, `lint-biome`,
+and `secret-scan`. `make lint` runs all of them; CI enforces every one across
+its split jobs, and each target's trigger says which.
 
-`golangci-lint` and `gitleaks` are the only external tools the gate needs;
-`make tools` installs the CI-pinned versions from `.tool-versions`. They
+`make tools` installs the gate's only run-time tools, `golangci-lint` and
+`gitleaks`, from the CI-pinned `.tool-versions`. `lint-biome` additionally
+needs Node/npm and the frontend's `node_modules` (which on a cold install means
+a network fetch), made ready by `web-preflight.sh` exactly as it is for the
+other web targets. The tools
 behave differently when absent: a missing `golangci-lint` fails the gate
 outright, while a missing local `gitleaks` warns and returns zero — CI sets
 `EVENER_GITLEAKS_REQUIRED=1` so absence there is a failure rather than a
 silent skip. Read that local warning as a limitation, never as evidence that a
 scan ran and found nothing — the same applies to `make fuzz-corpus-scan`,
 which points the same tool at the committed fuzz corpora.
+
+## Why `lint-biome` delegates to the frontend lint script
+
+`lint-biome` is the one gate whose tool does not live where a repo-root
+invocation would find it. No `biome` binary is installed at the repository root:
+the frontend's pinned `@biomejs/biome` lives in
+`cmd/evener-hub/frontend/node_modules` (and `mobile-native` carries its own copy
+for the native tree, which a root `npx biome` never resolves), so `npx biome`
+from the repository root finds no local package and downloads the unrelated
+`biome@0.3.3`, which ignores its arguments and exits 0. Every root-scoped
+"biome both scopes" invocation
+therefore reported green while checking nothing (#1406). The recipe runs
+`npm run lint` from the frontend directory: npm puts that install's
+`node_modules/.bin` on `PATH`, so `biome` resolves to the frontend's pinned
+`@biomejs/biome`, and the frontend `package.json` `lint` script stays the single
+definition of the two enforced scopes (`src` and `../../../appwire-client/typescript`,
+the same files `tsconfig.json`'s `include` covers) — the command the `web` CI
+job's `make test-web` already runs. `web-preflight` makes the install ready
+first, the same way it does for the other web targets. Never invoke `npx biome`
+from the repository root — use `make lint-biome` (part of `make lint`) or run
+Biome from the frontend directory.
 
 ## Why two tagged lint passes exist
 
@@ -139,5 +165,6 @@ user's global golangci-lint cache or sibling worktrees.
 | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs and the six docs/developing-evener/ target tables. | docs/appwire-protocol.md, the generated TypeScript protocol types, and the marked target-table regions in docs/developing-evener/'s six family docs all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
 | `make lint-fuzz-registry` | Wrap `make fuzz-registry-check` so a fuzz target that lands without its registry row fails the required gate instead of sitting undetected. | Every native/Rapid fuzz target in the manifest (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace declarations. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond the Go toolchain; static AST analysis only. | A discovered fuzz target has no registry row, or a registry row has no discovered target. |
 | `make lint-package-imports` | Fail if a web or native import names the AppWire TypeScript package by path instead of by its package name. | Every import specifier under cmd/evener-hub/frontend/src, mobile-native and mobile/src spells the package @evener/appwire-client (or a subpath its exports map publishes), with no file exempt but the resolver configs and mobile-native/src/metroResolver.test.ts, which asserts that mapping - each named one by one. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond a POSIX shell and grep. | Any import specifier in those trees names the package directory or the protocol/ directory it moved out of, or a swept tree is missing. |
-| `make lint` | Go lint, formatting, tagged floors, generated outputs, imports, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; that no web or native import names the AppWire TypeScript package by path; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks. | Any member of LINT_TARGETS exits nonzero. |
+| `make lint-biome` | Run the frontend's Biome over cmd/evener-hub/frontend/src and appwire-client/typescript via the frontend `lint` script. | Both frontend Biome scopes pass the @biomejs/biome ruleset, run by the frontend install's own `lint` script (the same command the web job runs) rather than the unrelated root-resolved `biome` package. | Required CI (the web job's make test-web runs the same frontend lint script); local make lint. | The frontend node_modules install; web-preflight makes it ready (and refuses npm ci through a symlinked install). | The frontend `lint` script is nonzero in either scope. |
+| `make lint` | Go lint, formatting, tagged floors, generated outputs, imports, frontend Biome, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; that no web or native import names the AppWire TypeScript package by path; that the frontend's Biome lint script passes over both frontend scopes; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks, and the frontend node_modules install. | Any member of LINT_TARGETS exits nonzero. |
 <!-- END GENERATED -->

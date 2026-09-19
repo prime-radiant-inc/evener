@@ -686,7 +686,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Through deps so hermetic runMain tests stay offline: the default
 	// warms the live cache from real provider endpoints.
 	deps.startLivePrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
-		notifyInstanceUpdated(web.appRPC)
+		// A server-initiated pass has no originating client, so the broadcast
+		// names none: every client, including the one that may have just asked
+		// for the prefetch, reads it as an unowned list change and refetches.
+		notifyInstanceUpdated(web.appRPC, "")
 	})
 
 	srv := &listenerHTTPServer{

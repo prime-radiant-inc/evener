@@ -1339,14 +1339,22 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				}
 			}
 			// handleModelError owns terminal provider recovery: it emits the
-			// failed turn, blocks the active goal, and settles the session idle.
-			// Keep this generic tail for non-provider failures (and budget
-			// exhaustion), but do not duplicate provider goal/provenance effects.
+			// failed turn, blocks the active goal, and settles through the
+			// pending-aware failure boundary. Keep this generic tail for
+			// non-provider failures (and budget exhaustion), but do not duplicate
+			// provider goal/provenance effects.
 			if !isProviderTerminalError(err) {
 				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 					s.terminateGoalOnError(processCtx, err)
 				}
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// A human-note carrier's own append failure (carrierSteerUndelivered)
+				// leaves askPending set -- its entry clear never ran
+				// (steeringCarrierClaimAnswersAsk) -- so settling idle here would
+				// report a session with a genuinely unanswered question as idle,
+				// diverging from restore's deriveRestoredState for the identical
+				// transcript and, via WireState, telling a live client nothing is
+				// waiting on them.
+				s.finishProcessingAtFailureBoundary(processCtx)
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
@@ -1374,29 +1382,27 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// intact in s.followups for the next drain cycle instead of being silently
 		// dropped by an awaiting rest that won't run it.
 		//
-		// Proof this capture is equivalent to askPendingCount() > 0, even though
-		// it reads raw state directly (unlike SetGoal/settleGoalOnIdle/Compact,
-		// which key on the pending-ask set): processOneInput unconditionally
-		// resets s.state to SessionProcessing and s.askPending to nil at entry
-		// (above, "s.setStateIfOpenLocked(SessionProcessing)" / "s.askPending =
-		// nil") for every accepted entry kind, so whatever this call's state was
-		// before this iteration's processOneInput call is wiped before it runs.
-		// The only path that can move it OUT of SessionProcessing before
-		// processOneInput returns on the clean-completion path is
-		// deliverIfCommunicated (session_tool_round.go), which writes
-		// SessionAwaiting via finishProcessingAtBoundary exactly when
-		// askedThisRound (this round grew askPending) — i.e. exactly when
-		// askPendingCount() > 0. The general non-ask idle→awaiting upgrade,
-		// armAwaitingAtSettle, is the only OTHER writer of SessionAwaiting
-		// reachable from this loop, but it runs strictly later, at the terminal
-		// settle (below, s.armAwaitingAtSettle), which is unconditionally
-		// followed by this call's own return — it never runs before this
-		// capture within the same ProcessInputKind call, and never more than
-		// once per call. So at this exact point, s.State() == SessionAwaiting
-		// holds if and only if askPendingCount() > 0 here; the two are
-		// interchangeable at this capture only, not as a general rule elsewhere
-		// in this file.
-		awaiting := s.State() == SessionAwaiting
+		// This used to read s.State() == SessionAwaiting alone, on the premise
+		// that askPendingCount() > 0 here implied THIS round's own delta grew it
+		// (askedThisRound, which deliverIfCommunicated maps straight to
+		// SessionAwaiting) — true only because processOneInput's entry used to
+		// clear askPending unconditionally, so nothing could reach this capture
+		// with a pending ask the round itself did not just post. A steering-carrier
+		// entry whose steer does not answer the ask (a human-note update,
+		// steeringCarrierClaimAnswersAsk) now skips that entry clear, so a round
+		// that merely acknowledges the note without posting anything new leaves
+		// askPending exactly as it was — nonzero, but with askedThisRound false —
+		// and deliverIfCommunicated settles it SessionIdle at this capture point
+		// (armAwaitingAtSettle's general upgrade runs later, at the outer loop's
+		// own terminal settle, not before this capture). Reading state alone would
+		// then pop and run a follow-up while ask1 sits unanswered
+		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
+		// pins this). askPendingCount() > 0 is checked directly alongside the
+		// state read so the gate holds regardless of which boundary state this
+		// round's own delta happened to settle on — awaitingOrHasPendingAsk
+		// samples both under one lock so a concurrent state transition or
+		// askPending mutation can't land between the two reads.
+		awaiting := s.awaitingOrHasPendingAsk()
 		var fu string
 		if !awaiting {
 			// Follow-ups need no such guard: they live in memory for this
@@ -1602,10 +1608,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 // fired — emits once.
 //
 // The state is read rather than asserted, the way the settled tail below reads
-// it. The failure exit settles to idle before calling this and so still reports
-// idle; a refusal can arrive with a question pending or a message still queued,
-// and a client told idle there would show a thread that is finished with
-// neither.
+// it. The failure exit settles through the pending-aware boundary before
+// calling this; a refusal can arrive with a question pending or a message
+// still queued, and a client told idle there would show a thread that is
+// finished with neither.
 func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1640,7 +1646,7 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	if !s.attachedTranscript().Poisoned() {
 		return nil
 	}
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return errTranscriptRefusesRecords()
 }
@@ -1788,6 +1794,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	// A steering-carrier entry (a queued human-note or answering steer with
+	// no turn of its own) only resolves the pending ask when the steer it is
+	// about to carry actually answers it: computed before the lock below
+	// since it reads the client-mutation journal, not session state.
+	queuedIdentity := queuedClientMutationFromContext(ctx)
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
+
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -1798,10 +1811,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
-	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
-	// beside comm's reset, under the lock already held (not via the
-	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	s.askPending = nil
+	// A claimed answering steering carrier has already crossed its durable
+	// admission boundary before this carrier turn runs, so preserve its
+	// established entry-clear behavior. Ordinary user input clears only after
+	// acceptUserInputWithSkillSelection has durably admitted its user turn;
+	// failed MaxTurns, environment, or transcript admission must leave the
+	// pending ask available for the next real reply and for restore.
+	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
+		s.askPending = nil
+	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -2260,7 +2278,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 		// A managed job can finish while this tool batch is running. Yield before
@@ -2268,13 +2286,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// as an EntryNotification turn. Notification turns already own their current
 		// batch and leave any later arrivals for the next wake.
 		if kind != EntryNotification && s.peekNotifications() > 0 {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
 	}
@@ -2336,28 +2354,26 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // shared answer so the callers keyed on that sentinel -- the queued restore in
 // ProcessPendingUserInput -- recognize this refusal as one of theirs.
 //
-// Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
-// failed once still accepts the next record, and whether that is right for
-// every producer is the audit in #1181, not this path's rule to settle.
+// A retained whole line is adopted by the shared pair helper, while any write
+// that recorded nothing is returned before the input is announced or the model
+// runs. This direct user-input door owns the stronger admission contract: the
+// pending ask cannot be cleared until the reply is recorded. A retained,
+// unsynced record is still adopted as the authoritative line rather than
+// appended again, which is the transcript pair's explicit retained-record
+// contract.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
-	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(turn)
-	if writeErr != nil && s.attachedTranscript().Poisoned() {
-		s.attentionMu.Unlock()
-		return errors.Join(writeErr, errTranscriptRefusesRecords())
+	err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	)
+	if err != nil {
+		if s.attachedTranscript().Poisoned() {
+			return errors.Join(err, errTranscriptRefusesRecords())
+		}
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
-	s.mu.Unlock()
-	s.attentionMu.Unlock()
-	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
-	}
-	// A buffered write whose whole line landed but did not sync returns nil and
-	// queues its diagnostic; this path owns surfacing it, outside the lock.
-	s.surfaceTranscriptWarnings()
-	return nil
+	return err
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
@@ -2394,7 +2410,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
 				Budget:    exhaustedBudgetTurns,
 				Limit:     s.cfg.MaxTurns,
@@ -2408,6 +2424,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
+		s.clearAskPending()
 		return nil
 	}
 
@@ -2472,8 +2489,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
 					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
 				}
-				if err := s.recoverClientMutationFailures(true); err != nil {
-					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
+				recoveryErr := s.recoverClientMutationFailures(true)
+				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
+				if userRecorded {
+					s.clearAskPending()
+				}
+				if recoveryErr != nil {
+					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
+				}
+				if !userRecorded {
+					return failure
 				}
 				s.emit(events.EventUserInput, events.UserInputData{
 					Text:             input,
@@ -2496,9 +2521,17 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
+		// The claimed user turn is now durable. Resolve the pending ask only
+		// after this admission point; failures before it must preserve the ask.
+		s.clearAskPending()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
+	}
+	if queuedIdentity.ClientMutationID == "" {
+		// The direct user turn is durable (or was durably preseeded) at this
+		// point. Earlier admission failures intentionally leave askPending set.
+		s.clearAskPending()
 	}
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:             input,
@@ -2726,7 +2759,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
+	// Recorded for the duration of the drain so a skill-selection failure for
+	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
+	// can tag its TurnFailure as a resolution boundary too — this turn's mere
+	// acceptance already cleared askPending before the drain ever ran.
+	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
 	delivered := s.injectDrainedSteering()
+	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
@@ -2736,7 +2775,16 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		// Tagged only when the claimed steer itself answers the ask
+		// (steeringCarrierClaimAnswersAsk, the same journal-kind check the
+		// entry clear uses): a human-note carrier's entry clear already left
+		// askPending set, so its failure must not be a resolution boundary
+		// either, or restore would diverge from live.
+		if s.steeringCarrierClaimAnswersAsk(identity) {
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+		} else {
+			s.emitTurnFailure(errorDataFromError(err))
+		}
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was

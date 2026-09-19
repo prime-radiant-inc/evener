@@ -138,11 +138,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
 		}
 	}
-	// The one *plugins.Manager this hub server uses: every plugin CRUD
-	// handler, the auto-upgrade daemon, and a launch's plugin-inventory
-	// resolution (thread/start, evener/spawn/slashCatalog) reach this same
-	// instance via cfg.PluginManager, instead of each minting its own,
-	// unwired one.
+	// The one *plugins.Manager the appRPC server and every consumer reached
+	// through cfg.PluginManager share: the plugin CRUD handlers and a
+	// launch's plugin-inventory resolution (thread/start,
+	// evener/spawn/slashCatalog) all reach this same instance instead of
+	// each minting its own, unwired one. The three background maintenance
+	// paths in main_background.go (hubStartUpgrade, seedHubMarketplaces,
+	// startHubPluginMaintenance's GC) build their own wired manager over the
+	// default plugin root instead of reusing this field; #1780 tracks
+	// unifying them.
 	if cfg.PluginManager == nil {
 		cfg.PluginManager = plugins.NewManager(cfg.PluginRoot)
 	}

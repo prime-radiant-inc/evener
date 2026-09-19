@@ -1,11 +1,16 @@
 // @vitest-environment node
 
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+
+// The outbox reads readiness off the same client lookup the dispatcher takes,
+// so these tests supply a ready client rather than a boolean flag.
+const READY_CLIENT = new FakeClient();
 
 // stop() awaits discovery that is already RUNNING; it no longer executes work
 // that was only queued (a stopped outbox discovers nothing — outbox.ts's
@@ -560,6 +565,36 @@ describe("MutationOutbox discovery", () => {
     databaseName = `mutation-outbox-discovery-${crypto.randomUUID()}`;
   });
 
+  // One readiness notion for both halves of the subpath: the outbox asks the
+  // same client lookup the dispatcher does, and dispatch is possible exactly
+  // when that client reports state "ready". A host cannot wire the outbox's
+  // gate and the dispatcher's from two facts that drift apart.
+  test("readiness comes from the client lookup, not a separate flag", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    await storage.enqueueIntent(intent("waiting"));
+    const client = new FakeClient("connecting");
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      getClient: () => client,
+      onDiscover: (_targets, reason) => {
+        discoveries.push(reason);
+      },
+    });
+    await outbox.start();
+    await discovered(() => discoveries.includes("startup"));
+    discoveries.length = 0;
+
+    // Not ready: no dispatch is possible, so a ready scan discovers nothing.
+    await outbox.connectionReady();
+    expect(discoveries).toEqual([]);
+
+    // The same client becomes ready: the outbox now discovers.
+    client.state = "ready";
+    await outbox.connectionReady();
+    expect(discoveries).toEqual(["ready"]);
+    await outbox.stop();
+  });
+
   test("a ready peer discovers a commit broadcast by another tab", async () => {
     const channels = new Set<TestBroadcastChannel>();
     const createBroadcastChannel = (name: string) => new TestBroadcastChannel(name, channels);
@@ -567,7 +602,7 @@ describe("MutationOutbox discovery", () => {
     const tabA = new MutationOutbox(
       new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence("a") }),
       {
-        isReady: () => true,
+        getClient: () => READY_CLIENT,
         onDiscover: (targets, reason) => {
           discoveries.push({ targets, reason });
         },
@@ -575,7 +610,7 @@ describe("MutationOutbox discovery", () => {
       },
     );
     const tabB = new MutationOutbox(new MutationOutboxIndexedDB({ indexedDB, databaseName }), {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover: (targets, reason) => {
         discoveries.push({ targets, reason });
       },
@@ -595,7 +630,7 @@ describe("MutationOutbox discovery", () => {
   test("a discovery failure cannot report a committed message as a failed submission", async () => {
     const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover() {
         throw new Error("discovery unavailable");
       },
@@ -622,7 +657,7 @@ describe("MutationOutbox discovery", () => {
       releaseDiscovery = resolve;
     });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover() {
         announceDiscovery?.();
         return gate;
@@ -651,7 +686,7 @@ describe("MutationOutbox discovery", () => {
     const record = await storage.enqueueIntent(intent("recover at startup"));
     const discovered: string[] = [];
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover(targets, reason) {
         if (reason === "startup") throw new Error("storage was unavailable during startup");
         discovered.push(...targets);
@@ -679,7 +714,7 @@ describe("MutationOutbox discovery", () => {
       announceStartup = resolve;
     });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover(_targets, reason) {
         discoveries.push(reason);
         if (reason === "startup") announceStartup?.();
@@ -741,7 +776,7 @@ describe("MutationOutbox discovery", () => {
     let tick: (() => void) | undefined;
     const discoveries: string[] = [];
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover(_targets, reason) {
         discoveries.push(reason);
       },
@@ -769,7 +804,7 @@ describe("MutationOutbox discovery", () => {
     const intervals: Array<() => void> = [];
     const discoveries: Array<{ targets: string[]; reason: string }> = [];
     const survivingTab = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover: (targets, reason) => {
         discoveries.push({ targets, reason });
       },
@@ -821,7 +856,7 @@ describe("MutationOutbox discovery", () => {
       releaseStartup = resolve;
     });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover: async (_targets, reason) => {
         discoveries.push(reason);
         if (reason === "startup") await startupBlocked;
@@ -851,7 +886,7 @@ describe("MutationOutbox discovery", () => {
     await storage.enqueueIntent(intent("waiting"));
     const discoveries: string[] = [];
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover: (_targets, reason) => {
         discoveries.push(reason);
       },
@@ -878,7 +913,7 @@ describe("MutationOutbox discovery", () => {
       releaseStartup = resolve;
     });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => ready,
+      getClient: () => (ready ? READY_CLIENT : null),
       onDiscover: async (_targets, reason) => {
         discoveries.push(reason);
         if (reason === "startup") await startupBlocked;
@@ -913,7 +948,7 @@ describe("MutationOutbox discovery", () => {
     const cleared: number[] = [];
     const discoveries: string[] = [];
     const outbox = new MutationOutbox(storage, {
-      isReady: () => true,
+      getClient: () => READY_CLIENT,
       onDiscover: (_targets, reason) => {
         discoveries.push(reason);
       },
@@ -956,7 +991,7 @@ describe("MutationOutbox discovery", () => {
       announceStartup = resolve;
     });
     const outbox = new MutationOutbox(storage, {
-      isReady: () => ready,
+      getClient: () => (ready ? READY_CLIENT : null),
       onDiscover: (targets, reason) => {
         discoveries.push({ targets, reason });
         if (reason === "startup") announceStartup?.();
