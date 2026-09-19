@@ -698,6 +698,35 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  test("refreshing a decoded-equivalent raw-shape replacement resets the prior generation", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>({
+      id: "d1",
+      baseRevision: 3,
+      rules,
+      writeUncertain: false,
+      futureField: 1,
+    });
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ draftConflict: true, draft: { generation: 1 } });
+
+    drafts.failReplace();
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+    drafts.failReplace(false);
+    drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: false,
+      draftConflict: false,
+      draft: { revision: 3, rules, generation: 3 },
+    });
+  });
+
   test("editDraft's own id-generation failure sets storageUnavailable and draftError, the same as a save failure", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const throwingCreateId: typeof drafts.storage = {

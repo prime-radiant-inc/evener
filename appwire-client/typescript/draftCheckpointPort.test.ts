@@ -30,6 +30,16 @@ describe("createDraftRepository", () => {
     expect(repo.reload()).toEqual({ checkpoint: { id: "d2", value: "a" }, sameIdentity: false });
   });
 
+  it("reports a raw-shape replacement even when decoding produces the same checkpoint", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    expect(repo.load()).toEqual({ id: "d1", value: "a" });
+    drafts.storage.save({ id: "d1", value: "a" });
+
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: false });
+  });
+
   it("removeIf on a checkpoint load() returned removes the exact stored bytes, extra fields included", () => {
     const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
     const repo = createDraftRepository(drafts.storage, decode);
