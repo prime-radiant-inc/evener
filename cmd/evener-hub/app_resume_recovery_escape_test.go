@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
@@ -35,7 +34,7 @@ func persistedUnconfirmedRecovery(t *testing.T, sessionID string) (*hubcore.Resu
 		t.Fatal(err)
 	}
 	owner := daemonprocess.Target{PID: 4242, SessionID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now().Round(0)}
-	if err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	state := locks.RecoveryState(sessionID)
@@ -151,14 +150,21 @@ func TestResumeStillRefusesUnconfirmedExitWithUnverifiedClaim(t *testing.T) {
 	if len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatal("setup did not stage an unconfirmed claim")
 	}
-	locks, _, _ := persistedUnconfirmedRecovery(t, sessionID)
-	if err := locks.PersistForceStop([]string{forkAlias, sessionID}, sessionID); err != nil {
+	// Keep the owner proof and make the controller verify the old owner gone,
+	// so the unconfirmed claim is the ONLY thing keeping the refusal — a
+	// proofless record would refuse at the earlier no-proof check and leave
+	// the claim branch unexercised.
+	locks, _, owner := persistedUnconfirmedRecovery(t, sessionID)
+	if _, err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false
 	cfg := hubcore.WebConfig{
 		Roster:      roster,
 		ResumeLocks: locks,
+		DaemonProcesses: forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+			return nil, daemonprocess.ErrExited
+		}),
 		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			spawned = true
 			return rendezvous.Entry{}, errors.New("spawn sentinel")

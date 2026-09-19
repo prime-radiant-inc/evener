@@ -93,7 +93,7 @@ func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
 		if _, exists := store.state[record.Alias]; exists {
 			return nil, fmt.Errorf("duplicate recovery alias %q", record.Alias)
 		}
-		if target, ok := targets[record.Group]; ok && target != record.recoveryAuthority {
+		if target, ok := targets[record.Group]; ok && !target.sameAuthority(record.recoveryAuthority) {
 			return nil, errors.New("recovery group has conflicting exit or session authority")
 		}
 		targets[record.Group] = record.recoveryAuthority
@@ -232,4 +232,18 @@ func syncRecoveryDirectory(fs afero.Fs, dir string) error {
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
 	return errors.Join(syncErr, closeErr)
+}
+
+// sameAuthority compares two records of one group. OwnerStartedAt must compare
+// by instant, not struct equality: a time.Time's == also compares the location
+// pointer, and non-UTC zones parse back with pointer identity only by the
+// zone-cache's grace. Equal is the comparison that cannot misjudge identical
+// records as conflicting.
+func (a recoveryAuthority) sameAuthority(b recoveryAuthority) bool {
+	return a.ExitConfirmed == b.ExitConfirmed &&
+		a.Group == b.Group &&
+		a.SessionID == b.SessionID &&
+		a.OwnerPID == b.OwnerPID &&
+		a.OwnerStateDir == b.OwnerStateDir &&
+		a.OwnerStartedAt.Equal(b.OwnerStartedAt)
 }
