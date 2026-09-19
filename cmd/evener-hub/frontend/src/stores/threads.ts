@@ -1382,7 +1382,11 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
       // reason: the discard may have removed the ref's last durable row, and
       // a stale pin keeps releaseThread from dropping the model.
       notifyMutationPersistence([targetRef]);
-      void refreshMutationPins(runtime, [targetRef]);
+      // Fired, not awaited - the clear's publication must not wait on it -
+      // but its rejection stays inside this best-effort envelope: the reads
+      // it performs can fail (a timeout, a VersionError, a retired
+      // connection) after the discard already committed.
+      void refreshMutationPins(runtime, [targetRef]).catch(() => {});
     })
     .catch(() => {});
 }

@@ -5174,6 +5174,59 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
   });
 
+  // RoboRev's detached-promise finding: discardCanceledMutations fires the pin
+  // refresh without awaiting it, and refreshMutationPins reads storage
+  // (listOutbox/listOptimistic) - reads that can reject (a timeout, a
+  // VersionError, a retired connection) after the discard already committed.
+  // The fired promise must stay inside the discard's best-effort envelope
+  // rather than escaping as an unhandled rejection. Reaching the end of this
+  // test instead of the runner failing on an unhandled rejection is the
+  // assertion, the same rule as the credentials retry test.
+  test("a pin-refresh read failing after a successful discard stays best-effort, not an unhandled rejection", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    // The discard commits; the pin refresh that follows reads storage, and
+    // that read fails. The wrapper only arms the failure after the real
+    // discard resolves and fires it exactly once - clearThread's own awaited
+    // pin refresh that follows must keep the real reads - so the discard
+    // itself stays real and only its fired refresh pays the failure.
+    const realDiscardCanceled = storage.discardCanceled.bind(storage);
+    const realListOptimistic = storage.listOptimistic.bind(storage);
+    storage.discardCanceled = (targetRef: string) =>
+      realDiscardCanceled(targetRef).then((discarded) => {
+        storage.listOptimistic = () => {
+          storage.listOptimistic = realListOptimistic;
+          return Promise.reject(new Error("pin refresh read failed"));
+        };
+        return discarded;
+      });
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
+    await threadsStore.getState().clearThread("ref_a");
+
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
+    // Let a would-be unhandled rejection surface: a few real event-loop turns,
+    // each a real storage read the same runtime serves.
+    const probe = new MutationOutboxIndexedDB();
+    for (let round = 0; round < 5; round += 1) await probe.listOutbox("ref_a");
+    probe.close();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+  });
+
   // The other half of §6's removal rule: the hub's durable deletion fence is
   // the moment the ref provably no longer exists, so its canceled rows go too.
   test("a hub-deleted thread's canceled rows are removed when the deletion fence lands", async () => {
