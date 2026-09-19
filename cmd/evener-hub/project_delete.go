@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -154,6 +153,12 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if record, ok := s.cfg.DeletionStore.DeletingProject(project.ID); ok {
 		releaseOwnership, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, nil)
 		if ownerErr != nil {
+			// Cancellation while acquiring a later target is not a skipped
+			// target: the resume never ran, so it must not be reported as a
+			// successful deletion outcome.
+			if err := ctx.Err(); err != nil {
+				return appwire.ProjectDeleteResponse{}, err
+			}
 			skipped := []projectDeleteSkip{{ID: ownerErr.ThreadID, Reason: ownerErr.Error()}}
 			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)
@@ -165,6 +170,12 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 				releaseOwnership()
 			}
 		}()
+		// Ownership is held but the request may have been abandoned while it
+		// waited; fail before the destructive cleanup, as the fresh path and
+		// sessionDelete already do.
+		if err := ctx.Err(); err != nil {
+			return appwire.ProjectDeleteResponse{}, err
+		}
 		result := s.cleanupProjectDeletion(ctx, record, nil)
 		if len(result.DecisionErrors) > 0 {
 			return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
@@ -267,6 +278,9 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 			releaseOwnership()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return appwire.ProjectDeleteResponse{}, err
+	}
 	if len(ownedTargets) == 0 {
 		return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
 	}
@@ -372,7 +386,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 ) (func(), *projectDeletionOwnershipError) {
 	targets := append([]hubcore.DeletionTarget(nil), record.Targets...)
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ThreadID < targets[j].ThreadID })
-	var locks []*sync.Mutex
+	var locks []*hubcore.ResumeMutex
 	var owners []*llm.APILogger
 	release := func() {
 		for _, owner := range slices.Backward(owners) {
@@ -384,7 +398,10 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 	}
 	for _, target := range targets {
 		lock := s.lockForSession(target.ThreadID)
-		lock.Lock()
+		if err := lock.LockContext(ctx); err != nil {
+			release()
+			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
+		}
 		locks = append(locks, lock)
 		if s.cfg.Roster != nil {
 			if err := s.cfg.Roster.OwnershipError(); err != nil {

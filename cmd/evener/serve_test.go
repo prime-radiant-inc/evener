@@ -259,6 +259,24 @@ func TestAgentToServerDetailedStatus_WatchesDeepCopied(t *testing.T) {
 	}
 }
 
+// TestArmInterruptRunnerArmsTheRunnerBeforeTheServerCancel: the interrupt path
+// waits on the mutation runner (cancelAndWaitMutationRunner reads those fields
+// and then waits for runnerDone before it finalizes the fence) and never consults
+// the server cancel func. Armed cancel-first, a Stop accepted between the two
+// statements finds the runner fields still nil, returns without waiting, and
+// finalizes the fence -- so the claimed turn then runs the very turn the user
+// stopped. The order is the fix, so the order is what this asserts.
+func TestArmInterruptRunnerArmsTheRunnerBeforeTheServerCancel(t *testing.T) {
+	var order []string
+	armInterruptRunner(
+		func() { order = append(order, "runner") },
+		func() { order = append(order, "server-cancel") },
+	)
+	if want := []string{"runner", "server-cancel"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("arming order = %v, want %v: an accepted interrupt must find the runner armed before the fence can be finalized", order, want)
+	}
+}
+
 func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T) {
 	input := make(chan server.InputMessage, 1)
 	input <- server.InputMessage{Text: "already queued"}
