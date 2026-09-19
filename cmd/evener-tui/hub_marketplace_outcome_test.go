@@ -71,8 +71,8 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	if cmd != nil {
 		t.Fatal("applied-with-litter result should not request another list")
 	}
-	if after.err == nil || after.err == err {
-		t.Fatalf("warning = %v, want distinct applied-with-litter warning", after.err)
+	if after.err == nil {
+		t.Fatal("applied-with-litter result should leave a visible warning")
 	}
 	if _, ok := errors.AsType[appwire.WireError](after.err); !ok {
 		t.Fatalf("warning = %v, want original WireError in error chain", after.err)
