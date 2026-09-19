@@ -50,6 +50,28 @@ func TestClassifyMarketplaceCloneRemainsJSONData(t *testing.T) {
 			t.Fatalf("JSON uncertain outcome = %v/%+v, want unavailable zero snapshot", state, applied)
 		}
 	}
+	state, applied = classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(map[string]any{
+		"evenerErrorInfo": "other-error",
+		"applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept"}},
+		},
+	}))
+	if state != marketplaceCloneRemainsNotTyped || applied.Marketplaces != nil {
+		t.Fatalf("unmarked JSON outcome = %v/%+v, want ordinary error", state, applied)
+	}
+}
+
+func TestClassifyMarketplaceCloneRemainsDiscardsPartialJSONSnapshot(t *testing.T) {
+	malformed := map[string]any{
+		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": 42}},
+		},
+	}
+	state, applied := classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(malformed))
+	if state != marketplaceCloneRemainsUnavailable || applied.Marketplaces != nil {
+		t.Fatalf("malformed partial snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
+	}
 }
 
 func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T) {
@@ -71,8 +93,8 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	if cmd != nil {
 		t.Fatal("applied-with-litter result should not request another list")
 	}
-	if after.err == nil || after.err == err {
-		t.Fatalf("warning = %v, want distinct applied-with-litter warning", after.err)
+	if after.err == nil {
+		t.Fatal("applied-with-litter result should leave a visible warning")
 	}
 	if _, ok := errors.AsType[appwire.WireError](after.err); !ok {
 		t.Fatalf("warning = %v, want original WireError in error chain", after.err)
@@ -131,13 +153,40 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	}
 
 	list := cmd().(launchconfig.MarketplaceListResultMsg)
-	if list.Err != nil || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
+	if list.Err != nil || list.ReconcileGeneration != after.marketplaceReconcileGeneration || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
 		t.Fatalf("reconcile result = %+v, want confirmed list", list)
 	}
 	got, _ = after.handleMarketplaceListResult(list)
 	reconciled := got.(hubModel)
 	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
 		t.Fatalf("after reconciliation pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
+	}
+}
+
+func TestMarketplaceListResultDoesNotSettleReconciliationWithoutItsGeneration(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removed := appwire.MarketplaceEntry{Name: "removed"}
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 1,
+	}
+
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed}},
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != removed.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("untagged list settled pending state = %q/%v, want fence preserved", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("untagged list should not discard the existing panel state")
+	}
+	remove := cmd().(launchconfig.MarketplaceRemoveMsg)
+	if remove.Name != kept.Name {
+		t.Fatalf("untagged list changed selected marketplace to %q, want %q", remove.Name, kept.Name)
 	}
 }
 
