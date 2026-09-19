@@ -154,8 +154,17 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "SELECT service_id FROM store_identity").Scan(&s.identity); err != nil {
 		return err
 	}
+	// These access paths also belong to reopened, already-supported schema 2.
+	if _, err := tx.ExecContext(ctx, storeIndexes); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
+
+const storeIndexes = `
+ CREATE INDEX IF NOT EXISTS diagnostics_by_artifact_time ON artifact_diagnostics(artifact_id,reported_at);
+ CREATE INDEX IF NOT EXISTS mutations_by_namespace ON artifact_mutations(namespace_id);
+`
 
 const storeSchema = `
  CREATE TABLE store_identity(service_id TEXT NOT NULL);
