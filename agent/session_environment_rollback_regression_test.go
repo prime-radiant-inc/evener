@@ -1184,13 +1184,14 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	sendOneUserInput(t, sess, "first")
 
 	turnCtx, interrupt := interruptDrainTurnContext(t)
-	fs := attachEnvironmentFailureFS(t, sess)
-	// The buffered user-input record poisons the writer before the model is
-	// asked, and the interrupt then ends the turn with the bare cancellation
-	// the drain keys on.
-	armEnvironmentPartialWrite(fs)
+	// The input must be admitted before the model turn poisons the writer; the
+	// interrupt then ends that reachable turn with the bare cancellation the
+	// drain keys on.
 	steps[1] = func(llm.Request) llm.Response {
 		requests.Add(1)
+		// Poison the transcript during the scripted response, before the
+		// interrupt lets the drain claim its queued message.
+		poisonSessionTranscript(t, sess)
 		interrupt()
 		return finalResponse("ok")
 	}
@@ -1203,6 +1204,9 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(turnCtx, "poisons mid-turn", nil)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("model requests = %d, want the initial turn and the interrupted poisoning turn", got)
+	}
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("interrupted turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}

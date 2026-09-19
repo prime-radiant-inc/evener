@@ -42,6 +42,8 @@ func newDurableAdmissionAskSession(t *testing.T, cfg SessionConfig) *Session {
 
 func seedDurableAdmissionAsk(t *testing.T, sess *Session) context.Context {
 	t.Helper()
+	// TRIPWIRE: scripted in-process provider and local temporary transcript
+	// files, with no network; 30s is a generous guard for a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
