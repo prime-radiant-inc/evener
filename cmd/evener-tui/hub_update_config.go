@@ -514,6 +514,9 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
+	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
+		return m, nil
+	}
 	if msg.Err == nil && m.marketplaceReconcilePending {
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
@@ -545,8 +548,9 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			case marketplaceCloneRemainsUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
 				m.marketplaceReconcilePending = true
+				m.marketplaceReconcileGeneration++
 				if m.client != nil {
-					return m, launchconfig.CmdMarketplaceList(m.client)
+					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 				}
 				return m, nil
 			}

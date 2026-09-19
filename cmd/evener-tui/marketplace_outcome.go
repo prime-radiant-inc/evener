@@ -24,8 +24,8 @@ func classifyMarketplaceCloneRemains(err error) (marketplaceCloneRemainsState, a
 	if !ok {
 		return marketplaceCloneRemainsNotTyped, appwire.MarketplaceListResponse{}
 	}
-	data, ok := decodeMarketplaceCloneRemainsData(wire.Data)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+	data, marked := decodeMarketplaceCloneRemainsData(wire.Data)
+	if !marked {
 		return marketplaceCloneRemainsNotTyped, appwire.MarketplaceListResponse{}
 	}
 	if data.AppliedUnavailable || data.Applied.Marketplaces == nil {
@@ -36,15 +36,30 @@ func classifyMarketplaceCloneRemains(err error) (marketplaceCloneRemainsState, a
 
 func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregisteredCloneRemainsData, bool) {
 	if data, ok := raw.(appwire.MarketplaceUnregisteredCloneRemainsData); ok {
-		return data, true
+		return data, data.EvenerErrorInfo == appwire.ErrorMarketplaceUnregisteredCloneRemains
 	}
 	encoded, err := json.Marshal(raw)
 	if err != nil || string(encoded) == "null" {
 		return appwire.MarketplaceUnregisteredCloneRemainsData{}, false
 	}
-	var data appwire.MarketplaceUnregisteredCloneRemainsData
-	if err := json.Unmarshal(encoded, &data); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
 		return appwire.MarketplaceUnregisteredCloneRemainsData{}, false
+	}
+	var info appwire.ErrorInfo
+	if err := json.Unmarshal(fields["evenerErrorInfo"], &info); err != nil || info != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+		return appwire.MarketplaceUnregisteredCloneRemainsData{}, false
+	}
+	data := appwire.MarketplaceUnregisteredCloneRemainsData{EvenerErrorInfo: info}
+	if rawUnavailable, ok := fields["appliedUnavailable"]; ok {
+		if err := json.Unmarshal(rawUnavailable, &data.AppliedUnavailable); err != nil {
+			return data, true
+		}
+	}
+	if rawApplied, ok := fields["applied"]; ok && string(rawApplied) != "null" {
+		if err := json.Unmarshal(rawApplied, &data.Applied); err != nil {
+			return data, true
+		}
 	}
 	return data, true
 }

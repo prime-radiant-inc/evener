@@ -141,6 +141,55 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestMarketplaceListResultDoesNotSettleUnrelatedReconciliation(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removed := appwire.MarketplaceEntry{Name: "removed"}
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 1,
+	}
+
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed}},
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != removed.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("stale list settled pending state = %q/%v, want fence preserved", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale list should not discard the existing panel state")
+	}
+	remove := cmd().(launchconfig.MarketplaceRemoveMsg)
+	if remove.Name != kept.Name {
+		t.Fatalf("stale list changed selected marketplace to %q, want %q", remove.Name, kept.Name)
+	}
+}
+
+func TestMarketplaceCloneRemainsWrongShapedDataStaysFenced(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{client: client, marketplaceRemovePending: "removed"}
+	err := marketplaceCloneRemainsError(map[string]any{
+		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"applied":         "not-a-list",
+	})
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err: err, Action: "remove", Name: "removed",
+	})
+	after := got.(hubModel)
+	if cmd == nil || after.marketplaceRemovePending != "removed" || !after.marketplaceReconcilePending {
+		t.Fatalf("wrong-shaped marked data = pending %q/%v cmd=%v, want fenced reconciliation", after.marketplaceRemovePending, after.marketplaceReconcilePending, cmd != nil)
+	}
+}
+
 func TestMarketplaceMutateResultMalformedAppliedPayloadStaysFenced(t *testing.T) {
 	m := hubModel{marketplaceRemovePending: "removed"}
 	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
