@@ -347,12 +347,12 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordC
 	originalDelete := f.ctl.auth.deleteAuth
 	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
 		removed, err := originalDelete(dir, name)
-		if err == nil && removed {
-			// Occupy the record's path so the atomic restore cannot land: the
-			// layer that carried the instance stays deleted.
-			if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil {
-				t.Errorf("Mkdir(%s): %v", authPath, mkErr)
-			}
+		// The record was moved aside (renamed away) before this cleanup ran, so
+		// this call finds nothing to delete and the record's path is free.
+		// Occupy it anyway, so the rename that would put the layer back cannot
+		// land: the layer that carried the instance stays out of reach.
+		if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil && !os.IsExist(mkErr) {
+			t.Errorf("Mkdir(%s): %v", authPath, mkErr)
 		}
 		return removed, err
 	}
@@ -557,12 +557,11 @@ func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.
 	originalDelete := f.ctl.auth.deleteAuth
 	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
 		removed, err := originalDelete(dir, name)
-		if err == nil && removed {
-			// Occupy the record's path so the atomic restore cannot land: the
-			// stray key restores fine, the carrying record does not.
-			if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil {
-				t.Errorf("Mkdir(%s): %v", authPath, mkErr)
-			}
+		// The record was moved aside (renamed away) before this cleanup ran and
+		// its path is free; occupy it so the rename that would put the carrying
+		// layer back cannot land. The stray key still restores fine.
+		if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil && !os.IsExist(mkErr) {
+			t.Errorf("Mkdir(%s): %v", authPath, mkErr)
 		}
 		return removed, err
 	}
