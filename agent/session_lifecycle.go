@@ -2357,25 +2357,16 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // A retained whole line is adopted by the shared pair helper, while any write
 // that recorded nothing is returned before the input is announced or the model
 // runs. This direct user-input door owns the stronger admission contract: the
-// pending ask cannot be cleared until the reply is recorded and synced.
+// pending ask cannot be cleared until the reply is recorded. A retained,
+// unsynced record is still adopted as the authoritative line rather than
+// appended again, which is the transcript pair's explicit retained-record
+// contract.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
-	var barrierErr error
 	err := s.appendTurnAfterTranscriptWrite(
 		turn,
-		func() error {
-			if err := s.writeTranscriptLocked(turn); err != nil {
-				return err
-			}
-			if writer := s.attachedTranscript(); writer != nil {
-				barrierErr = writer.EstablishDurability()
-			}
-			return nil
-		},
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	)
-	if barrierErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript durability barrier failed: %v", barrierErr)})
-	}
 	if err != nil {
 		if s.attachedTranscript().Poisoned() {
 			return errors.Join(err, errTranscriptRefusesRecords())

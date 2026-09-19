@@ -1399,9 +1399,9 @@ func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
 	turnsBefore, historyBefore := sess.turns, len(sess.history)
 	sess.mu.Unlock()
 
-	fs := attachEnvironmentFailureFS(t, sess)
-	// The USER_INPUT record is the next write, and it stops partway.
-	armEnvironmentPartialWrite(fs)
+	// The USER_INPUT record is the next write, and it stops partway without a
+	// successful rollback, so the synced admission door poisons the writer.
+	attachEnvironmentPoisoningWrite(t, sess, errors.New("injected transcript write failure"), errors.New("injected transcript rollback failure"))
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(t.Context(), "poisons its own input record", nil)
@@ -1489,9 +1489,10 @@ func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
 	fs.mu.Unlock()
 
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("buffered input whose sync fails"))
-	if err := sess.appendUserInputTurnRefusingPoison(turn); err != nil {
-		t.Fatalf("appendUserInputTurnRefusingPoison error = %v, want nil: the whole line is a record", err)
+	if err := sess.writeTranscript(turn); err != nil {
+		t.Fatalf("buffered transcript write error = %v, want nil: the whole line is a record", err)
 	}
+	sess.surfaceTranscriptWarnings()
 
 	sess.Close()
 	<-done
