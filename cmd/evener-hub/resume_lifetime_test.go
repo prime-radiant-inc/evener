@@ -1102,3 +1102,64 @@ func TestShutdownUncertainOwnershipRefusesRegisteredResume(t *testing.T) {
 		t.Fatal("refusal is classified session-unavailable, so the tolerant fallback would mask it as a no-op success")
 	}
 }
+
+// The Low RoboRev reported against resumeDaemon's CompletionOwned timeout=0:
+// a completion-owned resume whose client never cancels held the session's
+// ownership aliases indefinitely while the child never published rendezvous.
+// The hub now bounds the wait itself (completionOwnedResumeTimeout, mirroring
+// the client's RESUME_REQUEST_TIMEOUT_MS), so the lock lifetime does not
+// depend on caller behavior.
+func TestCompletionOwnedResumeRendezvousWaitIsHubBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		exit := make(chan error, 1)
+		defer close(exit)
+		waiting := make(chan struct{})
+		killed := make(chan struct{}, 1)
+		original := startResumeChild
+		defer func() { startResumeChild = original }()
+		startResumeChild = func(cmd *exec.Cmd) (resumeChild, error) {
+			return resumeChild{pid: 4242, kill: func() error {
+				killed <- struct{}{}
+				return nil
+			}, wait: func() error {
+				close(waiting)
+				return <-exit
+			}}, nil
+		}
+		originalBudget := completionOwnedResumeTimeout
+		defer func() { completionOwnedResumeTimeout = originalBudget }()
+		completionOwnedResumeTimeout = time.Second
+		type result struct {
+			entry rendezvous.Entry
+			err   error
+		}
+		completed := make(chan result, 1)
+		go func() {
+			entry, err := resumeDaemon(t.Context(), "fixture-evener", runDir, hubcore.ResumeRequest{
+				SessionID: sessionID, CompletionOwned: true,
+			}, DefaultConfig().SpawnTimeout, io.Discard)
+			completed <- result{entry, err}
+		}()
+		<-waiting
+		// Inside the budget the launcher keeps waiting even though the caller
+		// has no deadline of its own.
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case got := <-completed:
+			t.Fatalf("completion-owned resume returned inside its hub budget: %+v", got)
+		default:
+		}
+		// Past the budget the hub's own cap settles the wait and retires the
+		// child, exactly like the ordinary spawn timeout does.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		<-killed
+		exit <- nil
+		if got := <-completed; !errors.Is(got.err, errRendezvousTimeout) {
+			t.Fatalf("completion-owned resume did not settle on the hub cap: %+v", got)
+		}
+	})
+}
