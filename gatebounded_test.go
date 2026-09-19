@@ -141,8 +141,9 @@ pid=$!
 ready=no
 for _ in $(seq 1 100); do [ -f "$dir/ready" ] && { ready=yes; break; }; sleep 0.05; done
 if [ "$ready" != yes ]; then
-	kill -KILL "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
+	# Stop the whole tree, not just the parent: a child that exists but never
+	# signalled readiness would otherwise survive and hold CombinedOutput's pipe.
+	stop_process_tree "$pid"
 	rm -rf "$dir"
 	echo "parent never signalled readiness"
 	exit 1
@@ -189,8 +190,7 @@ pid=$!
 ready=no
 for _ in $(seq 1 100); do [ -s "$dir/late" ] && [ -f "$dir/child-ready" ] && { ready=yes; break; }; sleep 0.05; done
 if [ "$ready" != yes ]; then
-	kill -KILL "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
+	stop_process_tree "$pid"
 	rm -rf "$dir"
 	echo "child never signalled readiness"
 	exit 1
