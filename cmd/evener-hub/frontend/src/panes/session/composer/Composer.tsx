@@ -1246,7 +1246,6 @@ export function Composer({ ref, focused }: ComposerProps) {
       await submitWithPendingTracking(
         {
           ref,
-          method: kind,
           text: submittedText,
           attachments: payload,
           skillNames: submittedSkillNames,

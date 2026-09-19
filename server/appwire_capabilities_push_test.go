@@ -8,20 +8,18 @@ import (
 )
 
 // A client holds ThreadCapabilities as a snapshot from its last thread/read,
-// and two of them — Send, Queue — are defined by whether a turn is in flight
-// (Steer advertises harness support alone; the client applies the status). So
-// a client that read the thread while it was idle holds queue=false, and
-// nothing on the wire ever corrects that: the
-// composer then renders a session it KNOWS is active (it has the status change
-// and the turn) with no Steer, no Stop, and a dead Send, until a reload
-// (kata 06t8). A status transition is exactly the moment those flip, so the
-// set rides along there — the same fix shape thread/status/changed already
+// and Send is defined by whether a turn is in flight (Steer, Interrupt and
+// Queue advertise harness support alone; the client applies the status). So a
+// client that read the thread while it was idle holds send=true, and nothing
+// on the wire ever corrects that: the composer then renders a session it KNOWS
+// is active (it has the status change and the turn) with a live Send, until a
+// reload (kata 06t8). A status transition is exactly the moment Send flips, so
+// the set rides along there — the same fix shape thread/status/changed already
 // carries for the running failure count (kata 12rq).
 func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) error { ; return nil })
-	srv.SetQueueFunc(func(string) error { return nil })
+	wireRetrySafeCapabilities(srv)
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
@@ -54,11 +52,16 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	if idle.Capabilities == nil {
 		t.Fatal("idle thread/status/changed carried no capabilities, want the set that goes with no turn")
 	}
-	if idle.Capabilities.Queue {
-		t.Fatalf("idle capabilities = %+v, want queue false with no turn in flight", *idle.Capabilities)
-	}
 	if !idle.Capabilities.Steer {
 		t.Fatalf("idle capabilities = %+v, want steer true: it advertises harness support, and a queue parked by Stop is released by a drain or promote sent while idle", *idle.Capabilities)
+	}
+	// Queue and Interrupt advertise harness support too (#1375): the set is
+	// pushed on the idle transition, and the client applies the status itself.
+	if !idle.Capabilities.Queue {
+		t.Fatalf("idle capabilities = %+v, want queue true: it advertises harness support, not a turn in flight", *idle.Capabilities)
+	}
+	if !idle.Capabilities.Interrupt {
+		t.Fatalf("idle capabilities = %+v, want interrupt true: it advertises harness support, not a turn to stop", *idle.Capabilities)
 	}
 	if !idle.Capabilities.Send {
 		t.Fatal("idle capabilities Send = false, want true with no turn in flight")
@@ -79,8 +82,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) error { ; return nil })
-	srv.SetQueueFunc(func(string) error { return nil })
+	wireRetrySafeCapabilities(srv)
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "shutdown", State: "closed"}})

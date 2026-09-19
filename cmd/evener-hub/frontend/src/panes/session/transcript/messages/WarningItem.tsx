@@ -12,6 +12,7 @@
 // quiet below - each piece renders only when present/non-empty, and the
 // whole row renders nothing at all when there is truly nothing to show.
 
+import { hasWarningText } from "@evener/appwire-client";
 import { memo } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -29,9 +30,15 @@ const CLASS = {
 // a fresh turn object on every streaming delta targeting a DIFFERENT item
 // must not re-render an already-settled warning row.
 export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) {
-  const title = item.warning?.title;
-  const hint = item.warning?.hint;
-  const message = item.text;
+  // hasWarningText is the package's own "is this actually content" reading
+  // (a non-blank string) — the same one the reducer's raw-frame fallback
+  // decides against, so a blank-but-present title/hint/message never shows
+  // an empty chip or row here while item.text falls back to the raw frame.
+  // It also rejects a non-string runtime value outright, so a malformed
+  // wire frame's title/hint can never reach React as a child.
+  const title = hasWarningText(item.warning?.title) ? item.warning?.title : undefined;
+  const hint = hasWarningText(item.warning?.hint) ? item.warning?.hint : undefined;
+  const message = hasWarningText(item.text) ? item.text : "";
   if (!title && !message && !hint) return null; // nothing to show
 
   return (
@@ -42,7 +49,7 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
           {message}
         </div>
       )}
-      {!!hint && (
+      {hint !== undefined && (
         <div className={CLASS.hint} data-testid="warning-hint">
           {hint}
         </div>

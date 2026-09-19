@@ -299,6 +299,13 @@ type testConfig struct {
 	// written, before the store write -- where a test arms a write fault that
 	// refuses exactly that claim. Nil in production.
 	steeringCarrierClaiming func()
+	// beforeSteeringInjectedPublish observes a delivered steer's live event
+	// about to be published, immediately after clearAskPendingForResolvingSteer
+	// ran -- the ordering RoboRev #1806 member-3 Medium's fix depends on
+	// (the server refreshes its ask facet on this event, so the clear must be
+	// visible before it fires). Tests use it to sample askPendingCount() at
+	// exactly that point. Nil in production.
+	beforeSteeringInjectedPublish func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)

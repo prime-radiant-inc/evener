@@ -46,6 +46,7 @@ import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDi
 import {
   type MutationAttachment,
   type MutationClientLookup,
+  type MutationCommit,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
@@ -642,11 +643,6 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-interface MutationCommit {
-  record: MutationOutboxRecord;
-  recoveryId?: string;
-}
-
 type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
 const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 

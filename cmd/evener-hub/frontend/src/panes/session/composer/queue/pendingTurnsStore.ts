@@ -1,10 +1,16 @@
 import {
   awaitingFirstFrameSend,
   blockedEntries,
+  createMutationProjectionFence,
+  createMutationProjectionWorkTracker,
   createPendingTurnsStore,
+  createSubmissionRunner,
+  type MutationPersistencePort,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
+  replaceTargetRecords,
+  wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -52,91 +58,49 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   identity: { isOwnMutationRecord },
 });
 
-let refreshGeneration = 0;
-let allTargetsRefreshGeneration = 0;
-const refreshGenerations = new Map<string, number>();
-let refreshEpoch = 0;
+// The durable-read fence a refresh's targets are decided through, and the
+// port it reads them from: readMutationPersistence is already shaped to
+// MutationPersistencePort, so no adapter object is needed beyond naming it.
+const projectionFence = createMutationProjectionFence<MutationAttachment>();
+const persistencePort: MutationPersistencePort<MutationAttachment> = { read: readMutationPersistence };
 
-function replaceTargetRecords<T extends { clientMutationId: string; targetRef: string }>(
-  current: Map<string, T>,
-  targets: ReadonlySet<string>,
-  records: T[],
-): Map<string, T> {
-  const next = new Map(current);
-  for (const [id, record] of next) {
-    if (targets.has(record.targetRef)) next.delete(id);
-  }
-  for (const record of records) {
-    if (targets.has(record.targetRef)) next.set(record.clientMutationId, record);
-  }
-  return next;
-}
-
-// Every durable projection operation below is registered here while it runs.
-// The work is the mutation runtime's start plus real IndexedDB reads and
-// writes, so its wall time scales with machine load - a mount-to-activation
-// latency of 124-1246ms was measured for the Composer's own path (kata 3c7t).
-// That leaves a test with nothing to await but the operation itself: polling
-// its side effects against a fixed window is a race, not an assertion.
-const inFlightProjectionWork = new Set<Promise<unknown>>();
+// Every durable projection operation below is registered with this tracker
+// while it runs. The work is the mutation runtime's start plus real IndexedDB
+// reads and writes, so its wall time scales with machine load - a
+// mount-to-activation latency of 124-1246ms was measured for the Composer's
+// own path (kata 3c7t). That leaves a test with nothing to await but the
+// operation itself: polling its side effects against a fixed window is a
+// race, not an assertion. The stall tripwire and the macrotask yield the
+// tracker settles through are the package's; this binds them to the
+// browser's own timers and a MessageChannel hop.
+const projectionWorkTracker = createMutationProjectionWorkTracker({
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (timerId) => clearTimeout(timerId),
+  yieldMacrotask: () =>
+    new Promise<void>((resolve) => {
+      const hop = new MessageChannel();
+      hop.port1.onmessage = () => {
+        hop.port1.close();
+        resolve();
+      };
+      hop.port2.postMessage(undefined);
+    }),
+});
 
 function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
-  inFlightProjectionWork.add(work);
-  return work.finally(() => {
-    inFlightProjectionWork.delete(work);
-  });
+  return projectionWorkTracker.track(work);
 }
 
-// A round waits on real durable work, so its wall time scales with machine
-// load - but no amount of load turns work that has no completion left into
-// work that finishes. A test that stalls storage and then flushes without
-// releasing it parks HERE, inside the act() below, until vitest abandons the
-// whole test at its own timeout - and an abandoned act() leaves React's act
-// queue open for the rest of the FILE, so every later render produces nothing
-// and one hang becomes dozens of failures (issue #1187). This bound exists to
-// make that one named failure in the test that caused it, nothing else: it is
-// a tripwire for a stall, never pacing. The slowest round measured across the
-// whole web suite (10373 tests) under 32-way CPU contention was 165ms.
-const SETTLE_STALL_TRIPWIRE_MS = 4_000;
-
-async function awaitOutstandingProjectionWork(outstanding: Promise<unknown>[]): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const tripwire = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `pending-turns projection work stalled: ${outstanding.length} operation(s) still unsettled after ${SETTLE_STALL_TRIPWIRE_MS}ms - release whatever storage or transport this test is holding before flushing`,
-          ),
-        ),
-      SETTLE_STALL_TRIPWIRE_MS,
-    );
-  });
-  try {
-    await Promise.race([Promise.allSettled(outstanding), tripwire]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// The fire-and-forget refresh port both the commit feed and the submission
+// runner take, bound once here rather than written inline at each site.
+const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsProjection(ref);
 
 // Awaits whatever projection work is outstanding right now and reports how
 // much that was. Callers repeat until it reports zero, flushing React in
 // between: the components start this work from effects, so only a flush can
-// reveal whether anything is left. The macrotask hop drains every pending
-// microtask, so work chained onto an operation that just finished has already
-// registered itself by the time the caller looks again.
+// reveal whether anything is left.
 export async function settlePendingTurnsProjectionForTests(): Promise<number> {
-  const outstanding = [...inFlightProjectionWork];
-  await awaitOutstandingProjectionWork(outstanding);
-  await new Promise<void>((resolve) => {
-    const hop = new MessageChannel();
-    hop.port1.onmessage = () => {
-      hop.port1.close();
-      resolve();
-    };
-    hop.port2.postMessage(undefined);
-  });
-  return outstanding.length;
+  return projectionWorkTracker.settle();
 }
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
@@ -144,72 +108,42 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
-  const epoch = refreshEpoch;
-  const generation = ++refreshGeneration;
-  // Starting a newer read supersedes older snapshots even if that read fails.
-  if (ref === undefined) allTargetsRefreshGeneration = generation;
-  else refreshGenerations.set(ref, generation);
-  try {
-    const snapshot = await readMutationPersistence(ref);
-    if (refreshEpoch !== epoch) return false;
-    // Provenance is monotonic knowledge about ids rather than a view of the
-    // records currently in storage, so it is published from every read of this
-    // epoch and in its own setState: a read a newer generation has already
-    // superseded still saw a record of this client's, and the newer read - taken
-    // later - may be looking at storage that record has since been settled out
-    // of. Skipping it there would leave the id known to nobody.
-    pendingTurnsStore.recordSubmittedHere(snapshot);
-    // Reads of all targets and reads of one target share the same ordering.
-    // An old all-target snapshot must not erase a newer local commit.
-    const targets = new Set(
-      ref === undefined
-        ? [
-            ...refreshGenerations.keys(),
-            ...snapshot.outbox.map((record) => record.targetRef),
-            ...snapshot.optimistic.map((record) => record.targetRef),
-            ...snapshot.recovery.map((record) => record.targetRef),
-          ]
-        : [ref],
-    );
-    for (const target of targets) {
-      if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0))
-        targets.delete(target);
-      else refreshGenerations.set(target, generation);
-    }
-    pendingTurnsStore.setState((state) => ({
-      outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
-      optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
-      recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
-    }));
-    return true;
-  } catch {
-    // A read failure cannot discard the last durable projection. Lifecycle
-    // discovery or the next explicit action retries the same IndexedDB read.
-    return false;
-  }
+  const accepted = await projectionFence.refresh(persistencePort, ref);
+  if (!accepted) return false;
+  const { snapshot } = accepted;
+  // Provenance is monotonic knowledge about ids rather than a view of the
+  // records currently in storage, so it is published from every read the
+  // fence accepted and in its own setState: a read a newer generation has
+  // already superseded still saw a record of this client's, and the newer
+  // read - taken later - may be looking at storage that record has since
+  // been settled out of. Skipping it there would leave the id known to
+  // nobody.
+  pendingTurnsStore.recordSubmittedHere(snapshot);
+  // apply() re-decides the accepted targets right here, not at refresh()'s
+  // resolution: a live commit's advance() for one of them can land in
+  // between, and it must still out-rank this snapshot for that target.
+  const targets = accepted.apply();
+  pendingTurnsStore.setState((state) => ({
+    outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
+    optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
+    recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
+  }));
+  return true;
 }
 
-subscribeMutationPersistence((targetRefs, committed) => {
-  if (committed) {
-    const { record, recoveryId } = committed;
-    refreshGenerations.set(record.targetRef, ++refreshGeneration);
-    pendingTurnsStore.recordSubmittedHere({ outbox: [record], optimistic: [] });
-    pendingTurnsStore.setState((state) => {
-      const recovery = new Map(state.recovery);
-      if (recoveryId) recovery.delete(recoveryId);
-      return { outbox: new Map(state.outbox).set(record.clientMutationId, record), recovery };
-    });
-  }
-  if (targetRefs.length === 0) {
-    void refreshPendingTurnsProjection();
-    return;
-  }
-  for (const ref of targetRefs) void refreshPendingTurnsProjection(ref);
-});
+// The commit feed's fast path (advancing the fence and landing the record
+// straight into the store, with no durable read at all) and the refresh it
+// triggers for every other changed target both live in the package; this
+// binds them to the browser's own durable-mutation feed and the refresh
+// declared below.
+wireMutationCommitFeed(pendingTurnsStore, projectionFence, { subscribe: subscribeMutationPersistence }, refreshTarget);
+
+// The submission lifecycle's four singletons (store, fence, tracker, refresh),
+// bound once here rather than repeated at every submitWithPendingTracking call.
+const runSubmission = createSubmissionRunner(pendingTurnsStore, projectionFence, trackProjectionWork, refreshTarget);
 
 export interface SubmitWithPendingTrackingOptions {
   ref: string;
-  method: PendingMethod;
   text: string;
   attachments?: InputAttachment[];
   // The canonical skill selections submitted with this text, for the
@@ -244,71 +178,43 @@ export function useComposerSubmitting(ref: string): boolean {
 }
 
 // The action resolves at the local IndexedDB commit boundary. Durable state,
-// not a component timer or text echo, is the only optimistic lifecycle.
-//
-// Registered with trackProjectionWork for its whole duration, not just for the
-// refresh it ends with. Every other durable path here is tracked from the call
-// that starts it; this one used to register nothing until `perform` had already
-// resolved, which left a window where a settle round found the set empty and
-// reported the projection settled while a send was still in flight (kata 3p22).
-// Tracking from the click is what makes one zero round genuine proof.
+// not a component timer or text echo, is the only optimistic lifecycle. The
+// begin/epoch-guard/settle-draft/end/refresh sequencing lives in the
+// package's submission lifecycle (state/mutation/submission.ts); this binds
+// it to the browser's projection tracker and fence, and turns what it
+// decided into this file's own composer-submission notification (the
+// recovery tray, the draft UI) - neither of which the package names.
 export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
   perform: () => Promise<void>,
 ): Promise<void> {
-  if (!pendingTurnsStore.beginSubmission(opts.ref)) {
-    return Promise.reject(new Error("A message submission is already pending for this task"));
-  }
-  const epoch = refreshEpoch;
-  const draftRevisionAtStart = readDraftRevision(opts.ref);
-  return trackProjectionWork(
-    (async () => {
-      try {
+  const skillNames = [...(opts.skillNames ?? [])];
+  return runSubmission(
+    {
+      ref: opts.ref,
+      draftRevisionAtStart: readDraftRevision(opts.ref),
+      text: opts.text,
+      skillNames,
+      onFailure: opts.onFailure,
+    },
+    perform,
+    ({ cleared, draftUnchanged }) => {
+      if (!cleared && !opts.recoveryId) return;
+      for (const listener of submissionCommittedListeners) {
         try {
-          await perform();
-        } catch (error) {
-          opts.onFailure(error);
-          throw error;
-        }
-        // Submission ownership outlives a mounted composer. A retired mount
-        // must not clear a newer draft written after a tab switch.
-        if (epoch === refreshEpoch) {
-          const skillNames = [...(opts.skillNames ?? [])];
-          const { cleared: clearStoredDraft, draftUnchanged } = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
-            draftRevisionAtStart,
-            text: opts.text,
+          listener(
+            opts.ref,
+            opts.text,
             skillNames,
-          });
-          if (clearStoredDraft || opts.recoveryId) {
-            for (const listener of submissionCommittedListeners) {
-              try {
-                listener(
-                  opts.ref,
-                  opts.text,
-                  skillNames,
-                  opts.recoveryId
-                    ? {
-                        clientMutationId: opts.recoveryId,
-                        draftUnchanged,
-                        attachments: opts.attachments ?? [],
-                      }
-                    : undefined,
-                );
-              } catch (error) {
-                console.error("Composer submission listener failed", error);
-              }
-            }
-          }
+            opts.recoveryId
+              ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
+              : undefined,
+          );
+        } catch (error) {
+          console.error("Composer submission listener failed", error);
         }
-      } finally {
-        if (epoch === refreshEpoch) {
-          pendingTurnsStore.endSubmission(opts.ref);
-        }
-        // Projection reads own their tracking, but cannot delay or change the
-        // result of a submission whose durable outcome is already known.
-        void refreshPendingTurnsProjection(opts.ref);
       }
-    })(),
+    },
   );
 }
 
@@ -483,13 +389,10 @@ export function resendRecoveryPendingTurn(
 }
 
 export function resetPendingTurnsStoreForTests(): void {
-  refreshEpoch += 1;
-  refreshGeneration = 0;
-  allTargetsRefreshGeneration = 0;
-  refreshGenerations.clear();
+  projectionFence.reset();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
-  inFlightProjectionWork.clear();
+  projectionWorkTracker.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

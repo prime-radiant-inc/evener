@@ -171,7 +171,7 @@ export function buildFloodStream(count: number, seed = 1): FloodStream {
 // A model hydrated and folded up to (and including) item/started for one
 // in-flight agentMessage item — the canonical "streaming item" scaffold the
 // token-flood stream (buildFloodStream above) opens with and that
-// reducer.test.ts's O(1)/purity/branch tests fold deltas onto. Shared here
+// chunkview.test.ts's O(1)/purity/branch tests fold deltas onto. Shared here
 // (next to buildFloodStream's own notifications) rather than re-implemented
 // per test file. `ids` overrides the flood defaults so callers can pin their
 // own thread/ref/turn/item identity; determinism is by construction (no

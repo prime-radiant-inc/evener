@@ -13,6 +13,7 @@ import {
 	normalizeConfig,
 	toWireConfig,
 	type TranscriptDisplayConfigV1,
+	WireError,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
@@ -95,6 +96,32 @@ function decodeTranscriptPatch(value: unknown): {
 	if (config === undefined)
 		throw new Error("Hub returned invalid transcript display settings.");
 	return { revision: value.revision, config };
+}
+
+// postApplyPatch extracts the applied {revision, config} from a
+// transcriptDisplayPostApply WireError (appwire.ErrorTranscriptDisplayPostApply,
+// hubcore.TranscriptDisplayPostApplyError): the patch APPLIED on the hub
+// before a follow-up durable step failed, and the hub already broadcast the
+// applied revision to every other client. Mirrors keybindingsStore.ts's
+// rejectionPayload for the sibling store's KeybindingsPostRenameError.
+// Returns undefined for any other rejection, which saveTranscript then
+// treats as an unconfirmed write as before.
+function postApplyPatch(
+	error: unknown,
+): { revision: number; config: TranscriptDisplayConfigV1 } | undefined {
+	if (
+		!(error instanceof WireError) ||
+		error.evenerErrorInfo !== "transcriptDisplayPostApply"
+	)
+		return undefined;
+	const data = error.data;
+	if (!isRecord(data)) return undefined;
+	if (data.layout !== "mobile") return undefined;
+	try {
+		return decodeTranscriptPatch(data.applied);
+	} catch {
+		return undefined;
+	}
 }
 
 const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
@@ -387,16 +414,25 @@ export class NativePreferences {
 				}),
 			);
 		} catch (error) {
-			this.publish({
-				transcriptMobile: {
-					...this.state.transcriptMobile,
-					saving: false,
-					error: HUB_UNCONFIRMED_MESSAGE,
-					conflict: true,
-					writeUncertain: true,
-				},
-			});
-			throw error;
+			// The patch APPLIED before a follow-up durable step failed: the hub
+			// already published the applied revision and will broadcast it to
+			// every other client (app_rpc_transcript_display.go). Reconcile
+			// from it below the same way a successful response does, instead
+			// of treating this write as rejected and blocking further edits.
+			const applied = postApplyPatch(error);
+			if (applied === undefined) {
+				this.publish({
+					transcriptMobile: {
+						...this.state.transcriptMobile,
+						saving: false,
+						error: HUB_UNCONFIRMED_MESSAGE,
+						conflict: true,
+						writeUncertain: true,
+					},
+				});
+				throw error;
+			}
+			value = applied;
 		}
 		const latest = this.state.transcriptMobile.confirmed;
 		const conflict =

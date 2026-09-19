@@ -11,6 +11,8 @@
 // reconciles, and what a host's own store of them tracks, not where any of
 // it lives.
 
+export type { MutationCommit, MutationCommitFeed } from "./commitFeed";
+export { wireMutationCommitFeed } from "./commitFeed";
 export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
 export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
@@ -41,8 +43,15 @@ export type {
   SubmittedDraft,
 } from "./pendingTurns";
 export { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
-export type { MutationPersistencePort, MutationPersistenceSnapshot } from "./projection";
-export { replaceTargetRecords } from "./projection";
+export type {
+  MutationPersistencePort,
+  MutationPersistenceSnapshot,
+  MutationProjectionFence,
+  MutationProjectionRefresh,
+} from "./projection";
+export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
+export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
+export { createMutationProjectionWorkTracker } from "./projectionWork";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
@@ -58,3 +67,5 @@ export type {
 export { createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
+export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";
+export { createSubmissionRunner, submitWithPendingTracking } from "./submission";

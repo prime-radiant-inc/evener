@@ -8,14 +8,44 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
-func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
+// webInterruptTripwire bounds the wait for an interrupted `make test-web` to
+// exit. It is a tripwire, never the synchronisation mechanism: the recipe
+// shell's own exit, driven by the delivered interrupt, is what ends the wait.
+// The bound exists so an interrupt that never reaches test-web.sh surfaces as a
+// diagnosed failure instead of an unbounded exec.Cmd.Wait on a recipe shell
+// that is still parked on its held child (issue #1551's 9m28s hang).
+const webInterruptTripwire = 30 * time.Second
+
+// webInterruptOutcome records how a web-interrupt fixture run ended.
+type webInterruptOutcome struct {
+	output *syncBuffer
+	// killedReaped is the sentinel the recording shell writes when the
+	// interrupt signals the already-reaped typecheck PID.
+	killedReaped string
+	// waitErr is waitForChildExit's result for the interrupted make: nil if it
+	// exited zero, or errChildExitTimeout if it never exited within the
+	// tripwire.
+	waitErr error
+}
+
+// runWebInterruptFixture drives `make test-web` in a fresh fixture up to the
+// post-reap seam, then either delivers the interrupt to make's whole process
+// group (deliver) or withholds it so the signal never arrives.
+//
+// The interrupt goes to the process group, the way a terminal (Ctrl-C) or a CI
+// cancellation reaches a job's process tree, so the recipe shell receives it
+// directly. Delivering it to the make process alone made this test depend on
+// GNU make relaying SIGTERM to its recipe; make does not do that reliably, and
+// when the relay is missed the recipe shell keeps waiting on its held npm check
+// forever.
+func runWebInterruptFixture(t *testing.T, deliver bool, tripwire time.Duration) webInterruptOutcome {
+	t.Helper()
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
@@ -37,7 +67,7 @@ func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
   if [ "${1:-}" = "$tracked_pid" ] && [ "${reaped_gate:-0}" -eq 0 ]; then
     reaped_gate=1
 	    exec 9<> "$EVENER_TEST_SHELL_WAIT_RELEASE"
-    : > "$EVENER_TEST_SHELL_WAITED_REAPED"
+	    : > "$EVENER_TEST_SHELL_WAITED_REAPED"
 	    read -r _ <&9
   fi
   return "$wait_status"
@@ -56,6 +86,10 @@ kill() {
 	// script's own bash, where they shadow the builtins it calls.
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
+	// Give make its own process group so the interrupt can be delivered to the
+	// whole job — make, the recipe shell, and the held npm check — instead of
+	// trusting make to relay SIGTERM to its recipe.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(fixture.environment(""),
 		"BASH_ENV="+recordingShell,
 		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
@@ -67,20 +101,21 @@ kill() {
 		"EVENER_TEST_SHELL_WAIT_RELEASE="+waitRelease,
 		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
 	)
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
+	output := &syncBuffer{}
+	command.Stdout = output
+	command.Stderr = output
 	if err := command.Start(); err != nil {
 		t.Fatalf("start make test-web: %v", err)
 	}
-	// One waiter, started with the child: both readiness waits race against it,
-	// and the interrupt assertion below reads the same result.
 	run := startChild(command)
 	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			<-run.done
-		}
+		// Kill the whole group. A run that missed its interrupt would otherwise
+		// leak the recipe shell and its held npm check, and those survivors
+		// hold make's stdout/stderr pipe open, which is what makes Cmd.Wait
+		// block even after make itself is gone.
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		_ = command.Process.Kill()
+		<-run.done
 	})
 	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
 		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
@@ -88,26 +123,58 @@ kill() {
 	if err := waitForPathOrExit(waitedReaped, run, readinessTripwire); err != nil {
 		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check: %v; output = %s", err, output.String())
 	}
-	release, err := os.OpenFile(waitRelease, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open wait release FIFO: %v", err)
+	if deliver {
+		// Open the release before signalling: the parked seam holds the FIFO's
+		// reader, and after the interrupt that reader is gone, so opening then
+		// would block.
+		release, err := os.OpenFile(waitRelease, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatalf("open wait release FIFO: %v", err)
+		}
+		// The shell is parked in the seam's read until release, so the group
+		// interrupt is handled there: the exact post-reap, pre-forget window
+		// the production guard protects.
+		if err := syscall.Kill(-command.Process.Pid, syscall.SIGTERM); err != nil {
+			release.Close()
+			t.Fatalf("signal make test-web process group: %v", err)
+		}
+		// The interrupted shell aborts the seam read on the signal, so this
+		// write may find no reader. Losing that race is expected; any other
+		// write error is not.
+		if _, err := release.WriteString("release\n"); err != nil && !errors.Is(err, syscall.EPIPE) {
+			release.Close()
+			t.Fatalf("write wait release FIFO: %v", err)
+		}
+		_ = release.Close()
 	}
-	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
-		release.Close()
-		t.Fatalf("signal make test-web: %v", err)
+	return webInterruptOutcome{output: output, killedReaped: killedReaped, waitErr: waitForChildExit(run, tripwire)}
+}
+
+func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
+	outcome := runWebInterruptFixture(t, true, webInterruptTripwire)
+	switch err := outcome.waitErr; {
+	case err == nil:
+		t.Fatalf("interrupted make test-web exited zero; output = %s", outcome.output.String())
+	case errors.Is(err, errChildExitTimeout):
+		t.Fatalf("interrupted make test-web did not exit within %s: %v; output = %s",
+			webInterruptTripwire, err, outcome.output.String())
 	}
-	if _, err := release.WriteString("release\n"); err != nil {
-		release.Close()
-		t.Fatalf("write wait release FIFO: %v", err)
+	if _, err := os.Stat(outcome.killedReaped); !os.IsNotExist(err) {
+		t.Fatalf("interrupt signaled a PID after its npm check was reaped: stat err = %v; output = %s", err, outcome.output.String())
 	}
-	if err := release.Close(); err != nil {
-		t.Fatalf("close wait release FIFO: %v", err)
-	}
-	if err := run.wait(); err == nil {
-		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
-	}
-	if _, err := os.Stat(killedReaped); !os.IsNotExist(err) {
-		t.Fatalf("interrupt signaled a PID after its npm check was reaped: stat err = %v; output = %s", err, output.String())
+}
+
+// TestMakeTestWebInterruptMissingSignalIsDiagnosed pins the guard against the
+// issue's 9m28s hang: when the interrupt never reaches test-web.sh, the recipe
+// shell stays parked on its held npm check, so the run must surface as a
+// bounded timeout with the captured output rather than block forever on the
+// pipe the surviving shell still holds.
+func TestMakeTestWebInterruptMissingSignalIsDiagnosed(t *testing.T) {
+	const missedSignalTripwire = 3 * time.Second
+	outcome := runWebInterruptFixture(t, false, missedSignalTripwire)
+	if !errors.Is(outcome.waitErr, errChildExitTimeout) {
+		t.Fatalf("a missed interrupt was not diagnosed as a bounded timeout: %v; output = %s",
+			outcome.waitErr, outcome.output.String())
 	}
 }
 

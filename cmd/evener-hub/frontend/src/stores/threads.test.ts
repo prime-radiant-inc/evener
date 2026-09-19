@@ -9165,8 +9165,24 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
   "periodic discovery resumes authority checks for saved $status delegates, accepted=$accepted",
   async ({ status, accepted }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    // Per-case private IndexedDB factory, the same pattern this file uses for
+    // its other directly driven storage cases. A fresh factory is its own
+    // in-memory database namespace: this test awaits only the FIRST settle
+    // call, so its reconciliation tail can still be running when the case ends,
+    // and a shared (even uniquely named) database let that tail linger in the
+    // worker's factory. A private factory means the tail cannot write into a
+    // sibling case's records, a rerun cannot inherit a stale `delegate-periodic`
+    // record (whose duplicate `add` would mask the real failure as a
+    // ConstraintError), and no database is left behind in the shared global
+    // factory that the suite's deleteMutationDatabase() never touches.
+    const indexedDB = new IDBFactory();
+    const databaseName = `evener-mutation-outbox-periodic-${status}-${accepted}`;
     try {
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delegate-periodic" });
+      const storage = new MutationOutboxIndexedDB({
+        indexedDB,
+        databaseName,
+        createMutationId: () => "delegate-periodic",
+      });
       const record = await storage.enqueueIntent({
         targetRef: "ref_a",
         method: "turn/queue",

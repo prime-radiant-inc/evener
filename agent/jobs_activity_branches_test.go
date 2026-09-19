@@ -1160,14 +1160,14 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 // a live root's continuation is rejected on resume once the tree has
 // mutated since mint time: a live root's JobsEpoch/DelegatesEpoch are
 // always 0 (loadLiveActivityBase reads neither fold cache), so the epoch
-// check in loadActivitySnapshotForParamsWithCache provides no protection
+// check in loadActivitySnapshotForParams provides no protection
 // at all for a live continuation -- 0 == 0 always passes, even across a
 // real mutation. This mints a valid live continuation (Path nil, matching
 // markActivitySessionTruncated's own shape for the root's own list),
 // forces a real mutation on the live tree (bumping jobActivityClock the
 // same way an actual job-started/job-finished event would), and asserts
 // resuming with the now-stale continuation is rejected -- proving the
-// Revision check in loadActivitySnapshotForParamsWithCache actually
+// Revision check in loadActivitySnapshotForParams actually
 // fires, not just that continuations carry the field.
 func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing.T) {
 	stateDir := t.TempDir()

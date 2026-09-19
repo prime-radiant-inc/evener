@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -122,10 +123,20 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 // daemon: retirement remains the daemon's own decision, and force-stop
 // authority is unchanged.
 func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) (resumeErr error) {
+	// A retirement-triggered resume shares resumeThread's correlated lifecycle
+	// trace: it opens the trace with the requested identity, brackets the whole
+	// attempt in the request pair so every outcome is recorded, and stamps the
+	// ownership-resolved target below so its records carry the same
+	// session_id/resolved_session_id pair an explicit resume records.
+	sessionID := deletionThreadID(params.Ref, params.ThreadID)
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
+	requestStarted := time.Now()
+	trace.record(ctx, "request", "begin", requestStarted, nil, 0, 0)
+	defer func() { trace.record(ctx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
+
 	if err := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); err != nil {
 		return err
 	}
-	sessionID := deletionThreadID(params.Ref, params.ThreadID)
 	if sessionID == "" || cfg.ResumeLocks == nil || cfg.Roster == nil {
 		return appwire.LifecycleUnavailable("retiring")
 	}
@@ -138,10 +149,16 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	ownerBefore, hadOwnerBefore := liveDaemonForThread(cfg.Roster, sessionID)
 
+	ownershipDone := trace.stage(ctx, "ownership")
 	target, aliases, err := resumeOwnership(cfg, sessionID, sessionID)
+	ownershipDone(err)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
+	// Every outcome after ownership resolution records the resolved identity,
+	// including the live-replacement early returns below: the deferred request
+	// completion captures this trace by reference.
+	ctx, trace = trace.resolved(ctx, target)
 	// A successful retirement recovery is a completed resume, so record where
 	// the alias resolved exactly as resumeThread's defer does after
 	// ExplicitResumeCompleted. This defer covers the normal exit and the three
@@ -165,13 +182,18 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
+	lockDone := trace.stage(ctx, "lock_wait")
 	for _, id := range aliases {
 		cfg.ResumeLocks.For(id).Lock()
 	}
+	lockDone(nil)
+	heldStarted := time.Now()
+	trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
 	defer func() {
 		for _, id := range slices.Backward(aliases) {
 			cfg.ResumeLocks.For(id).Unlock()
 		}
+		trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 	}()
 	for _, id := range aliases {
 		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {

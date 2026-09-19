@@ -33,6 +33,8 @@ import {
   hasItemFailure,
   isActiveItem,
   isInProgressStatus,
+  joinedReasoningParagraphs,
+  joinWarningParts,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -256,7 +258,11 @@ function attachmentRows(
   return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
 }
 
-function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
+// Exported for the live store (state/conversation.ts): the folded model item
+// (reducer.applyNotification's mergeItemImages) already carries the
+// "absent/empty input images means unchanged" rule projectItemAttachments
+// below cannot honor from a raw wire item alone.
+export function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     return attachmentRows(item.id, item.images);
@@ -396,6 +402,24 @@ function projectItem(
     const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
+    // Two different fields can be stale, depending on whether the item is
+    // still running. A SETTLED item's text is always authoritative
+    // (reducer.ts's mergeCompletedText) — reasoningSummaries can instead be
+    // the stale one: wireItemToModel seeds it from ANY non-empty initial
+    // wire text, and mergeReasoning keeps that seed across later merges
+    // once it's set, so a later completion's real text must not be masked
+    // by it. An ACTIVE (still-streaming) item is the other way around:
+    // appendReasoningDelta (reducer.ts) appends every live delta to
+    // reasoningSummaries ONLY, never to text, so text can be a stale
+    // partial seed from item/started while reasoningSummaries has grown
+    // well past it — preferring text there would lose the streamed growth.
+    // Comparing lengths distinguishes the two without a third model field:
+    // a settled item's text is the longer, complete value once summaries
+    // stop growing; an active item's joined summary overtakes its seed as
+    // soon as a delta arrives.
+    const joinedSummary = joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
+    const reasoningOutput =
+      state === "running" && joinedSummary.length > item.text.length ? joinedSummary : item.text || joinedSummary;
     return {
       kind: "activity",
       pre: {
@@ -406,7 +430,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: item.text },
+          detail: { ...activityDetail(item), output: reasoningOutput },
         },
       },
     };
@@ -506,10 +530,26 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: item.text || item.output },
+        detail: { ...activityDetail(item), output: warningFallbackText(item) || item.text || item.output },
       },
     },
   };
+}
+
+// Composes a warning item's displayable text: title, message, and hint
+// together, the same parts the web (WarningItem.tsx) renders (title as a
+// chip, message as the body, hint below) and the live warning row
+// (conversation.ts's case "warning") carries (title as its own field,
+// message+hint as detail) - this canonical row has no separate title slot,
+// so title has to join the rest of the string instead of being dropped
+// whenever there's also a message. A message-less frame folds to text: ""
+// on the wire side (reducer.ts's warning fold; joinWarningParts filters it
+// out), leaving just title+hint, the same content the web renders via
+// item.warning directly.
+function warningFallbackText(item: ItemModel): string | undefined {
+  if (item.type !== "warning" || !item.warning) return undefined;
+  const joined = joinWarningParts([item.warning.title, item.text, item.warning.hint]);
+  return joined === "" ? undefined : joined;
 }
 
 function activityDescription(item: ItemModel): string | undefined {
