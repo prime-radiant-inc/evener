@@ -14,9 +14,9 @@ export type ControlsSource = Pick<MobileConversation, "status"> & {
  * What this conversation may be asked to do now: the SDK's sessionControls
  * (@evener/appwire-client's submitRouting module) over the conversation's status,
  * capabilities and queue depth. Every native affordance and submission reads
- * this rather than a raw capability flag: the hub advertises steer as harness
- * support alone, so the status (and, for a drain, the queue a Stop parked) is
- * the client's to apply.
+ * this rather than a raw capability flag: the hub advertises steer, interrupt
+ * and queue as harness support alone, so the status (and, for a drain, the
+ * queue a Stop parked) is the client's to apply.
  */
 export function conversationControls(conversation: ControlsSource) {
   return sessionControls(conversation.status.type, conversation.capabilities, conversation.queue?.depth ?? 0);

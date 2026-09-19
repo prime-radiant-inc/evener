@@ -3,7 +3,9 @@
 // "no dropped-chunk correctness failures" gate; THIS file measures and
 // reports (never asserts - the brief's own framing) the frame-budget half:
 // total fold time, mean/p99 per-delta, and the growth curve (a true O(n^2)
-// accumulation shows up as a super-linear late/early cost ratio).
+// accumulation shows up as a super-linear late/early cost ratio). One case
+// (issue #1560) additionally READS the accumulated text after every delta,
+// because the fold cases alone never touch it and so hid the read-side cost.
 //
 // `.bench.ts` files are NOT part of `vitest run`'s default include pattern
 // - only `npx vitest bench` discovers them - so this file's console output
@@ -11,6 +13,7 @@
 // manually to reproduce the numbers transcribed into
 // docs/superpowers/plans/wave4-report.md.
 import { bench, describe } from "vitest";
+import { pendingTextJoined } from "./chunkview";
 import { applyNotification } from "./reducer";
 import { buildFloodStream, foldWithTiming, hydrateFloodModel, mean, percentile } from "./testing/tokenFlood";
 import type { AnyNotification } from "./types.gen";
@@ -80,18 +83,10 @@ describe("token-flood: per-delta profile + growth curve (console output - see fi
   });
 });
 
-// Tool-output fold case (issue #1562): the #1547 / D23c-2a review claimed
-// `item/toolOutput/delta`'s `output + delta` accumulation (reducer.ts case
-// "item/toolOutput/delta") is O(n^2). It is not - the append is one flat
-// string per delta, which V8 folds into a rope at O(1) amortized (Hermes
-// buffers the primitive, likewise non-quadratic) - so a real-reducer fold of
-// 64 B deltas shows a ~flat late/early decile ratio at every size. The
-// agentMessage path is measured alongside as the contrast: THAT path's
-// pre-appendChunk array spread is the one that was quadratic (chunkview.ts's
-// module comment), and it folds flat too now. The original refutation ran
-// these same sizes under Node/V8 and Hermes; this in-tree case runs under
-// whatever engine executes `vitest bench`.
-function foldStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
+// The scaffold both 64 B-delta cases below share: a fresh model with one
+// streaming item open and the delta notification that feeds it. Extracted so
+// the fold case and the read case (issue #1560) cannot drift apart.
+function stringDeltaScaffold(kind: "toolOutput" | "agentMessage") {
   const ref = `ref_${kind}`;
   const threadId = `thr_${kind}`;
   const turnId = `turn_${kind}`;
@@ -132,29 +127,72 @@ function foldStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
           params: { threadId, ref, turnId, itemId, callId: `call_${kind}`, delta },
         } as AnyNotification)
       : ({ method: "item/agentMessage/delta", params: { threadId, ref, turnId, itemId, delta } } as AnyNotification);
-  // Time ten EQUAL-SIZE deciles by their cumulative elapsed windows rather
-  // than per-delta: a single reducer apply is ~1us, below the timer's practical
-  // noise floor, so per-delta means are dominated by jitter. A decile window
-  // aggregates 200/800/3,200 deltas into a millisecond-scale sample - the same
-  // late/early decile ratio, measured where the signal is real. (Quadratic
-  // accumulation would show last/first ~19x regardless: the pre-appendChunk
-  // agentMessage path measured ~11x at n=10,000.)
+  return { model, notification, itemId };
+}
+
+// A model's item by id - the streaming item the scaffold above opened. A
+// nested find, not turns.flatMap(...).find(...): the read case calls this once
+// per delta, and flatMap allocates an array per call - work in every decile
+// that has nothing to do with the read being measured.
+function streamedItem(m: ReturnType<typeof hydrateFloodModel>, itemId: string) {
+  for (const turn of m.turns) {
+    const item = turn.items.find((it) => it.id === itemId);
+    if (item) return item;
+  }
+  return undefined;
+}
+
+// The item's accumulated text as both cases read it: tool output, or the
+// joined pending chunks plus any settled text.
+function accumulatedText(item: ReturnType<typeof streamedItem>) {
+  return item?.output ?? pendingTextJoined(item?.pendingText ?? []) + (item?.text ?? "");
+}
+
+// Ten equal-size decile windows by cumulative elapsed time, shared by both
+// 64 B-delta cases so their ratios use the same boundaries. A single reducer
+// apply is ~1us, below the timer's practical noise floor, so per-delta means
+// are dominated by jitter and a decile window (many deltas aggregated into a
+// millisecond-scale sample) is where the signal is real. `observe(i)` closes a
+// window every n/10 deltas.
+function decileAccumulator(n: number) {
   const tenth = Math.floor(n / 10);
-  const run = () => {
-    let m = model;
-    let now = 1002;
-    const decileMs: number[] = [];
-    let mark = performance.now();
-    for (let i = 0; i < n; i += 1) {
-      now += 1;
-      m = applyNotification(m, notification, now);
+  const decileMs: number[] = [];
+  let mark = performance.now();
+  return {
+    decileMs,
+    observe(i: number): void {
       if ((i + 1) % tenth === 0 && decileMs.length < 10) {
         const t = performance.now();
         decileMs.push(t - mark);
         mark = t;
       }
+    },
+  };
+}
+
+// Tool-output fold case (issue #1562): the #1547 / D23c-2a review claimed
+// `item/toolOutput/delta`'s `output + delta` accumulation (reducer.ts case
+// "item/toolOutput/delta") is O(n^2). It is not - the append is one flat
+// string per delta, which V8 folds into a rope at O(1) amortized (Hermes
+// buffers the primitive, likewise non-quadratic) - so a real-reducer fold of
+// 64 B deltas shows a ~flat late/early decile ratio at every size. The
+// agentMessage path is measured alongside as the contrast: THAT path's
+// pre-appendChunk array spread is the one that was quadratic (chunkview.ts's
+// module comment), and it folds flat too now. The original refutation ran
+// these same sizes under Node/V8 and Hermes; this in-tree case runs under
+// whatever engine executes `vitest bench`.
+function foldStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
+  const { model, notification, itemId } = stringDeltaScaffold(kind);
+  const run = () => {
+    let m = model;
+    let now = 1002;
+    const acc = decileAccumulator(n);
+    for (let i = 0; i < n; i += 1) {
+      now += 1;
+      m = applyNotification(m, notification, now);
+      acc.observe(i);
     }
-    return { m, decileMs };
+    return { m, decileMs: acc.decileMs };
   };
   // One untimed pass first so the timed pass's first decile isn't inflated by
   // cold interpretation, which would fake an O(n^2) ratio. Then the MIN of
@@ -173,11 +211,8 @@ function foldStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
   }
   const firstMs = minDecileMs[0] ?? 0;
   const lastMs = minDecileMs[minDecileMs.length - 1] ?? 0;
-  // Proves the fold actually accumulated: output for a tool call, joined
-  // pending chunks for the agent message.
-  const item = m.turns.flatMap((t) => t.items).find((it) => it.id === itemId);
-  const accumulated = item?.output ?? (item?.pendingText ?? []).join("") + (item?.text ?? "");
-  return { ratio: lastMs / firstMs, firstMs, lastMs, bytes: accumulated.length };
+  // accumulatedText's non-zero length also proves the fold accumulated.
+  return { ratio: lastMs / firstMs, firstMs, lastMs, bytes: accumulatedText(streamedItem(m, itemId)).length };
 }
 
 describe("token-flood: tool-output vs agentMessage fold (64 B deltas)", () => {
@@ -193,4 +228,75 @@ describe("token-flood: tool-output vs agentMessage fold (64 B deltas)", () => {
       );
     }
   });
+});
+
+// Issue #1560: the cases above never READ the accumulated text, so they time
+// only the accumulate half and the frame-budget number hides the read. A
+// consumer that touches the whole text after every delta - a renderer
+// redrawing each frame - pays a full O(current-length) read every time: on V8
+// the read flattens the rope that `output + delta` (tool output) and
+// `appendChunk`'s cached `brand.text + delta` (pendingText) both build, so
+// fold+read is quadratic even though either fold alone is linear. (The chunk
+// backing removed the array copy, not the read.) This case times that read
+// half at the same decile granularity: tens of x last/first is the
+// super-linear signature (the fold alone sits near 1x).
+function readStringDeltas(kind: "toolOutput" | "agentMessage", n: number) {
+  const { model: base, notification, itemId } = stringDeltaScaffold(kind);
+  const acc = decileAccumulator(n);
+  let m = base;
+  let now = 1002;
+  // The read's RESULT must be consumed: the reader's whole point is the
+  // flatten, and a discarded `charCodeAt` is pure enough that V8 eliminates
+  // it, silently turning this case back into a fold. `checksum` is printed
+  // with the timing as the proof the read actually ran.
+  let checksum = 0;
+  for (let i = 0; i < n; i += 1) {
+    now += 1;
+    m = applyNotification(m, notification, now);
+    // The per-delta reader: consume the WHOLE accumulated text, not just one
+    // code unit. A trailing-char access can be satisfied by descending a rope
+    // to its rightmost leaf without flattening, so it alone does not reliably
+    // exercise the full-text read a renderer does; summing every code unit
+    // forces the flatten on any rope implementation. It reads the same value
+    // `accumulatedText` reports, so the timed read and the `bytes` check below
+    // cannot drift (roborev on #1909).
+    const text = accumulatedText(streamedItem(m, itemId));
+    for (let c = 0; c < text.length; c += 1) checksum += text.charCodeAt(c);
+    acc.observe(i);
+  }
+  const firstMs = acc.decileMs[0] ?? 0;
+  const lastMs = acc.decileMs[acc.decileMs.length - 1] ?? 0;
+  const totalMs = acc.decileMs.reduce((a, b) => a + b, 0);
+  // A single pass, not the fold case's min-of-five: each read is O(n), so the
+  // min-of-five rig would multiply a run that is already seconds long. The
+  // read's growth is tens of x, far outside jitter, so one pass is decisive.
+  return {
+    ratio: lastMs / firstMs,
+    firstMs,
+    lastMs,
+    totalMs,
+    bytes: accumulatedText(streamedItem(m, itemId)).length,
+    checksum,
+  };
+}
+
+// Sizes stop at 4,000: the read is super-linear, so the fold cases' 32,000
+// would take minutes per pass here. The GROWTH CURVE is the finding and is
+// already unmistakable at these sizes - the fold cases above run to 32,000
+// precisely because they are cheap; this one cannot. One bench per size so
+// vitest's own hz/mean describes a single size rather than the sum of them all
+// (roborev on #1909); the console-logged decile lines are the primary signal.
+describe("token-flood: fold+READ after every delta (64 B deltas) - the half the fold cases omit", () => {
+  for (const n of [1_000, 2_000, 4_000]) {
+    bench(`fold-and-read n=${n} (64 B deltas)`, () => {
+      const tool = readStringDeltas("toolOutput", n);
+      const msg = readStringDeltas("agentMessage", n);
+      console.log(
+        `--- fold+read n=${n} (64 B deltas): tool-output late/early ${tool.ratio.toFixed(1)}x ` +
+          `(total ${tool.totalMs.toFixed(0)}ms, first decile ${tool.firstMs.toFixed(2)}ms, last ${tool.lastMs.toFixed(2)}ms, ${tool.bytes} B, sum ${tool.checksum}) ` +
+          `| agentMessage late/early ${msg.ratio.toFixed(1)}x ` +
+          `(total ${msg.totalMs.toFixed(0)}ms, first decile ${msg.firstMs.toFixed(2)}ms, last ${msg.lastMs.toFixed(2)}ms, ${msg.bytes} B, sum ${msg.checksum})`,
+      );
+    });
+  }
 });

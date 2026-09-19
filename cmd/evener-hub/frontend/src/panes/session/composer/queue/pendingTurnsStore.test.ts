@@ -145,9 +145,7 @@ test("usePendingTurnEntries returns the same entries array across a submittingRe
   // optimistic, submittedHere or the thread model this hook's entries
   // actually depend on - so the getSnapshot cache must not recompute here.
   await act(async () => {
-    await submitWithPendingTracking({ ref: "ref_a", method: "send", text: "unrelated", onFailure: vi.fn() }, () =>
-      Promise.resolve(),
-    );
+    await submitWithPendingTracking({ ref: "ref_a", text: "unrelated", onFailure: vi.fn() }, () => Promise.resolve());
   });
 
   expect(pending.result.current).toBe(entriesBefore);
@@ -176,7 +174,7 @@ test("a committed submission releases its caller while recovery projection reads
   });
   let accepted = false;
   const onFailure = vi.fn();
-  const submit = submitWithPendingTracking({ ref: "ref_a", method: "steer", text: "one send", onFailure }, () =>
+  const submit = submitWithPendingTracking({ ref: "ref_a", text: "one send", onFailure }, () =>
     threadsStore.getState().steer("ref_a", "one send"),
   ).then(() => {
     accepted = true;
@@ -289,9 +287,7 @@ test("a local commit failure reports the exact error and never creates optimisti
   const pending = renderHook(() => usePendingTurnEntries("ref_a"));
 
   await expect(
-    submitWithPendingTracking({ ref: "ref_a", method: "send", text: "keep me", onFailure }, () =>
-      Promise.reject(failure),
-    ),
+    submitWithPendingTracking({ ref: "ref_a", text: "keep me", onFailure }, () => Promise.reject(failure)),
   ).rejects.toBe(failure);
 
   expect(onFailure).toHaveBeenCalledWith(failure);
@@ -351,9 +347,8 @@ test("a committed submission clears a stored draft only when its text and select
   writeComposerDraft("ref_a", { text: "with skills", skillNames: ["pkg:probe"] });
   const onFailure = vi.fn();
 
-  await submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "with skills", skillNames: ["pkg:probe"], onFailure },
-    () => Promise.resolve(),
+  await submitWithPendingTracking({ ref: "ref_a", text: "with skills", skillNames: ["pkg:probe"], onFailure }, () =>
+    Promise.resolve(),
   );
 
   expect(onFailure).not.toHaveBeenCalled();
@@ -368,7 +363,7 @@ test("a skill edit during a delayed commit keeps the stored draft", async () => 
   });
   const onFailure = vi.fn();
   const submit = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "patient", skillNames: ["pkg:probe"], onFailure },
+    { ref: "ref_a", text: "patient", skillNames: ["pkg:probe"], onFailure },
     () => held,
   );
 
@@ -448,7 +443,7 @@ test("a flush cannot settle while a submit is still in flight", async () => {
   });
 
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "in flight", onFailure: () => undefined },
+    { ref: "ref_a", text: "in flight", onFailure: () => undefined },
     () => submitting,
   );
 
@@ -484,7 +479,7 @@ test("a flush that can never settle trips instead of hanging inside act", async 
     releaseSubmit = resolve;
   });
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "never settles", onFailure: () => undefined },
+    { ref: "ref_a", text: "never settles", onFailure: () => undefined },
     () => stalled,
   );
 

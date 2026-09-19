@@ -91,12 +91,11 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
 };
 
 // What a real daemon publishes for an IDLE thread, read off
-// server/appwire_runtime.go's appCapabilities: `active` is false there, and
-// Queue is gated on it, so an idle thread advertises queue:false; Steer is
-// harness support and stays true (the composer applies the status itself).
-// Clear and ForkFromTurn are hardcoded false. This is the set the client is
-// actually holding in the window kata 8c65 describes, and it is not
-// FULL_CAPABILITIES.
+// server/appwire_runtime.go's appCapabilities: Send is !active, and Steer,
+// Interrupt and Queue advertise harness support (#1363, #1375) and stay true
+// at idle (the composer applies the status itself). Clear and ForkFromTurn are
+// hardcoded false. This is the set the client is actually holding in the
+// window kata 8c65 describes, and it is not FULL_CAPABILITIES.
 const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -107,7 +106,7 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   shutdown: true,
   changeModel: true,
   changeVisionModel: true,
-  queue: false,
+  queue: true,
   goal: true,
   sharedNotes: true,
   rename: true,
@@ -117,8 +116,14 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
 // (cmd/evener-hub/app_threadread.go's pastThreadCapabilities): send stays true
 // because turn/start alone carries the auto-resume retry loop that wakes the
 // session (app_rpc.go's resumeTurnStartThread), while steer, interrupt and
-// queue are false because they gate on an active turn a cold thread has none
-// of. This is what the client holds for a "notLoaded" status.
+// queue are false because the hub cannot carry them out for a thread with no
+// daemon - it resumes on send alone. This is what the client holds for a
+// "notLoaded" status.
+//
+// The false queue bit here is the HUB's stub, not a daemon's answer: the
+// submit router reads it as authoritative only for a live snapshot status
+// (sendQueueAvailability.ts's pending-send tier), so the auto-resume window
+// still queues the second message rather than disabling the composer.
 const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: false,
@@ -1529,8 +1534,9 @@ test("a second message composed before the first turn's status frame arrives que
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
   await user.type(textarea(), "second message");
-  // Still composable: an idle queue:false means "no turn to queue behind", and
-  // must never be read as "this session takes no input".
+  // Still composable: an idle snapshot on a queue-capable harness carries
+  // queue:true (#1375), so the second message routes to turn/queue rather than
+  // bouncing as a second turn/start.
   await waitFor(() => expect(submitButton().disabled).toBe(false));
   await user.click(submitButton());
 

@@ -21,10 +21,10 @@ import { create } from "zustand";
 import {
   applyNotification,
   foldWarningParams,
-  hasWarningText,
   isActiveItem,
   isStaleCursorError,
   itemIdentityMatches,
+  joinWarningParts,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -2540,7 +2540,12 @@ export function createConversationStore() {
               : projected;
             if (projectedWithReasoning !== null) {
               // Lifecycle events replace the whole source item, including any
-              // companion attachment row. An empty image list removes it.
+              // companion attachment row — but an empty or absent input-image
+              // list is unchanged, never a removal (mergeItemImages,
+              // imagesToItemImagesForSession; closes #1656), so the
+              // replacement below reads attachments from the reducer-folded
+              // item (findFoldedItem/itemAttachments), which already carries
+              // forward whatever images the fold kept.
               if (!preservesReasoningOutput) {
                 truncatedItemIds.delete(timelineIdentity(projectedWithReasoning));
               }
@@ -2847,13 +2852,15 @@ export function createConversationStore() {
             const title = folded.title ?? "Warning";
             // Compose every non-blank part rather than picking one with ||:
             // a warning carrying both a message and a hint shows both, the
-            // same as the web and TUI renderers.
-            const detail = [folded.text, folded.hint].filter(hasWarningText).join(" — ");
-            // Built from the sanitized title, never folded.text: a
-            // message-less frame's text is the up-to-2000-char raw JSON
-            // fallback, which would otherwise bloat this id (and the
-            // ownership keys it feeds).
-            const id = `warning:${title}:${++liveNoticeSerial}`;
+            // same as the web and TUI renderers. title stays its own field
+            // here (unlike the canonical projector's row, which has no
+            // separate title slot and joins it into this same string).
+            const detail = joinWarningParts([folded.text, folded.hint]);
+            // The serial alone is already unique; embedding the title (as
+            // an earlier round did) bloats this id and the ownership keys
+            // it feeds — foldWarningParams only bounds it to 2000 code
+            // points, far short of "short".
+            const id = `warning:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,
