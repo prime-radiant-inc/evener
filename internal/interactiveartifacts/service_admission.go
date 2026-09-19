@@ -14,6 +14,7 @@ type admissionWaiter struct {
 
 // AdmissionStats exposes bounded workload counts without principal identities.
 type AdmissionStats struct {
+	InFlight   int    `json:"inFlight"`
 	Active     int    `json:"active"`
 	Queued     int    `json:"queued"`
 	PeakActive int    `json:"peakActive"`
@@ -22,6 +23,8 @@ type AdmissionStats struct {
 }
 
 type admission struct {
+	ingress  map[principalKey]int
+	inFlight int
 	// onChange is a synchronous observation/fault boundary installed before use.
 	// It must not call back into admission or retain caller authority.
 	onChange  func(AdmissionStats)
@@ -35,7 +38,9 @@ type admission struct {
 	peakActive, peakQueue int
 }
 
-func newAdmission() *admission { return &admission{principals: make(map[principalKey]int)} }
+func newAdmission() *admission {
+	return &admission{principals: make(map[principalKey]int), ingress: make(map[principalKey]int)}
+}
 func (a *admission) acquire(ctx context.Context, key principalKey) (func(), error) {
 	a.mu.Lock()
 	if a.closed || ctx.Err() != nil {
@@ -124,11 +129,39 @@ func (a *admission) close() {
 }
 
 func (a *admission) statsLocked() AdmissionStats {
-	return AdmissionStats{Active: a.active, Queued: len(a.queue), PeakActive: a.peakActive, PeakQueued: a.peakQueue, Completed: a.completed}
+	return AdmissionStats{InFlight: a.inFlight, Active: a.active, Queued: len(a.queue), PeakActive: a.peakActive, PeakQueued: a.peakQueue, Completed: a.completed}
 }
 func (a *admission) stats() AdmissionStats { a.mu.Lock(); defer a.mu.Unlock(); return a.statsLocked() }
 func (a *admission) observe() {
 	if a.onChange != nil {
 		a.onChange(a.statsLocked())
 	}
+}
+
+// reserveIngress counts body readers as well as active/queued SDK calls. A
+// single authenticated principal cannot occupy every ingress slot by streaming
+// incomplete bodies; the remaining global slots stay available to other keys.
+func (a *admission) reserveIngress(key principalKey) (func(), error) {
+	a.mu.Lock()
+	if a.closed || a.ingress[key] >= 132 {
+		a.mu.Unlock()
+		return nil, &DomainError{Code: Busy, Retryable: true}
+	}
+	a.ingress[key]++
+	a.inFlight++
+	a.observe()
+	a.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.ingress[key]--
+			a.inFlight--
+			if a.ingress[key] == 0 {
+				delete(a.ingress, key)
+			}
+			a.observe()
+		})
+	}, nil
 }

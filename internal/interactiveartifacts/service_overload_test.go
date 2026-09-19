@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -93,4 +95,59 @@ func TestServiceRealHTTPQueueFairnessAndCancellation(t *testing.T) {
 		t.Fatalf("unbounded accounting: %+v", stats)
 	}
 	t.Logf("actual HTTP service admission: %+v", stats)
+}
+
+func TestServiceIncompleteBodiesCannotOccupyEveryIngressSlot(t *testing.T) {
+	s, token := serviceFixture(t)
+	otherScope := testScope()
+	otherScope.PrincipalID = "other-principal"
+	requireNoError(t, s.store.InstallGrant(context.Background(), sha256.Sum256([]byte("other-body-reader")), otherScope))
+	changes := make(chan AdmissionStats, 2048)
+	s.admission.onChange = func(stats AdmissionStats) { changes <- stats }
+	endpoint, err := url.Parse(s.ready.Endpoint)
+	requireNoError(t, err)
+	var sockets []net.Conn
+	t.Cleanup(func() {
+		for _, socket := range sockets {
+			_ = socket.Close()
+		}
+	})
+	waitInFlight := func(want int) {
+		t.Helper()
+		for {
+			stats := <-changes
+			if stats.InFlight == want {
+				return
+			}
+		}
+	}
+	for i := range 132 {
+		socket, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", endpoint.Host)
+		requireNoError(t, err)
+		sockets = append(sockets, socket)
+		_, err = fmt.Fprintf(socket, "POST /mcp HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Length: 1\r\n\r\n", endpoint.Host, token)
+		requireNoError(t, err)
+		waitInFlight(i + 1)
+	}
+	client := NewHTTPClient(token)
+	defer client.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.ready.Endpoint, nil)
+	requireNoError(t, err)
+	response, err := client.Do(request)
+	requireNoError(t, err)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("noisy body-reader overflow: %d", response.StatusCode)
+	}
+	other := sdkClient(t, s.ready.Endpoint, "other-body-reader")
+	catalog, err := other.ListTools(context.Background(), nil)
+	requireNoError(t, err)
+	if len(catalog.Tools) != 7 {
+		t.Fatal("incomplete noisy bodies starved other principal")
+	}
+	for _, socket := range sockets {
+		requireNoError(t, socket.Close())
+	}
+	sockets = nil
+	waitInFlight(0)
 }

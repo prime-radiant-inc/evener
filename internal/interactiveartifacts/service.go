@@ -140,6 +140,12 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		releaseIngress, err := s.admission.reserveIngress(principalKey{scope.RealmID, scope.PrincipalID})
+		if err != nil {
+			writeBusy(w)
+			return
+		}
+		defer releaseIngress()
 		// Read the bounded body before queuing. net/http cannot observe a
 		// peer's disconnect behind an unread request body; queued cancellation
 		// therefore requires completing this read first. The ingress gate

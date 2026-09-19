@@ -60,3 +60,26 @@ func TestAdmissionGlobalCapIncludesDistinctPrincipals(t *testing.T) {
 		t.Fatalf("global active bound: %+v", stats)
 	}
 }
+
+func TestAuthenticatedIngressReservesRoomForOtherPrincipals(t *testing.T) {
+	a := newAdmission()
+	key := principalKey{"realm", "noisy"}
+	var releases []func()
+	for range 132 {
+		release, err := a.reserveIngress(key)
+		requireNoError(t, err)
+		releases = append(releases, release)
+	}
+	_, err := a.reserveIngress(key)
+	requireCode(t, err, Busy)
+	other, err := a.reserveIngress(principalKey{"realm", "other"})
+	requireNoError(t, err)
+	other()
+	for _, release := range releases {
+		release()
+		release()
+	}
+	if a.stats().InFlight != 0 {
+		t.Fatal("body/queue ingress lease leaked")
+	}
+}
