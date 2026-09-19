@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/cmd/evener-tui/internal/msgrender"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
@@ -97,6 +98,24 @@ func TestPendingAskQuestions_SteeringDoesNotResolve(t *testing.T) {
 	got := pendingAskQuestions(messages)
 	if len(got) != 1 {
 		t.Fatalf("pending after steering = %#v, want still-pending (steering is not a resolving user turn)", got)
+	}
+}
+
+// An interrupted-salvage explanation is daemon-authored context, not the
+// admitted interrupt boundary. The TUI keeps that content visible while its
+// pending-ask projector leaves the question open.
+func TestPendingAskQuestions_InterruptedSalvageKeepsContentAndDoesNotResolve(t *testing.T) {
+	const salvage = "salvaged fragment before interruption"
+	messages := []transcript.ChatMessage{
+		askUserToolMsg("call_1", oneQuestionArgsJSON, true, ""),
+		{Kind: transcript.MsgSteering, Text: salvage},
+	}
+	got := pendingAskQuestions(messages)
+	if len(got) != 1 {
+		t.Fatalf("pending after interrupted salvage = %#v, want still-pending", got)
+	}
+	if rendered := msgrender.RenderMessage(messages[1], 100, false); !strings.Contains(rendered, salvage) {
+		t.Fatalf("interrupted salvage render = %q, want retained content %q", rendered, salvage)
 	}
 }
 
