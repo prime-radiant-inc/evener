@@ -360,7 +360,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
-	if err := cfg.ResumeLocks.PersistForceStop(aliases, target.SessionID); err != nil {
+	if err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {

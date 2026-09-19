@@ -635,7 +635,34 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			}
 		}
 		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
-			return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			// A hub death between PersistForceStop and ConfirmForceStop leaves
+			// the requirement set with the exit unconfirmed, and Resume is the
+			// only action that clears ResumeRequired — refusing unconditionally
+			// strands the session. Discovery was refreshed above, before this
+			// lock: a live or unverified claim on any recovery alias keeps the
+			// refusal. Marker absence alone is still not exit proof — a denied
+			// signal or a failed wait can leave the owner running markerless —
+			// so the escape holds the authority to the Stop route's own proof
+			// class: the process controller's verified ErrExited against the
+			// identity the force stop persisted. Only then is the exit
+			// confirmed durably and the launch allowed.
+			if cfg.Roster == nil || recoveryGroupClaimExists(cfg.Roster, cfg.ResumeLocks.RecoveryAliases(sessionID)) {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			owner, ok := cfg.ResumeLocks.RecoveryOwner(sessionID)
+			if !ok {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			controller := cfg.DaemonProcesses
+			if controller == nil {
+				controller = daemonprocess.NewController()
+			}
+			if _, err := controller.Open(owner); !errors.Is(err, daemonprocess.ErrExited) {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			}
+			if err := cfg.ResumeLocks.ConfirmForceStop(state.ResumeSessionID); err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable("confirm recovery exit: " + err.Error())
+			}
 		}
 	}
 	resumeReq.CompletionOwned = launch.completionOwned

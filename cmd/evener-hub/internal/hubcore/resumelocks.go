@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 )
 
 // ResumeLocks hands out one mutex per session id so concurrent resume attempts
@@ -54,14 +55,26 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 			groups[id] = group
 		}
 		group.aliases = append(group.aliases, alias)
-		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, group: group, durableGroup: id, ResumeSessionID: authority.SessionID}
+		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, group: group, durableGroup: id, ResumeSessionID: authority.SessionID, owner: daemonprocess.Target{PID: authority.OwnerPID, SessionID: authority.SessionID, StateDir: authority.OwnerStateDir, StartedAt: authority.OwnerStartedAt}}
 	}
 	return r, nil
 }
 
 // PersistForceStop records verified aliases and their current transcript under
-// ownership locks before signaling. Committed intent survives signaling failure.
+// ownership locks before signaling. Committed intent survives signaling
+// failure. It records no owner process identity, so the Resume refusal stands
+// until the Stop route establishes an exit proof.
 func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error {
+	return r.PersistForceStopWithOwner(aliases, sessionID, daemonprocess.Target{})
+}
+
+// PersistForceStopWithOwner is PersistForceStop plus the process identity the
+// force stop signaled, so a later Resume can prove that owner's exit through
+// the process controller even when every rendezvous marker is gone — the same
+// proof class the Stop route itself uses. The force-stop path always records
+// the identity it signaled; a zero owner records no exit proof and the Resume
+// refusal stands.
+func (r *ResumeLocks) PersistForceStopWithOwner(aliases []string, sessionID string, owner daemonprocess.Target) error {
 	if len(aliases) == 0 {
 		return errors.New("recovery alias set is empty")
 	}
@@ -82,7 +95,7 @@ func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error
 	if r.store != nil {
 		next := maps.Clone(r.store.state)
 		for _, alias := range aliases {
-			next[alias] = recoveryAuthority{Group: id, SessionID: sessionID}
+			next[alias] = recoveryAuthority{Group: id, SessionID: sessionID, OwnerPID: owner.PID, OwnerStateDir: owner.StateDir, OwnerStartedAt: owner.StartedAt}
 		}
 		committed, err = r.store.commit(next)
 	}
@@ -99,6 +112,7 @@ func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error
 			state.ExitConfirmed = false
 			state.durableGroup = id
 			state.ResumeSessionID = sessionID
+			state.owner = owner
 			r.recovery[alias] = state
 		}
 		r.mu.Unlock()
@@ -682,6 +696,25 @@ type SessionRecoveryState struct {
 	ResumeSessionID      string
 	group                *sessionRecoveryGroup
 	durableGroup         string
+	// owner is the process identity the force stop signaled; a zero PID means
+	// no exit proof was recorded.
+	owner daemonprocess.Target
+}
+
+// RecoveryOwner returns the process identity the recovery authority recorded
+// for sessionID's group, so a Resume can verify the old owner's exit through
+// the process controller after every rendezvous marker is gone.
+func (r *ResumeLocks) RecoveryOwner(sessionID string) (daemonprocess.Target, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	owner := r.recovery[sessionID].owner
+	if owner.PID == 0 {
+		return daemonprocess.Target{}, false
+	}
+	if owner.SessionID == "" {
+		owner.SessionID = r.recovery[sessionID].ResumeSessionID
+	}
+	return owner, true
 }
 
 type sessionRecoveryGroup struct {
