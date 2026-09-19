@@ -154,7 +154,7 @@ CHILD
 cat > "$dir/parent.sh" <<'PARENT'
 trap "" TERM
 : > "$READY"
-sleep 1
+sleep 0.2
 bash "$DIR/child.sh" &
 echo $! > "$LATE"
 wait
