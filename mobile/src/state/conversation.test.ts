@@ -7243,6 +7243,136 @@ describe("ConversationStore", () => {
         expect(failureRow.id.startsWith("warning:")).toBe(true);
       }
     });
+
+    // The live row applier (case "warning" above) and the canonical projector
+    // (projectConversation, applied on every reread) must produce the SAME row
+    // for the same warning: an attention row — kind "failure", title as its own
+    // field, message+hint joined as detail. The canonical projector used to
+    // route type "warning" through its generic unknown-activity fallback, so
+    // the row changed kind, lost its attention treatment, and regressed to a
+    // collapsed "Activity" row labelled "unknown" the moment a reread replaced
+    // the live one.
+    it("projects the same warning to the same failure row live and canonically", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      const warning = {
+        method: "warning",
+        params: {
+          ...target,
+          title: "Provider warning",
+          message: "rate limit approaching",
+          hint: "slow down",
+        },
+      } as AnyNotification;
+      store.getState().applyNotification(warning);
+      const live = store.getState().conversation;
+      expect(live).not.toBeNull();
+      const liveRow = live?.items.find((row) => row.kind === "failure");
+      const canonicalRow = projectConversation(live!).items.find(
+        (row) => row.kind === "failure",
+      );
+      const expected = {
+        kind: "failure",
+        title: "Provider warning",
+        detail: "rate limit approaching — slow down",
+      };
+      expect(liveRow).toMatchObject(expected);
+      expect(canonicalRow).toMatchObject(expected);
+      expect(canonicalRow?.kind).toBe(liveRow?.kind);
+      // One identity, not just one shape: timelineIdentity is
+      // transcriptKey ?? id, and a reread dedupes on exactly that, so the two
+      // rows must agree here or the warning survives the reread twice.
+      const identity = (row: MobileTimelineItem | undefined) =>
+        row === undefined ? undefined : (row.transcriptKey ?? row.id);
+      expect(identity(canonicalRow)).toBe(identity(liveRow));
+    });
+
+    // The identity the live row shares with the canonical one is what keeps a
+    // reread from showing the warning twice. The reread projection here is the
+    // canonical projection of the same model (what a hub that carries the
+    // warning frame in a snapshot — or a future projection path — serves); the
+    // live-owned row must be recognized as that identity and dropped, leaving
+    // exactly one failure row.
+    it("merges a warning to one failure row across a reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          ...target,
+          title: "Provider warning",
+          message: "rate limit approaching",
+          hint: "slow down",
+        },
+      } as AnyNotification);
+      const liveRows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(liveRows).toHaveLength(1);
+      const liveIdentity = liveRows[0]!.transcriptKey ?? liveRows[0]!.id;
+
+      const reread = projectConversation(store.getState().conversation!);
+      service.readProjectionResult = {
+        conversation: reread,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+
+      const rows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.transcriptKey ?? rows[0]!.id).toBe(liveIdentity);
+    });
+
+    // Warning → reread without the warning → warning. A hub's snapshot does
+    // not carry the non-persisted warning item, so the reread drops it from
+    // the model while the live-owned row stays; the model's per-turn warning
+    // count is back to zero, so the second warning is handed the same
+    // `item_warning_live_<turn>_0` id as the first. The retained row must not
+    // hand that id to a second row (duplicate timeline ids), and the second
+    // warning must still land as its own row.
+    it("keeps warning rows unique through a reread that drops the warning model item", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "first warning" },
+      } as AnyNotification);
+      const firstIds = (store.getState().conversation?.items ?? [])
+        .filter((row) => row.kind === "failure")
+        .map((row) => row.id);
+      expect(firstIds).toHaveLength(1);
+
+      // Reread serves the same thread with no warning item in its turn.
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      await store.getState().rehydrate(service, sink);
+      const afterReread = (store.getState().conversation?.items ?? [])
+        .filter((row) => row.kind === "failure")
+        .map((row) => row.id);
+      expect(afterReread).toEqual(firstIds);
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "second warning" },
+      } as AnyNotification);
+      const rows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(rows).toHaveLength(2);
+      expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+      expect(rows.map((row) => row.detail)).toEqual([
+        "first warning",
+        "second warning",
+      ]);
+    });
   });
 
   // I3: Track actual page-owned item IDs per binding/token. On reread merge,
