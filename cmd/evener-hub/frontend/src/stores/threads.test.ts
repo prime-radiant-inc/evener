@@ -10743,6 +10743,69 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     tabA.close();
   });
 
+  // RoboRev PR #1873 medium, examined and REFUTED: "during initial hydration
+  // putThreadModels runs before the runtime exists, so a replacement-instance
+  // transition leaves stale canceled rows permanently." No publication can run
+  // pre-runtime: the mutation runtime is minted unconditionally by the FIRST
+  // client-ready (rewireClient's direct handleReady call for an already-ready
+  // client; handleReady's opening getMutationRuntime), and every
+  // path that can observe a replacement instance - tracked and watched
+  // hydrations, the clear response, escalation resolution, older-page merges -
+  // completes a client RPC after that ready. The guard's early return is
+  // reachable only when no runtime can EVER exist (IndexedDB unavailable to
+  // the tab), where there are no durable rows to clean, so returning is the
+  // correct behavior there. This test pins the refutation at the earliest
+  // publication any page can make - a seeded old-instance row, a fresh page's
+  // very first hydration carrying the replacement instance, and no mutation
+  // ever sent, so the runtime owes its existence to the ready flow alone - and
+  // goes red if a future change breaks the ready-time mint or the observation.
+  test("the earliest possible replacement-instance publication already finds a runtime and discards the superseded rows", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    // Another tab's Stop residue against the OLD instance, plus a canceled row
+    // of an instance no transition ever supersedes: the removal is scoped to
+    // the instance the publication provably replaced, so that row must stay.
+    const superseded = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_old",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const unrelated = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_keep",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against an unrelated instance" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    // The page opens tracking the OLD instance, seeded the way a list row
+    // hydrates from hub state. Nothing has minted a runtime yet: no mutation
+    // was sent and no hydration has completed.
+    threadsStore.setState({
+      threads: new Map([["ref_a", hydrateThread(readResponseWithId("ref_a", "thr_old"), "ref_a", 1000)]]),
+    });
+
+    // The client connects - ready - and the ready flow mints the runtime
+    // BEFORE any publication can complete. The first hydration then publishes
+    // the REPLACEMENT instance (another tab cleared the thread).
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // The transition's cleanup ran at that earliest publication: the
+    // superseded instance's row left, the unrelated instance's row stays.
+    await flushUntilArrived(
+      "the earliest publication's transition cleanup to discard the superseded row",
+      async () => (await storage.getOutbox(superseded.clientMutationId)) === undefined,
+    );
+    expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("canceled");
+  });
+
   // RoboRev PR #1873 low, the notify half: a zero-discard success still has
   // to notify persistence. Zero says what THIS tab's write removed - never what
   // another tab removed from under this tab's cached projection, and the

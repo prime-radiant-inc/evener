@@ -546,7 +546,13 @@ function putThreadModels(
 
 // The observing half of §6's cross-tab removal. Observation only: a model
 // publication must never be what first mints the mutation runtime (its startup
-// scan would then run on the next hydration instead of the first send).
+// scan would then run on the next hydration instead of the first send). The
+// no-runtime return below is unreachable in a connected tab: the ready flow
+// mints the runtime (rewireClient's direct handleReady call, whose opening
+// getMutationRuntime) before any publication that could observe a replacement
+// instance completes, and a tab without IndexedDB never mints one but also has
+// no durable rows to remove - so the rows this guard could skip are exactly
+// none (pinned by the earliest-publication test in threads.test.ts).
 function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId: string): void {
   const runtime = mutationRuntime;
   if (!runtime) return;
