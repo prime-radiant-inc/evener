@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClient } from "../../client";
-import { errorText } from "../../errors";
+import { errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   MarketplaceAddParams,
@@ -85,6 +85,26 @@ export interface MarketplacesStore
 }
 
 export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
+
+/** Extracts the updated list from a marketplaceUnregisteredCloneRemains
+ * rejection (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
+ * already applied on the hub before its clone's own removal failed, so
+ * Data.applied is the current list with the target already gone - reconcile
+ * from it even though the call still rejects, the same way keybindingsStore's
+ * rejectionPayload reads a post-rename durable failure's applied state.
+ * Returns undefined for any other rejection, or when the hub's own follow-up
+ * read to build Data.applied failed too (Data.appliedUnavailable): there is
+ * then nothing to reconcile from. */
+function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
+    return undefined;
+  if (!error.data || typeof error.data !== "object") return undefined;
+  const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
+  if (data.appliedUnavailable) return undefined;
+  if (!data.applied || typeof data.applied !== "object") return undefined;
+  const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
+  return Array.isArray(marketplaces) ? (marketplaces as MarketplaceEntry[]) : undefined;
+}
 
 export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {
   // A browse response is keyed by marketplace name, so it can outlive the
@@ -181,20 +201,40 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
+      onFailure?: (error: unknown) => MarketplaceEntry[] | undefined,
     ): Promise<void> {
       const issuedIn = generation;
-      return writeRevisioned(listRevision, request, (resp) => {
-        // A reset or a dispose ended the generation this write was issued in:
-        // its answer is about a store that has forgotten everything it read.
-        if (issuedIn !== generation) return null;
-        // The catalogs this write names are retired whether or not its list is
-        // the live answer: retiring is monotonic within the generation, so a
-        // catalog stale under an older list is stale under a newer one too.
-        if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
-        // The list, and the two fields that belong to it, go through the fence:
-        // see plugins.ts's mutate for why the live answer owns all three.
-        return () => set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
-      });
+      return writeRevisioned(
+        listRevision,
+        request,
+        (resp) => {
+          // A reset or a dispose ended the generation this write was issued in:
+          // its answer is about a store that has forgotten everything it read.
+          if (issuedIn !== generation) return null;
+          // The catalogs this write names are retired whether or not its list is
+          // the live answer: retiring is monotonic within the generation, so a
+          // catalog stale under an older list is stale under a newer one too.
+          if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+          // The list, and the two fields that belong to it, go through the fence:
+          // see plugins.ts's mutate for why the live answer owns all three.
+          return () => set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
+        },
+        onFailure
+          ? (error) => {
+              const applied = onFailure(error);
+              if (applied === undefined || issuedIn !== generation) return null;
+              return () => {
+                if (issuedIn !== generation) return;
+                set((s) => ({
+                  marketplaces: applied,
+                  marketplacesLoading: false,
+                  marketplacesError: null,
+                  ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
+                }));
+              };
+            }
+          : undefined,
+      );
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>
@@ -220,7 +260,8 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       },
 
       addMarketplace: (params) => mutate(() => client.request("evener/marketplace/add", params), []),
-      removeMarketplace: (name) => mutate(() => client.request("evener/marketplace/remove", { name }), [name]),
+      removeMarketplace: (name) =>
+        mutate(() => client.request("evener/marketplace/remove", { name }), [name], cloneLitterApplied),
       refreshMarketplace: (name) => mutate(() => client.request("evener/marketplace/refresh", { name }), [name]),
       editMarketplace: (params) =>
         mutate(() => client.request("evener/marketplace/edit", params), [params.name, params.newName]),
