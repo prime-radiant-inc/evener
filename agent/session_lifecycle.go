@@ -2498,8 +2498,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
 					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
 				}
-				if err := s.recoverClientMutationFailures(true); err != nil {
-					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
+				recoveryErr := s.recoverClientMutationFailures(true)
+				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
+				if userRecorded {
+					s.clearAskPending()
+				}
+				if recoveryErr != nil {
+					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
+				}
+				if !userRecorded {
+					return failure
 				}
 				s.emit(events.EventUserInput, events.UserInputData{
 					Text:             input,

@@ -9,6 +9,8 @@ import (
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -117,4 +119,104 @@ func TestAskUser_DurableAdmissionTranscriptAppendFailureMatchesRestore(t *testin
 		t.Fatalf("transcript-refused resolving input error = %v, want %v", err, failure)
 	}
 	assertDurableAdmissionAskRestoresAwaiting(t, sess)
+}
+
+func prepareDurableAdmissionFailedStart(t *testing.T) (*Session, queuedInput) {
+	t.Helper()
+	sess := newDurableAdmissionAskSession(t, SessionConfig{})
+	seedDurableAdmissionAsk(t, sess)
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "failed-start-ask",
+		Input:            []appwire.InputItem{{Type: "text", Text: "answer the question"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	return sess, claimed
+}
+
+func TestAskUser_RecoveredStartAdmissionClearsPendingAskLikeRestore(t *testing.T) {
+	t.Parallel()
+	sess, claimed := prepareDurableAdmissionFailedStart(t)
+	failure := errors.New("deterministic pre-append failure")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+
+	_, err := sess.ProcessInputKind(
+		withQueuedClientMutation(context.Background(), claimed),
+		claimed.Text,
+		claimed.Images,
+		EntryUserInput,
+	)
+	if !errors.Is(err, failure) {
+		t.Fatalf("recovered start error = %v, want %v", err, failure)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live askPendingCount after recovered user record = %d, want 0", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("live state after recovered user record = %q, want %q", got, SessionIdle)
+	}
+
+	meta := sess.Meta()
+	dir := sess.stateDir
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored askPendingCount after recovered user record = %d, want 0", got)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state after recovered user record = %q, want %q", got, SessionIdle)
+	}
+}
+
+func TestAskUser_PartialRecoveredStartAfterUserMatchesRestore(t *testing.T) {
+	t.Parallel()
+	sess, claimed := prepareDurableAdmissionFailedStart(t)
+	failure := errors.New("deterministic pre-append failure")
+	crash := errors.New("simulated recovery interruption after user")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+	sess.clientMutationFailureRecoveryFault = func(boundary string) error {
+		if boundary == "after_user" {
+			return crash
+		}
+		return nil
+	}
+
+	_, err := sess.ProcessInputKind(
+		withQueuedClientMutation(context.Background(), claimed),
+		claimed.Text,
+		claimed.Images,
+		EntryUserInput,
+	)
+	if !errors.Is(err, failure) || !errors.Is(err, crash) {
+		t.Fatalf("partial recovered start error = %v, want failure and crash", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live askPendingCount after recovered user record with later failure = %d, want 0", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("live state after recovered user record with later failure = %q, want %q", got, SessionIdle)
+	}
+
+	meta := sess.Meta()
+	dir := sess.stateDir
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored askPendingCount after partial recovery = %d, want 0", got)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state after partial recovery = %q, want %q", got, SessionIdle)
+	}
 }
