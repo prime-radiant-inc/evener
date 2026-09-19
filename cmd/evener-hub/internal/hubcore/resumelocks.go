@@ -669,7 +669,10 @@ func (r *ResumeLocks) activeResumeOverlapLocked(alias string) ([]string, []*Acti
 }
 
 // SessionRecoveryState is the action admission state shared by every transport.
-// Epoch changes invalidate actions that were waiting for session ownership.
+// Epoch changes invalidate actions that were waiting for session ownership. It
+// advances only when a recovery decision is published — an unrejected fence's
+// Finish, or InvalidateResumeAdmission — never at a fence's begin and never
+// backwards, so an epoch value identifies one world forever (no ABA).
 type SessionRecoveryState struct {
 	Epoch                uint64
 	LastRecoverySequence uint64
@@ -757,13 +760,10 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) *ForceStopFence {
 		r.recovery = make(map[string]SessionRecoveryState)
 	}
 	r.sequence++
-	fence := &ForceStopFence{owner: r, aliases: slices.Clone(aliases), previous: make(map[string]uint64, len(aliases)), previousEpoch: make(map[string]uint64, len(aliases)), epochWritten: make(map[string]uint64, len(aliases)), sequence: r.sequence}
+	fence := &ForceStopFence{owner: r, aliases: slices.Clone(aliases), previous: make(map[string]uint64, len(aliases)), sequence: r.sequence}
 	for _, id := range aliases {
 		state := r.recovery[id]
 		fence.previous[id] = state.LastRecoverySequence
-		fence.previousEpoch[id] = state.Epoch
-		state.Epoch++
-		fence.epochWritten[id] = state.Epoch
 		state.LastRecoverySequence = r.sequence
 		state.Stopping++
 		r.recovery[id] = state
@@ -774,32 +774,32 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) *ForceStopFence {
 
 // ForceStopFence is the rollback token of one held admission fence, created by
 // beginForceStopLocked and dropped by Finish when the fence ends. It carries
-// the connection-level sequence metadata and admission epochs the fence
-// advanced so a refusal that canceled nothing can give them back. Only the
+// the connection-level sequence metadata the fence advanced so a refusal that
+// canceled nothing can give it back. The fence publishes no admission epoch at
+// begin: the epoch advances only at an unrejected Finish, so a refusal is
+// epoch-neutral by construction and no epoch value is ever reused. Only the
 // caller that began the force stop finishes or rejects it.
 type ForceStopFence struct {
 	owner    *ResumeLocks
 	aliases  []string
 	previous map[string]uint64
-	// previousEpoch is each fenced alias's epoch restore target: the epoch
-	// the alias held before this fence advanced it. An older fence's rejection
-	// can rewrite it to skip an advance that older refusal already gave back.
-	previousEpoch map[string]uint64
-	// epochWritten is the epoch value this fence wrote on each fenced alias,
-	// fixed at begin, so the rollback below still recognizes its own write
-	// after an older fence's rejection rewrote previousEpoch.
-	epochWritten map[string]uint64
-	sequence     uint64
-	rejected     bool
-	finished     bool
+	sequence uint64
+	rejected bool
+	finished bool
 }
 
 // Finish releases the fence: it gives back the admission Stopping each fenced
-// alias took and, unless the fence was rejected, writes the fenced aliases'
-// connection-level recovery sequence again, so the world a completed stop
-// leaves behind stales connections admitted before it. A rejected fence's
-// release keeps the sequence rolled back: the refusal canceled nothing, so
-// connections from before the fence must not be staled by its release either.
+// alias took and, unless the fence was rejected, advances each fenced alias's
+// admission epoch and writes the connection-level recovery sequence again, so
+// the world a completed stop leaves behind stales actions and connections
+// admitted before it. The epoch advance is the fence's ONLY publication: begin
+// advances nothing, so an epoch value is minted exactly once, here, and Epoch
+// is strictly increasing with no reuse (the ABA RoboRev reported against the
+// old begin-advance/reject-rollback pair). A rejected fence's release advances
+// nothing and keeps the sequence rolled back: the refusal canceled nothing,
+// so neither actions nor connections from before the fence may be staled by
+// its release — the in-flight Resume the refusal preserved completes against
+// the same epoch it was admitted under.
 func (f *ForceStopFence) Finish(stopped bool) {
 	r := f.owner
 	r.mu.Lock()
@@ -814,6 +814,7 @@ func (f *ForceStopFence) Finish(stopped bool) {
 		state := r.recovery[id]
 		state.Stopping--
 		if !f.rejected {
+			state.Epoch++
 			state.LastRecoverySequence = r.sequence
 		}
 		state.ResumeRequired = state.ResumeRequired || stopped
@@ -821,33 +822,28 @@ func (f *ForceStopFence) Finish(stopped bool) {
 	}
 }
 
-// Reject makes a refused force-stop fence admission-neutral: it gives back the
-// admission epoch the fence advanced — but only while that epoch is still the
-// value this fence wrote — and rolls back the connection-level sequence
-// metadata the fence wrote, so a connection established before the fence is
-// not refused as stale by the refusal — the force stop was refused and
-// canceled nothing. The in-flight Resume a refusal deliberately preserved
-// was admitted under the pre-fence epoch and completes through
-// ExplicitResumeCompleted, which ignores a stale epoch — the durable resume
-// requirement would stay set even though the Resume succeeded. The epoch
-// give-back is conditional because an advance another actor published since
-// this fence began must survive the refusal: a newer held fence's, or a
-// confirmed-stopped no-op's InvalidateResumeAdmission, which advances epochs
-// without installing a fence. Decrementing unconditionally would erase such a
-// publication and admit a registration on the pre-decision snapshot after the
-// no-op already reported the session stopped. Call it only on refusals that
-// have canceled nothing, while the fence is still held and before Finish:
-// with Stopping above zero no admission can bind the advanced epoch before
-// the Finish(false) release restores eligibility, and a rejected fence's
-// release keeps the sequence rolled back. A fence rejects exactly once, by
-// its own caller's handle and never another request's alias set, and never
-// once Finish has ended it. An alias a newer actor has since advanced keeps
-// the newer epoch and sequence value, so a refused fence cannot un-stale a
-// connection the newer fence must keep refusing; but the values this fence
-// wrote are retired wherever they are still saved: a newer held fence that
-// recorded them as an alias's previous state skips to this fence's own
-// previous values, so the newer fence's later rollback cannot restore a
-// value an already-rolled-back fence wrote.
+// Reject makes a refused force-stop fence admission-neutral. The fence
+// advanced no admission epoch at begin, so there is nothing to give back: the
+// in-flight Resume a refusal deliberately preserved completes through
+// ExplicitResumeCompleted against the same epoch it was admitted under, and a
+// later real publication — an unrejected fence's Finish, or a
+// confirmed-stopped no-op's InvalidateResumeAdmission — advances the epoch
+// exactly once and stales every snapshot taken before it. The refusal also
+// rolls back the connection-level sequence metadata the fence wrote, so a
+// connection established before the fence is not refused as stale by the
+// refusal — the force stop was refused and canceled nothing. Call it only on
+// refusals that have canceled nothing,
+// while the fence is still held and before Finish: with Stopping above zero
+// no admission can bind the advanced epoch before the Finish(false) release
+// restores eligibility, and a rejected fence's release keeps the sequence
+// rolled back. A fence rejects exactly once, by its own caller's handle and
+// never another request's alias set, and never once Finish has ended it. An
+// alias a newer fence has since advanced keeps that fence's sequence value
+// until the newer fence releases it: a refused fence cannot un-stale a
+// connection the newer fence must keep refusing; but the sequence value this
+// fence wrote is retired wherever a newer held fence still saves it, so the
+// newer fence's later rollback cannot restore a value an already-rolled-back
+// fence wrote.
 func (f *ForceStopFence) Reject() {
 	r := f.owner
 	r.mu.Lock()
@@ -858,16 +854,6 @@ func (f *ForceStopFence) Reject() {
 	f.rejected = true
 	for _, id := range f.aliases {
 		state := r.recovery[id]
-		// Give back the epoch only while the value this fence wrote is still
-		// the alias's current one: an advance another actor published since
-		// this fence began — a newer held fence's, or a confirmed-stopped
-		// no-op's InvalidateResumeAdmission, which installs no fence — must
-		// survive a refusal that canceled nothing, so the rollback cannot
-		// decrement the alias back past it and un-publish a decision already
-		// reported.
-		if state.Epoch == f.epochWritten[id] {
-			state.Epoch = f.previousEpoch[id]
-		}
 		// Roll back only what this fence wrote and nothing since has
 		// overwritten: an alias a newer fence has advanced keeps that
 		// fence's value until the newer fence releases it.
@@ -878,10 +864,8 @@ func (f *ForceStopFence) Reject() {
 	}
 	// Only fences newer than this one can have saved a value this fence
 	// wrote as an alias's previous state: every older fence recorded smaller
-	// sequence values and epochs. Retire the written values wherever a newer
-	// held fence still saves them, so the newer fence's own rollback skips
-	// them: the sequence this fence wrote, and the epoch an older refusal
-	// already gave back.
+	// sequence values. Retire the written value wherever a newer held fence
+	// still saves it, so the newer fence's own rollback skips it.
 	for _, held := range r.fences {
 		if held == f {
 			continue
@@ -889,9 +873,6 @@ func (f *ForceStopFence) Reject() {
 		for _, id := range f.aliases {
 			if held.previous[id] == f.sequence {
 				held.previous[id] = f.previous[id]
-			}
-			if held.previousEpoch[id] == f.epochWritten[id] {
-				held.previousEpoch[id] = f.previousEpoch[id]
 			}
 		}
 	}

@@ -129,7 +129,9 @@ func TestActiveResumeStopCancelsOverlappingAliasesAndWaitsForCleanup(t *testing.
 		}
 		for _, alias := range []string{"stable", "current", "next"} {
 			state := locks.RecoveryState(alias)
-			if state.Stopping != 1 || state.Epoch != 1 {
+			// The held fence publishes Stopping alone: its epoch advance is
+			// minted only when the fence's Finish releases it unrejected.
+			if state.Stopping != 1 || state.Epoch != 0 {
 				t.Fatalf("alias %s was not fenced exactly once: %+v", alias, state)
 			}
 			if active, err := locks.RegisterResume(t.Context(), alias, []string{alias}, resumeEpochs(locks, alias)); err == nil {
