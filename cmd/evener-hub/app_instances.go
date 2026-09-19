@@ -1783,12 +1783,14 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		// file a rewrite could.
 		//
 		// A rename-back that fails on a COMMITTED aside puts the copy back in its
-		// IN-FLIGHT shape instead, so the bytes stay recoverable. A committed copy has to mean the removal
-		// STOOD, or the startup sweep cannot tell debris from a failed removal's
-		// only credential: it deletes committed copies whose name the config does
-		// not carry, which for a credential-only instance is all of them. The
-		// bytes are still on disk either way, so the layer counts as restored;
-		// what could not be put back under its own name is reported.
+		// IN-FLIGHT shape instead, so the bytes stay recoverable. A committed
+		// copy has to mean the removal STOOD, or the startup sweep cannot tell
+		// debris from a failed removal's only credential: it deletes committed
+		// copies whose name the config does not carry, which for a
+		// credential-only instance is all of them. The layer does NOT count as
+		// restored - the record path is not where those bytes came back to - so
+		// what could not be put back under its own name is reported, and the
+		// answer below follows from that.
 		if err := os.Rename(oauthAside, authopenai.AuthFilePath(c.auth.stateDir, name)); err != nil {
 			restoreErr := err
 			if _, committed, _, _ := oauthAsideInstance(filepath.Base(oauthAside)); committed {
@@ -2249,13 +2251,29 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 			continue
 		}
 		if !c.ranked {
-			// A copy whose stamp cannot be ordered is left filed under the old
-			// name, its stamp text untouched: it stays parseable, and the
-			// destination ranking is not moved. Carrying it with want 0 would
-			// synthesize a fresh rankable stamp (and bump highestDest), turning
-			// an intentionally unorderable copy into the newest recovery
-			// candidate. The copy is reported instead, the way the other carry
-			// failures are.
+			// A copy whose stamp cannot be ordered is not carried, and its stamp
+			// text is left untouched: it stays parseable, and the destination
+			// ranking is not moved. Carrying it with want 0 would synthesize a
+			// fresh rankable stamp (and bump highestDest), turning an
+			// intentionally unorderable copy into the newest recovery candidate.
+			//
+			// Leaving it under the OLD name is only safe for a credential-only
+			// copy: startup recovery judges a config-backed copy by whether the
+			// config still carries its name BEFORE it parses the stamp, and
+			// providers.toml now names only the new instance - so the copy would
+			// be read as a removal that stood, renamed to its committed shape
+			// and deleted by the sweep, taking the renamed instance's only
+			// credential with it. A config-backed copy is therefore re-filed
+			// under the NEW name by remarkUncarriedOAuthAside, the way every
+			// other carry failure is, so recovery restores it to the renamed
+			// instance instead of deleting it. (setAsideOAuthFile cannot write
+			// an unorderable stamp - the clock is an int64 and the search
+			// enforces the bounds - so this is the on-disk-tampering path.)
+			cause := fmt.Errorf("its stamp %q cannot be ordered (past an int64), so it was not given a fresh rank", oauthAsideStampText(c.name))
+			if c.configBacked {
+				problems = append(problems, remarkUncarriedOAuthAside(dir, c.name, newName, cause))
+				continue
+			}
 			problems = append(problems, fmt.Sprintf("OAuth copy %q not carried to %q: its stamp %q cannot be ordered (past an int64), so it was left filed under the old name rather than given a fresh rank", c.name, newName, oauthAsideStampText(c.name)))
 			continue
 		}
@@ -2677,20 +2695,26 @@ func highestAsideStamp(entries []os.DirEntry, name string) (int64, bool) {
 // there was one.
 func stepFreeAsideName(recordPath string, configBacked bool, want, highest int64, have bool) (string, int64, asideSearch, error) {
 	stamp := want
+	// The stamp this copy must carry is at or above every copy already filed for
+	// this name, so recovery - which restores the NEWEST copy of a name and
+	// orders copies by stamp alone, without asking which marker wrote them -
+	// cannot put an older credential back in place of this one.
 	if have && highest >= maxAsideStamp {
-		// A copy already filed at the maximum leaves no stamp above it to step
-		// to. Falling back to the requested stamp - necessarily at or below the
-		// maximum - would file this copy at or before the one already there, and
-		// recovery restores the newest copy, so the older credential would win.
-		// The maximum is exhausted: refuse rather than hand back a lower stamp.
-		// (setAsideOAuthFile's own seed guard refuses the same successor, and the
-		// loop below refuses a step past the maximum.)
-		return "", stamp, asideSearchExhausted, nil
-	}
-	// One past the highest is all digits for any non-negative stamp; the comparison
-	// also refuses a maxAsideStamp successor, which would wrap to a negative tail no
-	// copy can carry.
-	if have && highest+1 > stamp {
+		// The highest copy already filed sits at the maximum, so there is no
+		// stamp above it to step to. The maximum itself is the only stamp that
+		// does not rank this copy below that one, and the two markers file
+		// DIFFERENT paths at the same stamp: a saturated copy of the other kind
+		// does not hold this one's candidate, so the loop below hands the
+		// maximum back when that candidate is free and refuses with
+		// asideSearchExhausted when a copy of THIS kind already holds it.
+		// Refusing on the other kind's saturation would strand this copy under a
+		// name recovery no longer reads - which is what a rename's fallback,
+		// re-filing an in-flight copy under the new name, must never do.
+		stamp = maxAsideStamp
+	} else if have && highest+1 > stamp {
+		// One past the highest is all digits for any non-negative stamp; the
+		// case above keeps this comparison away from a maxAsideStamp successor,
+		// which would wrap to a negative tail no copy can carry.
 		stamp = highest + 1
 	}
 	marker := oauthAsideMarkerFor(configBacked)
@@ -3641,10 +3665,26 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 	if !carried {
 		// The layer that carries the instance did not come back, so the removal
 		// stands (restoreFailedRemoval bound the frame and the discriminator to
-		// that answer) and there is nothing to roll back: the committed copies
-		// stay committed, for the startup sweep and the next reclaim to collect.
-		// No reload either - the failure already parked the registry on the view
-		// of the file that stands.
+		// that answer). But the CONFIG did come back - write(before) above
+		// succeeded, or nothing was ever written - so the instance the restored
+		// config names still exists, and every copy this removal marked
+		// committed belongs to a removal that did not stand. Those copies must
+		// not stay committed: a committed copy is never restored while the
+		// config carries its name, only swept, so leaving them would strand the
+		// only bytes of the user's credential beside an instance that cannot
+		// authenticate from its record path. (The carrying copy is the
+		// rename-back restoreFailedRemoval just made; these are the copies
+		// reinstateMarkedAsides returns to the in-flight shape startup reads.)
+		if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+			restored = fmt.Errorf("%w; %s", restored, strings.Join(more, " and "))
+		}
+		// The registry is reloaded over the config the rollback restored, the
+		// way the carried path does: the failure that brought us here parked it
+		// on the view of the file the removal wrote (or of the file it could not
+		// load), and the file that stands now is the pre-removal one.
+		if reloadErr := c.reg.Reload(); reloadErr != nil {
+			return fmt.Errorf("%w; the registry could not be reloaded over the config the rollback restored either (%w)", restored, reloadErr)
+		}
 		return restored
 	}
 	rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, cause)

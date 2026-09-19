@@ -2688,3 +2688,241 @@ func TestInstances_RemovalRecordsTheKindFromTheLayerItWrites(t *testing.T) {
 		t.Fatalf("providers.toml = %q (err %v), want it untouched (before: %q, err %v)", after, afterErr, before, beforeErr)
 	}
 }
+
+// TestFreeAsideNameAllocatesTheAlternateMarkerAtTheMaximumStamp: a copy already
+// filed at maxAsideStamp saturates that PATH, not the instance. The two markers
+// name different files, so the same maximum stamp is free under the other marker
+// - and the search must hand it back rather than refuse, or a rename's fallback
+// could not re-file a copy whose credential startup would then never restore.
+// The same-marker saturation still refuses: there the candidate really is taken
+// and there is no stamp above it (TestFreeAsideNameRefusesToAllocateBelowAMaximumStamp).
+func TestFreeAsideNameAllocatesTheAlternateMarkerAtTheMaximumStamp(t *testing.T) {
+	maxStamp := strconv.FormatInt(maxAsideStamp, 10)
+
+	// A credential-only copy sits at the maximum; the config-backed allocation
+	// must still land, at that same maximum stamp.
+	plainDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(plainDir, "work.json"+oauthAsideMarker+maxStamp), []byte("at the maximum\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, ok := freeAsideName(plainDir, "work", true, 100)
+	if !ok {
+		t.Fatal("freeAsideName = (\"\", false), want the config-backed candidate at the maximum: the plain marker's path does not take it")
+	}
+	if want := filepath.Join(plainDir, "work.json"+oauthConfigAsideMarker+maxStamp); got != want {
+		t.Fatalf("freeAsideName = %q, want %q", got, want)
+	}
+
+	// And the other way round: a saturated config-backed copy must not block the
+	// credential-only allocation.
+	cfgDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfgDir, "work.json"+oauthConfigAsideMarker+maxStamp), []byte("at the maximum\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, ok = freeAsideName(cfgDir, "work", false, 100)
+	if !ok {
+		t.Fatal("freeAsideName = (\"\", false), want the credential-only candidate at the maximum")
+	}
+	if want := filepath.Join(cfgDir, "work.json"+oauthAsideMarker+maxStamp); got != want {
+		t.Fatalf("freeAsideName = %q, want %q", got, want)
+	}
+}
+
+// TestInstances_RolledBackRemovalReinstatesMarkedCopiesWhenTheCarryingRecordStaysAside:
+// the rollback can land and still not put the carrying record back, because its
+// path is held by something the rename cannot replace. The config it restored
+// names the instance again, so the other copies this removal marked committed
+// belong to a removal that did not stand - and a committed copy is only ever
+// swept, never restored, while the config carries the name. They must go back to
+// the in-flight shape startup recovery reads, or the user's only credential
+// bytes sit unreachable beside an instance that cannot authenticate.
+func TestInstances_RolledBackRemovalReinstatesMarkedCopiesWhenTheCarryingRecordStaysAside(t *testing.T) {
+	// Load 1 is the fixture's own; load 2 primes the config; load 3 is the
+	// removal's reload, whose failure rolls the removal back; load 4 is the
+	// rollback's retry, which succeeds.
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The record this call removes, at its own path: the removal sets it aside
+	// and the commit mark renames it.
+	if err := os.WriteFile(authopenai.AuthFilePath(f.stateDir, "work"), []byte("the record the removal set aside\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(record): %v", err)
+	}
+	// An earlier failed removal's copy, in flight beside it, which this removal's
+	// commit mark renames too.
+	other := filepath.Join(dir, "work.json"+oauthAsideMarker+"1757000000000000000")
+	if err := os.WriteFile(other, []byte("the earlier removal's copy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", other, err)
+	}
+	// After the credential cleanup, occupy the record path with a non-empty
+	// directory: the rollback's rename-back cannot replace it, the way a disk
+	// refusal would, so the carrying layer does not come back.
+	record := authopenai.AuthFilePath(f.stateDir, "work")
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(stateDir, name string) (bool, error) {
+		removed, err := originalDelete(stateDir, name)
+		if mkErr := os.Mkdir(record, 0o700); mkErr != nil && !os.IsExist(mkErr) {
+			t.Errorf("Mkdir(%s): %v", record, mkErr)
+		}
+		if wErr := os.WriteFile(filepath.Join(record, "obstacle"), []byte("in the way"), 0o600); wErr != nil {
+			t.Errorf("WriteFile(obstacle): %v", wErr)
+		}
+		return removed, err
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the unrestored carrying record reported")
+	}
+	if !strings.Contains(err.Error(), "its OAuth record could not be restored") {
+		t.Fatalf("Remove = %v, want the carrying record named as not restored", err)
+	}
+
+	// The fix: the earlier removal's copy is back in the in-flight shape startup
+	// reads, not left committed where only the sweep would ever touch it.
+	if _, statErr := os.Lstat(other); statErr != nil {
+		t.Fatalf("the marked copy is not back in its in-flight shape at %s: %v", other, statErr)
+	}
+	for _, name := range authDirEntries(t, f) {
+		inst, committed, _, aside := oauthAsideInstance(name)
+		if !aside || inst != "work" || !committed {
+			continue
+		}
+		t.Fatalf("the rollback left the committed copy %s, which startup never restores while the config carries work", name)
+	}
+
+	// Startup then puts a credential back for the instance the config names.
+	if rerr := os.RemoveAll(record); rerr != nil {
+		t.Fatalf("RemoveAll(%s): %v", record, rerr)
+	}
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if !restored {
+		t.Fatal("startup put nothing back, want the credential the rollback reinstated")
+	}
+}
+
+// TestInstances_RolledBackRemovalReportsAReinstateFailureWhenTheCarryingRecordStaysAside:
+// the failure side of the test above. When a marked copy cannot be returned to
+// the in-flight shape, the caller has to hear it: those bytes then sit in the
+// shape the sweep deletes rather than the one recovery reads, which is exactly
+// what the reinstate on this path exists to prevent.
+func TestInstances_RolledBackRemovalReportsAReinstateFailureWhenTheCarryingRecordStaysAside(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	own := filepath.Join(dir, "work.json"+oauthCommittedMarker+stamp)
+	other := filepath.Join(dir, "work.json"+oauthCommittedMarker+"1757000000000000001")
+	for _, path := range []string{own, other} {
+		if err := os.WriteFile(path, []byte("a marked copy\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", path, err)
+		}
+	}
+	// The carrying copy cannot go back to its own path...
+	record := authopenai.AuthFilePath(f.stateDir, "work")
+	if err := os.Mkdir(record, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", record, err)
+	}
+	if err := os.WriteFile(filepath.Join(record, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+	// ...and the other copy's in-flight destination is taken, so reinstating that
+	// one cannot land either.
+	if err := os.Mkdir(filepath.Join(dir, "work.json"+oauthAsideMarker+"1757000000000000001"), 0o700); err != nil {
+		t.Fatalf("Mkdir(in-flight destination): %v", err)
+	}
+	before, _, err := f.ctl.read()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	err = f.ctl.rollBackFailedRemoval(before, "work", "", false, oauthCommitMark{own: own, marked: []string{own, other}}, false, "the instance is still configured", supplyAny, errors.New("commit mark failed"))
+	if err == nil {
+		t.Fatal("rollBackFailedRemoval = nil, want the reinstatement failure reported")
+	}
+	if !strings.Contains(err.Error(), "could not be returned to the in-flight shape") {
+		t.Fatalf("rollBackFailedRemoval = %v, want the copy it could not reinstate named", err)
+	}
+	if _, statErr := os.Lstat(other); statErr != nil {
+		t.Fatalf("the marked copy is gone (Lstat = %v), want it left where it was", statErr)
+	}
+}
+
+// TestInstances_EditRenameRefilesAConfigBackedUnrankableOAuthCopy: the other
+// half of the unrankable-carry case. A config-backed copy left under the old
+// name is judged by the config BEFORE its stamp is read, and providers.toml
+// names only the new instance after the rename - so startup reads it as a
+// removal that stood, renames it to its committed shape and deletes it, taking
+// the renamed instance's only credential. It must go through the same re-filing
+// a carry failure does, so recovery restores it to the renamed instance.
+// (setAsideOAuthFile cannot write an unorderable stamp - the clock is an int64
+// and the search enforces the bounds - so this is the on-disk-tampering path.)
+func TestInstances_EditRenameRefilesAConfigBackedUnrankableOAuthCopy(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "99999999999999999999"
+	const content = "the unorderable copy\n"
+	source := "work.json" + oauthConfigAsideMarker + stamp
+	if err := os.WriteFile(filepath.Join(dir, source), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", source, err)
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil {
+		t.Fatal("Edit(rename) = nil, want the re-filed copy reported")
+	}
+	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
+		t.Fatalf("Edit = %v (%T), want a renamePersistedError", err, err)
+	}
+	// The copy is no longer under the old name...
+	if _, statErr := os.Lstat(filepath.Join(dir, source)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the copy is still at %s (Lstat = %v), want it re-filed", source, statErr)
+	}
+	// ...it is filed under the RENAMED instance in the shape recovery reads.
+	var refiled string
+	for _, name := range authDirEntries(t, f) {
+		inst, committed, configBacked, aside := oauthAsideInstance(name)
+		if !aside || inst != "personal" {
+			continue
+		}
+		if committed || configBacked {
+			t.Fatalf("the re-filed copy %s is committed=%v configBacked=%v, want the credential-only in-flight shape recovery restores", name, committed, configBacked)
+		}
+		refiled = name
+	}
+	if refiled == "" {
+		t.Fatal("no copy was filed under the renamed instance")
+	}
+
+	// Startup recovery restores it to the renamed instance rather than sweeping it.
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if !restored {
+		t.Fatal("startup restored nothing, want the credential back for the renamed instance")
+	}
+	got, rerr := os.ReadFile(authopenai.AuthFilePath(f.stateDir, "personal"))
+	if rerr != nil || string(got) != content {
+		t.Fatalf("restored record = %q (%v), want %q", got, rerr, content)
+	}
+}
