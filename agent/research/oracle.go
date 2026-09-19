@@ -50,8 +50,10 @@ func walkSessionTranscripts(stateBase string, limit int) ([]sessionTranscript, e
 }
 
 // loadEntries decodes one transcript file. The first line must be the v2
-// header. Undecodable entry lines are skipped and counted: real corpora
-// contain torn tail lines, and the oracle measures, it does not reject.
+// header: a corrupt header, and equally a file with no header at all
+// (including a 0-byte file), is an error. Undecodable entry lines are skipped
+// and counted: real corpora contain torn tail lines, and the oracle measures,
+// it does not reject.
 func loadEntries(path string) (entries []transcript.Entry, skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -79,6 +81,9 @@ func loadEntries(path string) (entries []transcript.Entry, skipped int, err erro
 	}
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("scan %s: %w", path, err)
+	}
+	if first {
+		return nil, 0, fmt.Errorf("%s: no transcript header", path)
 	}
 	return entries, skipped, nil
 }

@@ -82,3 +82,14 @@ func TestLoadEntries_SkipsBadLines(t *testing.T) {
 		t.Fatalf("kind = %s", entries[0].Turn.Kind)
 	}
 }
+
+func TestLoadEntries_EmptyFileIsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.transcript.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadEntries(path); err == nil {
+		t.Fatal("loadEntries(0-byte file) = nil error, want headerless error")
+	}
+}
