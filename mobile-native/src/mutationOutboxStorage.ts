@@ -89,6 +89,7 @@ const COLUMNS = [
 	"origin_client_id",
 	"target_ref",
 	"thread_id",
+	"instance_id",
 	"method",
 	"payload",
 	"attachments",
@@ -116,6 +117,7 @@ export interface Row {
 	origin_client_id: string | null;
 	target_ref: string;
 	thread_id: string | null;
+	instance_id: string | null;
 	method: string;
 	payload: string;
 	attachments: string;
@@ -136,6 +138,7 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		originClientId: row.origin_client_id ?? undefined,
 		targetRef: row.target_ref,
 		threadId: row.thread_id ?? undefined,
+		instanceId: row.instance_id ?? undefined,
 		method: row.method,
 		payload: JSON.parse(row.payload),
 		attachments: JSON.parse(row.attachments),
@@ -169,7 +172,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		this.#getOwnClientId = options.getOwnClientId ?? (() => undefined);
 		const schema = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
 			client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
-			origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, method TEXT NOT NULL,
+			origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
 			payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
 			composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
@@ -200,6 +203,21 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		const sequenceColumns = this.db.getAllSync<{ name: string }>("PRAGMA table_info(mutation_sequence)");
 		if (!sequenceColumns.some((column) => column.name === "stop_epoch")) {
 			this.db.execSync("ALTER TABLE mutation_sequence ADD COLUMN stop_epoch INTEGER NOT NULL DEFAULT 0");
+		}
+		// The record tables' own additive column (the web's fused identity
+		// fix, 4059723ab4): a durable row carries its enqueue-time instance so
+		// cleanup and Retry can compare the identity the daemon actually
+		// fences with (instanceId ?? threadId). A database created before the
+		// field existed has no such column, and ALTER TABLE has no IF NOT
+		// EXISTS, so check each table's columns first - the nullable column is
+		// the whole migration, no data rewrite, and rows written before the
+		// field existed read as instanceId-undefined, their identity falling
+		// back to the threadId exactly the way the fused identity defines.
+		for (const table of Object.values(TABLES)) {
+			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+			if (!columns.some((column) => column.name === "instance_id")) {
+				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN instance_id TEXT`);
+			}
 		}
 	}
 
@@ -355,6 +373,12 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 					version: source.version,
 					clientMutationId: source.clientMutationId,
 					originClientId: source.originClientId,
+						// The enqueue-time instance rides the outbox ->
+						// optimistic transition like provenance does: dropping it
+						// would leave the accepted record identifying itself by
+						// threadId alone, exactly the pre-instance shape a
+						// replacement that retains the thread id is invisible to.
+						instanceId: source.instanceId,
 					targetRef: source.targetRef,
 					threadId: source.threadId,
 					method: source.method,
@@ -527,6 +551,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			record.originClientId ?? null,
 			record.targetRef,
 			record.threadId ?? null,
+			record.instanceId ?? null,
 			record.method,
 			JSON.stringify(record.payload),
 			JSON.stringify(record.attachments),

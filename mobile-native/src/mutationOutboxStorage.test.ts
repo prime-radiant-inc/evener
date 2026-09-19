@@ -116,6 +116,32 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
 });
 
+// RoboRev PR #1873 Medium, the fresh review: MutationIntent.instanceId - the
+// fused fencing identity the web's identity fix (4059723ab4) added, where
+// every durable row carries its enqueue-time instance and the cleanup fences
+// instanceId ?? threadId - was dropped by the SQLite adapter: no column, no
+// row conversion, no insert value. A reload (the row read back through
+// fromRow) or a state transition lost the identity, so a native row fell
+// back to its threadId even when the enqueue had captured the real instance.
+test("instanceId round-trips through a reload and the recovery handoff", async () => {
+	const record = await storage.enqueueIntent({ ...intent("fenced instance"), instanceId: "instance-at-click" });
+	// The durable row carries the column the reload reads.
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+
+	// A fresh adapter over the same database - what an app restart is - reads
+	// the identity back through the row conversion.
+	openStorage();
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+		instanceId: "instance-at-click",
+	});
+
+	// The recovery handoff spreads the record it read, so the identity rides
+	// the transition instead of falling back to the thread id.
+	const recovery = await storage.transferToRecovery(record.clientMutationId, "rejected", "turn is not active");
+	expect(recovery).toMatchObject({ instanceId: "instance-at-click" });
+	expect(rawRow("mutation_recovery", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+});
+
 test("enqueueIntent persists an absent optimistic display as JSON null so settlement can retire it", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("without an optimistic display"),
@@ -277,6 +303,27 @@ test("settleReceipt moves a pending, input-carrying record into the optimistic t
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted", composer_text: null });
+});
+
+// RoboRev PR #1873 Medium: the accepted optimistic copy is built
+// field-by-field (never a spread, so recovery evidence cannot leak into it),
+// and it dropped the enqueue-time instance. The copy carries it now, the way
+// every other record shape does - the identity survives the outbox ->
+// optimistic transition a pending receipt makes.
+test("settleReceipt's accepted optimistic copy keeps the enqueue-time instance", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("accepted with identity"),
+		instanceId: "instance-at-click",
+		optimisticDisplay: { input: [{ type: "text", text: "accepted with identity" }] },
+	});
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+
+	openStorage();
+	await expect(storage.getOptimistic(record.clientMutationId)).resolves.toMatchObject({
+		state: "accepted",
+		instanceId: "instance-at-click",
+	});
 });
 
 // Oracle: "a pending receipt settles a receipt-only control without creating
@@ -756,4 +803,41 @@ test("a pre-barrier mutation_sequence table migrates in place without losing its
 	expect(
 		database.prepare("SELECT last_sequence, stop_epoch FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
 	).toMatchObject({ last_sequence: 8, stop_epoch: 0 });
+});
+
+// RoboRev PR #1873 Medium, the same additive-migration style as stop_epoch's:
+// the record tables predate the instance_id column (the adapter previously
+// dropped the identity entirely), and ALTER TABLE has no IF NOT EXISTS, so
+// the constructor checks each table's columns and adds the nullable column -
+// the whole migration, no data rewrite. Rows written before the field existed
+// read as instanceId-undefined, so their identity falls back to the
+// threadId - exactly what a model with no instanceId presents.
+test("pre-instanceId record tables migrate in place and their existing rows read as identity-less", async () => {
+	database.exec("DROP TABLE mutation_outbox");
+	database.exec(`CREATE TABLE mutation_outbox (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_outbox (client_mutation_id, version, origin_client_id, target_ref, thread_id, method,
+				payload, attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted)
+			 VALUES ('mutation-pre-instance', 1, NULL, ?, 'thread-1', 'turn/queue', '{}', '[]', 'null', NULL, 1, 1234, 'submitting', 0)`,
+		)
+		.run(TARGET);
+	// The seeded row occupies the ref's sequence 1, so the allocation the
+	// post-migration enqueue makes must continue past it - the same
+	// sequence-survival assertion the pre-barrier migration test makes.
+	database.prepare("INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 1)").run(TARGET);
+
+	openStorage();
+
+	const existing = await storage.getOutbox("mutation-pre-instance");
+	expect(existing?.instanceId).toBeUndefined();
+	expect(rawRow("mutation_outbox", "mutation-pre-instance")).toMatchObject({ instance_id: null });
+
+	const after = await storage.enqueueIntent({ ...intent("after the migration"), instanceId: "instance-new" });
+	expect(after.intentSequence).toBe(2);
+	expect(rawRow("mutation_outbox", after.clientMutationId)).toMatchObject({ instance_id: "instance-new" });
 });
