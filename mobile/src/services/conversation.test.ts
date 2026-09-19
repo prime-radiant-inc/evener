@@ -346,6 +346,29 @@ describe("ConversationService", () => {
   });
 
   describe("loadOlder", () => {
+    // D18 B3 round 3: the older page's own turns (carrying usage) must reach
+    // the caller alongside items, so the store can keep conversation.turns in
+    // sync with the store's own paging cursor.
+    it("returns the older page's wire turns alongside items", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const page: ThreadTurnsListResponse = {
+        data: [
+          {
+            id: "turn-older",
+            itemsView: "fragment",
+            status: "completed",
+            usage: { inputTokens: 60, outputTokens: 40 },
+            items: [],
+          },
+        ],
+        nextCursor: undefined,
+      };
+      client.on("thread/turns/list", () => page);
+      const result = await service.loadOlder("cursor-1");
+      expect(result.turnsPage).toEqual(page);
+    });
+
     it("uses the caller-owned cursor after an ordinary completed projection", async () => {
       const { client, service } = setup({ olderCursor: "head-cursor-57" });
       await service.open("ref-1");
