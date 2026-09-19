@@ -463,6 +463,38 @@ test("getOptimistic and getRecovery read back what settleReceipt and transferToR
 	});
 });
 
+test("listRecovery scopes composite targets and discardRecovery requires the exact target", async () => {
+	const targetA = JSON.stringify(["hub-a", "same-ref"]);
+	const targetB = JSON.stringify(["hub-b", "same-ref"]);
+	const first = await storage.enqueueIntent({
+		...intent("first", targetA),
+		composerText: "first source",
+		attachments: [{ presentationId: "image-a", marker: 3, name: "a.png", mediaType: "image/png" }],
+	});
+	const second = await storage.enqueueIntent(intent("second", targetA));
+	const other = await storage.enqueueIntent(intent("other hub", targetB));
+	await storage.transferToRecovery(first.clientMutationId, "rejected", "refused");
+	await storage.transferToRecovery(second.clientMutationId, "orphaned");
+	await storage.transferToRecovery(other.clientMutationId, "rejected");
+
+	const scoped = await storage.listRecovery(targetA);
+	expect(scoped.map((record) => record.clientMutationId)).toEqual([
+		first.clientMutationId,
+		second.clientMutationId,
+	]);
+	expect(scoped[0]).toMatchObject({
+		composerText: "first source",
+		targetRef: targetA,
+		attachments: [{ presentationId: "image-a", marker: 3 }],
+	});
+	await expect(storage.listRecovery(targetB)).resolves.toEqual([expect.objectContaining({ clientMutationId: other.clientMutationId })]);
+
+	await expect(storage.discardRecovery(first.clientMutationId, targetB)).resolves.toBe(false);
+	await expect(storage.getRecovery(first.clientMutationId)).resolves.toBeDefined();
+	await expect(storage.discardRecovery(first.clientMutationId, targetA)).resolves.toBe(true);
+	await expect(storage.getRecovery(first.clientMutationId)).resolves.toBeUndefined();
+});
+
 test("listOptimistic scopes to a target ref and sorts by intentSequence", async () => {
 	const a = await storage.enqueueIntent({
 		...intent("a"),
