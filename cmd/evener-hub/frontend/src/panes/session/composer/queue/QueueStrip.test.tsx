@@ -178,22 +178,24 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
 // post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
 // still-blocked record - the retry's last storage touch before handleRetry's
 // own reads) arms the barrier, and the second TARGET-scoped listOutbox read
-// CREATED after that arm fires it. The first such read is the retry's own
-// projection refresh (inside retryBlockedPendingTurn), the second is
-// handleRetry's refresh, and handleRetry's decision read follows that refresh
-// directly, so the concurrent commit lands between handleRetry's refresh and
-// its decision read - the window where a settle from another tab is the benign
-// no-op the flow owes, not a "still cannot be checked" error for a row the
-// retry had already made moot.
+// CREATED after that arm fires it, so the concurrent settle commits inside the
+// retry window, ahead of handleRetry's own reads. What the test pins is that a
+// settle landing anywhere in that window is the benign no-op the flow owes -
+// no "still cannot be checked" error for a row the retry had already made moot.
+// It does not and cannot pin the settle BETWEEN handleRetry's refresh and its
+// decision read: fake-indexeddb's cross-connection commit visibility is
+// asynchronous relative to the flow's awaits, so that finer staging would make
+// the green side flaky (verified empirically on PR 1393 - a regressed
+// decide-before-refresh handleRetry passes under this barrier in both staging
+// orders, so no order-specific pin survives in this fixture).
 //
 // Reads are counted at CREATION, not completion. A background refresh whose
 // read was created before the arm (handleReady's notify-driven projection
 // refresh) cannot consume a slot however late its rows land, and global
 // discovery scans carry no target and never count. Persistence reads added or
 // removed anywhere before the retry's own final lookup no longer shift the
-// target at all; the only shape this depends on is handleRetry's own
-// back-to-back refresh-then-decision reads, which is the very behavior the
-// test exists to pin.
+// target at all; the only shape this depends on is the retry flow's own read
+// sequence.
 class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
   #blockedLookups = 0;
   #armed = false;
@@ -555,10 +557,9 @@ describe("durable recovery rows", () => {
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox(ref))[0];
     if (!original) throw new Error("missing seeded blocked mutation");
-    // The other tab reopens the record between handleRetry's projection
-    // refresh and its decision read (the barrier class above arms on the
-    // retry flow's own reads, so persistence-read shifts elsewhere in the flow
-    // cannot misplace the settle - issue #1723).
+    // The other tab reopens the record inside the retry window (the barrier
+    // class above arms on the retry flow's own reads, so persistence-read
+    // shifts elsewhere in the flow cannot misplace the settle - issue #1723).
     storage.settleOnRetryRefresh(async () => {
       await otherTab.restoreProvenAbsent(ref, new Set());
     });
