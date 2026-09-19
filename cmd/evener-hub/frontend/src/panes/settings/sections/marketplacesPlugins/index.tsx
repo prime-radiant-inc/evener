@@ -34,7 +34,7 @@ type SegmentId = "installed" | "browse" | "marketplaces";
 
 type AppliedRemovalGuard = {
   client: AppwireClientLike | null;
-  names: ReadonlySet<string>;
+  names: ReadonlyMap<string, number>;
 };
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
@@ -51,6 +51,7 @@ export function MarketplacesPluginsSection() {
   const plugins = useExtensionsStore((s) => s.plugins);
   const pluginsLoading = useExtensionsStore((s) => s.pluginsLoading);
   const pluginsError = useExtensionsStore((s) => s.pluginsError);
+  const marketplacesPublicationVersion = useExtensionsStore((s) => s.marketplacesPublicationVersion);
   const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
@@ -61,33 +62,34 @@ export function MarketplacesPluginsSection() {
   // it to the client that owns the catalog so a new hub starts unblocked.
   const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<AppliedRemovalGuard>(() => ({
     client: connectionClient,
-    names: new Set(),
+    names: new Map(),
   }));
   const appliedRemovalNames =
-    appliedRemovalGuard.client === connectionClient ? appliedRemovalGuard.names : EMPTY_APPLIED_REMOVALS;
+    appliedRemovalGuard.client === connectionClient
+      ? new Set(appliedRemovalGuard.names.keys())
+      : EMPTY_APPLIED_REMOVALS;
 
   useEffect(() => {
     setAppliedRemovalGuard((current) =>
-      current.client === connectionClient ? current : { client: connectionClient, names: new Set() },
+      current.client === connectionClient ? current : { client: connectionClient, names: new Map() },
     );
   }, [connectionClient]);
 
   useEffect(() => {
-    if (marketplaces === null) return;
-    const currentNames = new Set(marketplaces.map((marketplace) => marketplace.name));
+    if (appliedRemovalGuard.client !== connectionClient) return;
     setAppliedRemovalGuard((current) => {
       if (current.client !== connectionClient) return current;
-      const next = new Set([...current.names].filter((name) => currentNames.has(name)));
+      const next = new Map([...current.names].filter(([, baseline]) => baseline >= marketplacesPublicationVersion));
       return next.size === current.names.size ? current : { client: current.client, names: next };
     });
-  }, [connectionClient, marketplaces]);
+  }, [appliedRemovalGuard.client, connectionClient, marketplacesPublicationVersion]);
 
-  function markAppliedRemoval(name: string, owner: AppwireClientLike | null): void {
+  function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
     setAppliedRemovalGuard((current) => {
       if (current.client !== owner) return current;
-      const names = new Set(current.names);
-      names.add(name);
+      const names = new Map(current.names);
+      names.set(name, publicationVersion);
       return { client: owner, names };
     });
   }
