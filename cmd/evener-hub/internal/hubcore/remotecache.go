@@ -77,6 +77,64 @@ func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 	}
 }
 
+// RemoveSource drops every cached row the snapshot walk attributed to
+// sourceID, and the source's own per-source snapshot with them, so a host
+// removed at runtime cannot keep rendering its last-refreshed sessions as
+// live until the refresher's next tick rewrites the cache (the round-5 M2
+// finding: the source registry no longer resolves the removed ID, so
+// sourceOnline fail-opens and the stale rows read as live). Row ownership
+// follows the same rule StoreSnapshot's source inference uses: the row's
+// Source when it carries one, else its parsed ref. Nothing happens for an
+// empty ID or a source the cache holds no rows for — a no-op prune publishes
+// no generation, mirroring StoreSnapshotData's no-op discipline.
+func (c *RemoteThreadCache) RemoveSource(sourceID string) {
+	if sourceID == "" {
+		return
+	}
+	c.mu.Lock()
+	previous := normalizeRemoteThreadSnapshot(c.snapshot)
+	threads := make([]appwire.Thread, 0, len(previous.Threads))
+	for _, thread := range previous.Threads {
+		if remoteThreadOwnedBySource(thread, sourceID) {
+			continue
+		}
+		threads = append(threads, thread)
+	}
+	_, hadSource := previous.Sources[sourceID]
+	if !hadSource && len(threads) == len(previous.Threads) {
+		c.mu.Unlock()
+		return
+	}
+	delete(previous.Sources, sourceID)
+	snapshot := RemoteThreadSnapshot{
+		Threads:  threads,
+		Complete: previous.Complete,
+		Sources:  previous.Sources,
+	}
+	snapshot.Generation = c.snapshot.Generation + 1
+	c.snapshot = cloneRemoteThreadSnapshot(snapshot)
+	onChange := c.onChange
+	c.mu.Unlock()
+	if onChange != nil {
+		onChange()
+	}
+}
+
+// remoteThreadOwnedBySource reports whether the snapshot walk attributed
+// thread to sourceID — the row's own Source when it carries one, else its
+// parsed ref — exactly the resolution inferRemoteSources uses, so
+// RemoveSource drops the rows a stored snapshot grouped under the ID.
+func remoteThreadOwnedBySource(thread appwire.Thread, sourceID string) bool {
+	if thread.Source != "" {
+		return thread.Source == sourceID
+	}
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil {
+		return false
+	}
+	return ref.SourceID == sourceID
+}
+
 func normalizeRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapshot {
 	if snapshot.Threads == nil {
 		snapshot.Threads = []appwire.Thread{}

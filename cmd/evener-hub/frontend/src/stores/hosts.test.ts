@@ -72,3 +72,35 @@ describe("refresh", () => {
     expect(load.hosts).toEqual([row("post-mutation")]);
   });
 });
+
+describe("fetch", () => {
+  test("a failed background refresh must not strand fetch's fetched list", async () => {
+    // fetch races the background poll (round-5 LOW): fetch issues its list
+    // read and flips the section to the loading skeleton, the poll's own —
+    // newer — request fails, and only then does fetch's earlier response
+    // arrive with the real rows. The generation guard used to compare
+    // against a counter the failed poll had already advanced, so the fetched
+    // list was discarded and the skeleton never cleared. A response may only
+    // be discarded when a newer response actually PUBLISHED: a failed request
+    // publishes nothing and invalidates nothing.
+    const fake = connectFakeClient();
+    let resolveFetch!: (data: HostListResponse) => void;
+    fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolveFetch = resolve)));
+    const fetched = hostsStore.getState().fetch();
+
+    // The background poll's request fails while fetch's is still in flight.
+    fake.on("evener/host/list", () => Promise.reject(new Error("poll failed")));
+    await hostsStore.getState().refresh();
+    expect(hostsStore.getState().load.phase).toBe("loading");
+
+    // fetch's own response lands last, with the older generation: it is the
+    // only response that ever published, so the section must show its rows.
+    resolveFetch({ hosts: [row("m4")] });
+    await fetched;
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([row("m4")]);
+  });
+});

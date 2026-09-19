@@ -494,3 +494,81 @@ func TestHostManageManagerWithoutRegistrySharesTheManagers(t *testing.T) {
 		t.Fatalf("dialed %v, want the added host dialed through the shared registry", dialed)
 	}
 }
+
+// TestHostManageRemovePrunesRemoteThreadCache pins the round-5 M2 finding
+// end to end over the real server construction path: Remove dropped the
+// host's source but left its last-refreshed rows in the RemoteThreadCache,
+// and sourceOnline fail-opens for the now-unregistered source ID — so the
+// removed host's sessions kept rendering live until the refresher's next
+// 30-second tick rewrote the cache. Remove prunes the host's cached rows with
+// the same commit, so the first tree render after it sees nothing.
+func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cfg := hubcore.WebConfig{
+		Past:                 hubcore.NewPastIndex(""),
+		RemoteHostConfigPath: configPath,
+		RemoteThreadCache:    cache,
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// A UI-added host, then the cache the background refresher would have
+	// populated for it: one live session row it owns.
+	var added appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
+
+	// rowsFor counts the removed host's presence in the tree inputs: its
+	// session metas and its live entries.
+	rowsFor := func() (metas, live int) {
+		t.Helper()
+		metasList, liveList, _ := web.navigationTreeInputs(context.Background())
+		for _, meta := range metasList {
+			if meta.ProfileID == "web-side" {
+				metas++
+			}
+		}
+		for _, entry := range liveList {
+			if entry.SourceID == "web-side" {
+				live++
+			}
+		}
+		return metas, live
+	}
+	if metas, live := rowsFor(); metas != 1 || live != 1 {
+		t.Fatalf("tree rows before Remove = %d metas, %d live; want the seeded session rendered live (fixture sanity)", metas, live)
+	}
+
+	var removed appwire.HostRemoveResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, &removed); err != nil {
+		t.Fatalf("evener/host/remove: %v", err)
+	}
+	if !removed.Host.Removed {
+		t.Fatalf("remove response = %+v, want removed", removed.Host)
+	}
+	if metas, live := rowsFor(); metas != 0 || live != 0 {
+		t.Fatalf("tree rows after Remove = %d metas, %d live; want none: the removed host's cached rows must go with the removal", metas, live)
+	}
+	// The cache itself carries no rows for the removed host, so no later
+	// render can resurrect them either.
+	for _, thread := range cache.Snapshot().Threads {
+		if thread.Source == "web-side" {
+			t.Fatalf("cache kept thread %q owned by the removed host", thread.ID)
+		}
+	}
+	if _, ok := cache.Snapshot().Sources["web-side"]; ok {
+		t.Fatal("cache kept a source snapshot for the removed host")
+	}
+}

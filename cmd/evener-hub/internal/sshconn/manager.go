@@ -1013,12 +1013,17 @@ func (m *Manager) DetachHost(name string) error {
 // manager drives: persist first at the caller, then RemoveHost once, and
 // nothing is resurrected.
 //
-// Like DetachHost this never dials, an unknown name (or a nil registry) is a
-// no-op returning nil, and a second call for the same name is a no-op. The
-// Detached pairing and the post-lock reap mirror DetachHost exactly.
+// Like DetachHost this never dials, an unknown name is a no-op returning nil,
+// and a second call for the same name is a no-op. The Detached pairing and
+// the post-lock reap mirror DetachHost exactly. A nil registry is an error
+// rather than a silent no-op — a removal that committed nothing must not
+// report success, mirroring AddHost's loud-refusal posture (the round-5
+// host-registry M3 fix: the hub's Remove over a registry-less manager
+// reported Removed:true while the host stayed in the live registry,
+// mislabeled and unremovable).
 func (m *Manager) RemoveHost(name string) error {
 	if m.reg == nil {
-		return nil
+		return errors.New("sshconn: RemoveHost with no registry")
 	}
 	host, ok := m.reg.Get(name)
 	if ok {

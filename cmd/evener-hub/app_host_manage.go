@@ -53,6 +53,13 @@ type hostManagerConfig struct {
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
+	// remoteCache is the controller's remote-thread snapshot cache. Remove
+	// prunes the removed host's rows from it, so its sessions stop rendering
+	// with the removal instead of lingering live until the refresher's next
+	// tick. Nil (tests, embedders without a cache): every tree read then
+	// walks the live sources per request, and a removed host — no source —
+	// contributes no rows on its own.
+	remoteCache *hubcore.RemoteThreadCache
 	// manager owns every live SSH channel; removal goes through its atomic
 	// RemoveHost so a concurrent attach cannot publish past deregistration.
 	// Nil in tests that only exercise validation.
@@ -358,9 +365,23 @@ func (s *hostAttachState) observe(ev sshconn.Event) {
 	}
 }
 
+// hostFactsValidity records which of an attached row's fact fields the live
+// lookups actually refreshed: the handshake seam owns the server identity
+// pair, the facts seam the hub/os/arch triple. The seams report one success
+// flag per group, so validity is per lookup, not per field — a successful
+// lookup's values are authoritative even when empty.
+type hostFactsValidity struct {
+	handshake bool
+	facts     bool
+}
+
 // recordKnown keeps the facts of the last row that rendered attached, so the
-// host's later offline rows still render them.
-func (s *hostAttachState) recordKnown(row appwire.HostRow) {
+// host's later offline rows still render them. Only the fields whose live
+// lookup succeeded are written: a transient handshake or facts failure on an
+// attached host leaves those fields empty in the row, and recording them would
+// blank the previously retained facts (the round-5 M1 finding) — the offline
+// rows that follow would lose the metadata the wire contract promises.
+func (s *hostAttachState) recordKnown(row appwire.HostRow, validity hostFactsValidity) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec := s.records[row.Name]
@@ -368,12 +389,14 @@ func (s *hostAttachState) recordKnown(row appwire.HostRow) {
 		rec = &hostAttachRecord{}
 		s.records[row.Name] = rec
 	}
-	rec.known = appwire.HostRow{
-		ServerName:    row.ServerName,
-		ServerVersion: row.ServerVersion,
-		HubVersion:    row.HubVersion,
-		OS:            row.OS,
-		Arch:          row.Arch,
+	if validity.handshake {
+		rec.known.ServerName = row.ServerName
+		rec.known.ServerVersion = row.ServerVersion
+	}
+	if validity.facts {
+		rec.known.HubVersion = row.HubVersion
+		rec.known.OS = row.OS
+		rec.known.Arch = row.Arch
 	}
 }
 
@@ -445,6 +468,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		sidecar:          &hostSidecarStore{},
 		sidecarPath:      sidecarPathFor(configPath),
 		sources:          sources,
+		remoteCache:      cfg.RemoteThreadCache,
 		manager:          manager,
 		client:           cfg.RemoteHostClient,
 		online:           cfg.RemoteHostOnline,
@@ -567,7 +591,9 @@ func (m *hubHostManager) hostOnline(host string) bool {
 
 // hostRow renders one host's list row: the effective entry fields plus live
 // state. Attached rows read the live channel's handshake and preflight facts
-// through the attached-only lookups and record them as last-known; offline
+// through the attached-only lookups and record them as last-known; a failed
+// lookup keeps the previously retained fields instead of blanking them, so a
+// transient probe failure cannot cost a later offline row its facts. Offline
 // and in-progress rows render the retained attach state (midAttach,
 // lastAttachError) and last-known facts from the record. It never dials:
 // every seam here is attached-only. ctx is the caller's handler context — the
@@ -588,6 +614,12 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 	// UI then refuses to Connect because it looks already up. No lookup
 	// wired (tests, embedders) leaves the row honestly offline too: nothing
 	// can confirm a channel, so nothing may claim one.
+	//
+	// validity tracks which live lookups refreshed the row's fact fields, so
+	// the retention below keeps the previously known values for the fields
+	// whose lookup failed instead of blanking them with the failed read's
+	// empties.
+	var validity hostFactsValidity
 	if m.hostOnline(host.Name) && m.cfg.clientIfAttached != nil {
 		client, ok := m.cfg.clientIfAttached(host.Name)
 		if ok && client != nil {
@@ -596,6 +628,7 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 				if hs, ok := m.cfg.handshake(host.Name, client); ok {
 					row.ServerName = hs.ServerInfo.Name
 					row.ServerVersion = hs.ServerInfo.Version
+					validity.handshake = true
 				}
 			}
 			if m.cfg.facts != nil {
@@ -603,17 +636,20 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 					row.HubVersion = facts.HubVersion
 					row.OS = facts.OS
 					row.Arch = facts.Arch
+					validity.facts = true
 				}
 				// A facts-read failure keeps the row attached: the dial
 				// the attach already completed is authoritative
 				// (app_host_attach.go's dial-authoritative rule), and a
-				// failed facts read is not a detach.
+				// failed facts read is not a detach. The row's empty fields
+				// are the honest render of the failed read; what the row
+				// retains for its later offline rows is decided by validity.
 			}
 		}
 	}
 	m.cfg.state.apply(&row)
 	if row.Attached {
-		m.cfg.state.recordKnown(row)
+		m.cfg.state.recordKnown(row, validity)
 	}
 	return row
 }
@@ -829,7 +865,9 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 // the save rolls the sidecar forward again to keep the entry (rollbackSidecar),
 // so the durable state never forgets a host the live set still holds. Nothing
 // is resurrected: the entry, its source, its channel, and its retained attach
-// state are all gone by the time a successful Remove returns.
+// state are all gone by the time a successful Remove returns — and so are its
+// cached remote-thread rows, so its sessions stop rendering with the removal
+// instead of lingering live until the refresher's next tick.
 func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostRemoveResponse{}, err
@@ -867,6 +905,17 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	}
 	m.cfg.sidecar.remove(host.Name)
 	m.cfg.state.remove(host.Name)
+	// The remote-thread cache still holds the host's last-refreshed rows,
+	// and the refresher's next tick is up to 30s away; sourceOnline
+	// fail-opens for the now-unregistered source ID, so those rows would
+	// keep rendering the removed host's sessions as live until the tick
+	// rewrote the cache (the round-5 M2 finding). The removal is committed
+	// and the host can serve no future refresh, so the rows go with it. No
+	// configured cache means every tree read walks the live sources, which
+	// no longer list the host — nothing to prune.
+	if m.cfg.remoteCache != nil {
+		m.cfg.remoteCache.RemoveSource(host.Name)
+	}
 	return appwire.HostRemoveResponse{Host: appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,

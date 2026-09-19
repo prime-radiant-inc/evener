@@ -1286,3 +1286,231 @@ func TestHostManageListStatusHoldMutationMutex(t *testing.T) {
 		})
 	}
 }
+
+// TestHostManageTransientProbeFailureKeepsLastKnownFacts pins the round-5 M1
+// finding: an attached row's handshake or facts read can fail transiently
+// while the channel stays up, and the failed read must not overwrite the
+// last-known facts offline rows later render — every attached read used to
+// record all fact fields, so the empty values the failed probes left behind
+// blanked the retained identity. The attached row itself still renders the
+// failed reads honestly (the live channel is an attached row's only facts
+// authority); only the retention is per-lookup.
+func TestHostManageTransientProbeFailureKeepsLastKnownFacts(t *testing.T) {
+	live := &appwire.Client{}
+	var handshakeOK, factsOK bool
+	online := true
+	sources := appsource.NewRegistry()
+	cfg := hubcore.WebConfig{
+		RemoteHostOnline: func(string) bool { return online },
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			if host == "h" && online {
+				return live, true
+			}
+			return nil, false
+		},
+		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
+			if host == "h" && client == live && handshakeOK {
+				return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "evener-hub", Version: "0.1.0"}}, true
+			}
+			return appwire.InitializeResponse{}, false
+		},
+		RemoteHostFacts: func(_ context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
+			if host == "h" && client == live && factsOK {
+				return appsource.HostFacts{HubVersion: "9.9.9", OS: "linux", Arch: "amd64"}, nil
+			}
+			return appsource.HostFacts{}, errors.New("transient probe failure")
+		},
+	}
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "h", SSH: "h.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(sources, nil, cfg, "", hosts, nil)
+	status := func() appwire.HostRow {
+		t.Helper()
+		resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "h"})
+		if err != nil {
+			t.Fatalf("Status = %v", err)
+		}
+		return resp.Host
+	}
+	// Attached with healthy probes: the live facts render and are retained.
+	handshakeOK, factsOK = true, true
+	m.observeEvent(sshconn.Event{Host: "h", Kind: sshconn.EventAttached})
+	row := status()
+	if !row.Attached || row.ServerName != "evener-hub" || row.HubVersion != "9.9.9" {
+		t.Fatalf("attached row = %+v, want the live handshake and facts", row)
+	}
+	// The probes start failing while the channel stays up: the attached row
+	// renders without the failed reads' fields, but the failure is transient,
+	// not a change of identity — it must not blank what the row retains.
+	handshakeOK, factsOK = false, false
+	row = status()
+	if !row.Attached {
+		t.Fatalf("row = %+v, want attached: the dial, not the probe, is authoritative", row)
+	}
+	if row.ServerName != "" || row.ServerVersion != "" || row.HubVersion != "" {
+		t.Fatalf("attached row = %+v, want the failed probes' fields to render empty, not stale", row)
+	}
+	// Offline: the row keeps the last-known facts the healthy read retained —
+	// the transient failure never touched them.
+	online = false
+	m.observeEvent(sshconn.Event{Host: "h", Kind: sshconn.EventDetached})
+	row = status()
+	if row.Attached {
+		t.Fatalf("offline row = %+v, want detached", row)
+	}
+	if row.ServerName != "evener-hub" || row.ServerVersion != "0.1.0" || row.HubVersion != "9.9.9" || row.OS != "linux" || row.Arch != "amd64" {
+		t.Fatalf("offline row = %+v, want the last-known facts the healthy read retained", row)
+	}
+}
+
+// TestHostManageRetainedFactsFollowPerLookupValidity pins the per-lookup half
+// of the round-5 M1 fix: the handshake seam owns the server identity pair and
+// the facts seam the hub/os/arch triple, and only a successful lookup replaces
+// its own fields — a failed one keeps the previously retained pair/triple,
+// and a later success updates only its own. The offline row renders exactly
+// the mix of the last successful lookups, never a transient failure's empties.
+func TestHostManageRetainedFactsFollowPerLookupValidity(t *testing.T) {
+	live := &appwire.Client{}
+	var handshakeOK, factsOK bool
+	var handshakeName, factsVersion string
+	online := true
+	sources := appsource.NewRegistry()
+	cfg := hubcore.WebConfig{
+		RemoteHostOnline: func(string) bool { return online },
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			if host == "h" && online {
+				return live, true
+			}
+			return nil, false
+		},
+		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
+			if host == "h" && client == live && handshakeOK {
+				return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: handshakeName, Version: "0.1.0"}}, true
+			}
+			return appwire.InitializeResponse{}, false
+		},
+		RemoteHostFacts: func(_ context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
+			if host == "h" && client == live && factsOK {
+				return appsource.HostFacts{HubVersion: factsVersion, OS: "linux", Arch: "amd64"}, nil
+			}
+			return appsource.HostFacts{}, errors.New("transient probe failure")
+		},
+	}
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "h", SSH: "h.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(sources, nil, cfg, "", hosts, nil)
+	status := func() appwire.HostRow {
+		t.Helper()
+		resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "h"})
+		if err != nil {
+			t.Fatalf("Status = %v", err)
+		}
+		return resp.Host
+	}
+	// First healthy attach: server identity and facts both retained.
+	handshakeOK, factsOK = true, true
+	handshakeName, factsVersion = "evener-hub", "9.9.9"
+	m.observeEvent(sshconn.Event{Host: "h", Kind: sshconn.EventAttached})
+	if row := status(); !row.Attached || row.ServerName != "evener-hub" || row.HubVersion != "9.9.9" {
+		t.Fatalf("attached row = %+v, want the live handshake and facts", row)
+	}
+	// The handshake fails while a facts read succeeds with a new version: the
+	// attached row renders the new facts without the server identity, and the
+	// retention takes the facts but keeps the previous pair.
+	handshakeOK, factsOK = false, true
+	factsVersion = "8.8.8"
+	if row := status(); !row.Attached || row.ServerName != "" || row.HubVersion != "8.8.8" {
+		t.Fatalf("attached row = %+v, want the facts update to render without the failed handshake's fields", row)
+	}
+	// The reverse: a successful handshake with a new name while the facts
+	// read fails — the row renders the new identity without the facts, and
+	// the retention takes the pair but keeps the previous triple.
+	handshakeOK, factsOK = true, false
+	handshakeName = "renamed-hub"
+	if row := status(); !row.Attached || row.ServerName != "renamed-hub" || row.HubVersion != "" {
+		t.Fatalf("attached row = %+v, want the handshake update to render without the failed facts' fields", row)
+	}
+	// Offline: the retained record is the mix — the latest successful
+	// handshake's pair with the latest successful facts' triple.
+	online = false
+	m.observeEvent(sshconn.Event{Host: "h", Kind: sshconn.EventDetached})
+	row := status()
+	if row.Attached {
+		t.Fatalf("offline row = %+v, want detached", row)
+	}
+	if row.ServerName != "renamed-hub" || row.ServerVersion != "0.1.0" {
+		t.Fatalf("offline row = %+v, want the last successful handshake's pair", row)
+	}
+	if row.HubVersion != "8.8.8" || row.OS != "linux" || row.Arch != "amd64" {
+		t.Fatalf("offline row = %+v, want the last successful facts' triple", row)
+	}
+}
+
+// TestHostManageRemoveRollsSidecarBackWhenLiveTeardownFails pins the round-5
+// M3 fix from the failing side, mirroring
+// TestHostManageAddRollsSidecarBackWhenLiveInsertFails: with a threaded SSH
+// manager that owns no registry — the supported embedder shape
+// hostRegistryFromConfig keeps a fresh copy for — RemoveHost refuses loudly
+// the way AddHost always has, instead of reporting success for a teardown
+// that never happened. Pre-fix, RemoveHost returned nil for a nil registry, so
+// Remove dropped the sidecar row, the source, and the retained state and
+// answered Removed:true while the host stayed in the live registry: listed
+// forever under a mislabeled hub.toml origin, refused by add as a duplicate,
+// and unremovable. Now the failed teardown rolls the sidecar back — round-4's
+// defensive Remove rollback branch, exercised here for the first time — and
+// the host stays fully intact for the operator to retry.
+func TestHostManageRemoveRollsSidecarBackWhenLiveTeardownFails(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A sidecar entry from a previous run: it loads at construction into the
+	// fallback registry, the shape hostRegistryFromConfig builds for a
+	// manager with no registry — Add would refuse over this manager, so the
+	// boot path is the only way the entry gets here.
+	if err := saveHostSidecar(sidecarPathFor(configPath), []hostreg.Host{
+		{Name: "side", SSH: "s.example", KeyPath: "/keys/s"},
+	}); err != nil {
+		t.Fatalf("save sidecar: %v", err)
+	}
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, nil, nil)
+
+	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err == nil {
+		t.Fatal("Remove over a manager with no registry succeeded, want the live-teardown refusal")
+	}
+	// The live set is fully intact: registry entry, sidecar row, source...
+	if _, ok := m.cfg.hosts.Get("side"); !ok {
+		t.Fatal("the refused Remove dropped the registry entry")
+	}
+	if !m.cfg.sidecar.isSidecar("side") {
+		t.Fatal("the refused Remove dropped the sidecar row")
+	}
+	if _, ok := sources.Source("side"); !ok {
+		t.Fatal("the refused Remove dropped the source")
+	}
+	// ...and so is the durable file: the rollback re-persisted the entry, so
+	// a restart does not lose the host the API just reported as still present.
+	entries, err := loadHostSidecar(sidecarPathFor(configPath))
+	if err != nil {
+		t.Fatalf("loadHostSidecar: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "side" || entries[0].KeyPath != "/keys/s" {
+		t.Fatalf("sidecar after the refused Remove = %+v, want the entry rolled back intact", entries)
+	}
+	// The row still serves with its sidecar origin — nothing half-removed.
+	resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the refused Remove = %v, want the host intact", err)
+	}
+	if resp.Host.Origin != hostOriginSidecar || resp.Host.Removed {
+		t.Fatalf("row = %+v, want the sidecar origin and no removed marker", resp.Host)
+	}
+}

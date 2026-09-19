@@ -91,3 +91,49 @@ func TestRemoteThreadCacheSnapshotDefensivelyCopiesSourceAuthority(t *testing.T)
 		t.Fatalf("mutating a returned source snapshot changed cache state: %+v", again.Sources)
 	}
 }
+
+func TestRemoteThreadCacheRemoveSourceDropsOwnedRowsAndPerSourceSnapshot(t *testing.T) {
+	c := &RemoteThreadCache{}
+	var calls atomic.Int32
+	c.SetOnChange(func() { calls.Add(1) })
+	c.StoreSnapshot([]appwire.Thread{
+		{ID: "a1", Source: "host-a"},
+		{ID: "a2", Source: "", Evener: appwire.EvenerThread{Ref: "host-a:a2"}},
+		{ID: "b1", Source: "host-b"},
+	}, true)
+	before := c.Snapshot()
+	if before.Generation != 1 {
+		t.Fatalf("seed generation = %d, want 1", before.Generation)
+	}
+
+	c.RemoveSource("host-a")
+
+	after := c.Snapshot()
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("prune generation = %d, want %d", after.Generation, before.Generation+1)
+	}
+	// Both rows the snapshot walk attributed to host-a go — the one its own
+	// Source names and the one only its parsed ref does — and only those.
+	if len(after.Threads) != 1 || after.Threads[0].ID != "b1" {
+		t.Fatalf("threads after prune = %+v, want only host-b's row", after.Threads)
+	}
+	if _, ok := after.Sources["host-a"]; ok {
+		t.Fatal("prune kept host-a's per-source snapshot")
+	}
+	if _, ok := after.Sources["host-b"]; !ok {
+		t.Fatal("prune dropped host-b's per-source snapshot")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("onChange fired %d times, want the store's and the prune's", calls.Load())
+	}
+
+	// A prune with nothing to drop is a no-op: no generation, no change hook.
+	c.RemoveSource("host-a")
+	c.RemoveSource("")
+	if got := c.Snapshot().Generation; got != after.Generation {
+		t.Fatalf("no-op prune bumped generation to %d, want %d", got, after.Generation)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("onChange fired %d times, want still the store's and the prune's", calls.Load())
+	}
+}

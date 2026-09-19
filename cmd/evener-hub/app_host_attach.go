@@ -53,8 +53,9 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 // registry it was handed (the round-4 M2 finding: sidecar entries would land
 // where the manager never dials, Ensure answering ErrHostNotFound, and a
 // runtime Add would insert where host/list and host/attach never read).
-// A manager with no registry keeps the fresh copy: its AddHost refuses
-// loudly, so an add can never silently diverge.
+// A manager with no registry keeps the fresh copy: its AddHost and RemoveHost
+// both refuse loudly, so neither an add nor a removal can silently diverge
+// from it.
 //
 // Without a manager, config loading already validated the entries (main.go
 // builds the same registry from the same entries), so the error path is the

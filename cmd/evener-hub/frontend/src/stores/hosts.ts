@@ -50,12 +50,19 @@ function errorText(err: unknown): string {
 let refreshInflight: Promise<void> | null = null;
 
 // latestGeneration increments with every list request fetch and refresh issue,
-// so a slow earlier response is silently discarded once a later one has
-// already published (mirrors stores/daemonResidents.ts). fetch is the mutation
-// paths' re-read and refresh is the background poll, and the two are
-// independent requests: without the guard, a background response that lands
-// after an add/remove's re-read would overwrite the newer rows.
+// ordering the responses; latestPublishedGeneration records the newest
+// generation whose response actually published (mirrors stores/
+// daemonResidents.ts, hardened in round 5). fetch is the mutation paths'
+// re-read and refresh is the background poll, and the two are independent
+// requests: without a publish guard, a background response that lands after an
+// add/remove's re-read would overwrite the newer rows. Comparing against the
+// request counter alone was not enough: a refresh that FAILED advanced it too,
+// so fetch's earlier success was discarded and the section stayed on the
+// loading skeleton (round-5 LOW). A response is stale only when a newer
+// response published — a failed request publishes nothing and invalidates
+// nothing.
 let latestGeneration = 0;
+let latestPublishedGeneration = 0;
 
 export const hostsStore = create<HostsStoreState>((set, get) => ({
   load: { phase: "loading" },
@@ -66,14 +73,18 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
     try {
       const res = await requireClient().request("evener/host/list", {});
       if (res.hosts === undefined) throw new Error("evener/host/list returned no hosts");
-      // Discard this response if a newer request has already published.
-      if (generation === latestGeneration) {
+      // Discard this response if a newer one has already published.
+      if (generation > latestPublishedGeneration) {
+        latestPublishedGeneration = generation;
         set({ load: { phase: "ready", hosts: res.hosts } });
       }
     } catch (err) {
-      // The error publish is guarded too: an older fetch's failure must not
-      // blank the rows a newer request already delivered.
-      if (generation === latestGeneration) {
+      // The error publish is guarded the same way and advances the published
+      // marker with it: an older fetch's failure must not blank the rows a
+      // newer response delivered, and a newer error must not be overwritten
+      // by an older response landing after it.
+      if (generation > latestPublishedGeneration) {
+        latestPublishedGeneration = generation;
         set({ load: { phase: "error", message: errorText(err) } });
       }
     }
@@ -94,8 +105,9 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
       try {
         const res = await requireClient().request("evener/host/list", {});
         if (res.hosts === undefined) throw new Error("evener/host/list returned no hosts");
-        // Discard this response if a newer request has already published.
-        if (generation === latestGeneration) {
+        // Discard this response if a newer one has already published.
+        if (generation > latestPublishedGeneration) {
+          latestPublishedGeneration = generation;
           set({ load: { phase: "ready", hosts: res.hosts } });
         }
       } catch {
@@ -140,6 +152,7 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
   resetForTests: () => {
     refreshInflight = null;
     latestGeneration = 0;
+    latestPublishedGeneration = 0;
     set({ load: { phase: "loading" } });
   },
 }));
