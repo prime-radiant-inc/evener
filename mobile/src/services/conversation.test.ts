@@ -403,6 +403,62 @@ describe("ConversationService", () => {
       });
     });
 
+    it("waits for read reconciliation and projection commit before paging", async () => {
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      let reads = 0;
+      let releaseRead!: (value: ThreadReadResponse) => void;
+      const pendingRead = new Promise<ThreadReadResponse>((resolve) => {
+        releaseRead = resolve;
+      });
+      let releaseReconciliation!: () => void;
+      const reconciliation = new Promise<void>((resolve) => {
+        releaseReconciliation = resolve;
+      });
+      let reconciliationStarted = false;
+      client.on("thread/read", () => {
+        reads += 1;
+        return reads === 1
+          ? makeReadResponse(thread, "fresh-cursor")
+          : pendingRead;
+      });
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      const service = createConversationService(client, {
+        onReadComplete: async () => {
+          if (reads === 2) {
+            reconciliationStarted = true;
+            await reconciliation;
+          }
+        },
+      });
+      await service.open("ref-1");
+
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-before-refresh");
+      await Promise.resolve();
+      releaseRead(makeReadResponse(thread, "fresh-cursor"));
+      await vi.waitFor(() => expect(reconciliationStarted).toBe(true));
+      let pageSettled = false;
+      void page.finally(() => {
+        pageSettled = true;
+      });
+      await Promise.resolve();
+      expect(pageSettled).toBe(false);
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+
+      releaseReconciliation();
+      await refresh;
+      await expect(page).resolves.toMatchObject({ items: [] });
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(1);
+    });
+
     it("does not page after the pending read is closed", async () => {
       const { client, service, thread } = setup({ olderCursor: "cursor-a" });
       await service.open("ref-1");
