@@ -95,7 +95,8 @@ func TestAppendSessionObservedByPreservesFieldsAndDeduplicates(t *testing.T) {
 	}
 	want := seeded
 	want.ObservedBy = []string{"observer_existing", "observer_a", "observer_b"}
-	want.Revision = got.Revision // saveSessionMetaLocked bumps the per-save counter
+	// Initial save plus four appends: Revision increments once per save.
+	want.Revision = 5
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("meta after observer appends\n got: %#v\nwant: %#v", got, want)
 	}
@@ -179,7 +180,9 @@ func TestSessionMetaWritesSerializeObserverAppend(t *testing.T) {
 	}
 	want := saved
 	want.ObservedBy = []string{"observer_existing", observer}
-	want.Revision = got.Revision // saveSessionMetaLocked bumps the per-save counter
+	// Seeded save, whole-meta save, then the observer append: Revision increments
+	// once per save.
+	want.Revision = 3
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("serialized meta\n got: %#v\nwant: %#v", got, want)
 	}

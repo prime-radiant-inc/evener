@@ -104,6 +104,61 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow pins that an
+// UpdateMeta carrying older metadata than the indexed row (a concurrent
+// Rebuild/fold advanced it) is rejected rather than overwriting the newer row.
+func fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "newer", UpdatedAt: base, Revision: 5}})
+
+	if changed := idx.UpdateMeta(id, schema.SessionMeta{ID: id, Name: "older", UpdatedAt: base, Revision: 1}); changed {
+		t.Fatal("UpdateMeta of an older revision reported a change")
+	}
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index")
+	}
+	if got.Meta.Name != "newer" {
+		t.Fatalf("stale UpdateMeta clobbered the newer indexed row: Name=%q, want %q", got.Meta.Name, "newer")
+	}
+}
+
+// fuzzScenarioPastIndex_FindDoesNotResurrectSessionRemovedByRebuild pins that a
+// Rebuild completing during Find's probe (its scan did not find the session,
+// because it was deleted after the probe read it) suppresses the fold instead of
+// re-inserting the stale probe.
+func fuzzScenarioPastIndex_FindDoesNotResurrectSessionRemovedByRebuild(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+
+	idx.afterFindProbe = func() {
+		// The session is deleted after the probe read it, and a Rebuild scans
+		// (finding nothing) and swaps in the deletion.
+		if err := os.Remove(sessionMetaPath(proj, id)); err != nil {
+			t.Errorf("remove meta: %v", err)
+		}
+		if _, err := idx.Rebuild(); err != nil {
+			t.Errorf("Rebuild: %v", err)
+		}
+	}
+	defer func() { idx.afterFindProbe = nil }()
+
+	if got, ok := idx.Find(id); ok {
+		t.Fatalf("Find resurrected a session deleted during the probe: %+v", got)
+	}
+	if _, ok := idx.findCached(id); ok {
+		t.Fatal("a deleted session is present in the index")
+	}
+}
+
 // fuzzScenarioPastIndex_LegacyFirstResaveBeatsItsLegacyRow pins the mixed-pair
 // tie: the first timestamp-neutral re-save of a legacy session advances Revision
 // 0 -> 1 without moving either timestamp, so a probe carrying it must replace the

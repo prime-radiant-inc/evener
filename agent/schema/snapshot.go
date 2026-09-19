@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -394,6 +395,9 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		if previous.Revision == math.MaxUint64 {
+			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
+		}
 		meta.Revision = previous.Revision + 1
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

@@ -55,6 +55,11 @@ type PastIndex struct {
 	// write once a newer mutation has superseded it, so an older snapshot can
 	// never clobber a fresher one's mirror or lock the mirror into stale data.
 	gen uint64
+	// rebuildGen is bumped only by Rebuild's swap. Find captures it before
+	// probing so foldOne does not re-insert a probe when a Rebuild completed in
+	// the meantime and did not find the session — the deletion won, and folding
+	// the stale probe would resurrect it.
+	rebuildGen uint64
 
 	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
 	// publish's delta is applied against exactly the snapshot the previous
@@ -216,6 +221,7 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		i.all = all
 		i.byID = byID
 		i.gen++
+		i.rebuildGen++
 		gen := i.gen
 		i.mu.Unlock()
 		// Report skips only for the scan that actually replaced the index; a
@@ -413,6 +419,13 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
 	old, ok := i.byID[id]
 	if !ok {
+		i.mu.Unlock()
+		return false
+	}
+	if metaNewer(old.Meta, meta) {
+		// The indexed row is strictly newer than this update — a concurrent
+		// Rebuild, fold, or refresh advanced it — so keep it rather than let a
+		// stale rename/refresh overwrite newer metadata.
 		i.mu.Unlock()
 		return false
 	}
@@ -1108,12 +1121,25 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
+	i.mu.RLock()
+	probeRebuildGen := i.rebuildGen
+	i.mu.RUnlock()
 	entry, found := i.probeOne(sessionID)
 	if !found {
 		return PastEntry{}, false
 	}
 	if i.afterFindProbe != nil {
 		i.afterFindProbe()
+	}
+	// A Rebuild that completed during the probe may have dropped this session
+	// (deleted from disk after the probe read it and before the scan listed its
+	// project). Folding the stale probe would resurrect it, so report a miss.
+	i.mu.RLock()
+	_, indexed := i.byID[sessionID]
+	rebuildMoved := i.rebuildGen != probeRebuildGen
+	i.mu.RUnlock()
+	if !indexed && rebuildMoved {
+		return PastEntry{}, false
 	}
 	i.foldOne(entry)
 	// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
