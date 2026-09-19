@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -122,10 +123,20 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 // daemon: retirement remains the daemon's own decision, and force-stop
 // authority is unchanged.
 func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) (resumeErr error) {
+	// A retirement-triggered resume shares resumeThread's correlated lifecycle
+	// trace: it opens the trace with the requested identity, brackets the whole
+	// attempt in the request pair so every outcome is recorded, and stamps the
+	// ownership-resolved target below so its records carry the same
+	// session_id/resolved_session_id pair an explicit resume records.
+	sessionID := deletionThreadID(params.Ref, params.ThreadID)
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
+	requestStarted := time.Now()
+	trace.record(ctx, "request", "begin", requestStarted, nil, 0, 0)
+	defer func() { trace.record(ctx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
+
 	if err := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); err != nil {
 		return err
 	}
-	sessionID := deletionThreadID(params.Ref, params.ThreadID)
 	if sessionID == "" || cfg.ResumeLocks == nil || cfg.Roster == nil {
 		return appwire.LifecycleUnavailable("retiring")
 	}
@@ -138,10 +149,16 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	ownerBefore, hadOwnerBefore := liveDaemonForThread(cfg.Roster, sessionID)
 
+	ownershipDone := trace.stage(ctx, "ownership")
 	target, aliases, err := resumeOwnership(cfg, sessionID, sessionID)
+	ownershipDone(err)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
+	// Every outcome after ownership resolution records the resolved identity,
+	// including the live-replacement early returns below: the deferred request
+	// completion captures this trace by reference.
+	ctx, trace = trace.resolved(ctx, target)
 	// A successful retirement recovery is a completed resume, so record where
 	// the alias resolved exactly as resumeThread's defer does after
 	// ExplicitResumeCompleted. This defer covers the normal exit and the three
@@ -165,21 +182,39 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
-	for _, id := range aliases {
-		cfg.ResumeLocks.For(id).Lock()
-	}
+	// This path is context-aware, so it acquires each alias through the context
+	// and releases the prefix it holds if a later alias blocks past
+	// cancellation; an ordinary Lock here would hang behind a long-running
+	// explicit Resume and retain every earlier alias.
+	acquired := 0
+	var heldStarted time.Time
+	lockDone := trace.stage(ctx, "lock_wait")
 	defer func() {
-		for _, id := range slices.Backward(aliases) {
+		for _, id := range slices.Backward(aliases[:acquired]) {
 			cfg.ResumeLocks.For(id).Unlock()
+		}
+		if !heldStarted.IsZero() {
+			trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 		}
 	}()
 	for _, id := range aliases {
-		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			lockDone(err)
 			return err
 		}
+		acquired++
 	}
-	if target != sessionID {
-		if err := deletionFenceError(cfg, "", target, ""); err != nil {
+	lockDone(nil)
+	heldStarted = time.Now()
+	trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
+	// A deletion record may name any alias in the resolved ownership
+	// group, so the whole group is fenced under the locks that make the
+	// check final, before live-owner reuse or replacement below.
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return err
+	}
+	for _, id := range aliases {
+		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
 			return err
 		}
 	}

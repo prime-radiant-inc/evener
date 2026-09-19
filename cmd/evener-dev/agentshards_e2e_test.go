@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -480,6 +481,83 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	}
 }
 
+// TestAgentShardsBoundsTotalShardConcurrency is the issue #1191 regression:
+// each shard is one OS process, and the runner used to start all of them at
+// once. AGENT_SHARD_PARALLEL therefore bounded only the tests within a shard,
+// and a one-CPU cgroup still got one live process per shard.
+//
+// The fixture reports the peak population of live shard binaries and waits for
+// its peers' markers rather than sleeping a fixed time, so the uncapped case
+// reaches both shards' markers and the capped case cannot. A capped run is
+// expected to write timeout markers -- that is the second shard being held back
+// -- while an uncapped run must not, which is what keeps a probe that simply
+// failed to measure from passing as a low-concurrency observation.
+func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		concurrency int
+		wantPeak    int
+		wantTimeout bool
+	}{
+		{"uncapped runs every shard at once", 0, 2, false},
+		{"capped serializes the shards", 1, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.noSurvey = true
+			cfg.concurrency = tc.concurrency
+			liveDir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
+			t.Setenv("SHARD_FIXTURE_LIVE_EXPECT", "2")
+			if rc := runShards(cfg); rc != 0 {
+				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+			}
+			if got := peakLiveShards(t, liveDir); got != tc.wantPeak {
+				t.Fatalf("peak concurrent shard processes = %d, want %d\nstdout:\n%s", got, tc.wantPeak, stdout)
+			}
+			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); (timeouts > 0) != tc.wantTimeout {
+				t.Fatalf("timeout markers = %d, wantTimeout %v; the probe never saw its peers\nstdout:\n%s",
+					timeouts, tc.wantTimeout, stdout)
+			}
+		})
+	}
+}
+
+// globMarkers returns the files matching pattern in dir.
+func globMarkers(t *testing.T, dir, pattern string) []string {
+	t.Helper()
+	markers, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		t.Fatalf("globbing %s: %v", pattern, err)
+	}
+	return markers
+}
+
+// peakLiveShards is the largest population any shard binary observed while it
+// was alive, read from the markers announceLiveShard left behind.
+func peakLiveShards(t *testing.T, dir string) int {
+	t.Helper()
+	seen := globMarkers(t, dir, "seen.*")
+	peak := 0
+	for _, file := range seen {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
+		}
+		if n > peak {
+			peak = n
+		}
+	}
+	if peak == 0 {
+		t.Fatalf("no shard binary reported its liveness; the probe never ran")
+	}
+	return peak
+}
+
 func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	cfg, _, stderr, _ := e2eConfig(t)
 	cfg.agentDir = filepath.Join(t.TempDir(), "no-such-module")
@@ -535,6 +613,8 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		{"AGENT_SHARD_COUNT", "banana"},
 		{"AGENT_SHARD_COUNT", "0"},
 		{"AGENT_SHARD_PARALLEL", "-3"},
+		{"AGENT_SHARD_CONCURRENCY", "banana"},
+		{"AGENT_SHARD_CONCURRENCY", "-1"},
 	} {
 		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot

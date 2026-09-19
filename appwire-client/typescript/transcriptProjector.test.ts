@@ -173,6 +173,18 @@ describe("transcript projector", () => {
     expect(entries[7]).toMatchObject({ kind: "item", isMessage: false });
   });
 
+  test("a warning item's non-string title does not crash the projector", () => {
+    // reducer.ts's own "warning" fold now coerces params.title/hint to
+    // string-or-undefined (foldWarningParams), so a reducer-produced
+    // ItemModel can never carry a non-string title. This guard is defense-
+    // in-depth for an ItemModel built directly (a hand-built fixture, a
+    // migrated legacy record) rather than through that fold.
+    const model = threadWith(item("warning", "warning", { text: "", warning: { title: 42 as unknown as string } }));
+
+    const entries = entriesFor(model, preset("full"));
+    expect(entries).toMatchObject([{ kind: "critical", sourceItemId: "warning" }]);
+  });
+
   test.each(["chat", "intent", "tools", "activity", "full"] as const)(
     "keeps interactions and non-tool failures critical at the %s level",
     (level) => {

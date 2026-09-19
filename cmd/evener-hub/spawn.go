@@ -39,6 +39,7 @@ var (
 	spawnRemoveAll                  = os.RemoveAll
 	listEvenerLaunchModelContractFn = listEvenerLaunchModelContract
 	listRendezvousForWait           = rendezvous.List
+	startResumeChild                = startResumeCommand
 )
 
 // daemonProcessCommand builds the subprocess that runs an `evener serve`
@@ -512,6 +513,53 @@ func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	return resumeDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
 }
 
+// resumeChild is the process-launch boundary. The launcher retains the exact
+// child's kill/wait handles; cancellation never rediscovers a PID to signal.
+type resumeChild struct {
+	pid  int
+	kill func() error
+	wait func() error
+}
+
+func startResumeCommand(cmd *exec.Cmd) (resumeChild, error) {
+	if err := cmd.Start(); err != nil {
+		return resumeChild{}, err
+	}
+	return resumeChild{pid: cmd.Process.Pid, kill: cmd.Process.Kill, wait: cmd.Wait}, nil
+}
+
+// resumeCleanupError is separate from the original launch failure so a Stop
+// waiting on Resume can refuse to claim cleanup while preserving both causes.
+type resumeCleanupError struct{ cause error }
+
+func (e *resumeCleanupError) Error() string {
+	return "resume child cleanup is unconfirmed: " + e.cause.Error()
+}
+func (e *resumeCleanupError) Unwrap() error { return e.cause }
+
+func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.ActiveResume) error {
+	if err := child.kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if active != nil {
+			// The kill handle must outlive the launcher, which is about to
+			// return: retaining it on the active lifetime lets the stop that
+			// drains this Resume retry the kill until the child is confirmed
+			// reaped, instead of stranding a live child no later action can
+			// address behind the retained cleanup error.
+			active.RetainChildCleanup(child.kill)
+		}
+		select {
+		case <-reaped:
+			return nil
+		default:
+			return &resumeCleanupError{cause: err}
+		}
+	}
+	// Only the original waiter reads Wait. Even when rendezvous waiting already
+	// consumed its exit result, this closed channel still proves reaping ended.
+	<-reaped
+	return nil
+}
+
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
 func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
@@ -537,42 +585,88 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	}
 	dlog.attach(cmd)
 	startedAt := time.Now()
-	if err := cmd.Start(); err != nil {
+	if err := ctx.Err(); err != nil {
 		launchDone(err)
 		dlog.close()
 		dlog.removeIfUncommitted()
+		failure := errors.Join(rendezvousWaitError(ctx), err)
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", failure), failure, "")
+	}
+	if req.ActiveResume != nil {
+		if err := req.ActiveResume.BeforeLaunch(); err != nil {
+			launchDone(err)
+			dlog.close()
+			dlog.removeIfUncommitted()
+			return rendezvous.Entry{}, fmt.Errorf("prepare resume ownership: %w", err)
+		}
+	}
+	child, err := startResumeChild(cmd)
+	if err != nil {
+		dlog.close()
+		dlog.removeIfUncommitted()
+		if req.ActiveResume != nil {
+			req.ActiveResume.ChildReaped()
+			if cleanupErr := req.ActiveResume.LaunchFinished(true, nil); cleanupErr != nil {
+				err = errors.Join(err, &resumeCleanupError{cause: cleanupErr})
+			}
+		}
+		launchDone(err)
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
+	reaped := make(chan struct{})
+	activeResume := req.ActiveResume
 	go func() {
-		exited <- cmd.Wait()
+		exited <- child.wait()
+		if activeResume != nil {
+			activeResume.ChildReaped()
+		}
+		close(reaped)
 	}()
+	finishLaunch := func(failed bool, cleanupErr error) error {
+		if req.ActiveResume != nil {
+			if err := req.ActiveResume.LaunchFinished(failed, cleanupErr); err != nil {
+				// LaunchFinished already classifies a retained cleanup
+				// failure; wrap only an unclassified one so the "cleanup is
+				// unconfirmed" text is not duplicated.
+				if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
+					return cleanup
+				}
+				return &resumeCleanupError{cause: err}
+			}
+			return nil
+		}
+		return cleanupErr
+	}
+	if req.CompletionOwned {
+		timeout = 0
+	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
 	waitStarted := time.Now()
-	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, cmd.Process.Pid, 0)
-	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
-	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
+	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, child.pid, 0)
+	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
+	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, child.pid, 0)
 	if err != nil {
-		_ = cmd.Process.Kill()
+		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
+		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
 	if err := dlog.promote(); err != nil {
-		_ = cmd.Process.Kill()
-		promotionErr := fmt.Errorf("promote daemon log: %w", err)
+		promotionErr := errors.Join(fmt.Errorf("promote daemon log: %w", err), finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, cmd.Process.Pid, len(tail))
+		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
+	_ = finishLaunch(false, nil)
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }

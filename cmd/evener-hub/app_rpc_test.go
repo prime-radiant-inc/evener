@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -934,7 +935,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(t.Context(), cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -11848,6 +11849,121 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
+// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
+// from a client that names itself must broadcast an evener/auth/updated
+// carrying that same id, so the originator recognizes its own echo by id
+// instead of treating its own mutation as another client's change and
+// refetching. Every registered instance mutation is covered, each against its
+// own hub so one case's write cannot perturb the next.
+func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params func(origin string) any
+	}{
+		{"create", appwire.MethodEvenerInstanceCreate, func(origin string) any {
+			return appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: origin}
+		}},
+		{"edit", appwire.MethodEvenerInstanceEdit, func(origin string) any {
+			return appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test", OriginClientId: origin}
+		}},
+		{"remove", appwire.MethodEvenerInstanceRemove, func(origin string) any {
+			return appwire.InstanceRemoveParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setDefault", appwire.MethodEvenerInstanceSetDefault, func(origin string) any {
+			return appwire.InstanceSetDefaultParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setModelDisabled", appwire.MethodEvenerInstanceSetModelDisabled, func(origin string) any {
+			return appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-opus-4-6", Disabled: true, OriginClientId: origin}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newAuthOriginTestClient(t)
+
+			var resp appwire.InstanceListResponse
+			if err := client.Request(context.Background(), tc.method, tc.params("tab-a"), &resp); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+
+			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdatedRaw(t, client), "tab-a")
+		})
+	}
+}
+
+// assertInstanceBroadcastShape requires an instance mutation's broadcast to echo
+// wantOrigin and to name no provider or active source. The emptiness is part of
+// the contract, not incidental: the SDK's own-echo correlation keys on the
+// absent provider to tell an instance echo from an auth one, so a stray
+// provider would reroute the notification into its auth fallback.
+func assertInstanceBroadcastShape(t *testing.T, method string, raw json.RawMessage, wantOrigin string) {
+	t.Helper()
+	// Key ABSENCE, not an empty value: a payload carrying `"provider":""` decodes
+	// to the same empty string as an omitted key, but the SDK routes an instance
+	// echo by `provider === undefined`, so an explicit empty provider would send
+	// it looking for a "" marker and read the client's own mutation as foreign.
+	// Only the raw bytes can pin that.
+	if bytes.Contains(raw, []byte("provider")) || bytes.Contains(raw, []byte("activeSource")) {
+		t.Errorf("%s params=%s, want neither the provider nor the activeSource key: an instance broadcast names no auth source",
+			method, raw)
+	}
+	var params appwire.EvenerAuthUpdatedParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("%s: decode params %s: %v", method, raw, err)
+	}
+	if params.OriginClientId != wantOrigin {
+		t.Errorf("%s params=%s: originClientId=%q, want %q", method, raw, params.OriginClientId, wantOrigin)
+	}
+}
+
+// TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId covers the sixth
+// mutation handler, whose success needs a live /models endpoint: its broadcast
+// must echo the caller's id like the other five.
+func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { client.Close() })
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRefreshModels,
+		appwire.InstanceRefreshModelsParams{Name: "gw", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatalf("evener/instance/refreshModels: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "tab-a")
+}
+
+// TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
+// for TestHubRPCInstanceBroadcastEchoesOriginClientId: the identical
+// create with no id must broadcast an empty one, so the id the first test
+// observes is the caller's value rather than one the hub supplies on its own.
+func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "")
+}
+
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
 // of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
 // evener/auth/updated is the right (reused) notification.
@@ -11918,7 +12034,7 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	}
 
 	var resp appwire.InstanceListResponse
-	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
@@ -11946,14 +12062,11 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 		t.Fatal("the rename did not reach providers.toml")
 	}
 
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyEvenerAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
-	}
+	// A rename that persisted before it failed announces as loudly as a clean
+	// one - the error reply is not the only signal every other client's list is
+	// stale - but it names no origin: the caller's mutation errored, so its echo
+	// must not be consumable as that client's own success.
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdatedRaw(t, client), "")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows

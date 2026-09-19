@@ -628,7 +628,7 @@ func registerThreadHandlers(
 				}
 			}
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.ThreadReadResponse{}, err
@@ -809,7 +809,7 @@ func registerThreadHandlers(
 		}
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
-		source, srcErr := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
+		source, srcErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if isTargetDeletedError(srcErr) {
 			return appwire.ThreadTurnsListResponse{}, srcErr
 		}
@@ -855,7 +855,7 @@ func registerThreadHandlers(
 		if ref == "" {
 			return appwire.EvenerSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, "")
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, "")
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
@@ -1237,11 +1237,20 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// Every instance write answers the same way: a write that applied is
 	// announced, whether or not the step after it failed (writeDidApply), and
 	// the error still goes back to the client that asked, which is the only
-	// one that can act on what was left behind.
-	instanceWrite := func(apply func() error) (appwire.InstanceListResponse, error) {
+	// one that can act on what was left behind. Only a CLEANLY applied write
+	// echoes the caller's own originClientId, so that client recognizes its own
+	// change; an applied write that still returned an error broadcasts without
+	// one, because the issuing client cannot treat an errored mutation's echo as
+	// its own success - the broadcast can beat the failing reply, and consuming
+	// the marker then would suppress the invalidation a failed operation owes.
+	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
 		err := apply()
 		if writeDidApply(err) {
-			notifyInstanceUpdated(server)
+			if err != nil {
+				notifyInstanceUpdated(server, "")
+			} else {
+				notifyInstanceUpdated(server, originClientId)
+			}
 		}
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
@@ -1249,10 +1258,10 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		return instancesController.List(), nil
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.Create(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error {
+		return instanceWrite(params.OriginClientId, func() error {
 			// A rename that persisted before it failed is a write that stands,
 			// so it is announced (writeApplied, which instanceWrite broadcasts
 			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
@@ -1266,7 +1275,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error {
+		return instanceWrite(params.OriginClientId, func() error {
 			// A removal whose credential deletion applied before it failed is a
 			// write that stands, so it is announced (writeApplied, which
 			// instanceWrite broadcasts on) and the error goes back carrying
@@ -1280,13 +1289,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.SetDefault(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetDefault(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetModelDisabled(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(func() error { return instancesController.RefreshModels(ctx, params) })
+		return instanceWrite(params.OriginClientId, func() error { return instancesController.RefreshModels(ctx, params) })
 	})
 }
 
@@ -1576,23 +1585,38 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 	case err == nil:
 		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
 	case writeDidApply(err):
-		notifyInstanceUpdated(server)
+		// The no-data form, deliberately WITHOUT the origin. The originating
+		// credential mutation has already retired its own marker on the error,
+		// so it cannot attribute this broadcast anyway - and echoing the origin
+		// would make this provider-less broadcast structurally identical to a
+		// provider-instance echo, letting it consume an instance mutation's
+		// marker and turn that mutation's own echo foreign.
+		notifyInstanceUpdated(server, "")
 	}
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all
 // connected clients after a provider-instance CRUD mutation (create, edit,
-// remove, setDefault). It deliberately reuses the auth/updated channel rather
-// than minting a new notification type: the client-side handler
+// remove, setDefault, setModelDisabled, refreshModels), and it is also the
+// no-data form notifyAuthWrite uses for a credential write that applied but
+// whose status read failed. It deliberately reuses the auth/updated channel
+// rather than minting a new notification type: the client-side handler
 // (notifications.js) already treats evener/auth/updated as payload-agnostic —
 // "credentials or instances changed, refetch" — reloading both the instances
-// panel and the providers settings tab on receipt, regardless of payload
-// content. An empty payload mirrors notifyMarketplaceUpdated/
-// notifyPluginUpdated below, which broadcast the same way for the same
-// reason: there is no single provider/activeSource pair that honestly
-// summarizes "the instance list changed."
-func notifyInstanceUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
+// panel and the providers settings tab on receipt.
+//
+// Provider and activeSource stay empty: there is no single provider/activeSource
+// pair that honestly summarizes "the instance list changed." originClientId is
+// the originating client's own id, echoed back from the mutation that produced
+// this broadcast so that client can recognize its own echo by id instead of
+// refetching as if another client had changed the list; empty when the caller
+// sent none (an older build, the TUI), which leaves the payload exactly as it
+// was before the field existed. The credential no-data form notifyAuthWrite
+// uses passes no origin even when the caller sent one: that caller's own marker
+// was retired by the failure, so the broadcast is unattributable, and carrying
+// an id would make it look like a provider-instance echo to the SDK.
+func notifyInstanceUpdated(server *appserver.Server, originClientId string) {
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{OriginClientId: originClientId})
 }
 
 // notifyLaunchUpdated broadcasts a evener/launch/updated notification to all connected clients.

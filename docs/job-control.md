@@ -1358,8 +1358,10 @@ Rules:
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
-  by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
-  never steers, resumes, or stops the delegate.
+  by `delegate_id`, and it repeats once per further ten-minute window while the
+  delegate stays silent and running. Fresh activity resets the baseline, so a
+  progressing delegate never fires. The watchdog only reports—it never steers,
+  resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
 - The `end_turn=true` warning naming still-running jobs depends on whether the
   session outlives the turn. Where it does, the warning keeps promising each

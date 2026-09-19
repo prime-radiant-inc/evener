@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstanceSheet } from "./InstanceSheet";
@@ -94,6 +95,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
+  // Every instance mutation now stamps originClientId, so the assertions that
+  // pin the exact params need an identity that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
 });
@@ -740,7 +744,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("GOOGLE_VERTEX_BASE_URL"), "https://vx.example.test");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { BASE_URL: "https://vx.example.test" } });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { BASE_URL: "https://vx.example.test" },
+      originClientId: "test-tab",
+    });
   });
 
   test("Save is disabled until a field changes, and while writesRefused", async () => {
@@ -796,7 +804,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
     expect(unavailableStates()).toEqual(actions.map(() => true));
 
     await act(async () => finish({ instances: [FULL], availableProviders: [OPENAI] }));
@@ -898,7 +910,7 @@ describe("the form", () => {
   test("Save sends only the changed fields", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x", originClientId: "test-tab" });
       return { instances: [{ ...WORK, baseUrl: "https://gw.example.test/v1/x" }], availableProviders: [OPENAI] };
     });
     connectionStore.getState().connect(fake);
@@ -922,7 +934,7 @@ describe("the form", () => {
     await user.clear(field("Base URL"));
     expect(screen.getByText("Resets the endpoint to the provider's default.")).toBeTruthy();
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true, originClientId: "test-tab" });
   });
 
   test("choosing inherit from base sends clearProtocol", async () => {
@@ -933,7 +945,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.selectOptions(select("Protocol"), "");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", clearProtocol: true });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", clearProtocol: true, originClientId: "test-tab" });
   });
 
   test("emptying a var sends it empty so the hub deletes it", async () => {
@@ -945,7 +957,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.clear(field("GOOGLE_VERTEX_PROJECT"));
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { GOOGLE_VERTEX_PROJECT: "" } });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "" },
+      originClientId: "test-tab",
+    });
   });
 
   test("a credential header without $ is refused inline, with no RPC", async () => {
@@ -1054,6 +1070,7 @@ describe("the form", () => {
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       expectedEndpointFingerprint: "fp-work",
+      originClientId: "test-tab",
     });
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
     expect(getToasts().some((t) => t.text.includes("changed to a different endpoint"))).toBe(true);
@@ -1077,7 +1094,11 @@ describe("the form", () => {
     await user.type(field("Name"), "2");
     await user.click(saveButton());
 
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
     expect(screen.queryByText(/changed to a different endpoint/)).toBeNull();
     // Not the endpoint-conflict recovery: no listing read was asked for.
@@ -1087,7 +1108,7 @@ describe("the form", () => {
   test("a rename toasts the new name, calls onRenamed, and does not close the sheet", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", newName: "work2" });
+      expect(params).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
       return { instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] };
     });
     connectionStore.getState().connect(fake);
@@ -1301,7 +1322,7 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://original.example/v1");
 
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY", originClientId: "test-tab" });
     await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
     expect(screen.queryByRole("alert")).toBeNull();
     // Reseeded from the instance the save answered with: clean again, showing
@@ -1441,7 +1462,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     dismiss();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -1465,7 +1486,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1490,7 +1511,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1515,7 +1540,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1552,7 +1581,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     await refreshList(fake, [WORK]);
     await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
@@ -1570,7 +1599,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     await refreshList(fake, [{ ...WORK, name: "work2" }]);
     await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
@@ -1606,7 +1635,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
 
     // The persisted name is followed regardless of the listing...
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("work2"));
@@ -1637,6 +1670,7 @@ describe("the form", () => {
       name: "work",
       newName: "work2",
       baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
     });
 
     const renamed = {
@@ -1663,7 +1697,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     await refreshList(fake, [{ ...OTHER, name: "work2" }]);
     await act(async () => finish({ instances: [{ ...OTHER, name: "work2" }], availableProviders: [OPENAI] }));
@@ -1692,6 +1726,7 @@ describe("the form", () => {
       name: "work",
       newName: "work2",
       apiKeyEnv: "PORTKEY_KEY_2",
+      originClientId: "test-tab",
     });
 
     const lookAlike = {
@@ -1716,7 +1751,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     const lookAlike = { ...WORK, name: "work2", auth: "oauth-openai-codex" };
     await refreshList(fake, [lookAlike]);
@@ -1754,6 +1789,7 @@ describe("the form", () => {
       name: "openai",
       newName: "openai-work",
       expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
     });
 
     const renamed = { ...shadow, name: "openai-work", base: "openai" };
@@ -1791,6 +1827,7 @@ describe("the form", () => {
       name: "openai-codex",
       newName: "openai-codex-work",
       expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
     });
 
     // What the hub authors: the entry under the new name, pinning the curated
@@ -1829,6 +1866,7 @@ describe("the form", () => {
       name: "openai-codex",
       newName: "openai-codex-work",
       expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
     });
 
     // Every identity field matches, but the row is implicit - not something a
@@ -1868,6 +1906,7 @@ describe("the form", () => {
       name: "openai",
       newName: "openai-work",
       expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
     });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
@@ -1893,6 +1932,7 @@ describe("the form", () => {
       name: "openai",
       newName: "openai-work",
       expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
     });
 
     const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
@@ -1910,7 +1950,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     await refreshList(fake, [WORK]);
     await act(async () =>

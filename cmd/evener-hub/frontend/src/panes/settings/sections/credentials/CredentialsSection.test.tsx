@@ -425,7 +425,7 @@ describe("the detail sheet", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "personal" });
+      expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
       return { instances: [WORK], availableProviders: [] };
     });
     render(
@@ -1355,7 +1355,7 @@ describe("set default", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setDefault", (params) => {
-      expect(params).toEqual({ name: "personal" });
+      expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
       return { instances: [WORK, { ...PERSONAL, isDefault: true }], availableProviders: [] };
     });
     render(
@@ -1400,7 +1400,7 @@ describe("model live refresh", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/refreshModels", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return {
         instances: [{ ...WORK, models: [...(WORK.models ?? []), { id: "claude-live-new" }] }],
         availableProviders: [],
@@ -1426,7 +1426,7 @@ describe("model live refresh", () => {
     const bare = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
     fake.on("evener/instance/list", () => ({ instances: [bare], availableProviders: [] }));
     fake.on("evener/instance/refreshModels", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return {
         instances: [{ ...bare, models: [{ id: "claude-live-new" }] }],
         availableProviders: [],
@@ -1537,7 +1537,7 @@ describe("model toggles", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setModelDisabled", (params) => {
-      expect(params).toEqual({ name: "work", model: "claude-opus-4-6", disabled: true });
+      expect(params).toEqual({ name: "work", model: "claude-opus-4-6", disabled: true, originClientId: "test-tab" });
       return {
         instances: [
           {
@@ -1908,7 +1908,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "personal" });
+      expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
       return { instances: [WORK], availableProviders: [] };
     });
     render(
@@ -2000,7 +2000,11 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-personal" };
     fake.on("evener/instance/list", () => ({ instances: [WORK, PERSONAL_FP], availableProviders: [] }));
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "personal", expectedEndpointFingerprint: "fp-personal" });
+      expect(params).toEqual({
+        name: "personal",
+        expectedEndpointFingerprint: "fp-personal",
+        originClientId: "test-tab",
+      });
       return { instances: [WORK], availableProviders: [] };
     });
     render(
@@ -2028,7 +2032,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "personal" });
+      expect(params).toEqual({ name: "personal", originClientId: "test-tab" });
       return {
         instances: [
           WORK,
@@ -2069,7 +2073,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return {
         instances: [
           instance({

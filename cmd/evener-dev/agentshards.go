@@ -12,6 +12,7 @@ package dev
 //
 //	AGENT_SHARD_COUNT      number of shards (default 4)
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
+//	AGENT_SHARD_CONCURRENCY  shards running at once (default 0 = all at once)
 //	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
 //	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and to
 //	                       every shard's: a skipped test draws no cost line,
@@ -71,6 +72,7 @@ type shardsConfig struct {
 	agentDir       string
 	count          int
 	parallel       int
+	concurrency    int
 	surveyParallel int
 	skip           string
 	noSurvey       bool
@@ -94,6 +96,15 @@ func runAgentShards(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
 		return 1
 	}
+	// Shards are independent processes; AGENT_SHARD_PARALLEL bounds each one's
+	// tests but not how many run at once. Zero (and unset) means all of them,
+	// the historical behavior; a positive value is the total concurrency the
+	// load-aware gate lowers on a busy host.
+	concurrency, err := envNonNegativeInt("AGENT_SHARD_CONCURRENCY", 0)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		return 1
+	}
 	surveyParallel, err := envPositiveInt("AGENT_SHARD_SURVEY_PARALLEL", defaultSurveyParallel)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
@@ -108,6 +119,7 @@ func runAgentShards(args []string) int {
 		agentDir:       "agent",
 		count:          count,
 		parallel:       parallel,
+		concurrency:    concurrency,
 		surveyParallel: surveyParallel,
 		skip:           os.Getenv("AGENT_SHARD_SKIP"),
 		noSurvey:       envFlag("AGENT_SHARD_NO_SURVEY"),
@@ -162,6 +174,21 @@ func envPositiveInt(name string, def int) (int, error) {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 {
 		return 0, fmt.Errorf("%s must be a positive integer (got %q)", name, raw)
+	}
+	return n, nil
+}
+
+// envNonNegativeInt is envPositiveInt with zero allowed: AGENT_SHARD_CONCURRENCY
+// uses zero for "no limit", so it cannot share the positive-only parse. Unset
+// is def.
+func envNonNegativeInt(name string, def int) (int, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer (got %q)", name, raw)
 	}
 	return n, nil
 }
@@ -386,9 +413,27 @@ func runShards(cfg shardsConfig) int {
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: %d shards, -parallel %d each\n", len(bins), cfg.parallel)
 
-	// Launch every shard, each waited by its own goroutine so its reported
-	// wall time is its OWN clock (the script measured with /usr/bin/time -p
-	// inside each invocation); results are still reported in shard order.
+	// A shard is one OS process, so cfg.parallel bounds only the tests inside
+	// it. limit bounds the processes themselves: on a busy host or a
+	// quota-limited cgroup, running every shard at once is what oversubscribes
+	// the machine, whatever each shard's -parallel says. A concurrency of zero,
+	// or one at least the shard count, starts every shard at once: the
+	// historical behavior and what an idle run still gets.
+	limit := cfg.concurrency
+	if limit < 1 || limit > len(bins) {
+		limit = len(bins)
+	}
+	if limit < len(bins) {
+		_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: at most %d of %d shards run at once\n", limit, len(bins))
+	}
+	slots := make(chan struct{}, limit)
+
+	// Launch shards, at most limit at a time. Slots are acquired before
+	// starting a shard and released by the goroutine that waits for it, so a
+	// long shard holds its slot exactly as long as the process lives. Each
+	// shard is waited by its own goroutine so its reported wall time is its OWN
+	// clock (the script measured with /usr/bin/time -p inside each invocation);
+	// results are still reported in shard order.
 	type shardResult struct {
 		err     error
 		seconds float64
@@ -396,6 +441,14 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
+		slots <- struct{}{}
+		// A signal that arrived while we waited for a slot must not start more
+		// work: the interrupter has already TERMed the live shards, and a shard
+		// started now would outlive the run we are trying to stop.
+		if in.exitCode() != 0 {
+			<-slots
+			break
+		}
 		// The -test.run regex for a large shard can exceed Linux's
 		// MAX_ARG_STRLEN (128KB per single argument string). Write the
 		// regex to a file and hand the path via env so the test binary
@@ -426,6 +479,7 @@ func runShards(cfg shardsConfig) int {
 		err = procgroup.Start(cmd)
 		_ = log.Close()
 		if err != nil {
+			<-slots
 			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: starting shard %d: %v\n", i, err)
 			launchFailed = true
 			break
@@ -435,6 +489,7 @@ func runShards(cfg shardsConfig) int {
 		results[i] = result
 		go func() {
 			err := cmd.Wait()
+			<-slots
 			result <- shardResult{err: err, seconds: time.Since(started).Seconds()}
 		}()
 	}

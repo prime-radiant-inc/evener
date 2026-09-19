@@ -42,13 +42,20 @@ func (m *Manager) loadRegistry() (Registry, error) {
 	return installLoadRegistry(path)
 }
 
+// saveRegistry is the shared boundary every mutation (Install, Upgrade,
+// SetEnabled/SetAutoUpgrade, Remove, and the marketplace rename path's own
+// registry save) writes installed_plugins.json through, so scrubbing here
+// once - installSaveRegistry's own error can name this machine's absolute
+// plugin-store path directly - covers every caller instead of wrapping each
+// one individually.
 func (m *Manager) saveRegistry(reg Registry) error {
 	path, err := m.storePath(registryFileName)
 	if err != nil {
 		return err
 	}
 	if err := installSaveRegistry(path, reg); err != nil {
-		return err
+		_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", registryFileName, err)
+		return fmt.Errorf("saving %s failed; see the hub's log for detail", registryFileName)
 	}
 	m.markStoreChanged(StoreChanged{Plugins: true})
 	return nil

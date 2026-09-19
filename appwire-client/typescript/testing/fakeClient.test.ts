@@ -143,6 +143,42 @@ describe("FakeClient ready handoff", () => {
   });
 });
 
+// AppwireClient.resumeThread forces a reconnect and runs beforeRequest only
+// after it settles, synchronously before the resume RPC (../client.ts) — which
+// is the whole reason a Stop that lands during that reconnect can cancel the
+// resume. A fake that ran the guard synchronously inside its own call let a
+// test stage exactly that Stop and still pass: a green test about an ordering
+// production never has.
+describe("FakeClient resume ordering", () => {
+  test("resumeThread runs beforeRequest after the transport settles, so a cancellation landing first is observed", async () => {
+    const fake = new FakeClient();
+    let canceled = false;
+    const guard = vi.fn(() => {
+      if (canceled) throw new Error("Stop canceled this pending action; send again when ready.");
+    });
+    const resume = fake.resumeThread("ref_a", { beforeRequest: guard });
+    // The window the real client's `await connected` gives its caller: the Stop
+    // that lands here is the one the guard has to see.
+    canceled = true;
+    await expect(resume).rejects.toThrow("Stop canceled this pending action");
+    // A guarded-out resume must not send the RPC - the guard's whole point.
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+  });
+
+  test("resumeThread runs beforeRequest before the resume RPC and after the caller can act", async () => {
+    const fake = new FakeClient();
+    const order: string[] = [];
+    fake.on("thread/resume", () => {
+      order.push("resume RPC");
+      return undefined as never;
+    });
+    const resume = fake.resumeThread("ref_a", { beforeRequest: () => order.push("beforeRequest") });
+    order.push("caller");
+    await resume;
+    expect(order).toEqual(["caller", "beforeRequest", "resume RPC"]);
+  });
+});
+
 // The gate's own contract: it holds each call to `method` until the test
 // settles it, either way, one handle per call. The suites that need to answer
 // or fail a request out of order (storeLifecycle's gatedWrite, launchLayer's

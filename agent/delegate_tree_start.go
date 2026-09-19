@@ -845,6 +845,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	live.productiveActivityAt = startedAt
 	live.quietSequence = 1
 	live.quietNotified = false
+	live.quietNotifiedAt = time.Time{}
 	live.quietClaim = nil
 	c.evidenceVersion++
 	return delegateStartCommit{
@@ -885,6 +886,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	live.recoveryRunnerPending = false
 	live.quietSequence = 0
 	live.quietNotified = false
+	live.quietNotifiedAt = time.Time{}
 	live.quietClaim = nil
 	if c.durable[lease.delegateID].Trigger == delegatestore.TriggerAttention {
 		c.releaseCapacityLocked(delegateDriveCapacity)

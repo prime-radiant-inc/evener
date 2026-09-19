@@ -3,6 +3,8 @@ package plugins
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -47,6 +49,32 @@ func TestSeedDefaultMarketplaces_FirstRunOnly(t *testing.T) {
 	mk, _ = m.ListMarketplaces(context.Background())
 	if _, ok := mk["superpowers-marketplace"]; ok {
 		t.Fatal("removed seed was re-added")
+	}
+}
+
+// SeedDefaultMarketplaces returns m.saveMarketplaces' error directly, so its
+// own atomicWriteFile error - naming this machine's absolute plugin-store
+// path - must already be scrubbed by the time it gets here; SeedDefaultMarketplaces
+// itself has no marketplace name to wrap it with (it seeds several at once).
+func TestSeedDefaultMarketplaces_SaveFailureNamesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	path := m.marketplacesFile()
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.SeedDefaultMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("SeedDefaultMarketplaces = nil, want the failed save reported")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, marketplacesFileName)
 	}
 }
 

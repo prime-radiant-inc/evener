@@ -368,6 +368,62 @@ func TestDaemonActionRefusesStaleRenderedIdentity(t *testing.T) {
 	}
 }
 
+// TestRetireDaemonRefusesDeletedSiblingAlias is the retire-path instance of
+// the ownership-group deletion fence (the e68ec81fa class): retireDaemon locks
+// every ownership alias but validated the deletion fence only for the requested
+// ref and its thread id, so a deletion record naming a sibling alias — here
+// the thread id of a resident whose rendered ref names the session id — was
+// bypassed and safe retire reached the daemon on a deleted group.
+func TestRetireDaemonRefusesDeletedSiblingAlias(t *testing.T) {
+	runDir := t.TempDir()
+	// One resident, two distinct ownership aliases: the rendered ref names the
+	// session id; the sibling thread id carries the deletion record.
+	session, thread := hubtest.SessionID(t), hubtest.SessionID(t)
+	retireCalls := 0
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(_ context.Context, _ appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		retireCalls++
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: *residentLifecycleForTest()}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry := residentEntryForTest(t, 4201)
+	entry.SessionID, entry.ThreadID, entry.WorkspaceRef = session, thread, "local:"+session
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	writeRendezvous(t, runDir, entry)
+	identity := daemonIdentity(entry)
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(filepath.Base(hubtest.ProjectDir(t, t.TempDir(), "deleted")), []hubcore.DeletionTarget{{Ref: "local:" + thread, ThreadID: thread}}); err != nil {
+		t.Fatal(err)
+	}
+	// The roster must keep the fixture resident: a probed, process-alive entry
+	// survives crash-marker GC exactly as in the stale-identity retire test.
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: "idle", Lifecycle: residentLifecycleForTest(), LifecycleFresh: true}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), DeletionStore: store, Roster: roster, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: identity})
+	var wire appwire.WireError
+	if err == nil || !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || !strings.Contains(err.Error(), "target has been deleted") {
+		t.Fatalf("retire of a sibling-deleted daemon = %v, want the target-deleted refusal", err)
+	}
+	if retireCalls != 0 {
+		t.Fatalf("safe retire reached the daemon %d times on a deleted ownership group", retireCalls)
+	}
+}
+
 // TestDaemonResidentInventoryRows pins the discovery half of the feature: one
 // row per exact discovered process identity across archived, aliased,
 // incompatible, stale, unconfirmed, and overlapping claims; dead markers are

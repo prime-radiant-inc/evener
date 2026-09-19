@@ -51,6 +51,11 @@ const (
 	// collision, an expired flow), so clients must match this discriminant, never
 	// the code - otherwise a create collision reads as a moved endpoint.
 	ErrorEndpointConflict ErrorInfo = "endpointConflict"
+	// ErrorTranscriptDisplayPostApply marks a transcript-display patch that
+	// APPLIED (the rename published the new revision) before a follow-up
+	// durable step failed; the error's data carries the applied canonical
+	// state. Same rule as ErrorKeybindingsPostRename, for the other store.
+	ErrorTranscriptDisplayPostApply ErrorInfo = "transcriptDisplayPostApply"
 )
 
 type MutationOutcome string

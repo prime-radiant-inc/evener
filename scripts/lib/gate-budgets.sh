@@ -68,6 +68,14 @@ gate_init_budgets() {
 	AGENT_P=${AGENT_P-$(gate_budget 4 4)}
 	export AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(gate_budget 3 3)}
 	export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
+	# Total shard processes the runner may keep alive at once, independent of
+	# AGENT_SHARD_COUNT (which partitions the tests) and of each shard's
+	# AGENT_SHARD_PARALLEL: the runner otherwise starts every shard at once, so
+	# a one-CPU cgroup still gets one process per shard. gate_budget 8 8 is
+	# min(cores, 8) on an idle machine, so a host with at least 8 CPUs keeps
+	# starting every shard at once (unchanged) while a smaller or busier one
+	# starts fewer.
+	export AGENT_SHARD_CONCURRENCY=${AGENT_SHARD_CONCURRENCY-$(gate_budget 8 8)}
 }
 
 # gate_module_flags MODULE — the -p/-parallel flags run-module-tests.sh hands

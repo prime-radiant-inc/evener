@@ -159,6 +159,7 @@ describe("AddInstanceDialog", () => {
         base: "google-vertex-express",
         baseUrl: "",
         vars: { BASE_URL: "https://example.test/v1" },
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -217,6 +218,7 @@ describe("AddInstanceDialog", () => {
         base: "anthropic",
         baseUrl: "",
         credentialHeader: "Authorization=Bearer $PORTKEY_KEY",
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -232,7 +234,13 @@ describe("AddInstanceDialog", () => {
   test("api-key-env sends the bare variable name", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "", apiKeyEnv: "PORTKEY_KEY" });
+      expect(params).toEqual({
+        name: "work",
+        base: "anthropic",
+        baseUrl: "",
+        apiKeyEnv: "PORTKEY_KEY",
+        originClientId: "test-tab",
+      });
       return { instances: [], availableProviders: [] };
     });
     const user = userEvent.setup();
@@ -252,6 +260,7 @@ describe("AddInstanceDialog", () => {
         base: "google-vertex-anthropic",
         baseUrl: "",
         vars: { GOOGLE_VERTEX_PROJECT: "my-proj" },
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -267,7 +276,7 @@ describe("AddInstanceDialog", () => {
   test("submit calls instanceCreate and, on success, toasts + calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x", originClientId: "test-tab" });
       // The hub's create returns the full updated listing, so the applied
       // response carries the new row (the dialog verifies it).
       return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
@@ -819,6 +828,7 @@ describe("AddInstanceDialog", () => {
         baseUrl: "",
         protocol: "openai-responses",
         surface: "generic",
+        originClientId: "test-tab",
       });
       return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
     });

@@ -23,19 +23,18 @@ function caps(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
 
 // The capability set a real daemon publishes for an IDLE thread, read off
 // server/appwire_runtime.go's appCapabilities with every optional callback
-// wired: `active := processing || appReservedTurnID != ""` is false there, so
-// Steer and Queue are both false; Clear and ForkFromTurn are hardcoded false;
-// Interrupt is gated on the callback alone, not on active.
+// wired: Send is !active; Steer, Interrupt and Queue advertise harness support
+// (#1363, #1375) and do not move with `active`, so an idle live daemon
+// advertises all three; Clear and ForkFromTurn are hardcoded false.
 //
-// caps() above is nobody's snapshot. It reports queue:true for a thread that
-// is not running anything, which no daemon ever sends. It is the right
-// fixture for the tiers that must IGNORE capabilities, and the wrong one for
-// any rule that reads them: a rule proved only against caps() is proved
-// against a state that cannot occur (kata 8c65).
-function daemonIdleCapabilities(): ThreadCapabilities {
+// It is closer to caps() now that the status no longer folds into steer or
+// queue, and the two are still distinct fixtures: caps() is nobody's snapshot,
+// and a rule proved only against it is proved against a state a daemon never
+// sends (kata 8c65). Only Clear and ForkFromTurn differ.
+function daemonIdleCapabilities(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
   return {
     send: true,
-    steer: false,
+    steer: true,
     interrupt: true,
     compact: true,
     clear: false,
@@ -43,10 +42,11 @@ function daemonIdleCapabilities(): ThreadCapabilities {
     shutdown: true,
     changeModel: true,
     changeVisionModel: true,
-    queue: false,
+    queue: true,
     goal: true,
     sharedNotes: true,
     rename: true,
+    ...overrides,
   };
 }
 
@@ -141,15 +141,13 @@ describe("deriveSendQueueAvailability", () => {
   // itself. That is its OWN record of what it did, not a late guess about the
   // daemon's state, so this is not the activeTurnId fold the header rejects.
   //
-  // It has to be its own tier, ABOVE the tier-3 capability veto, because the
-  // capabilities in hand during this window are the IDLE ones and idle
-  // advertises queue:false. Folding it into the active branch instead makes
-  // the veto fire and DISABLES the composer in exactly the window the rule
-  // exists to serve - strictly worse than the bounce, which at least left a
-  // recovery row. An idle queue:false means "nothing to queue behind", not
-  // "this harness has no queue"; the two are indistinguishable from here, so
-  // this tier does not consult it. A harness with no queue at all answers
-  // turn/queue with Unavailable, which the user sees.
+  // It has to be its own tier, ABOVE the tier-3 capability veto, so it answers
+  // what the active branch would answer before the status says the turn is
+  // live. Queue advertises harness support alone (#1375), so the idle
+  // snapshot's true bit still routes to the queue, and a false bit is the
+  // harness saying it has no queue seam - the case where turn/queue could only
+  // answer Unavailable, and where this tier reports the same both-false the
+  // active branch does rather than firing a request that cannot land.
   //
   // The queue lands with no turn id: appwire v3 dropped expectedTurnId from
   // turn/queue outright (appwire/types.go's ProtocolVersion note), so neither
@@ -166,6 +164,52 @@ describe("deriveSendQueueAvailability", () => {
       }),
     ).toEqual({ canSend: false, canQueue: true });
   });
+
+  // The other direction of the same rule: an idle snapshot whose queue bit is
+  // false is the harness saying it has no queue seam (#1375), so there is
+  // nothing this client can do with the message while its own turn runs. It
+  // reports the both-false the active branch would report once the status
+  // catches up, instead of a turn/queue the daemon answers Unavailable.
+  test("tier 6 honors a harness with no queue seam: an idle queue:false snapshot with a pending send is both-false", () => {
+    expect(
+      deriveSendQueueAvailability({
+        statusType: "idle",
+        capabilities: daemonIdleCapabilities({ queue: false }),
+        hasPendingSend: true,
+      }),
+    ).toEqual({ canSend: false, canQueue: false });
+  });
+
+  // The veto is about a LIVE daemon's answer, not about the "idle" spelling:
+  // warning and systemError are live statuses too (appStatus), so a false queue
+  // bit there is the same "no seam" answer and must not fall through to the
+  // queue. A live status table that named only idle/awaiting left these two
+  // firing a turn/queue the daemon can only answer Unavailable.
+  test.each(["awaiting", "warning", "systemError"])(
+    "tier 6: a live %s snapshot with queue:false and a pending send is both-false",
+    (statusType) => {
+      expect(
+        deriveSendQueueAvailability({
+          statusType,
+          capabilities: daemonIdleCapabilities({ queue: false }),
+          hasPendingSend: true,
+        }),
+      ).toEqual({ canSend: false, canQueue: false });
+    },
+  );
+
+  test.each(["awaiting", "warning", "systemError"])(
+    "tier 6: the same live %s snapshot on a queue-capable harness still queues",
+    (statusType) => {
+      expect(
+        deriveSendQueueAvailability({
+          statusType,
+          capabilities: daemonIdleCapabilities(),
+          hasPendingSend: true,
+        }),
+      ).toEqual({ canSend: false, canQueue: true });
+    },
+  );
 
   test("tier 6 leaves tier 5 alone: the same idle capabilities with no pending send are still plain-send", () => {
     expect(

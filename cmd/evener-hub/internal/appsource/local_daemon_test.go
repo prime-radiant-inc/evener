@@ -567,11 +567,12 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
-func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
 		}
 	}, nil)
 
@@ -579,18 +580,28 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 2 {
-		t.Fatalf("threads len=%d, want 2: %+v", len(resp.Data), resp.Data)
+	if len(resp.Data) != 3 {
+		t.Fatalf("threads len=%d, want 3: %+v", len(resp.Data), resp.Data)
 	}
 	capsByID := map[string]appwire.ThreadCapabilities{}
 	for _, thread := range resp.Data {
 		capsByID[thread.ID] = thread.Evener.Capabilities
 	}
-	if capsByID["th_idle"].Queue {
-		t.Fatalf("idle thread advertised queue capability: %+v", capsByID["th_idle"])
+	// Queue is harness support, not "a turn in flight" (#1375): every open
+	// entry advertises it, and the client applies the status. A status-folded
+	// projection here made ListThreads disagree with ThreadRead for one session.
+	for _, id := range []string{"th_idle", "th_processing"} {
+		if !capsByID[id].Queue {
+			t.Fatalf("%s did not advertise the queue capability: %+v", id, capsByID[id])
+		}
 	}
-	if !capsByID["th_processing"].Queue {
-		t.Fatalf("processing thread did not advertise queue capability: %+v", capsByID["th_processing"])
+	// A closed entry is the exception: the daemon withholds steer, interrupt
+	// and queue support once closed (appCapabilitiesLocked's `!closed`), so the
+	// roster must too, or the same session reads differently from ListThreads
+	// and from ThreadRead.
+	closed := capsByID["th_closed"]
+	if closed.Queue || closed.Steer || closed.Interrupt {
+		t.Fatalf("closed entry advertised turn actions: %+v", closed)
 	}
 }
 

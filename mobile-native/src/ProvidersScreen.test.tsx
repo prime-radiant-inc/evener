@@ -16,7 +16,6 @@ import {
 	type InstanceListResponse,
 } from "@evener/appwire-client";
 import { ProviderEditor } from "./ProviderEditor";
-import type { ProviderInstances } from "./providerInstances";
 import { ProvidersScreen } from "./ProvidersScreen";
 import {
 	alertRequests,
@@ -307,12 +306,12 @@ it("keeps the create form for a name-collision conflict", async () => {
 	const create = vi.fn(async () => {
 		throw collision;
 	});
-	const model = { create, edit: vi.fn() } as unknown as ProviderInstances;
 	const onEndpointConflict = vi.fn();
 	const tree = render(
 		<ProviderEditor
 			providers={[{ id: "anthropic", name: "Anthropic" } as ProviderDescriptor]}
-			model={model}
+			onCreate={create}
+			onEdit={vi.fn(async () => true)}
 			disabled={false}
 			onSaved={() => {}}
 			onEndpointConflict={onEndpointConflict}
