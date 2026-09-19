@@ -83,7 +83,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			_, _ = sourceForThread(appsource.NewRegistry(), "", "")
 			_, _ = sourceForThread(registry, "remote:thread", "")
 			_, _ = sourceForThread(registry, "bad ref", "")
-			_, _ = sourceForThreadWithDeletionFence(cfg, registry, "remote:thread", "thread")
+			_, _ = sourceForThreadWithDeletionFence(context.Background(), cfg, registry, "remote:thread", "thread")
 			_ = hubKnowsRef(cfg, "remote:thread")
 			_ = relayOnThreadRead(&noReadRelaySource{remote})
 
