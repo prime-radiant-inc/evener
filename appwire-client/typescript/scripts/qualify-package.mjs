@@ -53,6 +53,13 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+const history = client.mergeTurnHistory(
+  [{ id: "old", status: "completed", items: [] }],
+  [{ id: "fresh", status: "completed", items: [] }],
+);
+assert.deepEqual(history.turns.map((turn) => turn.id), ["old", "fresh"]);
+assert.equal(history.olderCoverage, true);
+assert.equal(history.transcriptOverlap, false);
 const askItem = {
   id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
   argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
