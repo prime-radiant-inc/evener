@@ -101,20 +101,17 @@ func TestPendingAskQuestions_SteeringDoesNotResolve(t *testing.T) {
 	}
 }
 
-// An interrupted-salvage explanation is daemon-authored context, not the
-// admitted interrupt boundary. The TUI keeps that content visible while its
-// pending-ask projector leaves the question open.
-func TestPendingAskQuestions_InterruptedSalvageKeepsContentAndDoesNotResolve(t *testing.T) {
+// ChatMessage does not retain the steering kind, so pending-ask behavior for
+// steering messages is covered by TestPendingAskQuestions_SteeringDoesNotResolve.
+// This test keeps the separate rendering contract load-bearing: salvage text
+// remains visible in the TUI transcript.
+func TestInterruptedSalvageRenderKeepsContent(t *testing.T) {
 	const salvage = "salvaged fragment before interruption"
-	messages := []transcript.ChatMessage{
-		askUserToolMsg("call_1", oneQuestionArgsJSON, true, ""),
-		{Kind: transcript.MsgSteering, Text: salvage},
+	message := transcript.ChatMessage{
+		Kind: transcript.MsgSteering,
+		Text: salvage,
 	}
-	got := pendingAskQuestions(messages)
-	if len(got) != 1 {
-		t.Fatalf("pending after interrupted salvage = %#v, want still-pending", got)
-	}
-	if rendered := msgrender.RenderMessage(messages[1], 100, false); !strings.Contains(rendered, salvage) {
+	if rendered := msgrender.RenderMessage(message, 100, false); !strings.Contains(rendered, salvage) {
 		t.Fatalf("interrupted salvage render = %q, want retained content %q", rendered, salvage)
 	}
 }
