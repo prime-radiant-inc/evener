@@ -4119,6 +4119,60 @@ func TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore(t *testing.T
 	}
 }
 
+// TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore covers the
+// explicit MaxToolRoundsPerInput terminal boundary: a human-note carrier
+// preserves the pending ask, but the tool-round exhaustion branch must leave
+// the live session awaiting just as restore does for the same transcript.
+func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:              dir,
+		MaxToolRoundsPerInput: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-tool-round-budget", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	_, ran, err := sess.ProcessPendingUserInput(ctx, nil)
+	if !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want tool-round budget exhaustion after the carrier ran", ran, err)
+	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after tool-round exhaustion = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after tool-round exhaustion = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+}
+
 // TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry
 // covers a RoboRev #1907 round-2 Medium: roundEntryResolvesAskBoundary's
 // backward walk only skips TurnAssistant/TurnToolResults on its way to the

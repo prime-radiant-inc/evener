@@ -2290,7 +2290,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
 	}
