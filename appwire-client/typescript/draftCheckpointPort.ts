@@ -36,22 +36,74 @@ export interface DraftPort<Checkpoint> {
   replaceIf(expected: unknown, next: Checkpoint): boolean;
 }
 
+/** A canonical string encoding of `value` with every object's keys sorted
+ * recursively, so two structurally equal values compare equal regardless of
+ * key order - a byte-for-byte JSON.stringify compare only tolerates
+ * whitespace, not key order, which is not what "canonicalize" promises.
+ * Shared by every port's identity compare (a byte-aware port's own
+ * replaceIf/removeIf, and the in-memory test doubles that stand in for one)
+ * so a same-fields-different-key-order record behaves identically in tests
+ * and in production. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /** What the port held is not a checkpoint this build can read. Distinct from
  * a port that could not be reached: the record is the problem, so the section
  * can still load the hub and can still throw the record away. */
 export class UnreadableDraftError extends Error {}
+
+/** discardStoredDraft's own outcome: "removed" when the record was actually
+ * deleted, "absent" when there was nothing stored to discard, and "refused"
+ * when the record present now is not the one just read - either because it
+ * now decodes as valid, or because a concurrent writer replaced it with a
+ * DIFFERENT record (readable or not) before the removal landed. A caller
+ * with no live repository has no memory of the identity it showed the user
+ * earlier - only what `load()` returns right now - so "refused" is what
+ * keeps a newer record, readable or not, from being deleted, or reported
+ * gone, as if it were the stale one the user was shown. */
+export type DiscardStoredDraftResult = "removed" | "absent" | "refused";
 
 /** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
  * raw value goes straight back to the port, which matches its own bytes, so a
  * record no build can decode is still the record removed. A host whose store is
  * gone (no connection, so no client to build one from) needs this to clear an
  * unreadable record; a host with a live store uses discardDraft, which also
- * publishes the state. One implementation either way. Reports whether
- * anything was actually removed. */
-export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): boolean {
-  const value = storage.load();
-  if (value === null || value === undefined) return false;
-  return storage.removeIf(value);
+ * publishes the state. One implementation either way. `isReadable`, when
+ * given, refuses rather than removing a record that decodes fine now (see
+ * DiscardStoredDraftResult); a caller with no decoder of its own gets the
+ * original always-remove behavior. Every port method may throw a genuine
+ * storage failure (see DraftPort's own docs) - degrading to
+ * "storageUnavailable" is what lets a store-free caller (no repository, no
+ * live store to publish the failure to) treat this the same as
+ * readDraftOutcome's own load() call, rather than escape its event handler
+ * uncaught. */
+export function discardStoredDraft<Checkpoint>(
+  storage: DraftPort<Checkpoint>,
+  isReadable: (value: unknown) => boolean = () => false,
+): DiscardStoredDraftResult | "storageUnavailable" {
+  try {
+    const value = storage.load();
+    if (value === null || value === undefined) return "absent";
+    if (isReadable(value)) return "refused";
+    if (storage.removeIf(value)) return "removed";
+    // The compare-and-swap failed: a concurrent writer replaced the record
+    // between the load() above and this call. Re-read to tell "gone" from
+    // "still there, but not the bytes just named" - the latter must not be
+    // reported the same as nothing to discard.
+    const current = storage.load();
+    return current === null || current === undefined ? "absent" : "refused";
+  } catch {
+    return "storageUnavailable";
+  }
 }
 
 export interface DraftRepository<Checkpoint> {

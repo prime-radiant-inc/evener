@@ -56,7 +56,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable", TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable)
 	t.Run("TestServerAppWireInitializeAdvertisesTurnList", TestServerAppWireInitializeAdvertisesTurnList)
 	t.Run("TestServerAppWireModelList", TestServerAppWireModelList)
-	t.Run("TestServerAppWireQueueCapabilityFlipsWithProcessing", TestServerAppWireQueueCapabilityFlipsWithProcessing)
+	t.Run("TestServerAppWireQueueCapabilityAdvertisesHarnessSupport", TestServerAppWireQueueCapabilityAdvertisesHarnessSupport)
 	t.Run("TestServerAppWireTasksList", TestServerAppWireTasksList)
 	t.Run("TestServerAppWireThreadList", TestServerAppWireThreadList)
 	t.Run("TestServerAppWireThreadModelSetQualifiesProvider", TestServerAppWireThreadModelSetQualifiesProvider)

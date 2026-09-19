@@ -28,7 +28,13 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
+import {
+  createDraftRepository,
+  type DiscardStoredDraftResult,
+  type DraftPort,
+  discardStoredDraft,
+  UnreadableDraftError,
+} from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -136,6 +142,11 @@ export interface KeybindingsStoreFields {
   /** The draft port threw; edits stay blocked until refreshOverrides can
    * restore the checkpoint again. */
   storageUnavailable: boolean;
+  /** The port answered but what it held could not be read. The RECORD is the
+   * problem, not the port: the section still loads, and discarding is
+   * allowed and is what clears it. A host must offer that discard, or the
+   * section is locked with no way out. */
+  draftUnreadable: boolean;
   /** The draft's base revision is not the confirmed revision (the hub moved
    * under it, or a write's outcome is unknown): saveDraft refuses until
    * rebaseDraft reviews the current rules. */
@@ -236,6 +247,7 @@ function initialState(): KeybindingsStoreFields {
     saving: false,
     writeUncertain: false,
     storageUnavailable: false,
+    draftUnreadable: false,
     draftConflict: false,
     draftError: null,
   };
@@ -371,6 +383,33 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
   } catch {
     invalidDraft();
   }
+}
+
+/** Whether `value` decodes as a valid keybindings draft checkpoint - the
+ * check a store-free discard (no live repository to hold identity) runs
+ * before removing a record shown as unreadable, so it refuses instead of
+ * deleting one a concurrent writer has since replaced with something this
+ * build can actually read (see draftCheckpointPort's discardStoredDraft). */
+export function isReadableKeybindingDraft(value: unknown): boolean {
+  try {
+    draftCheckpoint(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** discardStoredDraft, defaulting `isReadable` to isReadableKeybindingDraft:
+ * the generic function's own default (a caller with no decoder at all gets
+ * the original always-remove behavior) is the wrong default for a
+ * keybinding-named export, since a caller that forgets to pass its own
+ * decoder would silently delete a record this build can actually read
+ * instead of refusing. */
+export function discardStoredKeybindingDraft(
+  storage: DraftPort<KeybindingDraftCheckpoint>,
+  isReadable: (value: unknown) => boolean = isReadableKeybindingDraft,
+): DiscardStoredDraftResult | "storageUnavailable" {
+  return discardStoredDraft(storage, isReadable);
 }
 
 /** Extracts a payload the hub attached to a rejection under `key` when the
@@ -649,11 +688,32 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         draft,
         writeUncertain: checkpoint?.writeUncertain ?? false,
         storageUnavailable: false,
+        draftUnreadable: false,
         draftError: null,
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
       };
-    } catch {
-      return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
+    } catch (error) {
+      // An UnreadableDraftError names the RECORD as the problem, not the
+      // port: whatever draft/writeUncertain/draftConflict described before
+      // this call described a record that no longer exists to describe, so
+      // they clear too - otherwise a write left uncertain by an earlier
+      // attempt would stay that way forever, and assertDiscardable's
+      // unconditional writeUncertain check would refuse the one recovery
+      // (discard) an unreadable record is supposed to allow. A genuine port
+      // failure (the read itself failed, not what it read) says nothing
+      // about whether the in-memory state is still accurate, so it is left
+      // alone.
+      const unreadable = error instanceof UnreadableDraftError;
+      return {
+        storageUnavailable: true,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+        // Only an unreadable RECORD says anything about draftUnreadable - a
+        // genuine port failure (this branch otherwise) says nothing about
+        // whether an earlier unreadable classification still holds, so it
+        // is omitted rather than reset to false, which would silently hide
+        // the one recovery (discard) an unreadable record allows.
+        ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
+      };
     }
   }
 
@@ -943,10 +1003,21 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * draft editor: an uncertain write's outcome is now whatever the hub
    * confirmed, so the checkpoint is re-marked and edits unblock. A read that
    * started before the write left, or landed while one is in flight, says
-   * nothing about that write and settles nothing. */
-  function settledWrite(payload: KeybindingsOverrides, writeSerialAtStart: number): Partial<KeybindingsStoreFields> {
+   * nothing about that write and settles nothing. `savingAtReadStart` covers
+   * the case the CURRENT `saving`/write-token check misses: a write already
+   * in flight when this read began can fail (clearing `saving`, leaving
+   * writeUncertain) before this read's reply lands, with no NEWER write ever
+   * claiming a token - `fence.writeToken` never moves, so by reply time
+   * `saving` already reads false and the token still matches. A read whose
+   * own snapshot predates that write's outcome must not settle it. */
+  function settledWrite(
+    payload: KeybindingsOverrides,
+    writeSerialAtStart: number,
+    savingAtReadStart: boolean,
+  ): Partial<KeybindingsStoreFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving) return {};
+    if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving || savingAtReadStart)
+      return {};
     if (draft !== null && writeUncertain) {
       let replaced: boolean;
       try {
@@ -974,6 +1045,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (!fence.liveHub(generation)) return;
     const serial = fence.claimRead();
     const writeSerialAtStart = fence.writeToken;
+    const savingAtReadStart = getState().saving;
     // Finding 23: a refresh rejecting after support was lost would otherwise
     // overwrite the support-drop cleanup with a stale "could not load"
     // hubError while the section claims the built-in defaults are in effect.
@@ -987,7 +1059,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // hubLoading clears in the same publish whether the payload applies or
       // is ignored (`extra`); settledWrite's checkpoint reclassification
       // (`settle`) runs only once the reconcile has actually succeeded.
-      applyHubOverrides(payload, { hubLoading: false }, () => settledWrite(payload, writeSerialAtStart));
+      applyHubOverrides(payload, { hubLoading: false }, () =>
+        settledWrite(payload, writeSerialAtStart, savingAtReadStart),
+      );
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
@@ -1004,12 +1078,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   async function refreshOverrides(): Promise<void> {
-    // A draft port that failed gets one more restore attempt per refresh; the
-    // hub read waits until the local proposal is in hand again, so an edit
-    // cannot compose against a confirmed payload with the draft unknown.
+    // A draft port that failed gets one more restore attempt per refresh. The
+    // hub read waits only on a port that could not be READ FROM, so an edit
+    // cannot compose against a confirmed payload with the draft unknown. An
+    // unreadable RECORD is not that: the draft is simply absent, and holding
+    // the section's shortcuts hostage to it would lock a user out of settings
+    // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable) return;
+      if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -1202,6 +1279,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     )
       throw new Error(UNAVAILABLE_MESSAGE);
     return { revision: state.revision, rules: state.rawOverrides };
+  }
+
+  /** discardDraft's own gate, narrower than assertEditable: discarding needs
+   * no confirmed hub state to compose against, so hubSupport/loaded/
+   * loadError never block it. An unreadable record is the one storage
+   * failure discarding can FIX, so it is not a reason to refuse either -
+   * throwing the record away is exactly what the user is asking for. */
+  function assertDiscardable(): void {
+    const state = getState();
+    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
+      throw new Error(UNAVAILABLE_MESSAGE);
   }
 
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
@@ -1427,7 +1515,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function discardDraft(): void {
-    assertEditable();
+    assertDiscardable();
     let removed: boolean;
     try {
       removed = drafts.discardClassified();
@@ -1443,7 +1531,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState(restoreDraft(getState()));
       return;
     }
-    setState({ draft: null, draftConflict: false, draftError: null });
+    setState({
+      draft: null,
+      draftConflict: false,
+      draftError: null,
+      storageUnavailable: false,
+      draftUnreadable: false,
+    });
   }
 
   function rebaseDraft(reviewedRevision: number): void {

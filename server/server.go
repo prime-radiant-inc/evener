@@ -400,7 +400,6 @@ type Server struct {
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
 	retrySafeTurns               RetrySafeTurnFunctions
 	cancelFunc                   context.CancelFunc
-	interruptWired               bool
 	steerFunc                    func(string) error
 	steerWithImagesFunc          func(string, []ImageAttachment) error
 	queueFunc                    func(string) error
@@ -468,6 +467,11 @@ type Server struct {
 
 // SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
 // callbacks for the seven v2 turn methods.
+//
+// These are what appCapabilities reads: an Interrupt callback here is what
+// makes the daemon advertise Stop, and Steer/Queue likewise gate their bits, so
+// a harness is only advertised for the mutations its handlers will actually
+// dispatch.
 func (s *Server) SetRetrySafeTurnFunctions(functions RetrySafeTurnFunctions) {
 	s.mu.Lock()
 	s.retrySafeTurns = functions
@@ -612,17 +616,15 @@ func (s *Server) IncrementTurns() {
 // The session loop arms it per turn and clears it between turns, so it answers
 // "is a cancel armed right now" and nothing more durable than that.
 //
-// interruptWired is the durable half: whether this harness does interrupts at
-// all. It latches on the first armed cancel and never clears, because a daemon
-// that stopped one turn can stop the next one. appCapabilities needs that
-// distinction -- reading the per-turn field there published "a turn is running
-// and cannot be stopped" in the gaps between arming and publishing (kata 5gdv).
+// It is deliberately not what appCapabilities reads for Interrupt: that bit
+// follows the retry-safe handler the RPC dispatches through
+// (SetRetrySafeTurnFunctions), because a harness wired only with a cancel
+// would answer turn/interrupt with Unavailable. Reading this per-turn field
+// for the capability also published "a turn is running and cannot be stopped"
+// in the gaps between arming and publishing (kata 5gdv).
 func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.cancelFunc = cancel
-	if cancel != nil {
-		s.interruptWired = true
-	}
 	s.mu.Unlock()
 }
 

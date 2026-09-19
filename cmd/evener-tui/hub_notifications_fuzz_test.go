@@ -35,6 +35,9 @@ var notifyMethods = []string{
 	appwire.NotifyThreadModelChanged,
 	appwire.NotifyThreadReasoningEffortChanged,
 	appwire.NotifyThreadVisionModelChanged,
+	// The session's display name (user rename, auto-namer, compaction refresh)
+	// now folds onto the cached detail and the terminal title.
+	appwire.NotifyThreadNameChanged,
 	// Shared-notes pushes land on the cached session detail so the details
 	// drawer re-renders (Task 8): real dispatch cases, not ignores.
 	appwire.NotifyEvenerNotesUpdated,

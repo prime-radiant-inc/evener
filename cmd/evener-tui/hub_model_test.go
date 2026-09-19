@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1298,9 +1299,8 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 
 	m.session.setInputValue("/dashboard")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/dashboard should not need an async command")
-	}
+	// Leaving the session also clears the terminal title; no async work.
+	requireOnlyWindowTitle(t, cmd, "")
 	got := updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/dashboard mode=%v", got.mode)
@@ -1309,9 +1309,9 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	got.mode = hubModeSession
 	got.session.setInputValue("/project")
 	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/project should not need an async command")
-	}
+	// Navigating to the project dashboard also clears the terminal title; no
+	// async work.
+	requireOnlyWindowTitle(t, cmd, "")
 	got = updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/project mode=%v, want dashboard", got.mode)
@@ -2103,9 +2103,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 
 	updated, cmd = model.Update(cmd())
-	if cmd != nil {
-		t.Fatal("session detail returned unexpected command")
-	}
+	// Entering the session now also titles the terminal; anything else would be
+	// an unexpected follow-up command.
+	requireOnlyWindowTitle(t, cmd, "spawned session")
 	model = updated.(hubModel)
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
 		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
@@ -2565,12 +2565,14 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 			thread := appwireThread(hubTreeNode{
 				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
 			}, "/tmp/evener")
-			// The hub's idle set: send on, queue off, and steer on, because the
-			// hub advertises steer as harness support rather than "a turn is
-			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363).
+			// The hub's idle set: send on, and steer/interrupt/queue on because
+			// the hub advertises them as harness support rather than "a turn is
+			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363,
+			// #1375).
 			thread.Evener.Capabilities.Send = true
-			thread.Evener.Capabilities.Queue = false
+			thread.Evener.Capabilities.Queue = true
 			thread.Evener.Capabilities.Steer = true
+			thread.Evener.Capabilities.Interrupt = true
 			return appwire.ThreadReadResponse{Thread: thread}, nil
 		})
 	})
@@ -2606,16 +2608,34 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if !strings.Contains(view, "send: ready") {
 		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
 	}
-	// Steer stays advertised at idle; with nothing queued there is nothing to
-	// drain, so no ctrl+s hint and the binding is a silent no-op.
+	// Steer, Interrupt and Queue stay advertised at idle -- they are harness
+	// support -- while the TUI applies the status: no turn is running, so the
+	// controls withdraw stop and queue.
 	if !got.detail.Capabilities.Steer {
 		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
+	}
+	if !got.detail.Capabilities.Interrupt {
+		t.Fatalf("idle session on an interrupting harness lost interrupt: %+v", got.detail.Capabilities)
+	}
+	if !got.detail.Capabilities.Queue {
+		t.Fatalf("idle session on a queuing harness lost queue: %+v", got.detail.Capabilities)
+	}
+	if c := got.sessionControls(); c.stop || c.queue || c.steer {
+		t.Fatalf("idle controls = %+v, want stop/queue/steer all withheld by the status", c)
 	}
 	if strings.Contains(view, "ctrl+s") {
 		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
 	}
 	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
 		t.Fatal("ctrl+s at idle with nothing queued produced a command; it must be a silent no-op")
+	}
+	// ctrl+c is the stop binding: with no active turn it must not interrupt.
+	after, cmd := got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("ctrl+c at idle produced an interrupt command; it must be a silent no-op")
+	}
+	if msgs := after.(hubModel).session.messages; len(msgs) > 0 && strings.Contains(msgs[len(msgs)-1].Text, "Interrupting") {
+		t.Fatalf("ctrl+c at idle announced an interrupt: %q", msgs[len(msgs)-1].Text)
 	}
 }
 
@@ -3177,6 +3197,10 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
+	// /interrupt advertises harness support, not "a turn is running" (#1375),
+	// so the command applies the status: this session is mid-turn, as it is
+	// when a user actually reaches for Stop.
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.Capabilities.Shutdown = true
 	for _, input := range []string{"/interrupt", "/compact", "/model gpt-5.5", "/shutdown"} {
 		m.session.setInputValue(input)
@@ -4437,9 +4461,39 @@ func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 	if cmd == nil {
 		t.Fatal("expected quit command, got nil")
 	}
+	// Every quit route must clear the terminal window title, then quit, as one
+	// ordered sequence: a quit from a session view must not leave the session
+	// title on the terminal after the TUI exits. A bare tea.QuitMsg is a
+	// regression — it clears nothing — so it does not pass.
 	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	seq := reflect.ValueOf(msg)
+	if seq.Kind() != reflect.Slice {
+		t.Fatalf("quit route must clear the title then quit as an ordered sequence, got %T", msg)
+	}
+	var titles []string
+	quit := false
+	for i := 0; i < seq.Len(); i++ {
+		child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
+		if !ok {
+			t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
+		}
+		switch childMsg := child().(type) {
+		case tea.QuitMsg:
+			if len(titles) == 0 {
+				t.Fatal("quit ran before the window title was cleared")
+			}
+			quit = true
+		default:
+			if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
+				titles = append(titles, fmt.Sprint(childMsg))
+			}
+		}
+	}
+	if !quit {
+		t.Fatalf("quit sequence does not quit: %T", msg)
+	}
+	if len(titles) != 1 || titles[0] != "" {
+		t.Fatalf("quit must clear the window title first: titles=%q", titles)
 	}
 }
 
