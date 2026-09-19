@@ -20,7 +20,7 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == hubModeSession && m.commandPalette == nil {
 			return m.updateSessionKey(msg)
 		}
-		return m, tea.Quit
+		return m, quitCmd()
 	}
 	// Focus trap: when any overlay is open, non-escape-hatch keys are
 	// consumed by the topmost overlay only (wave 9 task 9.1).
@@ -126,7 +126,7 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openCommandPalette()
 		return m, nil
 	case "q":
-		return m, tea.Quit
+		return m, quitCmd()
 	case "r":
 		if m.client != nil {
 			return m, fetchHubTree(m.client)
