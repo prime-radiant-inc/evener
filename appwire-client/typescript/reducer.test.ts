@@ -3172,6 +3172,56 @@ function countIdentityReadsForMerge(count: number, includeTool: boolean): number
   return reads;
 }
 
+function countActiveToolCandidateReadsForMerge(count: number): { reads: number; merged: ItemModel | undefined } {
+  let reads = 0;
+  const items = Array.from({ length: count }, (_, index) => {
+    const callId = `active-call-${index}`;
+    const call: ItemModel = {
+      id: `item_tool_${index}`,
+      turnId: "fresh",
+      type: "commandExecution",
+      text: "",
+      callId,
+      status: "inProgress",
+      output: `fresh call ${index}`,
+    };
+    const result: ItemModel = {
+      id: `item_tool_result_${index}`,
+      turnId: "fresh",
+      type: "commandExecution",
+      text: "",
+      callId,
+      output: `result ${index}`,
+      status: "completed",
+      completedAt: new Date(index + 1).toISOString(),
+    };
+    Object.defineProperty(result, "id", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return `item_tool_result_${index}`;
+      },
+    });
+    return [call, result] satisfies ItemModel[];
+  });
+  const model = testHydrate();
+  model.turns = [
+    {
+      id: "fresh",
+      status: "inProgress",
+      items: items.flat(),
+    },
+  ];
+  const merged = mergeOlderItemPage(model, {
+    data: [],
+  });
+  return {
+    reads,
+    merged: merged.turns.flatMap((turn) => turn.items).find((item) => item.callId === "active-call-0"),
+  };
+}
+
 test("mergeOlderItemPage keeps no-tool provenance work linear as history grows", () => {
   const smaller = countIdentityReadsForMerge(8, false);
   const larger = countIdentityReadsForMerge(16, false);
@@ -3182,6 +3232,19 @@ test("mergeOlderItemPage keeps one-call provenance work linear as history grows"
   const smaller = countIdentityReadsForMerge(20, true);
   const larger = countIdentityReadsForMerge(40, true);
   expect(larger).toBeLessThanOrEqual(smaller * 3 + 40);
+});
+
+test("mergeOlderItemPage keeps active tool candidate work linear as history grows", () => {
+  const smaller = countActiveToolCandidateReadsForMerge(20);
+  const larger = countActiveToolCandidateReadsForMerge(40);
+  expect(smaller.reads).toBeGreaterThan(0);
+  expect(larger.reads).toBeLessThanOrEqual(smaller.reads * 3 + 40);
+  expect(smaller.merged).toMatchObject({
+    callId: "active-call-0",
+    output: "result 0",
+    status: "completed",
+    completedAt: new Date(1).toISOString(),
+  });
 });
 
 test("mergeOlderItemPage preserves older fallback fields across distinct result fragments", () => {
