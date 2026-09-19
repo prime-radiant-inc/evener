@@ -1628,8 +1628,30 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 				frame = "the removal stands"
 			}
 		}
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err), frame, supplies)
+		// The cause is neutral - "failed", not "was rolled back" - because this
+		// rollback only lands when restoreFailedRemoval answers carried. When the
+		// layer that carries the instance is a credential this call deleted and
+		// the restore cannot put it back, that answer is the standing frame, and
+		// a cause that already said "was rolled back" would have the one sentence
+		// report both outcomes at once ("removing X was rolled back: ...; the
+		// removal stands, ..."). The rollback wording is built below, once the
+		// restore has actually carried the instance, the way the !configChanged
+		// sibling builds it.
+		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			fmt.Errorf("removing %q failed: %w", name, err), frame, supplies)
+		if restored {
+			// The carrying layer is back, so the config this rollback restored is
+			// the pre-removal one and the removal was rolled back - the message
+			// says so. A stray other layer that stayed deleted is still a change
+			// every other client's credential status for this name is stale
+			// against, so it is folded in with the applied mark, exactly as the
+			// !configChanged sibling folds its leftovers.
+			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
+			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
+			}
+			restoreErr = rolledBack
+		}
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the

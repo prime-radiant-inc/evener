@@ -1567,6 +1567,14 @@ func TestInstances_RemoveStandsWhenAnImplicitDefaultLosesItsKeyOnRollback(t *tes
 	if !strings.Contains(err.Error(), "the removal stands") {
 		t.Fatalf("Remove = %v, want the standing frame: the carrying key is gone", err)
 	}
+	// The removal stood, so the one sentence must not also claim it was rolled
+	// back: the user reads this text verbatim as the TUI notice reason and the
+	// web toast, and two opposite outcomes in it leave them unable to tell
+	// whether to retry. The rolled-back wording belongs to the branch where the
+	// carrying layer actually came back.
+	if strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, must not claim the removal was rolled back when its carrying key could not be restored", err)
+	}
 	if _, applied := errors.AsType[removeAppliedError](err); !applied {
 		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying key stayed deleted", err, err)
 	}
