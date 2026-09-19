@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1424,6 +1425,30 @@ func TestHostManageRemoveRollsSidecarBackWhenLiveTeardownFails(t *testing.T) {
 	if resp.Host.Origin != hostOriginSidecar || resp.Host.Removed {
 		t.Fatalf("row = %+v, want the sidecar origin and no removed marker", resp.Host)
 	}
+	// The failed removal cleared its in-flight mark, so the name stays usable:
+	// the retry reports the same live-teardown refusal — not an in-progress
+	// conflict leaking from the first attempt — and the host stays intact for
+	// it, so the failed teardown never fences the name for good.
+	if _, retryErr := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); retryErr == nil {
+		t.Fatal("the retried Remove over a manager with no registry succeeded, want the live-teardown refusal again")
+	} else {
+		var retryWire appwire.WireError
+		if errors.As(retryErr, &retryWire) && retryWire.Code == appwire.CodeConflict {
+			t.Fatalf("the retried Remove = %v; the removal-in-progress mark leaked past the failed teardown", retryErr)
+		}
+	}
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "x.example"}); err == nil {
+		t.Fatal("Add over the intact host succeeded, want the duplicate refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+	}
+	retryEntries, retryFileErr := loadHostSidecar(sidecarPathFor(configPath))
+	if retryFileErr != nil {
+		t.Fatalf("loadHostSidecar: %v", retryFileErr)
+	}
+	if len(retryEntries) != 1 || retryEntries[0].Name != "side" {
+		t.Fatalf("sidecar after the retried Remove = %+v, want the entry intact again", retryEntries)
+	}
 }
 
 // TestHostManageListStatusReleaseLockDuringRowReads pins the round-7 M4 fix:
@@ -1516,4 +1541,373 @@ func TestHostManageListStatusReleaseLockDuringRowReads(t *testing.T) {
 			}
 		})
 	}
+}
+
+// blockingRunner parks the first process call the SSH manager makes — a
+// preflight probe or the attach dial, whichever comes first — until the test
+// releases it. An Ensure that parks there holds the manager's per-host gate
+// for the probe's whole duration, which is exactly what makes
+// Manager.RemoveHost block: the removal's teardown waits for the same gate a
+// supervisor's reconnect/ensure cycle can hold for minutes. Later calls fail
+// fast, so the released sequence unwinds promptly.
+type blockingRunner struct {
+	entered  chan struct{}
+	release  chan struct{}
+	parked   atomic.Bool
+	returned atomic.Bool
+}
+
+// block parks the first caller until release (or ctx dies, so a hung test
+// still unwinds) and refuses every later call.
+func (r *blockingRunner) block(ctx context.Context) error {
+	if r.parked.CompareAndSwap(false, true) {
+		close(r.entered)
+		select {
+		case <-r.release:
+			r.returned.Store(true)
+			return errors.New("blockingRunner: released")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return errors.New("blockingRunner: refusing a follow-up call")
+}
+
+func (r *blockingRunner) Run(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+	return nil, r.block(ctx)
+}
+
+func (r *blockingRunner) Start(ctx context.Context, _ []string, _ io.Writer) (sshconn.Stdio, error) {
+	return nil, r.block(ctx)
+}
+
+// removeOutcome carries the parked Remove's result back to the test.
+type removeOutcome struct {
+	resp appwire.HostRemoveResponse
+	err  error
+}
+
+// parkedRemoval is one removal driven into its released teardown window: an
+// Ensure parked inside the manager's first probe holds the per-host gate, so
+// the Remove that follows parks inside Manager.RemoveHost's gate wait. The
+// removal's commit has landed by the time the helper returns — the sidecar
+// row and the file already lost the entry, and the mark fences the name — and
+// the window stays open until release.
+type parkedRemoval struct {
+	m          *hubHostManager
+	sources    *appsource.Registry
+	configPath string
+	runner     *blockingRunner
+	release    func()
+	ensureDone chan error
+	removeDone chan removeOutcome
+}
+
+// startParkedRemoval drives the removal of name into its teardown window over
+// a real SSH manager with the blocking runner: the Add calls commit through
+// the manager's registry, the parked Ensure holds the per-host gate inside its
+// first probe, and the Remove parks behind it. "keep" is a second sidecar
+// host so the window's refusals and saves have an unrelated entry to leave
+// alone. The cleanup releases the parks and drains both goroutines
+// (registered after the manager's, so it runs first): a failing test's
+// teardown never races a removal still writing its sidecar into the
+// temp dir.
+func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &blockingRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	manager := sshconn.New(reg, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, reg, nil)
+	for _, host := range []appwire.HostAddParams{
+		{Name: "keep", Address: "keep.example"},
+		{Name: name, Address: name + ".example"},
+	} {
+		if _, err := m.Add(context.Background(), host); err != nil {
+			t.Fatalf("Add(%s): %v", host.Name, err)
+		}
+	}
+	// Park an Ensure for the host inside its first probe: it holds the
+	// per-host gate the removal's teardown below must wait for.
+	var parked sync.WaitGroup
+	parked.Add(2)
+	ensureDone := make(chan error, 1)
+	go func() {
+		defer parked.Done()
+		_, err := manager.Ensure(context.Background(), name)
+		ensureDone <- err
+	}()
+	<-runner.entered
+	// The removal parks in its teardown, inside RemoveHost's gate wait.
+	removeDone := make(chan removeOutcome, 1)
+	go func() {
+		defer parked.Done()
+		resp, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: name})
+		removeDone <- removeOutcome{resp: resp, err: err}
+	}()
+	// The removal's durable commit landed once the file lost the entry: the
+	// save runs under the mutation mutex, ahead of the teardown, on both the
+	// pre-fix and post-fix code. The condition persists until release, so the
+	// poll cannot race past the window.
+	waitSidecarLacks(t, configPath, name)
+	var releaseOnce sync.Once
+	pr := &parkedRemoval{
+		m:          m,
+		sources:    sources,
+		configPath: configPath,
+		runner:     runner,
+		release:    func() { releaseOnce.Do(func() { close(runner.release) }) },
+		ensureDone: ensureDone,
+		removeDone: removeDone,
+	}
+	t.Cleanup(func() {
+		// Release the parks, then drain both goroutines before the manager's
+		// Close and the temp dir removal run: a failing test's teardown must
+		// not race a removal still writing its sidecar.
+		pr.release()
+		parked.Wait()
+	})
+	return pr
+}
+
+// waitSidecarLacks polls the sidecar file until it holds no entry for name,
+// with a deadline that only a genuine failure to commit can hit.
+func waitSidecarLacks(t *testing.T, configPath, name string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entries, err := loadHostSidecar(sidecarPathFor(configPath))
+		found := false
+		for _, e := range entries {
+			if e.Name == name {
+				found = true
+			}
+		}
+		if err == nil && !found {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the removal of %q never committed: sidecar = %+v (%v)", name, entries, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// assertSidecarNames pins the sidecar file's exact entry list, in order — the
+// durable state the window's refusals and commits are asserted against.
+func assertSidecarNames(t *testing.T, configPath string, want ...string) {
+	t.Helper()
+	entries, err := loadHostSidecar(sidecarPathFor(configPath))
+	if err != nil {
+		t.Fatalf("loadHostSidecar: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sidecar entries = %v, want %v", got, want)
+	}
+}
+
+// served runs call and fails the test if it does not return while the removal
+// window is open — so a regression reads as "%s never served", never as a
+// hung test binary.
+func served(t *testing.T, name string, call func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s never served while a removal was parked in its teardown", name)
+		return nil
+	}
+}
+
+// waitRemovalDone collects the parked Remove's result once the window closes.
+func (pr *parkedRemoval) waitRemovalDone(t *testing.T) removeOutcome {
+	t.Helper()
+	select {
+	case done := <-pr.removeDone:
+		return done
+	case <-time.After(5 * time.Second):
+		t.Fatal("the removal never finished after its teardown was released")
+		return removeOutcome{}
+	}
+}
+
+// TestHostManageRemoveReleasesLockDuringTeardown pins the round-8 finding:
+// Remove used to hold the mutation mutex across the manager teardown, whose
+// RemoveHost blocks on the per-host gate a supervisor's reconnect/ensure
+// cycle holds — and on the ssh child's exit — so one host's slow or hung
+// removal froze every concurrent host/list, host/status, and host/add for
+// every host (the Settings hosts pane polls host/list every two seconds).
+// The teardown now runs mutex-free: while the removal below is parked inside
+// RemoveHost (an Ensure holding the gate through a probe the test keeps
+// blocked), List and Status keep serving, and the mid-removal row still
+// renders its sidecar origin. Every park is a channel the test holds open,
+// never a timed sleep.
+func TestHostManageRemoveReleasesLockDuringTeardown(t *testing.T) {
+	pr := startParkedRemoval(t, "side")
+
+	// Liveness, the finding itself: host/list must serve while the removal
+	// is parked in its teardown. Pre-fix this deadlocked — Remove held the
+	// mutation mutex across the parked RemoveHost.
+	var list appwire.HostListResponse
+	if err := served(t, "host/list", func() error {
+		resp, err := pr.m.List(context.Background(), appwire.EmptyParams{})
+		list = resp
+		return err
+	}); err != nil {
+		t.Fatalf("host/list during the teardown: %v", err)
+	}
+	// The teardown was still parked when List served — the two genuinely
+	// overlapped; this is not a list that ran after the removal finished.
+	if !pr.runner.parked.Load() || pr.runner.returned.Load() {
+		t.Fatal("the parked teardown finished before host/list served; the test did not hold the window open")
+	}
+	// The mid-removal row is fully committed, never half-gone: the registry
+	// entry still lists, under its sidecar origin — the removal mark stands
+	// in for the store row the commit already dropped.
+	if len(list.Hosts) != 2 {
+		t.Fatalf("list during the removal = %d rows, want keep + side: %+v", len(list.Hosts), list.Hosts)
+	}
+	for _, row := range list.Hosts {
+		if row.Name == "side" && (row.Origin != hostOriginSidecar || row.Removed) {
+			t.Fatalf("mid-removal row = %+v, want the sidecar origin and no removed marker", row)
+		}
+	}
+	// host/status serves through the same window, with the same origin.
+	var status appwire.HostStatusResponse
+	if err := served(t, "host/status", func() error {
+		resp, err := pr.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+		status = resp
+		return err
+	}); err != nil {
+		t.Fatalf("host/status during the teardown: %v", err)
+	}
+	if status.Host.Origin != hostOriginSidecar {
+		t.Fatalf("mid-removal status row = %+v, want the sidecar origin", status.Host)
+	}
+
+	// Let the teardown finish and the removal complete.
+	pr.release()
+	if err := <-pr.ensureDone; err == nil {
+		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
+	}
+	done := pr.waitRemovalDone(t)
+	if done.err != nil {
+		t.Fatalf("Remove: %v", done.err)
+	}
+	if !done.resp.Host.Removed {
+		t.Fatalf("remove row = %+v, want Removed", done.resp.Host)
+	}
+	// The end state is the pre-fix one: gone from the registry, the sources,
+	// the sidecar store, and the durable file.
+	if _, ok := pr.m.cfg.hosts.Get("side"); ok {
+		t.Fatal("removed host still in the registry")
+	}
+	if _, ok := pr.sources.Source("side"); ok {
+		t.Fatal("removed host still has a source")
+	}
+	if pr.m.cfg.sidecar.isSidecar("side") {
+		t.Fatal("removed host still in the sidecar store")
+	}
+	assertSidecarNames(t, pr.configPath, "keep")
+}
+
+// TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits pins the
+// correctness the released window needs: while a removal is parked in its
+// mutex-free teardown, a concurrent Add and a second Remove of the same name
+// refuse with the typed conflict and commit nothing (no re-exposed host, no
+// double teardown, no sidecar write), while an Add of a different name
+// commits — and its save must not resurrect the entry the removal already
+// committed, because the removal dropped its store row with its save. The
+// reloaded manager proves the durable outcome: the removed host stays gone
+// across a restart and the concurrently added host survives it. The fence
+// lifts with the removal, so the name is addable again afterwards.
+func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing.T) {
+	pr := startParkedRemoval(t, "side")
+
+	// The fenced name refuses both callers with the typed conflict...
+	if err := served(t, "host/add", func() error {
+		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "resurrect.example"})
+		return err
+	}); err == nil {
+		t.Fatal("Add of the mid-removal name committed, want the removal conflict")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if err := served(t, "host/remove", func() error {
+		_, err := pr.m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
+		return err
+	}); err == nil {
+		t.Fatal("a second Remove of the mid-removal name committed, want the removal conflict")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	// ...committing nothing: the sidecar the removal's commit wrote is the
+	// whole durable state of the window.
+	assertSidecarNames(t, pr.configPath, "keep")
+
+	// A different name commits through the window — one host's teardown holds
+	// up no other host's add — and its save derives from the live store,
+	// which no longer holds the entry being removed.
+	if err := served(t, "host/add (other)", func() error {
+		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "other", Address: "other.example"})
+		return err
+	}); err != nil {
+		t.Fatalf("Add(other) during the removal window: %v", err)
+	}
+	assertSidecarNames(t, pr.configPath, "keep", "other")
+
+	// Release the window: the removal completes and its end state holds.
+	pr.release()
+	if err := <-pr.ensureDone; err == nil {
+		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
+	}
+	done := pr.waitRemovalDone(t)
+	if done.err != nil {
+		t.Fatalf("Remove: %v", done.err)
+	}
+	if !done.resp.Host.Removed {
+		t.Fatalf("remove row = %+v, want Removed", done.resp.Host)
+	}
+	if _, ok := pr.m.cfg.hosts.Get("side"); ok {
+		t.Fatal("removed host still in the registry")
+	}
+	assertSidecarNames(t, pr.configPath, "keep", "other")
+
+	// A fresh boot over the same config is the resurrection check: the
+	// removed host must stay gone, the concurrently added one must survive.
+	boot := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, pr.configPath, nil, nil)
+	list, err := boot.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("reloaded List: %v", err)
+	}
+	names := make([]string, 0, len(list.Hosts))
+	for _, row := range list.Hosts {
+		names = append(names, row.Name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"keep", "other"}) {
+		t.Fatalf("reloaded hosts = %v, want keep + other only: a mid-window save resurrected or lost an entry", names)
+	}
+
+	// The fence lifted with the removal: the name is addable again.
+	if _, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "fresh.example"}); err != nil {
+		t.Fatalf("re-Add after the removal finished: %v", err)
+	}
+	assertSidecarNames(t, pr.configPath, "keep", "other", "side")
 }

@@ -99,6 +99,14 @@ type hostManagerConfig struct {
 	// mu serializes add/remove read-modify-write cycles so concurrent calls
 	// cannot lose updates or interleave a save with a registry mutation.
 	mu sync.Mutex
+	// removing holds the names whose removal is in flight: the durable sidecar
+	// save already dropped the entry, and the sidecar row left the store with
+	// it in the same commit phase (so no later save can re-persist it), while
+	// the channel teardown runs without mu held. Add and a second Remove
+	// refuse a marked name until the removal's finish phase clears the mark,
+	// so the released window cannot admit a re-add that races the finish or a
+	// second teardown of the same host. Guarded by mu.
+	removing map[string]struct{}
 }
 
 // hostSidecarStore is the durable sidecar: UI-added entries in add order.
@@ -482,6 +490,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		handshake:        cfg.RemoteHostHandshake,
 		facts:            cfg.RemoteHostFacts,
 		state:            newHostAttachState(),
+		removing:         map[string]struct{}{},
 		logf:             logf,
 	}}
 	entries, err := loadHostSidecar(m.cfg.sidecarPath)
@@ -709,10 +718,55 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	}
 }
 
+// markRemoving records name as mid-removal, in the commit phase that already
+// saved the sidecar without the entry and dropped its store row. Callers
+// hold mu.
+func (m *hubHostManager) markRemoving(name string) {
+	m.cfg.removing[name] = struct{}{}
+}
+
+// unmarkRemoving clears the removal mark in the finish phase, on the success
+// and the failure exit alike: a successful removal leaves the name addable
+// again, a failed one leaves it fully intact and retryable. Callers hold mu.
+func (m *hubHostManager) unmarkRemoving(name string) {
+	delete(m.cfg.removing, name)
+}
+
+// isRemoving reports whether name's removal is currently in flight — its
+// durable commit landed and its teardown has not finished. Callers hold mu.
+func (m *hubHostManager) isRemoving(name string) bool {
+	_, marked := m.cfg.removing[name]
+	return marked
+}
+
+// hostRemovingConflict is the typed refusal for a name whose removal is in
+// flight: the conflict code tells the caller the name is transiently held and
+// retryable, rather than mislabeling it a duplicate (Add) or file-declared
+// (a second Remove). It commits nothing.
+func hostRemovingConflict(name string) error {
+	return appwire.Conflict(fmt.Sprintf("host %q: removal in progress; retry once the removal finishes", name))
+}
+
+// rowOrigin is the list-row origin for name: the sidecar origin while the name
+// is a live sidecar entry — or its removal is in flight, which also started
+// from a sidecar entry. The removal's commit drops the store row together
+// with its durable save, but the registry entry the row still renders from
+// belongs to the sidecar until the teardown takes it, so the mark keeps the
+// origin truthful instead of relabeling a mid-removal host hub.toml-declared.
+// Callers hold mu.
+func (m *hubHostManager) rowOrigin(name string) string {
+	if m.cfg.sidecar.isSidecar(name) || m.isRemoving(name) {
+		return hostOriginSidecar
+	}
+	return hostOriginHubTOML
+}
+
 // Add registers one sidecar host entry: name + SSH address + key path. It
 // validates exactly like hub.toml loading (component-03 rules) and refuses a
 // name hub.toml or the live set already holds — the duplicate refusal applies
-// to live entries only: a removed name is gone, so re-add works.
+// to live entries only: a removed name is gone, so re-add works — and refuses
+// a name whose removal is still in flight, so a re-add cannot race the
+// removal's finish.
 //
 // The commit is durable-first: the sidecar file is written before anything is
 // exposed, so a save failure commits nothing (no registry entry, no sidecar
@@ -742,6 +796,15 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// which runs on the network and must not hold up concurrent commits
 	// (round-7 M4, the same reason List and Status build rows lock-free).
 	m.cfg.mu.Lock()
+	// A removal of this name in flight must not admit a re-add: Remove's
+	// teardown runs without the mutation mutex, and an add landing inside
+	// that window would race the removal's finish — a re-registered source
+	// or sidecar row the finish then drops, or a live channel for a host
+	// being removed. The refusal commits nothing, the sidecar write included.
+	if m.isRemoving(entry.Name) {
+		m.cfg.mu.Unlock()
+		return appwire.HostRow{}, hostRemovingConflict(entry.Name)
+	}
 	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
 		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, hostreg.ErrDuplicateHost))
@@ -816,13 +879,18 @@ func (m *hubHostManager) saveSidecar(entries []hostreg.Host) error {
 // rollbackSidecar re-persists previous after a post-save live mutation failed,
 // keeping the durable sidecar in step with the live set: the API reported the
 // mutation as failed, so the file must not keep a copy the next start would
-// resurrect (Add) or drop an entry the live set still holds (Remove). This is
-// the compensating half of the durable-first ordering round 1 chose — the save
-// still leads, so a save failure still commits nothing live and the caller can
-// retry — closing the window round 1 left open, the live mutation failing
-// after the save landed (the round-4 L2 finding). A rollback save failure is
-// surfaced alongside cause: the file is then known to diverge, and the caller
-// must hear it rather than a clean-looking refusal.
+// resurrect (Add) or drop an entry the live set still holds (Remove).
+// previous is the content the file must hold for the live set to stay in
+// step: the pre-add contents for Add, and for Remove the live snapshot
+// after the failed removal re-added its row — a stale pre-remove copy would
+// clobber entries concurrently committed while the removal's teardown ran
+// unlocked. This is the compensating half of the durable-first ordering
+// round 1 chose — the save still leads, so a save failure still commits
+// nothing live and the caller can retry — closing the window round 1 left
+// open, the live mutation failing after the save landed (the round-4 L2
+// finding). A rollback save failure is surfaced alongside cause: the file is
+// then known to diverge, and the caller must hear it rather than a
+// clean-looking refusal.
 func (m *hubHostManager) rollbackSidecar(previous []hostreg.Host, cause error) error {
 	if err := m.saveSidecar(previous); err != nil {
 		return fmt.Errorf("%w; host sidecar rollback failed: %w", cause, err)
@@ -845,7 +913,10 @@ func (m *hubHostManager) rollbackSidecar(previous []hostreg.Host, cause error) e
 // or hung host must not block every concurrent Add and Remove commit or
 // serialize other lists. The rows are the snapshot's point-in-time view: a
 // host added after the snapshot is absent from that response, never
-// half-committed in it.
+// half-committed in it. A host mid-removal lists under its sidecar origin
+// while its registry entry lasts: the removal mark stands in for the store
+// row its commit already dropped, so the row never renders as a hub.toml
+// entry the operator cannot remove through the UI.
 func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwire.HostListResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostListResponse{}, err
@@ -857,11 +928,7 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 	m.cfg.mu.Lock()
 	inputs := make([]rowInput, 0, len(m.cfg.hosts.All()))
 	for _, host := range m.cfg.hosts.All() {
-		origin := hostOriginHubTOML
-		if m.cfg.sidecar.isSidecar(host.Name) {
-			origin = hostOriginSidecar
-		}
-		inputs = append(inputs, rowInput{host: host, origin: origin})
+		inputs = append(inputs, rowInput{host: host, origin: m.rowOrigin(host.Name)})
 	}
 	m.cfg.mu.Unlock()
 	rows := make([]appwire.HostRow, 0, len(inputs))
@@ -891,10 +958,7 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 		m.cfg.mu.Unlock()
 		return appwire.HostStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
-	origin := hostOriginHubTOML
-	if m.cfg.sidecar.isSidecar(host.Name) {
-		origin = hostOriginSidecar
-	}
+	origin := m.rowOrigin(host.Name)
 	m.cfg.mu.Unlock()
 	return appwire.HostStatusResponse{Host: m.hostRow(ctx, host, origin)}, nil
 }
@@ -902,56 +966,103 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 // Remove deregisters one sidecar host entry: its sidecar row, its source, its
 // registry entry, and its channel all go, and the name is gone until
 // re-added. hub.toml-declared names are refused (edit the file); unknown names
-// are InvalidParams.
+// are InvalidParams; a removal already in flight for the name is a Conflict.
 //
-// The commit is durable-first — the sidecar file loses the entry before any
-// live state changes, so a save failure leaves the host fully intact and the
-// caller can retry — and the teardown is manager-owned: with a manager wired,
-// RemoveHost drops the registry entry, stops the supervisor, and clears the
-// channel under the host lock in one step, so a concurrent Ensure cannot
-// publish a fresh channel after deregistration. A teardown that fails after
-// the save rolls the sidecar forward again to keep the entry (rollbackSidecar),
-// so the durable state never forgets a host the live set still holds. Nothing
-// is resurrected: the entry, its source, its channel, and its retained attach
-// state are all gone by the time a successful Remove returns — and so are its
-// cached remote-thread rows, so its sessions stop rendering with the removal
-// instead of lingering live until the refresher's next tick.
+// The removal runs in three phases. The commit phase holds the mutation
+// mutex: validation, the durable-first sidecar save (the file loses the entry
+// before any live state changes, so a save failure leaves the host fully
+// intact and the caller can retry), the sidecar row's drop in the same
+// critical section (the store is what every later save derives its contents
+// from, so a row kept past the save would let a concurrent Add or Remove
+// re-persist an entry this removal already committed), and the removing mark
+// that fences the name. The mutex then releases for the teardown itself: the
+// manager-owned RemoveHost blocks on the per-host gate a supervisor holds for
+// a whole reconnect/ensure cycle and on the ssh child's exit, so holding the
+// mutation mutex across it would freeze every concurrent host/list,
+// host/status, and host/add behind one host's removal (the round-8 finding).
+// The mark fences the window instead: Add and a second Remove refuse the
+// name, so nothing re-exposes or double-tears a host whose removal is in
+// flight. The finish phase retakes the mutex, clears the mark, and completes
+// the bookkeeping. A teardown that fails rolls the sidecar forward again to
+// keep the entry (rollbackSidecar over the live snapshot), so the durable
+// state never forgets a host the live set still holds, and the cleared mark
+// leaves the name retryable. Nothing is resurrected: the entry, its source,
+// its channel, and its retained attach state are all gone by the time a
+// successful Remove returns — and so are its cached remote-thread rows, so
+// its sessions stop rendering with the removal instead of lingering live
+// until the refresher's next tick.
 func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostRemoveResponse{}, err
 	}
 	name := strings.TrimSpace(params.Name)
+	// Commit phase: the removal's durable state and the in-memory sidecar
+	// change together, under the mutation mutex, as one read-modify-write
+	// cycle.
 	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
+	if m.isRemoving(name) {
+		m.cfg.mu.Unlock()
+		return appwire.HostRemoveResponse{}, hostRemovingConflict(name)
+	}
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {
+		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	if !m.cfg.sidecar.isSidecar(host.Name) {
+		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("host %q is declared in hub.toml; remove it by editing the file", host.Name))
 	}
 	// Persist first: the durable sidecar loses the entry before any live
 	// state changes, so a save failure resurrects nothing — the host stays
-	// fully intact and the caller can retry. The pre-save snapshot is the
-	// rollback copy: should the live teardown below fail, the file regains
-	// the entry, keeping the durable state in step with the live one.
-	prev := m.cfg.sidecar.snapshot()
+	// fully intact and the caller can retry.
 	if err := m.saveSidecar(m.cfg.sidecar.without(host.Name)); err != nil {
+		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
 	}
+	// The row drops with the save it belongs to, in the same critical
+	// section: a concurrent Add or Remove committing in the window below
+	// derives its save from the store, and a row still present here would
+	// re-persist an entry this removal already committed — the next start
+	// would resurrect the host this call is removing.
+	m.cfg.sidecar.remove(host.Name)
+	// The mark fences the name for the window the mutex is about to release.
+	m.markRemoving(host.Name)
+	m.cfg.mu.Unlock()
+
+	// Teardown, mutex-free: with a manager wired, RemoveHost drops the
+	// registry entry, stops the supervisor, and clears the channel under the
+	// host lock in one step, so a concurrent Ensure cannot publish a fresh
+	// channel after deregistration; without one (tests, embedders) the
+	// registry's own Remove is the whole story.
+	var teardownErr error
 	if m.cfg.manager != nil {
-		// Manager-owned teardown: registry entry, supervisor, channel, and
-		// per-host caches drop together under the host lock.
 		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
-			return appwire.HostRemoveResponse{}, m.rollbackSidecar(prev, fmt.Errorf("remove host %q: %w", host.Name, err))
+			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
 	} else if err := m.cfg.hosts.Remove(host.Name); err != nil {
-		return appwire.HostRemoveResponse{}, m.rollbackSidecar(prev, err)
+		teardownErr = err
+	}
+
+	// Finish phase: the mutex comes back for the bookkeeping, and the mark
+	// clears on both exits — a success leaves the name addable again, a
+	// failure leaves it fully intact and retryable.
+	m.cfg.mu.Lock()
+	m.unmarkRemoving(host.Name)
+	if teardownErr != nil {
+		// The teardown failed before dropping anything live (RemoveHost
+		// refuses ahead of its registry step), so the removal un-commits: the
+		// sidecar row returns and the file regains it. The rollback saves the
+		// live snapshot, not a pre-remove copy: concurrent Adds and Removes
+		// may have committed in the window, and their entries must survive.
+		m.cfg.sidecar.add(host)
+		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), teardownErr)
+		m.cfg.mu.Unlock()
+		return appwire.HostRemoveResponse{}, err
 	}
 	if m.cfg.sources != nil {
 		m.cfg.sources.Remove(host.Name)
 	}
-	m.cfg.sidecar.remove(host.Name)
 	m.cfg.state.remove(host.Name)
 	// The remote-thread cache still holds the host's last-refreshed rows,
 	// and the refresher's next tick is up to 30s away; sourceOnline
@@ -968,6 +1079,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	if m.cfg.remoteCache != nil {
 		m.cfg.remoteCache.RemoveSource(host.Name)
 	}
+	m.cfg.mu.Unlock()
 	return appwire.HostRemoveResponse{Host: appwire.HostRow{
 		Name:    host.Name,
 		Address: host.SSH,
