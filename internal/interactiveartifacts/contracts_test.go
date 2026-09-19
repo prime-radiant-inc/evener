@@ -55,6 +55,74 @@ func TestToolRequestContracts(t *testing.T) {
 	}
 }
 
+func TestPublishInitialStateDefaultAppliesOnlyToCreation(t *testing.T) {
+	tools, err := Tools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded []byte
+	for _, tool := range tools {
+		if tool.Name == "artifact_publish" {
+			encoded, err = json.Marshal(tool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if encoded == nil {
+		t.Fatal("artifact_publish tool missing")
+	}
+	var wire struct {
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(wire.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.Properties["initialState"].Default) != 0 {
+		t.Fatal("initialState default applies outside the creation branch")
+	}
+	var creation, update *jsonschema.Schema
+	for _, branch := range schema.OneOf {
+		if slices.Contains(branch.Required, "artifactId") {
+			update = branch
+		} else {
+			creation = branch
+		}
+	}
+	if creation == nil || update == nil {
+		t.Fatal("publish creation and update branches missing")
+	}
+	if property := creation.Properties["initialState"]; property == nil || string(property.Default) != "{}" {
+		t.Fatal("creation branch lacks the initialState default")
+	}
+	if property := update.Properties["initialState"]; property != nil && len(property.Default) != 0 {
+		t.Fatal("update branch advertises an initialState default")
+	}
+
+	parsed, err := ParseRequest("artifact_publish", []byte(`{"mutationId":"M","title":"T","summary":"S","html":"H"}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(parsed.(*PublishRequest).InitialState) != "{}" {
+		t.Fatal("creation did not apply the initialState default")
+	}
+	parsed, err = ParseRequest("artifact_publish", []byte(`{"mutationId":"M","artifactId":"A","expectedSourceRevision":1,"expectedStateVersion":1,"title":"T","summary":"S","html":"H"}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.(*PublishRequest).InitialState != nil {
+		t.Fatal("update applied the creation-only initialState default")
+	}
+	if _, err := ParseRequest("artifact_publish", []byte(`{"mutationId":"M","artifactId":"A","expectedSourceRevision":1,"expectedStateVersion":1,"title":"T","summary":"S","html":"H","initialState":{}}`), false); err == nil {
+		t.Fatal("update accepted explicit initialState")
+	}
+}
+
 func TestModelProjectionRejectsHostField(t *testing.T) {
 	tools, err := Tools()
 	if err != nil {
