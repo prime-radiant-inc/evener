@@ -32,29 +32,15 @@ func managedResultPairing(history []schema.Turn) (map[int]managedHistoryPairs, m
 		}
 		for partIndex, part := range turn.Message.Content {
 			r := part.ToolResult
-			if r == nil || r.ManagedInvocationID == "" || r.ManagedAttemptGroupID == "" || r.ManagedToolIndex < 0 {
+			assistantIndex := schema.ManagedResultAssistantIndex(history, resultIndex, r)
+			if assistantIndex < 0 || pairs[assistantIndex].hasToolIndex(r.ManagedToolIndex) {
 				continue
 			}
-			for assistantIndex := resultIndex - 1; assistantIndex >= 0; assistantIndex-- {
-				assistant := history[assistantIndex]
-				if assistant.Kind != schema.TurnAssistant || assistant.AttemptGroupID != r.ManagedAttemptGroupID {
-					continue
-				}
-				calls := assistantToolCalls(assistant.Message)
-				if r.ManagedToolIndex >= len(calls) {
-					break
-				}
-				call := calls[r.ManagedToolIndex]
-				if call.ID != r.ToolCallID || call.Name != r.Name || pairs[assistantIndex].hasToolIndex(r.ManagedToolIndex) {
-					break
-				}
-				pairs[assistantIndex] = append(pairs[assistantIndex], managedHistoryPair{r.ManagedToolIndex, part})
-				if moved[resultIndex] == nil {
-					moved[resultIndex] = map[int]bool{}
-				}
-				moved[resultIndex][partIndex] = true
-				break
+			pairs[assistantIndex] = append(pairs[assistantIndex], managedHistoryPair{r.ManagedToolIndex, part})
+			if moved[resultIndex] == nil {
+				moved[resultIndex] = map[int]bool{}
 			}
+			moved[resultIndex][partIndex] = true
 		}
 	}
 	return pairs, moved

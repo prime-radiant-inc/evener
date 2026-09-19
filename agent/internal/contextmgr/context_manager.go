@@ -1732,6 +1732,32 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 // user messages that some APIs reject.
 // Returns -1 if no safe position exists; callers should skip compaction.
 func safeCutoff(history []schema.Turn, cutoff int) int {
+	for {
+		cutoff = messageBoundaryCutoff(history, cutoff)
+		if cutoff < 0 {
+			return -1
+		}
+		previous := cutoff
+		for index := cutoff; index < len(history); index++ {
+			if history[index].Kind != schema.TurnToolResults {
+				continue
+			}
+			for _, part := range history[index].Message.Content {
+				assistant := schema.ManagedResultAssistantIndex(history, index, part.ToolResult)
+				if assistant >= 0 && assistant < cutoff {
+					cutoff = assistant
+				}
+			}
+		}
+		if cutoff == previous {
+			return cutoff
+		}
+		// Keeping an exact recovered occurrence may also retain another result
+		// span. Repeat the decreasing cutoff until every retained pair is whole.
+	}
+}
+
+func messageBoundaryCutoff(history []schema.Turn, cutoff int) int {
 	tracingToolResult := false
 	crossedSteering := false
 	for i := cutoff; i < len(history); i++ {

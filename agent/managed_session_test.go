@@ -715,7 +715,14 @@ func TestManagedPrepareCannotChangeCallContext(t *testing.T) {
 
 func TestManagedRecoveryPairsBeforeInterveningInput(t *testing.T) {
 	f := &managedFixture{executeErr: errors.New("lost acknowledgment")}
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, ManagedRuntime: f}))
+	summaryCalls := 0
+	s := newScriptedSummaryCompactSession(t, "managed-recovered-fold", func(llm.Request) llm.Response {
+		summaryCalls++
+		return llm.Response{Message: llm.Assistant("summary of older turns")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, ManagedRuntime: f, NoProjectPrompts: true}))
+	for range 12 {
+		s.appendTurn(schema.TurnUserInput, llm.User("older conversation"))
+	}
 	response := managedCallStep(llm.Request{})
 	if err := s.appendAssistantTurn(response, ModelAttemptMetadata{AttemptGroupID: "interrupted-round"}); err != nil {
 		t.Fatal(err)
@@ -731,8 +738,10 @@ func TestManagedRecoveryPairsBeforeInterveningInput(t *testing.T) {
 		t.Helper()
 		session.repairOrphanedToolResults(t.Context(), "test next input")
 		messages := expandHistory(session.history, replayScope{})
+		assistants := 0
 		for i, m := range messages {
 			if len(assistantToolCalls(m)) > 0 {
+				assistants++
 				if i+1 >= len(messages) || messages[i+1].Role != llm.RoleTool || messages[i+1].Content[0].ToolResult.Content != "model-sentinel" {
 					t.Fatalf("unpaired provider history: %+v", messages)
 				}
@@ -746,9 +755,45 @@ func TestManagedRecoveryPairsBeforeInterveningInput(t *testing.T) {
 				}
 			}
 		}
-		if count != 1 {
-			t.Fatalf("result count=%d", count)
+		if count != 1 || assistants != 1 {
+			for _, turn := range session.history {
+				t.Logf("retained turn kind=%s attempt=%s text=%q", turn.Kind, turn.AttemptGroupID, turn.Message.Text())
+			}
+			t.Fatalf("orphan or duplicate managed history: assistants=%d results=%d", assistants, count)
 		}
+		assistantIndex, userIndex, resultIndex := -1, -1, -1
+		for index, turn := range session.history {
+			if turn.Kind == schema.TurnAssistant && turn.AttemptGroupID == "interrupted-round" {
+				assistantIndex = index
+			}
+			if turn.Kind == schema.TurnUserInput && turn.Message.Text() == "queued input" {
+				userIndex = index
+			}
+			for _, part := range turn.Message.Content {
+				if part.ToolResult != nil && part.ToolResult.ManagedInvocationID != "" {
+					resultIndex = index
+				}
+			}
+		}
+		if assistantIndex < 0 || userIndex <= assistantIndex || resultIndex <= userIndex {
+			t.Fatalf("raw chronology changed: assistant=%d user=%d result=%d", assistantIndex, userIndex, resultIndex)
+		}
+		if len(session.managedJournal.pending()) != 0 || len(f.requests) != 2 {
+			t.Fatal("settled occurrence retained or executed again")
+		}
+	}
+	assertPair(restored)
+	// Choose a preserved-tail boundary at the intervening accepted input.
+	// Recovery has already evicted the journal; only occurrence metadata can
+	// keep the exact assistant and recovered result together during the fold.
+	userIndex := indexOfTurnText(restored.history, "queued input")
+	restored.contextMgr.PreserveRecentTurns = len(restored.history) - userIndex
+	restored.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+	if err := restored.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if summaryCalls == 0 || restored.history[0].Kind != schema.TurnSummary {
+		t.Fatal("did not reach an actual summarized fold")
 	}
 	assertPair(restored)
 	reopened, err := restoreManagedFixture(t, restored, f)
