@@ -335,3 +335,128 @@ func TestRemoteThreadCacheRemovalLeavesNoPerNameState(t *testing.T) {
 		t.Fatalf("cache retains %d generation entries after the late removal, want none", got)
 	}
 }
+
+// TestRemoteThreadCacheWalkDropsSourceRemovedAfterCapture pins the round-9 M2
+// finding: sourceStale read "the walk did not capture this source" as "its
+// rows belong to the current registration" — but a source can register after
+// the capture and be removed again before the publish, and a registration
+// that no longer exists cannot own live rows. The late publish used to
+// republish the removed host's rows until the next refresh tick rewrote the
+// cache. The publish now treats an uncaptured source absent from the live
+// generations as stale: it registered after the capture and was removed
+// before the publish, so no live registration can claim its rows.
+func TestRemoteThreadCacheWalkDropsSourceRemovedAfterCapture(t *testing.T) {
+	c := &RemoteThreadCache{}
+	// host-a is live before the walk starts, so the capture is non-empty and
+	// the publish filters (a cache with nothing registered at the capture is
+	// a different shape, pinned below).
+	c.RegisterSource("host-a")
+	captured := c.SourceGenerations()
+	// The host registers after the capture — mid-walk — and the walk reads
+	// its rows before the remove commits, the way a real enumeration of the
+	// source registry would.
+	c.RegisterSource("host-late")
+	walk := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a1", Source: "host-a"},
+			{ID: "l1", Source: "host-late"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a":    {Threads: []appwire.Thread{{ID: "a1", Source: "host-a"}}, Complete: true},
+			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
+		},
+	}
+	// The remove commits while the walk is still in flight: the registration
+	// generation goes with the registration.
+	c.RemoveSource("host-late")
+
+	// The walk finishes and publishes what it read.
+	c.StoreWalkSnapshot(walk, captured)
+
+	got := c.Snapshot()
+	for _, thread := range got.Threads {
+		if thread.Source == "host-late" {
+			t.Fatalf("late walk resurrected thread %q for the removed host", thread.ID)
+		}
+	}
+	if _, ok := got.Sources["host-late"]; ok {
+		t.Fatal("late walk resurrected the removed host's per-source snapshot")
+	}
+	if len(got.Threads) != 1 || got.Threads[0].ID != "a1" {
+		t.Fatalf("threads after the late publish = %+v, want host-a's row alone", got.Threads)
+	}
+	if _, ok := got.Sources["host-a"]; !ok {
+		t.Fatal("late publish dropped the still-live source's per-source snapshot")
+	}
+}
+
+// TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture guards the
+// legitimate half of the round-9 M2 fix: a source that registered after the
+// capture and is still live at the publish owns the rows the walk read from
+// it, and they must publish — the filter may not read "not captured" as
+// "not live".
+func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture(t *testing.T) {
+	c := &RemoteThreadCache{}
+	c.RegisterSource("host-a")
+	captured := c.SourceGenerations()
+	c.RegisterSource("host-late")
+	walk := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a1", Source: "host-a"},
+			{ID: "l1", Source: "host-late"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a":    {Threads: []appwire.Thread{{ID: "a1", Source: "host-a"}}, Complete: true},
+			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
+		},
+	}
+	c.StoreWalkSnapshot(walk, captured)
+	got := c.Snapshot()
+	var late int
+	for _, thread := range got.Threads {
+		if thread.Source == "host-late" {
+			late++
+		}
+	}
+	if late != 1 || len(got.Threads) != 2 {
+		t.Fatalf("threads after the publish = %+v, want both sources' rows: the still-live source added after the capture must publish", got.Threads)
+	}
+	if _, ok := got.Sources["host-late"]; !ok {
+		t.Fatal("publish dropped the still-live source's per-source snapshot")
+	}
+}
+
+// TestRemoteThreadCacheEmptyCaptureWalkStillFiltersRemovedSource pins the
+// fresh-hub variant of the round-9 M2 finding: a walk that captured nothing
+// (no source was registered yet) is still a walk, and its publish must not
+// skip the staleness filter — a host added and removed inside that one walk
+// would otherwise republish. The empty capture differs from the walk-free
+// publish (StoreSnapshotData), which passes no capture at all and stays
+// unfiltered.
+func TestRemoteThreadCacheEmptyCaptureWalkStillFiltersRemovedSource(t *testing.T) {
+	c := &RemoteThreadCache{}
+	// The walk starts on a hub with nothing registered: the capture is
+	// empty, but it exists — SourceGenerations returns a map, never nil.
+	captured := c.SourceGenerations()
+	if captured == nil {
+		t.Fatal("SourceGenerations returned nil; the fixture needs an empty capture, not a walk-free publish")
+	}
+	c.RegisterSource("host-late")
+	walk := RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{{ID: "l1", Source: "host-late"}},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
+		},
+	}
+	c.RemoveSource("host-late")
+	c.StoreWalkSnapshot(walk, captured)
+	if got := c.Snapshot().Threads; len(got) != 0 {
+		t.Fatalf("threads after the late publish = %+v, want none: an empty capture is still a walk's capture", got)
+	}
+	if _, ok := c.Snapshot().Sources["host-late"]; ok {
+		t.Fatal("late walk resurrected the removed host's per-source snapshot")
+	}
+}

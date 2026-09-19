@@ -77,11 +77,11 @@ func (c *RemoteThreadCache) StoreSnapshot(threads []appwire.Thread, complete boo
 // generation. The caller's generation is ignored because the cache owns the
 // monotonic sequence used by tree memoization.
 //
-// This is the walk-metadata-free publish: nothing is filtered, because with no
-// captured generations there is no evidence a source's identity moved under
-// the rows. The production refresh path publishes through StoreWalkSnapshot,
-// which carries the generations the walk captured and drops rows a removal or
-// remove/re-add has made stale.
+// This is the walk-metadata-free publish: nothing is filtered, because it
+// carries no capture at all — with no captured generations there is no
+// evidence a source's identity moved under the rows. The production refresh
+// path publishes through StoreWalkSnapshot, which carries the generations the
+// walk captured and drops rows a removal or remove/re-add has made stale.
 func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 	c.publish(snapshot, nil)
 }
@@ -96,9 +96,11 @@ func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 // when it finishes (the round-6 M2 finding), and a walk that started before a
 // remove/re-add cannot publish the old registration's rows under the re-added
 // name (the round-7 M1 finding). A source the walk captured under its current
-// generation publishes normally, and so does a source the walk never captured:
-// it registered after the capture, so its rows belong to the current
-// registration.
+// generation publishes normally, and so does a source the walk never captured
+// while its registration is still live: it registered after the capture, so
+// its rows belong to the registration the publish sees — but a source that
+// was removed again before the publish is stale, the registration that owned
+// its rows being gone (the round-9 M2 finding).
 func (c *RemoteThreadCache) StoreWalkSnapshot(snapshot RemoteThreadSnapshot, sourceGenerations map[string]uint64) {
 	c.publish(snapshot, sourceGenerations)
 }
@@ -124,7 +126,8 @@ func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[
 
 // RegisterSource records sourceID's registration and assigns it the next
 // identity generation. The hub's host manager calls it whenever a host's
-// source registers — sidecar entries at startup and every runtime add — so the
+// source registers — sidecar entries at startup and every runtime add — and
+// the source registry's construction does it for configured hosts, so the
 // cache knows which registration of the name a walk is walking: RemoveSource
 // deletes the entry, a re-add assigns a strictly newer generation, and
 // StoreWalkSnapshot compares the two to reject a walk captured under a stale
@@ -132,8 +135,12 @@ func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[
 // remove/re-add published the old host's rows under the new host's identity
 // (the round-7 M1 finding). Registering a name that is already registered
 // refreshes its generation too: the caller cannot observe the interleaving,
-// and a stale walk's rows must not slide in through it. An empty ID does
-// nothing.
+// and a stale walk's rows must not slide in through it. Callers pair it
+// with the registration's visibility: the generation is assigned before the
+// source becomes enumerable, so a walk that reads a source always finds a
+// generation for it at publish — an uncaptured source absent from the
+// generations is one whose registration is gone (the round-9 M2 rule), never
+// one still mid-registration. An empty ID does nothing.
 func (c *RemoteThreadCache) RegisterSource(sourceID string) {
 	if sourceID == "" {
 		return
@@ -225,16 +232,41 @@ func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 // (the round-6 M2 finding) — or, across a remove/re-add, rows from the old
 // host under the new host's identity (the round-7 M1 finding). The filter
 // uses RemoveSource's own ownership rule, so what a prune drops cannot come
-// back in through a publish. Sources the walk did not capture publish
-// unfiltered: they registered after the capture, so their rows belong to the
-// current registration. Callers hold mu.
+// back in through a publish.
+//
+// A source the walk did not capture is stale too when the cache holds no
+// current registration for it. Such a source registered after the capture —
+// the only way a walk's row owner can be uncaptured — so a missing
+// registration means it was removed again before the publish, and a
+// registration that no longer exists cannot own live rows (the round-9 M2
+// finding: a host added and removed inside one refresh walk used to
+// republish its sessions until the next tick rewrote the cache). The
+// still-live half of that case publishes: the rows a walk read from a source
+// registered after its capture belong to that registration, which is the one
+// the publish sees. Every source a walk can enumerate carries a generation —
+// the hub assigns each source's generation before the source becomes
+// registry-visible, and only removal deletes it — so "uncaptured and
+// unregistered" can only mean removed, never mid-registration. Callers hold
+// mu.
 func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, captured map[string]uint64) RemoteThreadSnapshot {
-	if len(captured) == 0 {
+	if captured == nil {
+		// The walk-free publish (StoreSnapshotData) carries no capture at
+		// all: with nothing captured there is no evidence a source's identity
+		// moved under the rows, so nothing is filtered. A walk's empty
+		// capture is a map — SourceGenerations returns one, never nil — and
+		// still filters.
 		return snapshot
 	}
 	sourceStale := func(sourceID string) bool {
 		generation, walked := captured[sourceID]
-		return walked && c.generations[sourceID] != generation
+		if !walked {
+			// The source registered after the walk's capture. Its rows belong
+			// to the current registration; one that no longer exists was
+			// removed before the publish, so its rows cannot publish.
+			_, live := c.generations[sourceID]
+			return !live
+		}
+		return c.generations[sourceID] != generation
 	}
 	threads := make([]appwire.Thread, 0, len(snapshot.Threads))
 	for _, thread := range snapshot.Threads {

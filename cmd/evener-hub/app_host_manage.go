@@ -715,7 +715,6 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	source.SetHostOnline(func() bool {
 		return m.cfg.online == nil || m.cfg.online(entry.Name)
 	})
-	m.cfg.sources.Add(source)
 	// The registration gives the name a fresh identity generation in the
 	// remote-thread cache: Remove dropped the previous one with the host's
 	// rows, and a refresh that was walking while the remove committed holds
@@ -723,9 +722,16 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	// letting the old host's sessions publish under the re-added identity
 	// (round-7 M1), while the re-added host's own walks capture the new
 	// generation and publish normally.
+	//
+	// The generation is assigned BEFORE the source becomes registry-visible:
+	// a refresh walk may enumerate the source the moment it is added, and
+	// the publish treats a source absent from both its capture and the live
+	// generations as removed (round-9 M2) — so a source the walk can read
+	// must already carry a generation, and the remove path alone deletes it.
 	if m.cfg.remoteCache != nil {
 		m.cfg.remoteCache.RegisterSource(entry.Name)
 	}
+	m.cfg.sources.Add(source)
 }
 
 // markRemoving records name as mid-removal, in the commit phase that already

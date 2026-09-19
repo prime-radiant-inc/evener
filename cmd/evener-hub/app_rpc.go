@@ -59,6 +59,19 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				source.SetHostOnline(func() bool {
 					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
 				})
+				// The identity generation is assigned before the source
+				// becomes registry-visible, the same discipline the host
+				// manager's runtime add follows: a refresh walk may enumerate
+				// the source the moment it is added, and the publish treats a
+				// source absent from both its capture and the live generations
+				// as removed (round-9 M2) — so every enumerable source must
+				// carry a generation from the instant it is enumerable.
+				// Configured hosts never pass through the manager, so theirs
+				// is assigned here; the local source needs none — the walk
+				// skips it, so it can never own walk-published rows.
+				if cfg.RemoteThreadCache != nil {
+					cfg.RemoteThreadCache.RegisterSource(host.Name)
+				}
 				registry.Add(source)
 			}
 		}
