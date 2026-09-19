@@ -293,22 +293,24 @@ func TestProcessGroupGuardHelper(t *testing.T) {
 }
 
 // TestTheGroupSignalsRefuseAPgidThatIsNotAGroup pins the guard on every entry
-// point that signals: 0 is the caller's own process group, 1 makes kill(-1),
-// which is every process this user may signal on the host, and negatives are
-// not groups, so a signal built from any of them goes to processes this
-// package never started. A helper that survives its call and exits 0 is the
-// whole assertion: without the guard, Terminate(0) and Kill(0) kill it where
-// it stands, and the stops wait out a reap that cannot come.
+// point that signals: 0 is the caller's own process group and negatives are
+// not groups, so a signal built from either goes to processes this package
+// never started. A helper that survives its call and exits 0 is the whole
+// assertion: without the guard, Terminate(0) and Kill(0) kill it where it
+// stands, and the stops wait out a reap that cannot come.
 //
-// The 1 case is not mutation-proved, and deliberately: removing the guard and
-// running it would broadcast SIGTERM and then SIGKILL to every process this
-// user owns, on the machine running the tests. What is proved instead, and
-// safely, is the guard in the one place that sends -- see
-// TestSignalGroupRefusesTheNumbersThatAreNotGroups, which asks with signal 0,
-// the one that delivers nothing even when it reaches everything.
+// 1 is not in this matrix, and that is the point of saying so. These cases
+// send real signals, and they send nothing today only because the guard holds:
+// if it ever stops holding, a pgid of 1 makes kill(-1, SIGTERM) and then
+// kill(-1, SIGKILL), which is every process the user running the tests owns.
+// A test whose failure mode is taking out the developer's session, or the CI
+// runner's, is not a test worth having. The floor for 1 is proved instead in
+// TestSignalGroupRefusesTheNumbersThatAreNotGroups, which asks signalGroup and
+// Exists with signal 0 -- the one that delivers nothing even when it reaches
+// everything -- and that is the same floor, in the one place that sends.
 func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
 	for _, call := range []string{"Terminate", "Kill", "Stop", "StopWith"} {
-		for _, pgid := range []string{"0", "1", "-1"} {
+		for _, pgid := range []string{"0", "-1"} {
 			t.Run(call+"("+pgid+")", func(t *testing.T) {
 				// One buffer each: os/exec hands a child one descriptor when
 				// Stdout and Stderr are the same writer, so sharing one is

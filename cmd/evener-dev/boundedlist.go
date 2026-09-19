@@ -223,6 +223,15 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// descendant it left behind: that attempt is retried although its work was
 	// done. Nothing in a wait status tells the two apart, and this is the side
 	// that cannot report a partial list as a whole one.
+	//
+	// That ordering is also narrower than it looks: the wait goroutine returns
+	// as soon as the child exits, so a signal landing on an exited-but-
+	// unreaped child is possible only in the microseconds between the kernel
+	// marking the exit and wait4 returning. What it costs there is one extra
+	// enumeration -- or a 124 on the last attempt -- and never a partial list
+	// reported as a whole one, which is not a price worth paying for a
+	// per-platform process-state probe that would have to be right on two
+	// kernels to collect it.
 	stopped, stopErr := realGroupStopper.stop(result.pgid, result.interrupted, reaped, grace)
 	if stopErr != nil {
 		// A signal the kernel refused -- EPERM on a group this process does
