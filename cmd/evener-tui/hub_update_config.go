@@ -538,9 +538,6 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	currentRemoval := msg.Action == "remove" && msg.Name == m.marketplaceRemovePending &&
 		(m.marketplaceRemoveGeneration == 0 || msg.ListGeneration == m.marketplaceRemoveGeneration)
 	staleSnapshot := msg.ListGeneration < m.marketplaceListGeneration
-	if staleSnapshot && !currentRemoval {
-		return m, nil
-	}
 	if msg.Err != nil {
 		if currentRemoval {
 			switch state, applied := classifyMarketplaceCloneRemains(msg.Err); state {
@@ -573,6 +570,9 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			m.marketplaceRemoveGeneration = 0
 			m.marketplaceReconcilePending = false
 		}
+		return m, nil
+	}
+	if staleSnapshot && !currentRemoval {
 		return m, nil
 	}
 	if staleSnapshot {
