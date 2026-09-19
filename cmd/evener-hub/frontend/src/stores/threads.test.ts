@@ -11200,6 +11200,52 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     tabB.close();
   });
 
+  // RoboRev PR #1873 low, the fresh review: cancelUnattemptedMutations
+  // suppressed its persistence notification when its own write canceled
+  // nothing, but zero is exactly what this tab observes when a sibling tab's
+  // Stop already canceled the rows — and the raw storage write announces
+  // nothing over the BroadcastChannel either — so this tab's cached
+  // projection and pins stayed on the pre-cancel view until the next
+  // discovery scan refreshed them. Every successful cancel write must
+  // notify, zero included, the same rule the discard paths carry.
+  test("a stop whose rows a sibling tab already canceled still refreshes this tab's projection", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      const queued = await storage.enqueueIntent(queueIntent("canceled by the sibling tab"));
+      fake.on("thread/shutdown", () => ({}));
+
+      // The sibling tab's Stop already canceled the row, so this tab's own
+      // cancel write will observe zero — the finding's precondition.
+      const sibling = new MutationOutboxIndexedDB();
+      const siblingCanceled = await sibling.cancelUnattempted("ref_a");
+      sibling.close();
+      expect(siblingCanceled).toEqual([queued.clientMutationId]);
+
+      // Fake timers pin the discovery interval: no scan may be what
+      // refreshes the projection, so the notify under test is the only
+      // thing that can fire here. The flush first drains every discovery
+      // the setup armed, so the baseline below is honest.
+      await flushIndexedDBUntil(() => false);
+      let notified = false;
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (refs.includes("ref_a")) notified = true;
+      });
+      try {
+        expect(notified).toBe(false);
+        await threadsStore.getState().shutdown("ref_a");
+        await flushUntilArrived("the zero-cancel stop to refresh this tab's projection", () => notified);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // §9 item 4: a canceled row must not ride a Resume back out. The stopped
   // session's recovery flow - Force stop, the recovery obligation it leaves,
   // the explicit Resume that clears it - all run between the cancellation and

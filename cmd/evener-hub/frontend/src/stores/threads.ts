@@ -1507,8 +1507,15 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  const canceled = await runtime.storage.cancelUnattempted(ref);
-  if (canceled.length > 0) notifyMutationPersistence([ref]);
+  await runtime.storage.cancelUnattempted(ref);
+  // Notify on every successful write, zero canceled rows included: zero is
+  // exactly what this tab sees when a sibling tab's Stop already canceled the
+  // rows, and cancelUnattempted is a raw storage write — it announces nothing
+  // over the BroadcastChannel and schedules no discovery — so this notify is
+  // the only thing that refreshes this tab's projection and pins now rather
+  // than at the next discovery scan. The discard paths carry the same
+  // zero-included rule.
+  notifyMutationPersistence([ref]);
 }
 
 // Lean watches omit turns until an expanded card asks for them; the shared

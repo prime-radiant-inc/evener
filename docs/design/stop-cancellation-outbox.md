@@ -88,6 +88,12 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   successful Stop leaves no recovery obligation, so `forceStop` can fail while the
   daemon is already stopped") becomes structurally impossible: the dangerous order
   (stopped first, write second) no longer exists.
+  The write's success notifies the owning runtime's projection on every
+  outcome, zero canceled rows included (2026-09-19, the fresh review's Low):
+  zero is exactly what a sibling tab's earlier Stop leaves this tab, the raw
+  write announces nothing over the BroadcastChannel, and the notify is what
+  refreshes this tab's projection and pins now rather than at the next
+  discovery scan — the same zero-included rule the discard paths carry.
   Boundary (ratified 2026-09-18): this abort applies to a *real store whose write
   fails*. When no mutation store exists at all (IndexedDB unavailable to the tab),
   there are no durable rows to cancel and the tab can neither resurrect nor reopen
