@@ -679,6 +679,67 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
   return mergeOlderItemPage(model, resp);
 }
 
+type TurnFragment = {
+  turn: TurnModel;
+  source: "older" | "fresh";
+  order: number;
+};
+
+type TurnFragmentGroup = {
+  fragments: TurnFragment[];
+  firstOrder: number;
+};
+
+function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnModel[] {
+  const groups: TurnFragmentGroup[] = [];
+  const add = (turn: TurnModel, source: TurnFragment["source"], order: number): void => {
+    const fragment = { turn, source, order } satisfies TurnFragment;
+    const matching = groups.filter((group) =>
+      group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
+    );
+    const target = matching[0];
+    if (target === undefined) {
+      groups.push({ fragments: [fragment], firstOrder: order });
+      return;
+    }
+    target.fragments.push(fragment);
+    for (const group of matching.slice(1)) target.fragments.push(...group.fragments);
+    for (const group of matching.slice(1).reverse()) {
+      const index = groups.indexOf(group);
+      if (index !== -1) groups.splice(index, 1);
+    }
+    target.fragments.sort((left, right) => left.order - right.order);
+    target.firstOrder = target.fragments[0]?.order ?? target.firstOrder;
+  };
+
+  older.forEach((turn, index) => {
+    add(turn, "older", index);
+  });
+  fresh.forEach((turn, index) => {
+    add(turn, "fresh", older.length + index);
+  });
+
+  return groups
+    .sort((left, right) => left.firstOrder - right.firstOrder)
+    .flatMap((group) => {
+      const olderFragments = group.fragments.filter((fragment) => fragment.source === "older");
+      const freshFragments = group.fragments.filter((fragment) => fragment.source === "fresh");
+      if (olderFragments.length === 0) {
+        const firstFresh = freshFragments[0]?.turn;
+        if (firstFresh === undefined) return [];
+        return [
+          freshFragments.slice(1).reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstFresh),
+        ];
+      }
+      const firstOlder = olderFragments[0]?.turn;
+      if (firstOlder === undefined) return freshFragments.map((fragment) => fragment.turn);
+      const mergedOlder = olderFragments
+        .slice(1)
+        .reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstOlder);
+      return [freshFragments.reduce((current, fragment) => mergePageTurn(current, fragment.turn), mergedOlder)];
+    });
+}
+
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
@@ -686,22 +747,10 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   // before that field existed re-derives it from its own thread id.
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
-  const turns: TurnModel[] = [];
-
-  for (const older of olderTurns) {
-    const index = turns.findIndex((turn) => turnsMatch(turn, older));
-    if (index === -1) turns.push(older);
-    else if (turns[index]) turns[index] = mergePageTurn(turns[index], older);
-  }
-  for (const current of model.turns) {
-    const index = turns.findIndex((turn) => turnsMatch(turn, current));
-    if (index === -1) turns.push(current);
-    else if (turns[index]) turns[index] = mergePageTurn(turns[index], current);
-  }
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(turns),
+    turns: mergeToolCallsByCallId(coalesceTurnFragments(olderTurns, model.turns)),
     olderCursor: resp.nextCursor,
   };
 }
