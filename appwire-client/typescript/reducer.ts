@@ -619,7 +619,7 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
 }
 
 function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
-  if (matches.length === 0) return true;
+  if (matches.length === 0) return older.items.length === 0 || older.items.some((item) => item.type !== "warning");
   if (
     turnCoverageFields.some((field) => older[field] !== undefined && matches.every((turn) => turn[field] === undefined))
   ) {
@@ -686,9 +686,13 @@ function weaveTurnGap(fresh: TurnModel[], older: TurnModel[], preferOlderWithout
   return result;
 }
 
-function weaveUnmatchedOlderTurns(older: TurnModel[], fresh: TurnModel[], freshHasOlderMatch: boolean[]): TurnModel[] {
-  const oldAnchorFreshIndexes = older.map((olderTurn) =>
-    fresh.findIndex((freshTurn, index) => freshHasOlderMatch[index] && turnsMatch(olderTurn, freshTurn)),
+function weaveUnmatchedOlderTurns(
+  older: TurnModel[],
+  fresh: TurnModel[],
+  freshOlderAnchors: Set<number>[],
+): TurnModel[] {
+  const oldAnchorFreshIndexes = older.map((_olderTurn, olderIndex) =>
+    freshOlderAnchors.findIndex((olderIndexes) => olderIndexes.has(olderIndex)),
   );
   const olderRunsByFreshGap = new Map<number, TurnModel[]>();
   for (const [olderIndex, olderTurn] of older.entries()) {
@@ -704,15 +708,19 @@ function weaveUnmatchedOlderTurns(older: TurnModel[], fresh: TurnModel[], freshH
     olderRunsByFreshGap.set(gap, run);
   }
 
-  const anchors = freshHasOlderMatch.flatMap((hasMatch, index) => (hasMatch ? [index] : []));
+  const anchors = freshOlderAnchors.flatMap((olderIndexes, index) => (olderIndexes.size > 0 ? [index] : []));
   const boundaries = [-1, ...anchors, fresh.length];
   const result: TurnModel[] = [];
   for (let boundaryIndex = 0; boundaryIndex < boundaries.length - 1; boundaryIndex += 1) {
     const previousAnchor = boundaries[boundaryIndex];
     const nextAnchor = boundaries[boundaryIndex + 1];
+    if (previousAnchor === undefined || nextAnchor === undefined) continue;
     const gapRun = olderRunsByFreshGap.get(previousAnchor === -1 ? 0 : nextAnchor) ?? [];
     result.push(...weaveTurnGap(fresh.slice(previousAnchor + 1, nextAnchor), gapRun, previousAnchor === -1));
-    if (nextAnchor < fresh.length) result.push(fresh[nextAnchor] as TurnModel);
+    if (nextAnchor < fresh.length) {
+      const anchorTurn = fresh[nextAnchor];
+      if (anchorTurn !== undefined) result.push(anchorTurn);
+    }
   }
   return result;
 }
@@ -767,12 +775,13 @@ export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHi
   if (!olderContributed) return { turns: newer, olderCoverage: false, transcriptOverlap };
 
   const freshOrdered: TurnModel[] = [];
-  const freshHasOlderMatch: boolean[] = [];
+  const freshOlderAnchors: Set<number>[] = [];
   for (const fresh of newer) {
     const matchingIndexes = merged.flatMap((turn, index) => (turnsMatch(turn, fresh) ? [index] : []));
+    const consumedOlderIndexes = matchingIndexes.filter((index) => index < mergedOlder.length);
     if (matchingIndexes.length === 0) {
       freshOrdered.push(fresh);
-      freshHasOlderMatch.push(false);
+      freshOlderAnchors.push(new Set());
       continue;
     }
     let candidate = fresh;
@@ -780,14 +789,17 @@ export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHi
     const existingIndex = freshOrdered.findIndex((turn) => turnsMatch(turn, candidate));
     if (existingIndex === -1) {
       freshOrdered.push(candidate);
-      freshHasOlderMatch.push(matchingIndexes.some((index) => index < mergedOlder.length));
+      freshOlderAnchors.push(new Set(consumedOlderIndexes));
     } else {
       freshOrdered[existingIndex] = mergePageTurn(freshOrdered[existingIndex] ?? candidate, candidate);
-      freshHasOlderMatch[existingIndex] ||= matchingIndexes.some((index) => index < mergedOlder.length);
+      const olderIndexes = freshOlderAnchors[existingIndex];
+      if (olderIndexes !== undefined) {
+        for (const index of consumedOlderIndexes) olderIndexes.add(index);
+      }
     }
   }
   return {
-    turns: mergeToolCallsByCallId(weaveUnmatchedOlderTurns(mergedOlder, freshOrdered, freshHasOlderMatch)),
+    turns: mergeToolCallsByCallId(weaveUnmatchedOlderTurns(mergedOlder, freshOrdered, freshOlderAnchors)),
     olderCoverage,
     transcriptOverlap,
   };

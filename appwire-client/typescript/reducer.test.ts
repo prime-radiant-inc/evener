@@ -2884,6 +2884,50 @@ test("mergeTurnHistory keeps live-only fields and warning items out of transcrip
   );
   expect(warningOnly.olderCoverage).toBe(false);
   expect(warningOnly.turns[0]?.items).toHaveLength(1);
+
+  const unmatchedWarning = mergeTurnHistory(
+    [
+      {
+        id: "unmatched-warning-turn",
+        status: "completed",
+        items: [
+          {
+            id: "unmatched-warning",
+            turnId: "unmatched-warning-turn",
+            type: "warning",
+            text: "provider warning",
+            status: "completed",
+            warning: { title: "Provider" },
+          },
+        ],
+      },
+    ],
+    [],
+  );
+  expect(unmatchedWarning.olderCoverage).toBe(false);
+  expect(unmatchedWarning.turns[0]?.items).toHaveLength(1);
+});
+
+test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {
+  const sharedItem = {
+    id: "shared-item",
+    turnId: "turn-a",
+    type: "agentMessage",
+    text: "shared",
+    status: "completed",
+  };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-a", status: "completed", usage: { inputTokens: 10 }, items: [] }],
+    [
+      { id: "turn-a", status: "completed", items: [sharedItem] },
+      { id: "turn-b", status: "completed", items: [{ ...sharedItem, turnId: "turn-b" }] },
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-b");
+  expect(merged.turns[0]?.usage).toEqual({ inputTokens: 10 });
+  expect(merged.turns[0]?.items).toHaveLength(1);
 });
 
 test("mergeTurnHistory preserves fresh ordering when its window extends before retained turns", () => {
