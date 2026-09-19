@@ -204,6 +204,17 @@ function draftIdentity(entry: InstanceEntry): string {
   return fields.join("\u0000");
 }
 
+/** The same identity with the endpoint fingerprint left out - the fields
+ * draftIdentity carries minus the fingerprint. Two rows that match on this are
+ * the same instance, one re-pointed; a row that differs here (or is absent) is
+ * a replacement wearing the name, and a draft typed for the old instance must
+ * not follow it. */
+function draftIdentityWithoutEndpoint(entry: InstanceEntry): string {
+  return DRAFT_IDENTITY_FIELDS.filter((field) => field !== "endpointFingerprint")
+    .map((field) => fieldValue(entry, field))
+    .join("\u0000");
+}
+
 /** Whether a rename carried `base` over unchanged. Renaming a curated-shadow
  * instance pins base to the old name: the entry owned the name of the curated
  * provider it shadowed, and that name is what its configuration is inherited
@@ -578,15 +589,30 @@ export function InstanceSheet({
         // draft was seeded, so this save was not applied. Keep the draft, say
         // why, and re-read the listing so a retry asserts the destination now on
         // screen.
-        void credentialsStore
-          .getState()
-          .fetch()
-          .catch(() => {});
         if (shownName.current === instance.name) {
           setRenamingFrom(undefined);
           setFormError(ENDPOINT_CHANGED_SAVE_ERROR);
         }
         toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
+        // The retry this message asks for can only land once the sheet asserts
+        // the destination the name now resolves to, so the read is awaited
+        // rather than left in flight: the re-anchor below has to see a listing
+        // the store actually applied, never the stale row the refusal
+        // described. A read that never applied leaves today's refusal in place.
+        const listed = await confirmListingState(() => true);
+        if (!listed || shownName.current !== instance.name) return;
+        const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+        // Re-anchor only when the refreshed row is the same instance re-pointed
+        // - an identity match that ignores the endpoint fingerprint. Then the
+        // draft is left untouched and the next Save carries the user's edits and
+        // the destination now on screen. A replacement (a different
+        // provider/auth/base) or an absent row keeps handleSave's identity guard
+        // as the authority: it reseeds and refuses, because these edits must not
+        // land on a stranger.
+        if (refreshed === undefined) return;
+        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
+        seededIdentity.current = draftIdentity(refreshed);
+        seededFingerprint.current = refreshed.endpointFingerprint;
         return;
       }
       // A rename that stood but could not carry the instance's OAuth record

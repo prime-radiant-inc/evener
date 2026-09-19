@@ -1079,6 +1079,101 @@ describe("the form", () => {
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
   });
 
+  // The refusal's message asks the user to "review its destination and save
+  // again", so the retry has to be able to land: once the recovery read has
+  // applied, the sheet must assert the destination the name now resolves to and
+  // keep the edits the user typed. Before the fix the sheet kept both the stale
+  // assertion and the stale seeded identity, so the second Save either re-sent
+  // the refused fingerprint or tripped the identity guard and reseeded over the
+  // draft.
+  test("a retry after an endpoint conflict asserts the refreshed destination and keeps the edits", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const WORK_MOVED = {
+      ...WORK,
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-moved",
+    };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    // The same instance, re-pointed: name/providerId/base/auth unchanged, only
+    // the endpoint (baseUrl + fingerprint) moved.
+    fake.on("evener/instance/list", () => ({ instances: [WORK_MOVED], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    expect(edits()[0]?.params).toMatchObject({ expectedEndpointFingerprint: "fp-work" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    // The recovery read has applied the re-pointed row.
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.endpointFingerprint).toBe(
+        "fp-moved",
+      ),
+    );
+
+    await user.click(saveButton());
+    await waitFor(() => expect(edits()).toHaveLength(2));
+    // The retry lands against the destination now on screen, with the user's
+    // typed field intact - not the refused fingerprint, and not a reseeded form.
+    expect(edits()[1]?.params).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-moved",
+      originClientId: "test-tab",
+    });
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
+  // The re-anchor must not fire for a replacement: when the refreshed row under
+  // the name is a different instance, the sheet's existing identity guard is what
+  // refuses - the edits typed for the old instance must not land on a stranger.
+  test("a replacement at the name is refused, not re-anchored, after an endpoint conflict", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const IMPOSTOR = instance({
+      name: "work",
+      providerId: "anthropic",
+      protocol: "anthropic",
+      baseUrl: "https://gw.example.test/v9",
+      endpointFingerprint: "fp-impostor",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    fake.on("evener/instance/list", () => ({ instances: [IMPOSTOR], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.providerId).toBe("anthropic"),
+    );
+
+    await user.click(saveButton());
+    // The guard refuses and reseeds; nothing is sent to the replacement.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("was replaced under the same name"));
+    expect(edits()).toHaveLength(1);
+  });
+
   // The hub's generic conflict is shared by genuine refusals. A rename onto an
   // occupied name is one: the sheet must surface the hub's own message and keep
   // the draft, not dress it up as a moved endpoint and refresh.

@@ -62,12 +62,6 @@ const APPLIED_RENAME_WARNING =
 const ENDPOINT_CHANGED_WARNING =
   "This instance changed to a different endpoint since the form was opened. The provider list was refreshed; review its destination and try again.";
 
-// What a credential save says when the hub refuses the destination it was
-// asserted against: the name moved since the row was read, so nothing honest
-// was saved and the user re-enters against the destination now on screen.
-const ENDPOINT_CHANGED_SAVE_MESSAGE =
-  "This connection changed to a different endpoint, so the change was not saved. Check its destination and try again.";
-
 // What clearing a credential or removing an instance says when the hub cannot
 // fingerprint the destination: no key is being sent, so it does not reuse the
 // save-specific wording.
