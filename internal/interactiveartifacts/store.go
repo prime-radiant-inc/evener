@@ -254,11 +254,19 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 func (s *Store) InstallGrant(ctx context.Context, hash [32]byte, scope Scope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if (slices.Contains(scope.Methods, "artifact_publish") && scope.OriginatingThreadID == "") || hash == ([32]byte{}) || scope.PrincipalID == "" || scope.Generation == 0 || !s.clock().Before(scope.ExpiresAt) || len(scope.Methods) == 0 {
+	now := s.clock()
+	if (slices.Contains(scope.Methods, "artifact_publish") && scope.OriginatingThreadID == "") || hash == ([32]byte{}) || scope.PrincipalID == "" || scope.Generation == 0 || !now.Before(scope.ExpiresAt) || len(scope.Methods) == 0 {
 		return &DomainError{Code: NotFoundOrForbidden}
 	}
 	if err := s.checkNamespace(ctx, scope); err != nil {
 		return err
+	}
+	// Issuance reclaims expired scopes at the same writer fence as revocation.
+	// Active grants are retained; an idle service needs no cleanup goroutine.
+	for installed, grant := range s.grants {
+		if !now.Before(grant.ExpiresAt) {
+			delete(s.grants, installed)
+		}
 	}
 	if _, exists := s.grants[hash]; exists {
 		return errors.New("artifact grant hash already installed")
