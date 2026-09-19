@@ -141,7 +141,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			}
 		}
 		if len(added) != 0 {
-			descendantFinishes = append(descendantFinishes, cfg.ResumeLocks.BeginForceStop(added))
+			descendantFinishes = append(descendantFinishes, cfg.ResumeLocks.BeginForceStop(added).Finish)
 		}
 		return nil
 	}
@@ -151,8 +151,8 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return err
 	}
 	aliases := forceStopAliases(entry)
-	finishRecovery := cfg.ResumeLocks.BeginForceStop(aliases)
-	defer func() { finishRecovery(stopErr == nil) }()
+	fenceRecovery := cfg.ResumeLocks.BeginForceStop(aliases)
+	defer func() { fenceRecovery.Finish(stopErr == nil) }()
 	// Clear gives one daemon stable and current session aliases. Lock both so
 	// resume or deletion through either alias cannot race exit confirmation.
 	acquired := 0
@@ -174,7 +174,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
 			// The refusal canceled nothing, so it must not leave the epochs
 			// this fence advanced either.
-			cfg.ResumeLocks.RejectForceStop(aliases)
+			fenceRecovery.Reject()
 			return err
 		}
 	}
@@ -195,7 +195,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			// this fence advanced, so the in-flight Resume the refusal
 			// preserves still completes its recovery clear against the epoch
 			// it was admitted under.
-			cfg.ResumeLocks.RejectForceStop(aliases)
+			fenceRecovery.Reject()
 			return err
 		}
 	}
@@ -401,9 +401,10 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	}
 	aliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(aliases)
+	var fence *hubcore.ForceStopFence
 	if stopResumes {
-		finish := cfg.ResumeLocks.BeginForceStop(aliases)
-		defer finish(false)
+		fence = cfg.ResumeLocks.BeginForceStop(aliases)
+		defer fence.Finish(false)
 		// A deletion record may name any alias in the ownership group, not only
 		// the one the request addressed. Refuse a deleted group here, before any
 		// cancellation: the authoritative per-alias re-check runs under the alias
@@ -413,7 +414,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
 			// The refusal canceled nothing, so it must not leave the epochs
 			// this fence advanced either.
-			cfg.ResumeLocks.RejectForceStop(aliases)
+			fence.Reject()
 			return confirmedStoppedDecision{}, err
 		}
 	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
@@ -439,7 +440,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
 			// The refusal canceled nothing, so it must not leave the epochs
 			// this fence advanced either.
-			cfg.ResumeLocks.RejectForceStop(aliases)
+			fence.Reject()
 			return confirmedStoppedDecision{}, err
 		}
 	}
@@ -456,7 +457,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 				// epochs this fence advanced, so the in-flight Resume the
 				// refusal preserves still completes its recovery clear against
 				// the epoch it was admitted under.
-				cfg.ResumeLocks.RejectForceStop(aliases)
+				fence.Reject()
 				return confirmedStoppedDecision{}, err
 			}
 		}

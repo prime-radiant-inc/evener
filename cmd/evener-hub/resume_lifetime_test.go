@@ -237,7 +237,7 @@ func TestLongRunningResumeCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T) 
 		if err := locks.PersistForceStop(aliases, "z-current"); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		blocked := locks.For("z-current")
 		blocked.Lock()
 		defer blocked.Unlock()
@@ -290,7 +290,7 @@ func TestLongRunningResumeRepeatStopUsesDurableConfirmedAuthority(t *testing.T) 
 			if err := locks.ConfirmForceStop(current); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			// No rendezvous remains; confirmed authority must survive hub recreation.
 			if recreated {
 				locks, err = hubcore.NewPersistentResumeLocks(root)
@@ -337,7 +337,7 @@ func TestLongRunningResumeConfirmedStopDoesNotHideOtherAliasClaims(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			finish(true)
+			finish.Finish(true)
 			runDir := t.TempDir()
 			if kind != "unconfirmed exit" {
 				entry := rendezvous.Entry{PID: 4242, SessionID: current, ThreadID: current, StartedAt: time.Now()}
@@ -497,7 +497,7 @@ func TestLongRunningResumeShutdownProofNeverCancelsOrKills(t *testing.T) {
 			if err := locks.ConfirmForceStop(sessionID); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			before := locks.RecoveryState(sessionID)
 			runDir := t.TempDir()
 			var active *hubcore.ActiveResume
@@ -632,7 +632,7 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	waiting, allowExit, reaped := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	releaseChild := sync.OnceFunc(func() { close(allowExit) })
 	defer releaseChild()
@@ -837,7 +837,7 @@ func TestShutdownRefusesCleanupBeforeHandlerDone(t *testing.T) {
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
 	if err != nil {
 		t.Fatal(err)
@@ -890,7 +890,7 @@ func TestShutdownUncertainDiscoveryAttemptsSource(t *testing.T) {
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	runDir := t.TempDir()
 	// A pid-named but undecodable rendezvous file fails the strict read.
 	if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {

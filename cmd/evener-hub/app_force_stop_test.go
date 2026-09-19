@@ -327,7 +327,7 @@ func TestConfirmedStoppedShortcutRefreshesAfterStop(t *testing.T) {
 	if err := locks.ConfirmForceStop(webTestSessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	inputs := &hubcore.InputsVersion{}
 	poked := false
 	cfg := hubcore.WebConfig{
@@ -998,7 +998,7 @@ func TestSessionRecoveryRejectsOldActionsAfterExplicitResume(t *testing.T) {
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := sessionRecoveryState(cfg, "local:current", "").Epoch
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("current", epoch); err != nil {
 		t.Fatal(err)
@@ -1013,7 +1013,7 @@ func TestSessionRecoveryRejectsOldActionsAfterExplicitResume(t *testing.T) {
 		t.Fatalf("fresh action refused: %v", err)
 	}
 	finish = cfg.ResumeLocks.BeginForceStop([]string{"stable", "current"})
-	finish(false)
+	finish.Finish(false)
 	if state := sessionRecoveryState(cfg, "local:stable", ""); state.ResumeRequired || state.Stopping != 0 {
 		t.Fatalf("failed stop declared session stopped: %+v", state)
 	}
@@ -1027,7 +1027,7 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"recovery-waiter"}, "recovery-waiter"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("recovery-waiter", cfg.ResumeLocks.RecoveryState("recovery-waiter").Epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1210,7 +1210,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"unrelated"}, "unrelated"); err != nil {
 				t.Fatal(err)
 			}
-			other(true)
+			other.Finish(true)
 			if err := sessionActionRecoveryError(t.Context(), cfg, "", tc.target, sessionRequestRecoveryEpoch(ctx, cfg, "", tc.target)); err != nil {
 				t.Fatalf("another session invalidated this admission: %v", err)
 			}
@@ -1218,7 +1218,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{tc.target}, tc.target); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted(tc.target, cfg.ResumeLocks.RecoveryState(tc.target).Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -1290,7 +1290,7 @@ func TestSandboxApprovalCannotCrossSessionRecovery(t *testing.T) {
 				if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 				if err := cfg.ResumeLocks.ExplicitResumeCompleted("owner", cfg.ResumeLocks.RecoveryState("owner").Epoch); err != nil {
 					t.Fatal(err)
 				}
@@ -1356,7 +1356,7 @@ func TestCapturedSessionActionsRejectAdmissionBeforeRecovery(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"admitted-session"}, "admitted-session"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted("admitted-session", cfg.ResumeLocks.RecoveryState("admitted-session").Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -1429,7 +1429,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("stable", cfg.ResumeLocks.RecoveryState("stable").Epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1468,7 +1468,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	fresh = admitSessionConnection(t.Context(), cfg)
 	if _, err := hubThreadAutoResume(fresh, cfg, appsource.NewRegistry(), appwire.ThreadResumeParams{Session: "current"}); err == nil {
 		t.Fatal("fresh connection automatically cleared explicit resume requirement")
@@ -1489,9 +1489,9 @@ func TestRecoveryAdmissionNamesBlockedDurableMutation(t *testing.T) {
 			}
 			finish := cfg.ResumeLocks.BeginForceStop([]string{"owner"})
 			if recovery == "active" {
-				defer finish(false)
+				defer finish.Finish(false)
 			} else {
-				finish(recovery == "completed")
+				finish.Finish(recovery == "completed")
 			}
 			server := newHubAppServer(cfg, appsource.NewRegistry())
 			params := appwire.TurnStartParams{Ref: "local:owner", ClientMutationID: "preserved-intent", ExpectedInstanceID: "known-instance", Input: []appwire.InputItem{{Type: "text", Text: "keep this input"}}}
@@ -1655,7 +1655,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 101, SessionID: "B", ThreadID: "B", WorkspaceRef: "local:A"})
 	var events []string
@@ -1666,7 +1666,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 		if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		return &forceStopProcess{events: &events}, nil
 	})}
 	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:B"}, nil); err == nil {
@@ -1686,7 +1686,7 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) { return nil, daemonprocess.ErrExited })}
 	writeRendezvous(t, cfg.RunDir, rendezvous.Entry{PID: 101, SessionID: "B", ThreadID: "B", WorkspaceRef: "local:A"})
 	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:B"}, nil); err == nil {
@@ -1986,7 +1986,7 @@ func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T)
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
 		held := locks.For(sessionID)
 		held.Lock()
@@ -2046,7 +2046,7 @@ func TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration(t *testing.T) {
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		store, err := hubcore.NewDeletionStore(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -2109,7 +2109,7 @@ func TestShutdownConfirmedStoppedRefreshesRoster(t *testing.T) {
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	refreshed := false
 	original := hubRosterRefresh
 	hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
@@ -2177,7 +2177,7 @@ func TestForceStopConfirmedStoppedCleanupFailureIsUnavailable(t *testing.T) {
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		active, err := locks.RegisterResume(t.Context(), sibling, []string{sibling}, map[string]uint64{sibling: locks.RecoveryState(sibling).Epoch})
 		if err != nil {
 			t.Fatal(err)
@@ -2264,7 +2264,7 @@ func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	runDir := t.TempDir()
 	// A pid-named but undecodable rendezvous file fails the strict read.
 	if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {

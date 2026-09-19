@@ -197,7 +197,7 @@ func TestActiveResumeSharesExistingForceStopFence(t *testing.T) {
 		active.Complete(nil)
 		t.Fatal("registration crossed existing ForceStop")
 	}
-	finish(false)
+	finish.Finish(false)
 }
 
 func TestActiveResumeReapedCleanupPreservesRecoveryAuthority(t *testing.T) {

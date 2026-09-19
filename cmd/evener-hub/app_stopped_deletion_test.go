@@ -27,7 +27,7 @@ func confirmedStoppedDeletionFixture(t *testing.T) (hubcore.WebConfig, string) {
 	if err := locks.ConfirmForceStop(id); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -27,7 +27,7 @@ type ResumeLocks struct {
 	active        map[string]map[*ActiveResume]struct{}
 	recovery      map[string]SessionRecoveryState
 	sequence      uint64
-	fences        []*forceStopFence // held admission fences, newest last; guarded by mu
+	fences        []*ForceStopFence // held admission fences, newest last; guarded by mu
 }
 
 // NewResumeLocks returns an empty registry ready for use.
@@ -537,7 +537,8 @@ func (r *ResumeLocks) BeginActiveResumeStop(alias string) *ResumeStop {
 	}
 	aliases, actives := r.activeResumeOverlapLocked(alias)
 	stop := &ResumeStop{active: actives}
-	stop.release = r.beginForceStopLocked(aliases)
+	fence := r.beginForceStopLocked(aliases)
+	stop.release = fence.Finish
 	r.mu.Unlock()
 	for _, active := range stop.active {
 		active.cancel()
@@ -648,18 +649,21 @@ func (r *ResumeLocks) RecoverySequence() uint64 {
 // BeginForceStop blocks new actions and invalidates existing ownership waiters.
 // Temporary fences preserve committed alias routing. PersistForceStop installs
 // a new group only once its recovery authority may have reached durable storage.
-func (r *ResumeLocks) BeginForceStop(aliases []string) func(bool) {
+// The returned fence is the caller's own rollback token — Finish releases it
+// and Reject rolls back its admissions — so concurrent force stops over the
+// same aliases never reject or roll back each other's fences.
+func (r *ResumeLocks) BeginForceStop(aliases []string) *ForceStopFence {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.beginForceStopLocked(aliases)
 }
 
-func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
+func (r *ResumeLocks) beginForceStopLocked(aliases []string) *ForceStopFence {
 	if r.recovery == nil {
 		r.recovery = make(map[string]SessionRecoveryState)
 	}
 	r.sequence++
-	fence := &forceStopFence{aliases: slices.Clone(aliases), previous: make(map[string]uint64, len(aliases)), sequence: r.sequence}
+	fence := &ForceStopFence{owner: r, aliases: slices.Clone(aliases), previous: make(map[string]uint64, len(aliases)), sequence: r.sequence}
 	for _, id := range aliases {
 		state := r.recovery[id]
 		fence.previous[id] = state.LastRecoverySequence
@@ -669,78 +673,99 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
 		r.recovery[id] = state
 	}
 	r.fences = append(r.fences, fence)
-	return func(stopped bool) {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.fences = slices.DeleteFunc(r.fences, func(held *forceStopFence) bool { return held == fence })
-		r.sequence++
-		for _, id := range aliases {
-			state := r.recovery[id]
-			state.Stopping--
-			// A rejected fence's release keeps the connection-level sequence
-			// rolled back: the refusal canceled nothing, so connections from
-			// before the fence must not be staled by its release either.
-			if !fence.rejected {
-				state.LastRecoverySequence = r.sequence
-			}
-			state.ResumeRequired = state.ResumeRequired || stopped
-			r.recovery[id] = state
-		}
-	}
+	return fence
 }
 
-// forceStopFence is the rollback token of one held admission fence, created by
-// beginForceStopLocked the same way its finish closure is and dropped by that
-// finish when the fence ends. It carries the connection-level sequence metadata
-// the fence advanced so a refusal that canceled nothing can give it back.
-type forceStopFence struct {
+// ForceStopFence is the rollback token of one held admission fence, created by
+// beginForceStopLocked and dropped by Finish when the fence ends. It carries
+// the connection-level sequence metadata the fence advanced so a refusal that
+// canceled nothing can give it back. Only the caller that began the force
+// stop finishes or rejects it.
+type ForceStopFence struct {
+	owner    *ResumeLocks
 	aliases  []string
 	previous map[string]uint64
 	sequence uint64
 	rejected bool
+	finished bool
 }
 
-// RejectForceStop makes a refused force-stop fence admission-neutral: it gives
-// back the admission epochs the fence advanced and rolls back the
-// connection-level sequence metadata the fence wrote, so a connection
-// established before the fence is not refused as stale by the refusal — the
-// force stop was refused and canceled nothing. The in-flight Resume a refusal
-// deliberately preserved was admitted under the pre-fence epoch and completes
-// through ExplicitResumeCompleted, which ignores a stale epoch — the durable
-// resume requirement would stay set even though the Resume succeeded. Call it
-// only on refusals that have canceled nothing, while the fence is still held:
-// with Stopping above zero no admission can bind the advanced epoch before the
-// finish(false) release restores eligibility, and a rejected fence's release
-// keeps the sequence rolled back. The rollback token is the fence record
-// itself: the newest held, unrejected fence whose aliases match. An alias a
-// newer fence has since advanced keeps the newer value, so a refused fence
-// cannot un-stale a connection the newer fence must keep refusing.
-func (r *ResumeLocks) RejectForceStop(aliases []string) {
+// Finish releases the fence: it gives back the admission Stopping each fenced
+// alias took and, unless the fence was rejected, writes the fenced aliases'
+// connection-level recovery sequence again, so the world a completed stop
+// leaves behind stales connections admitted before it. A rejected fence's
+// release keeps the sequence rolled back: the refusal canceled nothing, so
+// connections from before the fence must not be staled by its release either.
+func (f *ForceStopFence) Finish(stopped bool) {
+	r := f.owner
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i := len(r.fences) - 1; i >= 0; i-- {
-		fence := r.fences[i]
-		if fence.rejected || !slices.Equal(fence.aliases, aliases) {
-			continue
+	f.finished = true
+	r.fences = slices.DeleteFunc(r.fences, func(held *ForceStopFence) bool { return held == f })
+	r.sequence++
+	for _, id := range f.aliases {
+		state := r.recovery[id]
+		state.Stopping--
+		if !f.rejected {
+			state.LastRecoverySequence = r.sequence
 		}
-		fence.rejected = true
-		for _, id := range aliases {
-			state := r.recovery[id]
-			state.Epoch--
-			// Roll back only what this fence wrote and nothing since has
-			// overwritten: an alias a newer fence has advanced keeps that
-			// fence's value until the newer fence releases it.
-			if state.LastRecoverySequence == fence.sequence {
-				state.LastRecoverySequence = fence.previous[id]
-			}
-			r.recovery[id] = state
-		}
+		state.ResumeRequired = state.ResumeRequired || stopped
+		r.recovery[id] = state
+	}
+}
+
+// Reject makes a refused force-stop fence admission-neutral: it gives back the
+// admission epochs the fence advanced and rolls back the connection-level
+// sequence metadata the fence wrote, so a connection established before the
+// fence is not refused as stale by the refusal — the force stop was refused
+// and canceled nothing. The in-flight Resume a refusal deliberately preserved
+// was admitted under the pre-fence epoch and completes through
+// ExplicitResumeCompleted, which ignores a stale epoch — the durable resume
+// requirement would stay set even though the Resume succeeded. Call it only
+// on refusals that have canceled nothing, while the fence is still held and
+// before Finish: with Stopping above zero no admission can bind the advanced
+// epoch before the Finish(false) release restores eligibility, and a rejected
+// fence's release keeps the sequence rolled back. A fence rejects exactly
+// once, by its own caller's handle and never another request's alias set,
+// and never once Finish has ended it. An alias a newer fence has since
+// advanced keeps the newer value, so a refused fence cannot un-stale a
+// connection the newer fence must keep refusing; but the value this fence
+// wrote is retired wherever it is still saved: a newer held fence that
+// recorded it as an alias's previous state skips to this fence's own previous
+// value, so the newer fence's later rollback cannot restore a value an
+// already-rolled-back fence wrote.
+func (f *ForceStopFence) Reject() {
+	r := f.owner
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if f.rejected || f.finished {
 		return
 	}
-	for _, id := range aliases {
+	f.rejected = true
+	for _, id := range f.aliases {
 		state := r.recovery[id]
 		state.Epoch--
+		// Roll back only what this fence wrote and nothing since has
+		// overwritten: an alias a newer fence has advanced keeps that
+		// fence's value until the newer fence releases it.
+		if state.LastRecoverySequence == f.sequence {
+			state.LastRecoverySequence = f.previous[id]
+		}
 		r.recovery[id] = state
+	}
+	// Only fences newer than this one can have saved a value this fence
+	// wrote as an alias's previous state: every older fence recorded smaller
+	// sequence values. Retire the written value wherever a newer held fence
+	// still saves it, so the newer fence's own rollback skips it.
+	for _, held := range r.fences {
+		if held == f {
+			continue
+		}
+		for _, id := range f.aliases {
+			if held.previous[id] == f.sequence {
+				held.previous[id] = f.previous[id]
+			}
+		}
 	}
 }
 

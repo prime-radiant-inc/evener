@@ -256,7 +256,7 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"root"}, "root"); err != nil {
 		t.Fatal(err)
 	}
-	finish(false)
+	finish.Finish(false)
 	thread := appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:root"}}
 	if got := applyHubForkCapability(hubcore.WebConfig{StateDir: t.TempDir(), ResumeLocks: locks}, thread); got.Evener.Capabilities.ForkFromTurn {
 		t.Fatal("current ResumeLocks recovery state re-advertised fork")
@@ -457,7 +457,7 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	cfg.ResumeLocks = locks
 
 	hub := newHubRPCTestServer(t, cfg)
@@ -576,7 +576,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 				if err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 			},
 			wantRefusal: isSessionRecoveryAdmissionError,
 		},
@@ -584,7 +584,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			name: "force stop in flight",
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, _, sessionID string) {
 				finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
-				t.Cleanup(func() { finish(false) })
+				t.Cleanup(func() { finish.Finish(false) })
 			},
 			wantRefusal: isSessionRecoveryAdmissionError,
 		},
@@ -799,7 +799,7 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 		t.Fatal("relayed status advertised fork while an in-flight force stop fenced the session")
 	}
 	// The force stop failed: the session keeps running and is forkable again.
-	finishForceStop(false)
+	finishForceStop.Finish(false)
 	if state := locks.RecoveryState(sessionID); state.ResumeRequired || state.Stopping != 0 {
 		t.Fatalf("recovery state after an abandoned force stop = %+v, want cleared", state)
 	}
@@ -1124,7 +1124,7 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			runDir := t.TempDir()
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, ResumeLocks: locks,
@@ -1245,7 +1245,7 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 				if err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 			},
 		},
 		{
@@ -1381,7 +1381,7 @@ func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *test
 			if err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, Roster: roster,
 				ResumeLocks: locks, DeletionStore: store,
@@ -1767,7 +1767,7 @@ func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
 	if err := locks.PersistForceStop(group, currentID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState(aliasID).Epoch
 	if err := locks.ExplicitResumeCompleted(aliasID, epoch); err != nil {
 		t.Fatal(err)
@@ -2011,14 +2011,14 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 				if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 			},
 		},
 		{
 			name: "resolved session is stopping",
 			fence: func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string) {
 				finish := locks.BeginForceStop([]string{sessionID})
-				t.Cleanup(func() { finish(false) })
+				t.Cleanup(func() { finish.Finish(false) })
 			},
 		},
 	} {
@@ -2484,7 +2484,7 @@ func recordResumeRedirect(t *testing.T, locks *hubcore.ResumeLocks, from, to str
 	if err := locks.PersistForceStop(group, to); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState(from).Epoch
 	if err := locks.ExplicitResumeCompleted(from, epoch); err != nil {
 		t.Fatal(err)

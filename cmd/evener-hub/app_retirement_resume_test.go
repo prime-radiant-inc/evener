@@ -802,7 +802,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		// The request was admitted before this recovery began; finishing the
 		// stop without a recovery requirement still invalidates its epoch.
 		abort := f.locks.BeginForceStop([]string{f.sessionID})
-		abort(false)
+		abort.Finish(false)
 		close(f.peerMutationGate)
 
 		result := <-done
@@ -1207,10 +1207,10 @@ func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
 	requested := hubtest.SessionID(t)
 	locks := hubcore.NewResumeLocks()
 	// An in-flight force stop leaves Stopping > 0, so the admission re-check
-	// refuses the retirement resume. finish(false) is the caller acknowledging
+	// refuses the retirement resume. finish.Finish(false) is the caller acknowledging
 	// the refused force stop; the fence itself is what the test needs held.
 	finish := locks.BeginForceStop([]string{requested})
-	t.Cleanup(func() { finish(false) })
+	t.Cleanup(func() { finish.Finish(false) })
 	runDir := t.TempDir()
 	cfg := hubcore.WebConfig{
 		RunDir:      runDir,

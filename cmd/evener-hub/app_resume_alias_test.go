@@ -38,7 +38,7 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 			if err := locks.ConfirmForceStop("z-current"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if recreated {
 				locks, err = hubcore.NewPersistentResumeLocks(root)
 				if err != nil {
@@ -105,7 +105,7 @@ func TestResumeMissingMarkerUsesDurableRecoveryTarget(t *testing.T) {
 				if err := locks.ConfirmForceStop(target); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 				if recreated {
 					locks, err = hubcore.NewPersistentResumeLocks(root)
 					if err != nil {
@@ -277,7 +277,7 @@ func TestResumeIgnoresOnlyVerifiedExitedTranscriptClaims(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "old"}, "old"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted("stable", cfg.ResumeLocks.RecoveryState("stable").Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -323,12 +323,12 @@ func TestResumeRejectsTargetRedirectedByNewerRecovery(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A", "B"}, "A"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	finish = locks.BeginForceStop([]string{"A", "C"})
 	if err := locks.PersistForceStop([]string{"A", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	locks, err = hubcore.NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +360,7 @@ func TestResumeUsesDurableTargetWhenAllRetainedClaimsExited(t *testing.T) {
 	if err := locks.ConfirmForceStop("current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	locks, err = hubcore.NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -466,7 +466,7 @@ func TestCompletedResumeMappingDefersToCurrentIdentity(t *testing.T) {
 			if err := locks.PersistForceStop([]string{"stable", "B"}, "B"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			epoch := locks.RecoveryState("stable").Epoch
 			if err := locks.ExplicitResumeCompleted("stable", epoch); err != nil {
 				t.Fatal(err)
@@ -478,7 +478,7 @@ func TestCompletedResumeMappingDefersToCurrentIdentity(t *testing.T) {
 				if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 			} else {
 				writeRendezvous(t, cfg.RunDir, rendezvous.Entry{PID: 101, ThreadID: "B", SessionID: "C"})
 			}
@@ -637,7 +637,7 @@ func TestResumeRejectsCompletedRedirectCycle(t *testing.T) {
 		if err := locks.PersistForceStop([]string{pair[0]}, pair[0]); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		epoch := locks.RecoveryState(pair[0]).Epoch
 		if err := locks.ExplicitResumeCompleted(pair[0], epoch); err != nil {
 			t.Fatal(err)
@@ -666,7 +666,7 @@ func TestResumeCompletedChainRefusesNewPendingRecovery(t *testing.T) {
 				if err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1]); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 				epoch := locks.RecoveryState(pair[0]).Epoch
 				if err := locks.ExplicitResumeCompleted(pair[0], epoch); err != nil {
 					t.Fatal(err)
@@ -678,9 +678,9 @@ func TestResumeCompletedChainRefusesNewPendingRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			if stopping {
-				defer finish(true)
+				defer finish.Finish(true)
 			} else {
-				finish(true)
+				finish.Finish(true)
 			}
 			before := locks.RecoveryState("C")
 			launches := 0
@@ -709,7 +709,7 @@ func TestResumeCompletedChainPreservesConnectionAdmission(t *testing.T) {
 		if err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1]); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		epoch := locks.RecoveryState(pair[0]).Epoch
 		if err := locks.ExplicitResumeCompleted(pair[0], epoch); err != nil {
 			t.Fatal(err)
@@ -722,7 +722,7 @@ func TestResumeCompletedChainPreservesConnectionAdmission(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState("C").Epoch
 	if err := locks.ExplicitResumeCompleted("C", epoch); err != nil {
 		t.Fatal(err)
@@ -917,7 +917,7 @@ func TestCompletedSelfTargetDoesNotOverrideUnresolvedExitedSuccessor(t *testing.
 	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState("A").Epoch
 	if err := locks.ExplicitResumeCompleted("A", epoch); err != nil {
 		t.Fatal(err)
@@ -945,7 +945,7 @@ func TestFailedForceStopPreservesCompletedRoutingAfterMarkerRemoval(t *testing.T
 	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState("stable").Epoch
 	if err := locks.ExplicitResumeCompleted("stable", epoch); err != nil {
 		t.Fatal(err)

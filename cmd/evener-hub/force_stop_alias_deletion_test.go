@@ -33,7 +33,7 @@ func TestConfirmedStoppedShortcutChecksEveryAliasDeletionFence(t *testing.T) {
 	if err := locks.ConfirmForceStop(current); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	cfg := hubcore.WebConfig{
 		RunDir:        t.TempDir(),
 		ResumeLocks:   locks,

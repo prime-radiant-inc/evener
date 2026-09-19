@@ -31,7 +31,7 @@ func confirmedStoppedResumeFixture(t *testing.T) (*hubcore.ResumeLocks, string, 
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestForceStopConfirmedStoppedValidatesSiblingDeletionBeforeCancelingResume(
 		if err := locks.ConfirmForceStop(current); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		epochs := map[string]uint64{
 			stable:  locks.RecoveryState(stable).Epoch,
 			current: locks.RecoveryState(current).Epoch,
@@ -341,7 +341,7 @@ func TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid(t *testing.T
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		resumeEpoch := locks.RecoveryState(sessionID).Epoch
 		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: resumeEpoch})
 		if err != nil {
