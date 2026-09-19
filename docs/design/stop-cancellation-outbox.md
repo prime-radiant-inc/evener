@@ -245,6 +245,12 @@ and the BroadcastChannel (payload unchanged; correctness never depends on it).
   outbox read and write in that tab fails loudly, and projections degrade to
   "storage unavailable" — the safe mixed-version state is a reload, never a
   silent share.
+- Native conforms at the storage-port level (2026-09-19): `MutationOutboxSQLite`
+  implements `enqueueInterruptAndCancel`, skips `canceled` rows in
+  `nextDispatchable`, and honors the stop barrier over an additive `stop_epoch`
+  column on its `mutation_sequence` rows (migrated in place, default 0). The
+  phone's Stop/UX flows do not call the combined write yet — adopting it there
+  is a follow-up, so nothing native issues a Stop's durable write today.
 
 ## 9. Test plan
 
