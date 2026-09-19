@@ -23,9 +23,9 @@ const (
 // fetch (including one forwarded from a successful mutation). The panel
 // understands only this type for populating its marketplace list.
 type MarketplaceListResultMsg struct {
-	List                appwire.MarketplaceListResponse
-	Err                 error
-	ReconcileGeneration uint64
+	List           appwire.MarketplaceListResponse
+	Err            error
+	ListGeneration uint64
 }
 
 // MarketplaceMutateResultMsg carries the result of a marketplace mutation
@@ -121,11 +121,9 @@ func CmdMarketplaceList(client *appwire.Client) tea.Cmd {
 	return cmdMarketplaceList(client, 0)
 }
 
-// CmdMarketplaceReconcileList requests the fresh list used to settle an
-// applied-but-unconfirmed removal. Its generation belongs only to that
-// reconciliation; ordinary list reads remain untagged until the ordered-read
-// consumer adds the broader generation contract.
-func CmdMarketplaceReconcileList(client *appwire.Client, generation uint64) tea.Cmd {
+// CmdMarketplaceListWithGeneration requests a marketplace list owned by the
+// hub model's monotonically increasing list generation.
+func CmdMarketplaceListWithGeneration(client *appwire.Client, generation uint64) tea.Cmd {
 	return cmdMarketplaceList(client, generation)
 }
 
@@ -134,7 +132,7 @@ func cmdMarketplaceList(client *appwire.Client, generation uint64) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsQuickTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceList(ctx)
-		return MarketplaceListResultMsg{List: resp, Err: err, ReconcileGeneration: generation}
+		return MarketplaceListResultMsg{List: resp, Err: err, ListGeneration: generation}
 	}
 }
 
