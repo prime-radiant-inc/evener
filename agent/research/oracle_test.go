@@ -1,6 +1,7 @@
 package research
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // writeTranscript writes a minimal valid v2 transcript: header + entries.
@@ -91,5 +93,48 @@ func TestLoadEntries_EmptyFileIsError(t *testing.T) {
 	}
 	if _, _, err := loadEntries(path); err == nil {
 		t.Fatal("loadEntries(0-byte file) = nil error, want headerless error")
+	}
+}
+
+func assistantToolCallTurn(id string, calls []llm.ToolCallData, in, out int) transcript.Entry {
+	content := make([]llm.ContentPart, 0, len(calls))
+	for _, c := range calls {
+		c := c
+		content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &c})
+	}
+	return transcript.Entry{Kind: "entry", Turn: schema.Turn{
+		Kind:    schema.TurnAssistant,
+		Message: llm.Message{Role: "assistant", Content: content},
+		Usage:   llm.Usage{InputTokens: in, OutputTokens: out},
+	}}
+}
+
+func mutationCall(name string) llm.ToolCallData {
+	return llm.ToolCallData{ID: "c_" + name, Name: name, Arguments: json.RawMessage(`{}`)}
+}
+
+func shellCall(command string) llm.ToolCallData {
+	return llm.ToolCallData{
+		ID:        "c_shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"` + command + `","description":"d"}`),
+	}
+}
+
+func TestMeasureAdjacency_CountsEditThenTestCycles(t *testing.T) {
+	entries := []transcript.Entry{
+		assistantToolCallTurn("u1", []llm.ToolCallData{mutationCall("edit_file")}, 1000, 50),
+		// result turn; adjacency scanner looks past it
+		assistantToolCallTurn("u2", []llm.ToolCallData{shellCall("go test ./...")}, 2200, 80),
+		assistantToolCallTurn("u3", []llm.ToolCallData{shellCall("go build ./...")}, 2400, 60),
+		assistantToolCallTurn("u4", []llm.ToolCallData{mutationCall("apply_patch")}, 2500, 70),
+		assistantToolCallTurn("u5", []llm.ToolCallData{shellCall("ls -la")}, 2600, 40), // not a test command
+	}
+	got := measureAdjacency(entries)
+	if got.Cycles != 1 {
+		t.Fatalf("Cycles = %d, want 1 (edit_file then go test)", got.Cycles)
+	}
+	if got.SavedPromptTokens != 2200 || got.SavedCompletionTokens != 80 {
+		t.Fatalf("saved tokens = %d/%d, want 2200/80", got.SavedPromptTokens, got.SavedCompletionTokens)
 	}
 }
