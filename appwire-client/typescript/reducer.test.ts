@@ -174,6 +174,29 @@ function fragmentTurn(id: string, itemIds: string[], overrides: Partial<Turn> = 
   };
 }
 
+function positionedFragmentTurn(
+  id: string,
+  items: Array<readonly [string, number]>,
+  overrides: Partial<Turn> = {},
+): Turn {
+  const turn = fragmentTurn(
+    id,
+    items.map(([itemId]) => itemId),
+    overrides,
+  );
+  return {
+    ...turn,
+    items: items.map(([itemId, entry], item) => ({
+      id: itemId,
+      turnId: id,
+      type: "agentMessage",
+      text: `${id}-${itemId}`,
+      status: "completed",
+      position: { entry, item },
+    })),
+  };
+}
+
 test("evener/goal/updated replaces and explicitly clears model.goal", () => {
   const initial = testHydrate({
     evener: { goal: { objective: "old objective", status: "active", iterations: 3 } },
@@ -2611,6 +2634,93 @@ test("mergeOlderItemPage applies fresh fields after coalescing a fragment chain"
   expect(result.turns).toHaveLength(1);
   expect(result.turns[0]).toMatchObject({ id: "fresh-y", usage: { inputTokens: 4 } });
   expect(result.turns[0]?.items.map((item) => item.id).sort()).toEqual(["x", "y"]);
+});
+
+test("mergeOlderItemPage places a positioned retained run inside fresh anchors", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-d", [["d", 3]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-b", "fresh-d", "fresh-c"]);
+});
+
+test("mergeOlderItemPage preserves retained prefix and suffix runs", () => {
+  const model = testHydrate({
+    turns: [positionedFragmentTurn("fresh-a", [["a", 1]]), positionedFragmentTurn("fresh-c", [["c", 4]])],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-p", [["p", 0]]),
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+      positionedFragmentTurn("old-s", [["s", 5]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["old-p", "fresh-a", "old-b", "fresh-c", "old-s"]);
+});
+
+test("mergeOlderItemPage preserves fresh prefix and suffix around a retained run", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-x", [["x", 0]]),
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+      positionedFragmentTurn("fresh-y", [["y", 5]]),
+    ],
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-x", "fresh-a", "old-b", "fresh-c", "fresh-y"]);
+});
+
+test("mergeOlderItemPage retains a warning-only run after a collapsed anchor", () => {
+  const model = testHydrate({
+    turns: [fragmentTurn("fresh-f", ["a", "c"])],
+  });
+  const warning = {
+    id: "old-b",
+    status: "completed" as const,
+    itemsView: "fragment" as const,
+    items: [
+      {
+        id: "warning-b",
+        turnId: "old-b",
+        type: "warning" as const,
+        text: "live warning",
+        status: "completed" as const,
+      },
+    ],
+  };
+
+  const result = mergeOlderItemPage(model, {
+    data: [positionedFragmentTurn("old-a", [["a", 1]]), warning, positionedFragmentTurn("old-c", [["c", 3]])],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-f", "old-b"]);
+  expect(result.turns.filter((turn) => turn.id === "old-b")).toHaveLength(1);
+  expect(result.turns[1]?.items).toMatchObject([{ id: "warning-b", type: "warning" }]);
 });
 
 test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
