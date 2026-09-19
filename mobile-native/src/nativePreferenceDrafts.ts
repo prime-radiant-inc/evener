@@ -215,6 +215,17 @@ export function readDraftOutcome(
 	return readDraftOutcomeWithValue(storage, isReadable).outcome;
 }
 
+/** Whether the store-free discard action should still present the record as
+ * unreadable, given the CURRENT record a follow-up read just found -
+ * `outcome` (discardStoredKeybindingDraft's own result) plays no part: a
+ * "removed" or "absent" outcome does not mean the record is gone NOW, since
+ * a concurrent writer can insert a fresh unreadable record between
+ * draftCheckpointPort's own re-read and this caller's - only the follow-up
+ * read's own classification of what is there right now can say that. */
+export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean {
+	return current === "unreadable";
+}
+
 export function nativeKeybindingDrafts(
 	hubId: string,
 	backend: NativeKeybindingDraftBackend,
