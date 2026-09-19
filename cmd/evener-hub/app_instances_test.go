@@ -1538,6 +1538,43 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	}
 }
 
+// An implicit instance the config only points at through `default` still has
+// configChanged on removal - clearing the pointer is a real change to the file -
+// but the pointer is not what carries the instance: its stored key is. When the
+// removal's reload fails, the config rollback restores the pointer, and the key
+// restore also fails, the instance no longer resolves, so the removal stands.
+// supplyAny would report it as "still configured" here; supplyOf(locked) names
+// the carrying key, so the frame and the discriminator instanceRemoveError reads
+// both say the removal applied.
+func TestInstances_RemoveStandsWhenAnImplicitDefaultLosesItsKeyOnRollback(t *testing.T) {
+	// Load 1 is the fixture's own, load 2 this test's SetDefault, load 3 the
+	// removal's - the one made to fail.
+	f := newFlakyReloadFixture(t, "groq", func(load int) bool { return load == 3 })
+	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	if before := entry(t, f.ctl.List(), "groq"); !before.IsDefault || before.ActiveSource != "store" {
+		t.Fatalf("fixture: groq = %+v, want an implicit stored-key instance that is the default", before)
+	}
+	// The key that carries the instance cannot be put back after the cleanup
+	// deleted it.
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed restore reported")
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing frame: the carrying key is gone", err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying key stayed deleted", err, err)
+	}
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("stored key = %q, want it to stay deleted", v)
+	}
+}
+
 // The test above covers a rollback file that does not load either. This one
 // covers the branch where it does: the removal's reload fails, the rollback
 // lands, and the reload that follows it succeeds. The file the rollback puts
@@ -2274,6 +2311,53 @@ func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
 	unkeyableStateRoot(t, f.stateDir)
 	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
 		t.Fatalf("EndpointFingerprint = %q, want it omitted when no key is available", got)
+	}
+}
+
+// An edit lands no secret, so an edit that asserts nothing must not consult a
+// fingerprint key it does not need: a hub whose state root cannot yield the key
+// still edits and renames, exactly as it did before the edit assertion existed.
+// A caller that DID assert an endpoint still fails closed, because the hub
+// cannot say the name resolves there.
+func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A directory where the key file belongs: neither reading nor creating it
+	// can succeed, so the hub cannot key a fingerprint and the listing omits one.
+	unkeyableStateRoot(t, f.stateDir)
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted when no key is available", got)
+	}
+
+	// An unasserted field edit: no key is needed, so it lands.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY"}); err != nil {
+		t.Fatalf("unasserted edit on a hub that cannot key fingerprints: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
+		t.Fatalf("apiKeyEnv = %q, want the unasserted edit to land", got.APIKeyEnv)
+	}
+
+	// A non-empty assertion still fails closed: the hub cannot resolve it.
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "OTHER_KEY", ExpectedEndpointFingerprint: "stale"})
+	if err == nil {
+		t.Fatal("an asserted edit must refuse while the hub cannot resolve the endpoint")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("asserted edit = %v, want a conflict refusal", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
+		t.Fatalf("apiKeyEnv = %q, want the refused asserted edit to change nothing", got.APIKeyEnv)
+	}
+
+	// An unasserted rename: no key needed either.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+		t.Fatalf("unasserted rename on a hub that cannot key fingerprints: %v", err)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("personal"); !ok {
+		t.Fatal("the unasserted rename did not land")
 	}
 }
 

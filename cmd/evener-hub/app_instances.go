@@ -992,9 +992,16 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// client has re-pointed since - or replaced with a different instance - must
 	// not have its replacement edited or renamed. Asked here, under the lock
 	// that holds the write, so it describes the instance this edit lands on.
-	// Empty asserts nothing (the contract InstanceRemoveParams documents).
-	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
-		return err
+	// Empty asserts nothing (the contract InstanceRemoveParams documents), and
+	// an edit lands no secret, so it has nothing to fail closed for: a hub whose
+	// state root cannot yield the key (the listing then omits every fingerprint,
+	// which is why the client sent no assertion) still edits and renames. A
+	// caller that DID assert an endpoint is still refused, because the hub
+	// cannot say the name resolves where the caller was told it does.
+	if params.ExpectedEndpointFingerprint != "" {
+		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 	}
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name
@@ -1599,8 +1606,30 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// key or OAuth record stays deleted under an instance that is back in
 		// the config, which every other client's status for it is stale
 		// against; restoreFailedRemoval wraps its own result in that case.
+		//
+		// Which layer the restore has to put back - and so what a failed
+		// restore means - depends on what held the instance up. An authored
+		// entry is back in the config, so the instance resolves from it whatever
+		// happens to its credentials: the configured frame with supplyAny's
+		// strict question is the honest report. An implicit instance has no
+		// entry to fall back on - configChanged is true only because a `default`
+		// pointer named it - so the layer supplyOf names is what carries it.
+		// When that layer is a credential this call deleted, a restore that
+		// cannot put it back leaves the instance unresolvable: the removal
+		// stands, the frame must say so, and the discriminator goes with it
+		// because instanceRemoveError reads it to tell the client the removal
+		// applied rather than leaving it to retry a removal that stands.
+		// supplyConfig is the provider carrying the row, with no credential of
+		// the user's at stake, so it keeps the configured frame.
+		frame, supplies := "the instance is still configured", supplyAny
+		if !authored {
+			supplies = supplyOf(locked)
+			if supplies != supplyConfig {
+				frame = "the removal stands"
+			}
+		}
 		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured", supplyAny)
+			fmt.Errorf("removing %q was rolled back: %w", name, err), frame, supplies)
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the
