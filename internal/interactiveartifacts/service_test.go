@@ -69,7 +69,7 @@ func TestServiceSDKProfileAuthorityAndResource(t *testing.T) {
 	}
 	resources, err := c.ListResources(context.Background(), nil)
 	requireNoError(t, err)
-	if len(resources.Resources) != 1 || resources.Resources[0].URI != ViewerResource.URI || resources.Resources[0].MIMEType != ViewerResource.MIMEType {
+	if len(resources.Resources) != 1 || resources.Resources[0].URI != ViewerResourceURI || resources.Resources[0].MIMEType != ViewerResourceMIMEType {
 		t.Fatalf("unexpected resource catalog: %+v", resources.Resources)
 	}
 	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: "artifact_publish", Arguments: json.RawMessage(createJSON("sdk"))})
@@ -120,9 +120,9 @@ func TestServiceSDKProfileAuthorityAndResource(t *testing.T) {
 	if _, err = c.CallTool(context.Background(), &mcp.CallToolParams{Name: "unknown", Arguments: map[string]any{}}); err == nil {
 		t.Fatal("unknown method accepted")
 	}
-	resource, err := c.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: ViewerResource.URI})
+	resource, err := c.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: ViewerResourceURI})
 	requireNoError(t, err)
-	if len(resource.Contents) != 1 || resource.Contents[0].MIMEType != ViewerResource.MIMEType || strings.Contains(resource.Contents[0].Text, "<script") {
+	if len(resource.Contents) != 1 || resource.Contents[0].MIMEType != ViewerResourceMIMEType || strings.Contains(resource.Contents[0].Text, "<script") {
 		t.Fatal("unsafe interim viewer")
 	}
 	if _, err = c.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "file:///etc/passwd"}); err == nil {

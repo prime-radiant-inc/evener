@@ -82,8 +82,9 @@ func startService(root string, options StoreOptions) (_ *service, resultErr erro
 	for _, tool := range catalog {
 		sdk.AddTool(tool, s.call)
 	}
-	sdk.AddResource(&ViewerResource, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: ViewerResource.URI, MIMEType: ViewerResource.MIMEType, Text: "<!doctype html><title>Artifact viewer unavailable</title><p>Interim viewer: interactive rendering is unavailable.</p>"}}}, nil
+	viewer := ViewerResource()
+	sdk.AddResource(&viewer, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: ViewerResourceURI, MIMEType: ViewerResourceMIMEType, Text: "<!doctype html><title>Artifact viewer unavailable</title><p>Interim viewer: interactive rendering is unavailable.</p>"}}}, nil
 	})
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return sdk }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	s.server = &http.Server{Handler: s.guard(listener.Addr().String(), handler), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
