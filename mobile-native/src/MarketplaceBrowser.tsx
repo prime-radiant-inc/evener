@@ -16,10 +16,12 @@ import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
   ConnectionState,
   MarketplaceAddParams,
+  MarketplaceEntry,
   PluginRefParams,
 } from "@evener/appwire-client";
 import {
   createMarketplacesStore,
+  marketplaceRemovalOutcome,
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -42,7 +44,7 @@ const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
 export const INSTALLED_PLUGINS_FAILED =
   "Could not load installed plugins. Try again when connected.";
 const WRITE_FAILED =
-  "Could not confirm the change. Refresh and check its status before trying again.";
+  "Could not confirm the change. Check its status before trying again.";
 
 export function MarketplaceBrowser({
   client,
@@ -52,6 +54,9 @@ export function MarketplaceBrowser({
   canUseConnection,
   connectionState,
   onOpenPlugin,
+  appliedRemovalNames,
+  onAppliedRemoval,
+  onAuthoritativeMarketplaces,
 }: {
   client: ConversationClientLike;
   hubName: string;
@@ -64,6 +69,12 @@ export function MarketplaceBrowser({
   canUseConnection: LiveReadiness;
   connectionState: ConnectionState;
   onOpenPlugin(target: PluginRefParams): void;
+  appliedRemovalNames: ReadonlySet<string>;
+  onAppliedRemoval(name: string, owner: ConversationClientLike): boolean;
+  onAuthoritativeMarketplaces(
+    marketplaces: readonly MarketplaceEntry[],
+    owner: ConversationClientLike,
+  ): void;
 }) {
   const colors = useColors();
   const ready = isReady(connectionState);
@@ -91,6 +102,10 @@ export function MarketplaceBrowser({
   useEffect(() => {
     model.connectionChanged(client, connectionState);
   }, [model, client, connectionState]);
+  useEffect(() => {
+    if (state.marketplaces !== null)
+      onAuthoritativeMarketplaces(state.marketplaces, client);
+  }, [client, onAuthoritativeMarketplaces, state.marketplaces]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();
@@ -135,11 +150,24 @@ export function MarketplaceBrowser({
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    const outcome = await runGatedMutation(gate, canUseConnection, action);
+    const outcome = await runMarketplaceAction(action);
     if (revision.current !== version) return;
-    if (outcome === "not-ready") return;
-    if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
-    else if (outcome === "failed") setError(WRITE_FAILED);
+    if (outcome.status === "not-ready") return;
+    if (outcome.status === "refused") setError(PLUGIN_MUTATION_BUSY);
+    else if (outcome.status === "failed") setError(WRITE_FAILED);
+  }
+
+  async function runMarketplaceAction(action: () => Promise<void>) {
+    let error: unknown;
+    const status = await runGatedMutation(gate, canUseConnection, async () => {
+      try {
+        await action();
+      } catch (cause) {
+        error = cause;
+        throw cause;
+      }
+    });
+    return status === "failed" ? { status, error } : { status };
   }
   function install(target: PluginRefParams) {
     void act(() => plugins.installPlugin(target.plugin, target.marketplace));
@@ -152,7 +180,8 @@ export function MarketplaceBrowser({
     void act(() => state.refreshMarketplace(marketplace.name));
   }
   function remove() {
-    if (!marketplace || busy || !canUseConnection()) return;
+    if (!marketplace || busy || appliedRemovalNames.has(marketplace.name) || !canUseConnection())
+      return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -161,8 +190,33 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current !== version || !canUseConnection()) return;
-          void act(() => state.removeMarketplace(name));
+          if (
+            revision.current !== version ||
+            appliedRemovalNames.has(name) ||
+            !canUseConnection()
+          )
+            return;
+          void (async () => {
+            setError(null);
+            const outcome = await runMarketplaceAction(() =>
+              state.removeMarketplace(name),
+            );
+            if (revision.current !== version) return;
+            if (outcome.status === "not-ready") return;
+            if (outcome.status === "refused") {
+              setError(PLUGIN_MUTATION_BUSY);
+              return;
+            }
+            if (outcome.status !== "failed") return;
+            const removal = marketplaceRemovalOutcome(outcome.error);
+            if (removal === undefined) {
+              setError(WRITE_FAILED);
+              return;
+            }
+            if (!onAppliedRemoval(name, client)) return;
+            if (removal.kind === "unavailable" && canUseConnection())
+              void state.fetchMarketplaces();
+          })();
         },
       },
     ]);
@@ -200,7 +254,7 @@ export function MarketplaceBrowser({
             <Action disabled={busy || !ready} onPress={refresh}>
               Refresh source
             </Action>
-            <Action disabled={busy || !ready} onPress={remove}>
+            <Action disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")} onPress={remove}>
               Remove marketplace
             </Action>
           </View>

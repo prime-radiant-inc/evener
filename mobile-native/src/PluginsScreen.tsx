@@ -20,7 +20,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ConnectionState, PluginRefParams } from "@evener/appwire-client";
+import type {
+  ConnectionState,
+  MarketplaceEntry,
+  PluginRefParams,
+} from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -44,6 +48,15 @@ import {
 } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+type AppliedRemovalGuard = {
+  client: ConversationClientLike;
+  names: ReadonlySet<string>;
+};
+
+const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
+const MARKETPLACE_CLEANUP_WARNING =
+  "Marketplace removed; clone cleanup failed. Remove leftover clone files manually.";
 
 export function PluginsScreen({
   route,
@@ -120,8 +133,23 @@ function Plugins({
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [marketplaceWarningClient, setMarketplaceWarningClient] =
+    useState<ConversationClientLike | null>(null);
   const [details, setDetails] = useState(false);
   const editorVersion = useRef(0);
+  const currentClient = useRef(client);
+  currentClient.current = client;
+  const [appliedRemovalGuard, setAppliedRemovalGuard] =
+    useState<AppliedRemovalGuard>(() => ({
+      client,
+      names: new Set(),
+    }));
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === client
+      ? appliedRemovalGuard.names
+      : EMPTY_APPLIED_REMOVALS;
+  const visibleMarketplaceWarning =
+    marketplaceWarningClient === client ? MARKETPLACE_CLEANUP_WARNING : null;
   const entry = state.plugins?.find(
     (item) =>
       item.plugin === selected?.plugin &&
@@ -132,6 +160,45 @@ function Plugins({
     (item) =>
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
+  );
+  useEffect(() => {
+    setAppliedRemovalGuard((current) =>
+      current.client === client ? current : { client, names: new Set() },
+    );
+    setMarketplaceWarningClient((current) =>
+      current === client ? current : null,
+    );
+  }, [client]);
+  const reconcileAppliedRemovals = useCallback(
+    (
+      marketplaces: readonly MarketplaceEntry[],
+      owner: ConversationClientLike,
+    ): void => {
+      if (currentClient.current !== owner) return;
+      const currentNames = new Set(marketplaces.map((item) => item.name));
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        const next = new Set([...current.names].filter((name) => currentNames.has(name)));
+        return next.size === current.names.size
+          ? current
+          : { client: owner, names: next };
+      });
+    },
+    [],
+  );
+  const markAppliedRemoval = useCallback(
+    (name: string, owner: ConversationClientLike): boolean => {
+      if (currentClient.current !== owner) return false;
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        const names = new Set(current.names);
+        names.add(name);
+        return { client: owner, names };
+      });
+      setMarketplaceWarningClient(owner);
+      return true;
+    },
+    [],
   );
   // Tells the store which connection its list belongs to, on every
   // transition that connection reports - a passive flap keeps `client`
@@ -220,6 +287,7 @@ function Plugins({
           Browse
         </Action>
       </View>
+      <ErrorMessage message={visibleMarketplaceWarning} />
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
@@ -232,6 +300,9 @@ function Plugins({
             close();
             setSelected(target);
           }}
+          appliedRemovalNames={appliedRemovalNames}
+          onAppliedRemoval={markAppliedRemoval}
+          onAuthoritativeMarketplaces={reconcileAppliedRemovals}
         />
       ) : (
         <FlatList
