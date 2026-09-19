@@ -1561,6 +1561,20 @@ async function enqueueMutationIntent(
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
+  // §4's stop barrier, the click-time half: the capture's read transaction is
+  // REQUESTED here, at true click time — inside the click's own synchronous
+  // prefix, before `await runtime.start` and every other wait in the enqueue
+  // chain — so nothing can take the queue position ahead of it. On a warm
+  // connection the read's transaction is the click's first; on a cold one the
+  // request itself issues the open, and the capture is the first transaction
+  // the reopened connection creates. A Stop whose durable write is created
+  // after this request lands either before the enqueue's own write — the
+  // comparison reads its bump, and the row commits born-"canceled" — or after
+  // it, where the Stop's cancel scan cancels the row directly. The one
+  // unfenceable order is a Stop whose write is created before the capture's
+  // transaction can exist at all (§4's honest boundary). The Stop's own
+  // interrupt record passes no barrier (it IS the click the epoch records).
+  const barrierRead = durableWrite === "enqueue" ? runtime.storage.readStopEpoch(ref) : undefined;
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
@@ -1568,15 +1582,9 @@ async function enqueueMutationIntent(
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  // §4's stop barrier, the click-time half: capture the ref's durable stop
-  // epoch before this submission's write issues, so a Stop that lands while
-  // the write is in flight - after the click, before the commit, the one
-  // interleave transaction ordering cannot fence when another tab's Stop
-  // commits on its own connection - makes the record commit born-"canceled"
-  // instead of live. The Stop's own interrupt record passes no barrier: it IS
-  // the click the epoch records.
+  // The click-time capture, awaited at the write it fences.
   const barrier: MutationStopBarrier | undefined =
-    durableWrite === "enqueue" ? { stopEpoch: await runtime.storage.readStopEpoch(ref) } : undefined;
+    barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
   let record: MutationOutboxRecord;
   try {
     record =

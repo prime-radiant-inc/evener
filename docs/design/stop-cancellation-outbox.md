@@ -121,6 +121,31 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   send's capture still cancels that send — the conservative direction, retryable,
   the same reversibility §4 stands on.
 
+  **The capture's own boundary** (added 2026-09-19, the fresh review's
+  stop-epoch capture race): the capture is a *read*, and a read must wait for
+  the tab's own IndexedDB connection. The enqueue requests it at true click
+  time — inside the click's synchronous prefix, before any startup wait in the
+  enqueue chain — so the click itself issues a cold connection's open and owns
+  the first transaction on the reopened connection, and every Stop whose
+  durable write is *created* after that request is fenced: it either commits
+  before the enqueue's own write (the comparison reads its bump; the row
+  commits born-`canceled`) or after it (the Stop's cancel scan cancels the
+  committed row directly). What no client-side mechanism can fence is the
+  narrower order that remains: a Stop whose durable write is created *before
+  the capture read's transaction can exist* — during a cold connection's
+  opening wait, or in the engine's own scheduling sliver between the request
+  and the read's first store access on a warm one. That Stop commits before
+  the capture resolves, the capture reads the post-Stop epoch, the comparison
+  passes equal, and the row commits `submitting` past a Stop whose scan already
+  ran. The database holds no record of the click, and a cold tab holds no
+  connection to read one with, so this Stop is indistinguishable from §9 item
+  10's deliberate post-Stop send — which must send. Canceling every capture
+  that cannot prove it predates some Stop would refuse exactly that
+  deliberate send, so the window is bounded, not closed: the click requests
+  the capture (nothing the enqueue chain does can widen the window), and the
+  boundary test in §9 item 10 pins the residual's shape so nothing can claim
+  it closed without amending this section first.
+
 The honest boundary: a row already `attempted` (dispatcher flipped it in a
 transaction before transport, `mutationDispatcher.ts:113`) may be in flight to the
 daemon. Cancellation cannot unsend it. The dispatcher's existing pre-transport
@@ -235,7 +260,14 @@ Real store, real flows, no mocks of the mechanism under test:
     in-flight barrier): the storage-level test interleaves a real write past a
     completed second-connection Stop, and the store-level test gates the real
     write at the seam. A capture taken after the Stop still sends, and the epoch
-    survives later enqueues, a reload, and both stop paths.
+    survives later enqueues, a reload, and both stop paths. The capture-race
+    pair (added 2026-09-19): a click whose connection is still opening must
+    request the capture before any other write can take the queue position, so
+    a Stop committed during that connection setup lands its bump where the
+    enqueue's comparison reads it; and the residual window has its own pin —
+    a Stop committed before the capture read's transaction can exist refreshes
+    the baseline invisibly, and the row commits `submitting` exactly like a
+    deliberate post-Stop send, §4's bounded boundary.
 
 ## 10. Open questions for Jesse
 

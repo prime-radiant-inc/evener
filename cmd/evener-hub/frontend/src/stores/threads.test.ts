@@ -10510,6 +10510,117 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(queued?.state).toBe("canceled");
   });
 
+  // RoboRev PR #1873 medium, the fresh review's stop-epoch capture race: the
+  // capture was requested after `await runtime.start`, so on a connection that
+  // is still opening at the click — the finding's cold tab — everything else
+  // could take the queue position first: a warm tab's Stop committed during the
+  // opening wait, the capture read the POST-Stop epoch, the comparison passed
+  // equal, and the row committed "submitting" into the session the user just
+  // stopped. The capture's read transaction must be REQUESTED at true click
+  // time — inside the click's own synchronous prefix, before any startup wait
+  // in the enqueue chain — so the engine's creation-order queue puts the
+  // capture ahead of every write the click precedes, and the Stop that commits
+  // during this tab's connection setup leaves its bump where the enqueue's own
+  // comparison reads it.
+  test("an enqueue whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The other tab: a second real connection to the same durable database —
+    // no store of ours, exactly a warm sibling whose Stop is a real write.
+    const tabA = new MutationOutboxIndexedDB();
+
+    // The cold tab: THIS store's connection is closed at the click, so the
+    // capture read must reopen it before it can run — the finding's opening
+    // wait, however long the engine takes to satisfy it.
+    storage.close();
+
+    // The click. queue()'s synchronous prefix must request the capture read —
+    // and with it the reopen — before yielding to the event loop.
+    const send = threadsStore.getState().queue("ref_a", "clicked before the stop");
+    // The warm tab's Stop commits while the cold tab's connection is still
+    // opening, before the barrier read resolves. No yield precedes it: this
+    // is exactly the queue position the click-time request has to own.
+    await tabA.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    await send;
+
+    // The Stop's own cancel scan committed before the row existed, so the
+    // epoch barrier is the only fence that can still catch it — and must:
+    // the capture was requested at the click, the Stop's bump landed after
+    // it, and the enqueue's own comparison reads the bumped epoch.
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("canceled");
+    // Born-canceled rows never dispatch: the send clicked before the Stop
+    // must not reach the daemon after it.
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // §4's honest boundary, the verdict's minimum test: a Stop whose durable
+  // write is CREATED before the capture read's transaction can exist — a cold
+  // tab whose connection is still opening at the Stop's click, or an engine
+  // whose cross-connection scheduling puts a concurrent Stop's write ahead of
+  // a capture requested in the same instant — commits before the barrier read
+  // resolves, and the capture then reads the POST-Stop epoch. The comparison
+  // passes equal and the row commits "submitting": the barrier cannot fence
+  // it, because the database holds no record of the click and a cold tab holds
+  // no connection to read one with. No client-side mechanism closes this
+  // window; §4 bounds it (the click requests the capture, so every Stop
+  // created after that request is fenced), and this test pins the residual's
+  // shape — the row goes live and dispatches, indistinguishable in the
+  // database from §9 item 10's deliberate post-Stop send, which must send.
+  // A future change that claims to close this window must update §4 first,
+  // and this pin is what forces that reckoning.
+  test("the residual window: a Stop committed before the capture read's transaction exists refreshes the baseline invisibly", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The other tab's Stop, as a real write on a second real connection.
+    const tabA = new MutationOutboxIndexedDB();
+    const stopCommitted = tabA.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+
+    // The capture read held at the seam until the Stop has committed — the
+    // cold-open order: the read that lands is the real one, its transaction
+    // simply cannot exist before the Stop's write does.
+    const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+    storage.readStopEpoch = async (targetRef: string) => {
+      await stopCommitted;
+      return realReadStopEpoch(targetRef);
+    };
+
+    await threadsStore.getState().queue("ref_a", "clicked before the stop");
+
+    // The residual: the capture read the post-Stop epoch, the comparison
+    // passed equal, and the row committed "submitting".
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("submitting");
+    // ... and it dispatches — the one resurrection shape the barrier cannot
+    // close, bounded to the window above and pinned here.
+    await flushUntilArrived("the residual's send to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/queue"),
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
   // §9 item 4: a canceled row must not ride a Resume back out. The stopped
   // session's recovery flow - Force stop, the recovery obligation it leaves,
   // the explicit Resume that clears it - all run between the cancellation and
