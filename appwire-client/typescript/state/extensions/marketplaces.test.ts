@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
-import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
+import {
+  createMarketplacesStore,
+  MARKETPLACE_REFETCH_DEBOUNCE_MS,
+  type MarketplacesStore,
+  marketplaceRemovalOutcome,
+} from "./marketplaces";
 
 const ACME: MarketplaceEntry = { name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 };
 const LOCAL: MarketplaceEntry = { name: "local", source: { kind: "directory", path: "/opt/plugins" }, lastUpdated: 2 };
@@ -24,6 +29,35 @@ function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> 
     ...extra,
   });
 }
+
+describe("marketplaceRemovalOutcome", () => {
+  test("returns the authoritative applied list for clone cleanup failure", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL]))).toEqual({
+      kind: "applied",
+      marketplaces: [LOCAL],
+    });
+  });
+
+  test("returns unavailable when the applied list could not be read", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError(null, { appliedUnavailable: true }))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  test("keeps malformed marked outcomes applied-but-unconfirmed", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError(null))).toEqual({ kind: "unavailable" });
+    expect(marketplaceRemovalOutcome(cloneLitterError({ name: "not-a-list" }))).toEqual({ kind: "unavailable" });
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("clone could not be removed", -32603, { evenerErrorInfo: "marketplaceUnregisteredCloneRemains" }),
+      ),
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  test("keeps truly ordinary failures retryable", () => {
+    expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+  });
+});
 
 describe("store shape", () => {
   test("two stores share nothing: lists, catalogs and errors stay with their own instance", async () => {
