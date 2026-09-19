@@ -949,27 +949,28 @@ export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHi
   let olderCoverage = false;
   let transcriptOverlap = false;
 
-  for (const turn of older) {
-    const matches = newer.filter((candidate) => turnsMatch(candidate, turn));
-    if (
-      turn.items.some(
-        (item) =>
-          item.type !== "warning" &&
-          matches.some((candidate) => candidate.items.some((next) => itemIdentityMatches(item, next))),
-      )
-    ) {
-      transcriptOverlap = true;
-    }
-    if (olderTurnAddsCoverage(turn, matches)) olderCoverage = true;
-  }
-
   for (const group of groups) {
+    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
+    for (const olderIndex of group.olderIndexes) {
+      const turn = older[olderIndex];
+      if (turn === undefined) continue;
+      if (
+        turn.items.some(
+          (item) =>
+            item.type !== "warning" &&
+            freshTurns.some((candidate) => candidate.items.some((next) => itemIdentityMatches(item, next))),
+        )
+      ) {
+        transcriptOverlap = true;
+      }
+      if (olderTurnAddsCoverage(turn, freshTurns)) olderCoverage = true;
+    }
+
     if (group.olderIndexes.length === 0) continue;
     if (group.freshIndexes.length === 0) {
       olderContributed = true;
       continue;
     }
-    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
     const fresh = foldTurnFragments(freshTurns);
     if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
   }
