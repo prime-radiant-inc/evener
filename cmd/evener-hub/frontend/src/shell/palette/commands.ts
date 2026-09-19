@@ -133,6 +133,21 @@ export interface Command {
   // run against this model, or undefined when it can. scopeCommand reads it
   // for the menu and runWhenAvailable for the run, so the two never disagree.
   available?(model: ThreadModel): string | undefined;
+  // The local recovery fence (stores/liveControls.ts) claims this command:
+  // its run mints a durable mutation the hub's recovery admission refuses for
+  // as long as a restart-blocking obligation stands, so an offered press could
+  // only mint intent that parks until the explicit Resume action clears the
+  // fence. The composer's Enter/submit interception reads this at the press
+  // (Composer.tsx's handleBuiltinSubmit) and refuses with a reason naming the
+  // Resume path, exactly as the Send/Steer buttons and QueueStrip already
+  // refuse their own fenced verbs. The set is the durable turn mutations
+  // (/steer, /queue, /drain-as-steer) plus /clear's durable thread/clear.
+  // /interrupt is deliberately NOT marked: Stop is how the fenced window ends
+  // and the Stop button is never disabled by the fence, so the typed form must
+  // agree with the button. /compact, /goal, /model and their siblings run as
+  // plain RPCs the hub refuses fail-fast with its own honest error, minting
+  // no durable intent, so they need no client-side fence.
+  recoveryFenced?: boolean;
   // stayOpen commands (/search, /help) never close and never record recency.
   stayOpen?: boolean;
   args?: CommandArgs;
@@ -399,6 +414,7 @@ export function buildCommands(): Command[] {
       keywords: [],
       scope: "session",
       capability: "clear",
+      recoveryFenced: true,
       run: (ctx) => (ctx.sessionRef ? threadsStore.getState().clearThread(ctx.sessionRef) : undefined),
     },
     {
@@ -534,6 +550,7 @@ export function buildCommands(): Command[] {
       keywords: [],
       scope: "session",
       capability: "steer",
+      recoveryFenced: true,
       available: steerAvailable,
       args: {
         kind: "free",
@@ -549,6 +566,7 @@ export function buildCommands(): Command[] {
       keywords: ["enqueue"],
       scope: "session",
       capability: "queue",
+      recoveryFenced: true,
       available: queueAvailable,
       args: {
         kind: "free",
@@ -582,6 +600,7 @@ export function buildCommands(): Command[] {
       keywords: ["force-steer", "drain"],
       scope: "session",
       capability: "steer",
+      recoveryFenced: true,
       available: drainQueueAvailable,
       run: (ctx) =>
         runWhenAvailable(ctx, "drain", drainQueueAvailable, (ref) => threadsStore.getState().drainAsSteer(ref, "")),
