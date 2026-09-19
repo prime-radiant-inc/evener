@@ -203,6 +203,14 @@ func (s *Supervisor) start() (_ *ownedService, resultErr error) {
 	stream := &pipeStream{reader: parentRead, writer: parentWrite}
 	transport := &lifetimeTransport{Transport: appwire.NewStreamTransport(stream), ctx: life}
 	child := &ownedService{cmd: exec.CommandContext(context.Background(), command[0], command[1:]...), client: appwire.NewClient(transport), done: make(chan struct{}), cancel: cancel}
+	// The artifact process needs only temporary-file placement and optional
+	// subprocess coverage output, never the Hub's provider or proxy credentials.
+	child.cmd.Env = make([]string, 0, 2)
+	for _, key := range []string{"TMPDIR", "GOCOVERDIR"} {
+		if value, ok := os.LookupEnv(key); ok {
+			child.cmd.Env = append(child.cmd.Env, key+"="+value)
+		}
+	}
 	child.cmd.ExtraFiles = append([]*os.File{childRead, childWrite}, s.options.extraFiles...)
 	if err := child.cmd.Start(); err != nil {
 		cancel()

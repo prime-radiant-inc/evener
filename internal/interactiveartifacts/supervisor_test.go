@@ -22,10 +22,22 @@ import (
 
 func TestArtifactServiceProcess(t *testing.T) {
 	mode := os.Args[len(os.Args)-1]
-	if mode != "artifact-process" && mode != "artifact-process-barrier" {
+	if mode != "artifact-process" && mode != "artifact-process-barrier" && mode != "artifact-process-environment" {
 		return
 	}
 	options := StoreOptions{}
+	if mode == "artifact-process-environment" {
+		syscall.CloseOnExec(5)
+		events := os.NewFile(5, "environment-presence")
+		presence := make(map[string]bool)
+		for _, key := range []string{"OPENAI_API_KEY", "EVENER_TEST_CREDENTIAL", "HTTP_PROXY", "HOME", "PATH", "GODEBUG", "TMPDIR", "GOCOVERDIR"} {
+			_, presence[key] = os.LookupEnv(key)
+		}
+		if err := json.NewEncoder(events).Encode(presence); err != nil {
+			os.Exit(3)
+		}
+		_ = events.Close()
+	}
 	if mode == "artifact-process-barrier" {
 		syscall.CloseOnExec(5)
 		syscall.CloseOnExec(6)
@@ -226,4 +238,34 @@ func TestArtifactInstalledCommandPath(t *testing.T) {
 		t.Fatal("installed command did not serve the real store")
 	}
 	t.Logf("real installed command path readiness=%+v", lease.Readiness)
+}
+
+func TestSupervisorChildEnvironmentAllowlist(t *testing.T) {
+	for _, key := range []string{"OPENAI_API_KEY", "EVENER_TEST_CREDENTIAL", "HTTP_PROXY", "HOME", "PATH"} {
+		t.Setenv(key, "synthetic-artifact-canary")
+	}
+	t.Setenv("GODEBUG", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("GOCOVERDIR", t.TempDir())
+	eventRead, eventWrite, err := os.Pipe()
+	requireNoError(t, err)
+	t.Cleanup(func() { _ = eventRead.Close(); _ = eventWrite.Close() })
+	s := NewSupervisor(filepath.Join(t.TempDir(), "private"), SupervisorOptions{Policy: testPolicy, command: []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process-environment"}, extraFiles: []*os.File{eventWrite}})
+	t.Cleanup(func() { requireNoError(t, s.Close()) })
+	grant, err := s.Grant(t.Context(), testScope())
+	requireNoError(t, err)
+	var presence map[string]bool
+	requireNoError(t, json.NewDecoder(eventRead).Decode(&presence))
+	for key, got := range presence {
+		want := key == "TMPDIR" || key == "GOCOVERDIR"
+		if got != want {
+			t.Errorf("child environment presence %s=%v want %v", key, got, want)
+		}
+	}
+	client := sdkClient(t, grant.Readiness.Endpoint, grant.Token)
+	result, err := client.CallTool(t.Context(), &mcp.CallToolParams{Name: "artifact_publish", Arguments: json.RawMessage(createJSON("environment"))})
+	requireNoError(t, err)
+	if result.IsError {
+		t.Fatal("isolated real child could not publish")
+	}
 }
