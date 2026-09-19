@@ -55,11 +55,11 @@ func (t *compactSDKTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	return response, nil
 }
 func TestServiceSDKLargeEscapedReadViewAndList(t *testing.T) {
-	s, token := serviceFixture(t)
+	s, _ := serviceFixture(t)
 	scope := testScope()
 	scope.NamespaceID = strings.Repeat("<é\x00", 20000)
 	requireNoError(t, s.store.EnsureNamespace(t.Context(), scope.NamespaceID, scope.RealmID, "owner"))
-	token = "large-namespace-token"
+	token := "large-namespace-token"
 	requireNoError(t, s.store.InstallGrant(t.Context(), sha256.Sum256([]byte(token)), scope))
 	client := NewHTTPClient(token)
 	wire := &compactSDKTransport{base: client.Transport}

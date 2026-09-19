@@ -130,7 +130,7 @@ func TestServiceHeaderlessInitializeSelectsOnlyQualifiedProfile(t *testing.T) {
 func TestServiceOmittedArgumentsUseListDefaults(t *testing.T) {
 	s, token := serviceFixture(t)
 	for i := range 21 {
-		_, err := s.store.Publish(t.Context(), sha256.Sum256([]byte(token)), []byte(createJSON(fmt.Sprintf("default-%d", i))), PublicationOrigin{})
+		_, err := s.store.Publish(t.Context(), sha256.Sum256([]byte(token)), createJSON(fmt.Sprintf("default-%d", i)), PublicationOrigin{})
 		requireNoError(t, err)
 	}
 	for _, test := range []struct {

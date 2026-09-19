@@ -52,8 +52,14 @@ func TestStoreCursorBoundAndNamespaceBinding(t *testing.T) {
 			t.Fatal("tampered cursor accepted")
 		}
 	}
-	// Framing must distinguish data that would collide under raw concatenation.
-	if s.encodeCursor("a", "bc") == s.encodeCursor("ab", "c") {
+	// These namespace/JSON-position pairs collide under raw concatenation.
+	// Reusing the original signature with the alternate position must fail.
+	original, err := base64.RawURLEncoding.DecodeString(s.encodeCursor("a", `"bc"`))
+	requireNoError(t, err)
+	forged, err := json.Marshal(`bc"`)
+	requireNoError(t, err)
+	forged = append(forged, original[len(original)-sha256.Size:]...)
+	if _, err := s.decodeCursor(base64.RawURLEncoding.EncodeToString(forged), `a"\`); err == nil {
 		t.Fatal("ambiguous namespace and position framing")
 	}
 }
