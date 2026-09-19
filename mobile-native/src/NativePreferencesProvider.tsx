@@ -75,13 +75,15 @@ type DraftReadWithValue = ReturnType<typeof readDraftOutcomeWithValue>;
 function reconcileRetainedDraftProjection(
 	snapshot: NativePreferencesSnapshot,
 	result: DraftReadWithValue,
-): NativePreferencesSnapshot {
+	draftDiagnosticOwned: boolean,
+): { snapshot: NativePreferencesSnapshot; draftDiagnosticOwned: boolean } {
 	const keybindings = snapshot.keybindings;
 	let draft = keybindings.draft;
 	let writeUncertain = keybindings.writeUncertain;
 	let storageUnavailable = keybindings.storageUnavailable;
 	let conflict = keybindings.conflict;
 	let error = keybindings.error;
+	let nextDraftDiagnosticOwned = draftDiagnosticOwned;
 	switch (result.outcome) {
 		case "storageUnavailable":
 			storageUnavailable = true;
@@ -91,7 +93,10 @@ function reconcileRetainedDraftProjection(
 			writeUncertain = false;
 			storageUnavailable = false;
 			conflict = false;
-			if (keybindings.storageUnavailable) error = null;
+			if (draftDiagnosticOwned) {
+				error = null;
+				nextDraftDiagnosticOwned = false;
+			}
 			break;
 		case "unreadable":
 			draft = null;
@@ -108,7 +113,10 @@ function reconcileRetainedDraftProjection(
 				draft !== null &&
 				keybindings.confirmed !== null &&
 				draft.revision !== keybindings.confirmed.revision;
-			if (keybindings.storageUnavailable) error = null;
+			if (draftDiagnosticOwned) {
+				error = null;
+				nextDraftDiagnosticOwned = false;
+			}
 			break;
 		}
 	}
@@ -117,19 +125,23 @@ function reconcileRetainedDraftProjection(
 		keybindings.writeUncertain === writeUncertain &&
 		keybindings.storageUnavailable === storageUnavailable &&
 		keybindings.conflict === conflict &&
-		keybindings.error === error
+		keybindings.error === error &&
+		draftDiagnosticOwned === nextDraftDiagnosticOwned
 	)
-		return snapshot;
+		return { snapshot, draftDiagnosticOwned };
 	return {
-		...snapshot,
-		keybindings: {
-			...keybindings,
-			draft,
-			writeUncertain,
-			storageUnavailable,
-			conflict,
-			error,
+		snapshot: {
+			...snapshot,
+			keybindings: {
+				...keybindings,
+				draft,
+				writeUncertain,
+				storageUnavailable,
+				conflict,
+				error,
+			},
 		},
+		draftDiagnosticOwned: nextDraftDiagnosticOwned,
 	};
 }
 
@@ -146,6 +158,7 @@ export function NativePreferencesProvider({
 		model: NativePreferences;
 		snapshot: NativePreferencesSnapshot;
 		config: TranscriptDisplayConfigV1 | null;
+		draftDiagnosticOwned: boolean;
 	} | null>(null);
 	const [offlineDraftUnreadable, setOfflineDraftUnreadable] = useState(false);
 	const [offlineStorageUnavailable, setOfflineStorageUnavailable] = useState(false);
@@ -155,6 +168,10 @@ export function NativePreferencesProvider({
 	// failed probe right after switching hubs would keep showing the old
 	// hub's classification under the new hub's name.
 	const probedHubId = useRef<string | null>(null);
+	// Storage availability is mutable across reconnects. Keep diagnostic
+	// provenance separately so a failed probe cannot make a hub error look like
+	// a draft restore error during later recovery.
+	const draftDiagnosticOwned = useRef(false);
 	useEffect(() => {
 		// Runs independently of connection state (see the field's own comment
 		// on Preferences.offlineDraftUnreadable): a cold offline start never
@@ -166,6 +183,7 @@ export function NativePreferencesProvider({
 		// changed.
 		if (!hubId) {
 			probedHubId.current = null;
+			draftDiagnosticOwned.current = false;
 			setOfflineDraftUnreadable(false);
 			setOfflineStorageUnavailable(false);
 			return;
@@ -179,11 +197,15 @@ export function NativePreferencesProvider({
 			// a NEWLY selected hub has no earlier classification of ITS OWN to
 			// preserve.
 			setOfflineStorageUnavailable(true);
-			if (probedHubId.current !== hubId) setOfflineDraftUnreadable(false);
+			if (probedHubId.current !== hubId) {
+				draftDiagnosticOwned.current = false;
+				setOfflineDraftUnreadable(false);
+			}
 			probedHubId.current = hubId;
 			return;
 		}
 		probedHubId.current = hubId;
+		draftDiagnosticOwned.current = outcome === "unreadable";
 		setOfflineStorageUnavailable(false);
 		setOfflineDraftUnreadable(outcome === "unreadable");
 	}, [hubId, state]);
@@ -200,8 +222,15 @@ export function NativePreferencesProvider({
 				previous.client === client
 			)
 				return previous;
-			const snapshot = reconcileRetainedDraftProjection(previous.snapshot, result);
-			return snapshot === previous.snapshot ? previous : { ...previous, snapshot };
+			const reconciled = reconcileRetainedDraftProjection(
+				previous.snapshot,
+				result,
+				previous.draftDiagnosticOwned,
+			);
+			return reconciled.snapshot === previous.snapshot &&
+				reconciled.draftDiagnosticOwned === previous.draftDiagnosticOwned
+				? previous
+				: { ...previous, ...reconciled };
 		});
 	};
 	useEffect(() => {
@@ -299,6 +328,10 @@ export function NativePreferencesProvider({
 						client,
 						model,
 						snapshot,
+						draftDiagnosticOwned:
+							previous?.hubId === hubId
+								? previous.draftDiagnosticOwned
+								: draftDiagnosticOwned.current,
 						config:
 							snapshot.transcriptMobile.support === "unsupported"
 								? null
