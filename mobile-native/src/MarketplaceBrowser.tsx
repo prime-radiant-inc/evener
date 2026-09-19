@@ -201,21 +201,22 @@ export function MarketplaceBrowser({
             const outcome = await runMarketplaceAction(() =>
               state.removeMarketplace(name),
             );
-            if (revision.current !== version) return;
             if (outcome.status === "not-ready") return;
             if (outcome.status === "refused") {
+              if (revision.current !== version) return;
               setError(PLUGIN_MUTATION_BUSY);
               return;
             }
             if (outcome.status !== "failed") return;
             const removal = marketplaceRemovalOutcome(outcome.error);
-            if (removal === undefined) {
-              setError(WRITE_FAILED);
+            if (removal !== undefined) {
+              if (!onAppliedRemoval(name, client)) return;
+              if (removal.kind === "unavailable" && canUseConnection())
+                void state.fetchMarketplaces();
               return;
             }
-            if (!onAppliedRemoval(name, client)) return;
-            if (removal.kind === "unavailable" && canUseConnection())
-              void state.fetchMarketplaces();
+            if (revision.current !== version) return;
+            setError(WRITE_FAILED);
           })();
         },
       },
