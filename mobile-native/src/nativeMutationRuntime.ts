@@ -8,6 +8,7 @@ import type {
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
+	createSecureUUID,
 	MutationDispatcher,
 	MutationOutbox,
 	type MutationAttachmentRef,
@@ -77,12 +78,22 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 	if (request.kind !== "interrupt") payload.input = request.input;
 	if (method === "turn/drainAsSteer")
 		payload.expectedQueueRevision = request.expectedQueueRevision;
+	// The wire input intentionally contains translated marker prose; recovery
+	// needs the original composer source and durable attachment identities.
+	const attachments =
+		request.composer?.attachments.map((attachment) => ({
+			presentationId: createSecureUUID(nativeRandomSource()),
+			marker: attachment.marker,
+			name: attachment.name ?? "attachment",
+			mediaType: attachment.mediaType,
+		})) ?? [];
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
 		method,
 		payload,
-		attachments: [],
+		attachments,
+		composerText: request.composer?.text,
 		optimisticDisplay:
 			request.kind === "interrupt"
 				? { method }
