@@ -1532,6 +1532,90 @@ func TestEditMarketplace_RenameRefusesADirectorySourceInsideTheClone(t *testing.
 	}
 }
 
+// The record being re-sourced is excluded from the swap guard: its own legacy
+// source at the clone path is exactly what the re-source replaces, so refusing
+// would leave a state no operation could clear.
+func TestEditMarketplace_ResourceToGitReplacesItsOwnLegacyCloneSource(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	seedLegacyInStoreDirectorySource(t, m, "acme")
+	repo := makeMarketplaceRepo(t, "acme")
+
+	ref, err := m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceURL, URL: repo})
+	if err != nil {
+		t.Fatalf("re-sourcing its own legacy clone-source was refused: %v", err)
+	}
+	if ref.Source.Kind != SourceURL {
+		t.Fatalf("Source = %+v, want the git source", ref.Source)
+	}
+	if _, err := os.Stat(filepath.Join(ref.InstallLocation, ".claude-plugin", "marketplace.json")); err != nil {
+		t.Fatalf("the re-sourced clone is not there: %v", err)
+	}
+}
+
+// The rename moves the plugin cache as well as the clone, so a registered
+// source living under the old cache must refuse the rename rather than be moved
+// out from under its record.
+func TestEditMarketplace_RenameRefusesASourceUnderTheOldCache(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheEntry := filepath.Join(m.cacheDir(), "acme")
+	if err := os.MkdirAll(cacheEntry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: cacheEntry}, InstallLocation: cacheEntry},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", nil); err == nil {
+		t.Fatal("expected the rename to refuse moving a cache another marketplace sources")
+	}
+	if _, err := os.Stat(cacheEntry); err != nil {
+		t.Fatalf("the cache another marketplace sources was moved: %v", err)
+	}
+}
+
+// The same cache move must refuse an incoming directory source that sits inside
+// the old cache, since the rename would carry it to the new name while
+// Source.Path still names the old location.
+func TestEditMarketplace_RenameRefusesAnIncomingSourceUnderTheOldCache(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheEntry := filepath.Join(m.cacheDir(), "acme")
+	if err := os.MkdirAll(cacheEntry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := makeDirectoryMarketplace(t, "local", "widget")
+	link := filepath.Join(cacheEntry, "source")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
+		InstallLocation: clone,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: link}); err == nil {
+		t.Fatal("expected the rename to refuse an incoming source inside the old cache")
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the cache or its incoming source moved despite the refusal: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
