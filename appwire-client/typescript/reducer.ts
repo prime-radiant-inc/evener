@@ -771,6 +771,10 @@ function compareTurnPositions(left: TurnModel, right: TurnModel): number | undef
   return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
 }
 
+function nextPositionedTurn(turns: CoalescedTurn[], start: number): CoalescedTurn | undefined {
+  return turns.slice(start).find((turn) => firstTurnPosition(turn.turn) !== undefined);
+}
+
 function weaveTurnGap(
   fresh: CoalescedTurn[],
   older: CoalescedTurn[],
@@ -782,7 +786,10 @@ function weaveTurnGap(
     while (olderIndex < older.length) {
       const olderTurn = older[olderIndex];
       if (olderTurn === undefined) break;
-      const comparison = compareTurnPositions(olderTurn.turn, freshTurn.turn);
+      const comparisonTurn =
+        firstTurnPosition(olderTurn.turn) === undefined ? nextPositionedTurn(older, olderIndex) : olderTurn;
+      const comparison =
+        comparisonTurn === undefined ? undefined : compareTurnPositions(comparisonTurn.turn, freshTurn.turn);
       if (comparison !== undefined ? comparison < 0 : preferOlderWithoutPositions) {
         result.push(olderTurn);
         olderIndex += 1;
