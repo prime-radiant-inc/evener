@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,18 +37,40 @@ func TestServiceSDKProfileAuthorityAndResource(t *testing.T) {
 	s, token := serviceFixture(t)
 	c := sdkClient(t, s.ready.Endpoint, token)
 	init := c.InitializeResult()
-	if init.ProtocolVersion != "2025-11-25" || init.Capabilities.Logging != nil || init.Capabilities.Completions != nil || init.Capabilities.Resources.Subscribe || init.Capabilities.Tools.ListChanged {
-		t.Fatalf("wrong profile: %+v", init)
+	if init.ProtocolVersion != "2025-11-25" || init.Capabilities.Tools == nil || init.Capabilities.Resources == nil {
+		t.Fatalf("missing selected profile or required capabilities: %+v", init)
+	}
+	capabilities := init.Capabilities
+	if capabilities.Logging != nil || capabilities.Completions != nil || capabilities.Prompts != nil || len(capabilities.Experimental) != 0 || len(capabilities.Extensions) != 0 || capabilities.Resources.Subscribe || capabilities.Resources.ListChanged || capabilities.Tools.ListChanged {
+		t.Fatalf("unsupported capabilities advertised: %+v", capabilities)
 	}
 	list, err := c.ListTools(context.Background(), nil)
 	requireNoError(t, err)
-	if len(list.Tools) != 7 {
-		t.Fatalf("catalog: %d", len(list.Tools))
+	catalog, err := Tools()
+	requireNoError(t, err)
+	if len(list.Tools) != len(catalog) {
+		t.Fatalf("catalog count: live=%d bundled=%d", len(list.Tools), len(catalog))
+	}
+	expected := make(map[string]*mcp.Tool, len(catalog))
+	for _, tool := range catalog {
+		expected[tool.Name] = tool
 	}
 	for _, tool := range list.Tools {
-		if tool.Meta["ui"] == nil {
-			t.Fatal("lost UI metadata")
+		bundled, ok := expected[tool.Name]
+		if !ok {
+			t.Fatalf("unexpected or duplicate live tool %q", tool.Name)
 		}
+		for name, pair := range map[string][2]any{"inputSchema": {tool.InputSchema, bundled.InputSchema}, "outputSchema": {tool.OutputSchema, bundled.OutputSchema}, "ui": {tool.Meta["ui"], bundled.Meta["ui"]}} {
+			if !reflect.DeepEqual(jsonValue(t, pair[0]), jsonValue(t, pair[1])) {
+				t.Fatalf("live tool %s changed %s contract", tool.Name, name)
+			}
+		}
+		delete(expected, tool.Name)
+	}
+	resources, err := c.ListResources(context.Background(), nil)
+	requireNoError(t, err)
+	if len(resources.Resources) != 1 || resources.Resources[0].URI != ViewerResource.URI || resources.Resources[0].MIMEType != ViewerResource.MIMEType {
+		t.Fatalf("unexpected resource catalog: %+v", resources.Resources)
 	}
 	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: "artifact_publish", Arguments: json.RawMessage(createJSON("sdk"))})
 	requireNoError(t, err)
@@ -144,4 +167,15 @@ func TestServiceHTTPBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// jsonValue compares machine fields after the same ordinary JSON type mapping
+// used by the SDK, without comparing natural-language tool descriptions.
+func jsonValue(t *testing.T, value any) any {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	requireNoError(t, err)
+	var decoded any
+	requireNoError(t, json.Unmarshal(encoded, &decoded))
+	return decoded
 }

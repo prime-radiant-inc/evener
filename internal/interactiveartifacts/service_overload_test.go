@@ -50,6 +50,7 @@ func TestServiceRealHTTPQueueFairnessAndCancellation(t *testing.T) {
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("MCP-Protocol-Version", "2025-11-25")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}).Do(req)
 		if err != nil {
@@ -125,7 +126,7 @@ func TestServiceIncompleteBodiesCannotOccupyEveryIngressSlot(t *testing.T) {
 		socket, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", endpoint.Host)
 		requireNoError(t, err)
 		sockets = append(sockets, socket)
-		_, err = fmt.Fprintf(socket, "POST /mcp HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Length: 1\r\n\r\n", endpoint.Host, token)
+		_, err = fmt.Fprintf(socket, "POST /mcp HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Length: 1\r\n\r\n", endpoint.Host, token)
 		requireNoError(t, err)
 		waitInFlight(i + 1)
 	}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -167,6 +168,10 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if r.Method == http.MethodPost && !selectedProtocolMessage(r, body, s.ready.CoreVersion) {
+			http.Error(w, "artifact service requires a single message in its selected MCP profile", http.StatusBadRequest)
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		// Buffer the complete SDK response before headers become observable. Failure
 		// after a mutation is transport uncertainty, never an assertion of rollback.
@@ -185,6 +190,36 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 		_, _ = w.Write(bounded.body.Bytes())
 	})
 }
+
+// selectedProtocolMessage prevents the SDK's legacy batch path from dispatching
+// multiple domain calls behind one HTTP admission lease or buffering a combined
+// response beyond the service budget. The SDK still owns single-message codecs.
+func selectedProtocolMessage(r *http.Request, body []byte, version string) bool {
+	headers := r.Header.Values("MCP-Protocol-Version")
+	if len(headers) > 1 || (len(headers) == 1 && headers[0] != version) {
+		return false
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] == '[' {
+		return false
+	}
+	message, err := jsonrpc.DecodeMessage(body)
+	if err != nil {
+		return false
+	}
+	if request, ok := message.(*jsonrpc.Request); ok && request.Method == "initialize" {
+		var params mcp.InitializeParams
+		if !request.IsCall() || json.Unmarshal(request.Params, &params) != nil || params.ProtocolVersion != version {
+			return false
+		}
+		// Initial requests legitimately have no negotiated-version header. Keep
+		// even that single initialize out of the SDK's legacy transport profile.
+		r.Header.Set("MCP-Protocol-Version", version)
+		return true
+	}
+	return len(headers) == 1
+}
+
 func hasHeader(h http.Header, name string) bool {
 	for key := range h {
 		if strings.EqualFold(key, name) {
