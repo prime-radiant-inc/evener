@@ -115,6 +115,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_LegacyFirstResaveBeatsItsLegacyRow,
 		fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow,
 		fuzzScenarioPastIndex_FindDoesNotResurrectSessionRemovedByRebuild,
+		fuzzScenarioPastIndex_DeletedSessionEvictedAfterRacedRebuildSwap,
 		fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild,
 		fuzzScenarioPastIndex_StaleProbeDoesNotClobberNewerIndexedRow,
 		fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows,

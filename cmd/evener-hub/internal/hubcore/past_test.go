@@ -165,6 +165,61 @@ func fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_DeletedSessionEvictedAfterRacedRebuildSwap pins the
+// Rebuild-side half: a Rebuild scans a session that is then deleted and swaps
+// its now-stale scan in during Find's probe. Find's re-probe confirms the disk
+// no longer holds it and evicts the row, so neither this nor a later cached Find
+// returns the deleted session.
+func fuzzScenarioPastIndex_DeletedSessionEvictedAfterRacedRebuildSwap(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	prevSwap := pastBeforeRebuildSwap
+	pastBeforeRebuildSwap = func() {
+		close(paused)
+		<-release
+	}
+	defer func() { pastBeforeRebuildSwap = prevSwap }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = idx.Rebuild()
+	}()
+	<-paused // the scan saw the session and is paused before its swap
+
+	var once sync.Once
+	idx.afterFindProbe = func() {
+		once.Do(func() {
+			// Delete the session, then publish the Rebuild's (now stale) scan.
+			if err := os.Remove(sessionMetaPath(proj, id)); err != nil {
+				t.Errorf("remove meta: %v", err)
+			}
+			close(release)
+			<-done
+		})
+	}
+	defer func() { idx.afterFindProbe = nil }()
+
+	if got, ok := idx.Find(id); ok {
+		t.Fatalf("Find returned a session deleted before the Rebuild swap: %+v", got)
+	}
+	if _, ok := idx.findCached(id); ok {
+		t.Fatal("the deleted session stayed cached after the raced Rebuild swap")
+	}
+	if got, ok := idx.Find(id); ok {
+		t.Fatalf("a later cached Find returned the evicted session: %+v", got)
+	}
+}
+
 // fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild pins the
 // successful re-probe path: a Rebuild scans while the session does not yet
 // exist, the session is created, and the Rebuild publishes its (session-less)

@@ -1126,12 +1126,18 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
+	declinedFold := false
 	for range pastFindProbeAttempts {
 		i.mu.RLock()
 		probeRebuildGen := i.rebuildGen
 		i.mu.RUnlock()
 		entry, found := i.probeOne(sessionID)
 		if !found {
+			if declinedFold {
+				// A Rebuild published a scan that predates this deletion; evict
+				// the row so a cached Find cannot hand back the deleted session.
+				i.evict(sessionID)
+			}
 			return PastEntry{}, false
 		}
 		if i.afterFindProbe != nil {
@@ -1141,6 +1147,7 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 			// A Rebuild swapped in a new index during the probe; its view is newer
 			// than ours, so re-probe against it rather than guess deletion vs
 			// creation.
+			declinedFold = true
 			continue
 		}
 		// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
@@ -1153,6 +1160,31 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	}
 	// Contended on every attempt: report a miss rather than a stale probe.
 	return PastEntry{}, false
+}
+
+// evict removes an id the disk no longer holds. A Rebuild can publish a scan
+// that predates a deletion (it presented the session before it was removed), and
+// Find's post-swap re-probe is what discovers the session is gone; evicting here
+// stops a later cached Find from returning the deleted row before the next tick.
+func (i *PastIndex) evict(id string) {
+	i.mu.Lock()
+	if _, ok := i.byID[id]; !ok {
+		i.mu.Unlock()
+		return
+	}
+	delete(i.byID, id)
+	fresh := make([]PastEntry, 0, len(i.all))
+	for _, e := range i.all {
+		if e.ID != id {
+			fresh = append(fresh, e)
+		}
+	}
+	i.all = fresh
+	i.gen++ // supersede any in-flight publisher (FTS + fingerprint)
+	gen := i.gen
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+	i.publishAndSignal(all, gen)
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
