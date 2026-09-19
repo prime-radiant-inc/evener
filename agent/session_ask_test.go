@@ -2034,6 +2034,138 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	}
 }
 
+// TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore
+// covers the marker rejection after a user reply has already cleared the
+// in-memory ask set. The admitted reply runs a completed tool-results round,
+// then cancellation reaches the marker with a clean rollback failure. Live
+// settlement must derive the same awaiting boundary restore reads from that
+// durable tool completion, while retaining the resolved ask and rejecting the
+// marker.
+func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	trigger := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop, trigger) },
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.RegisterTool("loop_tool", "returns a completed result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		return "ok", nil
+	})
+	sess.RegisterTool("trigger_cancel", "lets the post-tool hook cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		return "triggered", nil
+	})
+
+	// TRIPWIRE: scripted provider and local temporary transcript files use real
+	// I/O; 30s is a generous hang guard, and this test makes no network requests.
+	initialCtx, initialCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer initialCancel()
+	if _, err := sess.ProcessInput(initialCtx, "which db should we use?", nil); err != nil {
+		t.Fatalf("initial ask ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("initial pending count = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("initial state = %q, want %q", got, SessionAwaiting)
+	}
+	drainPendingEvents(sess)
+
+	markerFailure := errors.New("answered-round interrupt marker sync failure")
+	markerFaultHit := false
+	replyCtx, cancelReply := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelReply()
+	replyCtx = context.WithValue(replyCtx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
+		beforeSteering: func() {
+			// The successful reply's tool-results turn is durable before this
+			// hook arms the fault for the next append and cancels the round.
+			fs := attachEnvironmentFailureFS(t, sess)
+			fs.mu.Lock()
+			fs.failure = markerFailure
+			fs.onFailure = func() { markerFaultHit = true }
+			fs.mu.Unlock()
+			cancelReply()
+		},
+	})
+
+	_, processErr := sess.ProcessInput(replyCtx, "Postgres, thanks", nil)
+	if !errors.Is(processErr, context.Canceled) {
+		t.Fatalf("reply ProcessInput error = %v, want context.Canceled", processErr)
+	}
+	if !markerFaultHit {
+		t.Fatal("injected filesystem failure did not reach the interrupt marker")
+	}
+	if !errors.Is(processErr, markerFailure) {
+		t.Fatalf("reply ProcessInput error = %v, want the marker sync failure", processErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("model requests = %d, want 2 (ask plus admitted reply tool round)", got)
+	}
+	if result, ok := findToolResultInHistory(sess.history, "loop1"); !ok || result.IsError {
+		t.Fatalf("completed reply tool result = %+v, found=%v, want one non-error result", result, ok)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count = %d, want 0 (the admitted reply resolved ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after failed marker = %q, want %q (match the durable completed tool round)", got, SessionAwaiting)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("live wire state after failed marker = %q, want %q", got, SessionAwaiting)
+	}
+	terminalEvents := 0
+	for _, ev := range drainPendingEvents(sess) {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		data, ok := ev.Data.(events.SessionEndData)
+		if !ok {
+			t.Fatalf("session-end event data = %#v, want SessionEndData", ev.Data)
+		}
+		terminalEvents++
+		if data.Reason != "turn_failed" || data.State != string(SessionAwaiting) || data.Interrupted {
+			t.Fatalf("failed marker session-end = %+v, want turn_failed/Awaiting without interruption", data)
+		}
+	}
+	if terminalEvents != 1 {
+		t.Fatalf("failed marker emitted %d session-end events, want exactly one", terminalEvents)
+	}
+	for _, turn := range sessionHistory(sess) {
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindInterrupted {
+			t.Fatal("failed interrupt marker appeared in live history")
+		}
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored pending count = %d, want 0", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (durable completed tool round)", got, SessionAwaiting)
+	}
+	if got := restored.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
+	}
+}
+
 // TestAskUser_StreamedSalvageBeforeFailedInterruptMarkerPreservesBoundary
 // covers a cancellation that has already streamed a partial response. The
 // salvage explanation is recorded before the round loop's durable interrupt

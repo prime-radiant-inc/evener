@@ -1278,6 +1278,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// Claude Code / codex. The transcript records an interrupt
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
+			interruptMarkerRejected := false
 			if isTurnCancellation(processCtx, err) {
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
@@ -1291,6 +1292,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					if markerErr := s.appendSteeringTurnDurablyForOwner(interruptMsg, events.SteeringKindInterrupted, s.activeTurnOwner()); markerErr != nil {
+						interruptMarkerRejected = true
 						// The cancellation is still the original turn error, but a
 						// marker that was not admitted cannot resolve the ask or
 						// open the autonomous drain. The generic failure tail settles
@@ -1399,7 +1401,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				// diverging from restore's deriveRestoredState for the identical
 				// transcript and, via WireState, telling a live client nothing is
 				// waiting on them.
-				s.finishProcessingAtFailureBoundary(processCtx)
+				if interruptMarkerRejected {
+					s.finishProcessingAtRestoredFailureBoundary(processCtx)
+				} else {
+					s.finishProcessingAtFailureBoundary(processCtx)
+				}
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
