@@ -32,6 +32,8 @@ import {
   staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import { useConnectionDisplay } from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { useProviderSurface } from "./providerSurface";
@@ -60,13 +62,18 @@ const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
 export function ProvidersScreen({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
-  const { activeProfile, client, state, retry } = useConnection();
+  const { activeProfile, client, state, fatal, retry } = useConnection();
+  const display = useConnectionDisplay(state, fatal);
   const [signIn, setSignIn] = useState<{
     hubId: string;
     name: string;
     flow: ProviderSignIn;
   } | null>(null);
   const [revision, setRevision] = useState(0);
+  // useCredentialStore already survives a flap on its own (connectionChanged
+  // rebinds it - credentialStore.ts), so unlike Plugins/HubSettings this
+  // screen needs no "last known client" fallback: <Providers> below takes
+  // only `store`, never `client` directly.
   const store = useCredentialStore();
   useEffect(() => () => signIn?.flow.dispose(), [signIn]);
   useEffect(() => {
@@ -82,26 +89,27 @@ export function ProvidersScreen({
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
     );
+  if (display === "wall")
+    return (
+      <View style={{ padding: 20 }}>
+        <Copy>Connect to {activeProfile.name} to manage providers.</Copy>
+        <Action onPress={retry}>Reconnect</Action>
+      </View>
+    );
   return (
     <>
-      {client && state === "ready" ? (
-        <Providers
-          key={`${activeProfile.id}:${revision}`}
-          store={store}
-          hubName={activeProfile.name}
-          onSignIn={(name) => {
-            const flow = new ProviderSignIn(store, name);
-            flow.setConnection(client);
-            setSignIn({ hubId: activeProfile.id, name, flow });
-            void flow.start();
-          }}
-        />
-      ) : (
-        <View style={{ padding: 20 }}>
-          <Copy>Connect to {activeProfile.name} to manage providers.</Copy>
-          <Action onPress={retry}>Reconnect</Action>
-        </View>
-      )}
+      {display === "banner" ? <ConnectionStatus /> : null}
+      <Providers
+        key={`${activeProfile.id}:${revision}`}
+        store={store}
+        hubName={activeProfile.name}
+        onSignIn={(name) => {
+          const flow = new ProviderSignIn(store, name);
+          flow.setConnection(client);
+          setSignIn({ hubId: activeProfile.id, name, flow });
+          void flow.start();
+        }}
+      />
       {signIn && signIn.hubId === activeProfile.id && (
         <ProviderSignInSheet
           flow={signIn.flow}

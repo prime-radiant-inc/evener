@@ -20,10 +20,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { PluginRefParams } from "@evener/appwire-client";
+import type { AppwireClient, PluginRefParams } from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import { useConnectionDisplay } from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -52,12 +54,21 @@ export function PluginsScreen({
   // credential store is (credentialStore.ts), as committed state a discarded
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
-  const { activeProfile, client, state, retry } = useConnection();
+  const { activeProfile, client, state, fatal, retry } = useConnection();
+  const display = useConnectionDisplay(state, fatal);
+  // A flap keeps `client` set (the connection layer's own generation guard -
+  // hubConnection.ts), but a manual retry briefly clears it while it opens a
+  // fresh one; the last client this screen had keeps the list mounted
+  // through that gap too, rather than dropping to the wall for a moment the
+  // banner should cover just as well as a passive reconnect does.
+  const lastClient = useRef<AppwireClient | null>(null);
+  if (client) lastClient.current = client;
+  const renderClient = client ?? lastClient.current;
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
     );
-  if (!client || state !== "ready")
+  if (display === "wall" || !renderClient)
     return (
       <View style={{ padding: 20 }}>
         <Copy>Connect to {activeProfile.name} to manage plugins.</Copy>
@@ -65,12 +76,15 @@ export function PluginsScreen({
       </View>
     );
   return (
-    <Plugins
-      key={activeProfile.id}
-      client={client}
-      hubName={activeProfile.name}
-      gate={gate}
-    />
+    <>
+      {display === "banner" ? <ConnectionStatus /> : null}
+      <Plugins
+        key={activeProfile.id}
+        client={renderClient}
+        hubName={activeProfile.name}
+        gate={gate}
+      />
+    </>
   );
 }
 
