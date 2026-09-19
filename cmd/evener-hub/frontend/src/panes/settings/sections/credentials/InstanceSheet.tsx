@@ -452,19 +452,22 @@ function supersededSaveLanded(
   if (listed.implicit !== before.implicit && !(before.implicit && !listed.implicit)) return undefined;
   const plainBase = (a: InstanceEntry, b: InstanceEntry): boolean => fieldValue(a, "base") === fieldValue(b, "base");
   if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
+  // The destination identity is the mutation's own captured fingerprint. When
+  // it is unavailable the listing's sanitized baseUrl cannot stand in for it
+  // (it omits query/userinfo, so a replacement at a different hidden endpoint
+  // reads the same), and a destination plainly exists: fail closed rather than
+  // re-anchor, and let the caller mark the draft stale.
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
-  if (authoritativeFingerprint !== "") {
-    if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
-    // The fingerprint settles the destination; the fields it does not cover
-    // (credentials, surface, declared variables) are verified separately, and
-    // a credential clear fails closed.
-    if (!credentialValuesLanded(listed, params, true)) return undefined;
-    // The fingerprint excludes surface, and a clear leaves no declared value to
-    // compare: the captured row is the only proof of what the clear resolved to.
-    if (params.clearSurface && (listed.surface ?? "") !== (authoritative?.surface ?? "")) return undefined;
-    return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
-  }
-  return declaredValuesLanded(listed, params, true) ? listed : undefined;
+  if (authoritativeFingerprint === "") return undefined;
+  if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
+  // The fingerprint settles the destination; the fields it does not cover
+  // (credentials, surface, declared variables) are verified separately, and
+  // a credential clear fails closed.
+  if (!credentialValuesLanded(listed, params, true)) return undefined;
+  // The fingerprint excludes surface, and a clear leaves no declared value to
+  // compare: the captured row is the only proof of what the clear resolved to.
+  if (params.clearSurface && (listed.surface ?? "") !== (authoritative?.surface ?? "")) return undefined;
+  return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
 }
 
 export interface InstanceSheetProps {
