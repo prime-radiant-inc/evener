@@ -85,6 +85,31 @@
   height: 100%;
 }
 
+/* The agent's stated reason for the call - the one part of the row written for
+ * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
+ * review call) italics: a rationale reads as commentary on the call, set off
+ * from the machine text below it without a colour or size of its own.
+ *
+ * overflow-wrap:anywhere so long machine text can still break when the
+ * intent itself is the long part.
+ *
+ * This base rule precedes the [data-intent-trailing] overrides below: the
+ * override is MORE specific, so this ordering keeps specificity ascending
+ * (biome's noDescendingSpecificity) and does not change the cascade. */
+.intent {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  /* The title line-height (1.3, not the body's 1.5): the rationale-to-call
+   * gap is mostly half-leading, so tightening the line box is what actually
+   * pulls the call up against its description. */
+  line-height: var(--line-height-title);
+  font-style: italic;
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
 /* data-intent-trailing marks an intent-only row whose trailing Open affordance
  * rides the disclosure line (ToolRow.tsx's grammar). The visible content is a
  * sibling of the overlay trigger so its valid DOM order can be text, Open,
@@ -111,13 +136,53 @@
 .row[data-intent-trailing="true"] > .trigger:not(.intentOverlayTrigger) {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: calc(100% - 14px - var(--space-2));
+  max-width: calc(100% - var(--tap-min, 14px) - var(--space-2));
+}
+
+/* A summary-less two-level row renders its intent as a BARE line while the
+ * body trigger shares it - the delegate row's shape when it has no trailing
+ * affordance (issue #1253). The line is not the .intent alone: the rail icon
+ * and status siblings lead it, and below the 700px breakpoint the .rowIcon's
+ * negative-gutter pull does not apply, so the icon contributes its full outer
+ * width (24px slot + 2px margin-right + one column-gap = 34px, one
+ * --speaker-gutter) to the line. A max-width on the bare .intent would begin
+ * AFTER that icon and leave it unbounded, so the line sums 100% + 34px and flex
+ * line-breaking wraps the body trigger to its own line (roborev). Bound the
+ * WHOLE line - icon through intent - in one flex item instead. Same intent as
+ * the wrapper rules above: it shrinks to its text and leaves room for the body
+ * trigger, never grows to fill the line and spring the chevron to the far edge.
+ * The reservation is the body trigger's own width: the 14px chevron on desktop,
+ * --tap-min when the phone block below grows it. */
+.row[data-intent-trailing="true"] > .intentLine {
+  flex: 0 1 auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
+  max-width: calc(100% - var(--tap-min, 14px) - var(--space-2));
 }
 
 /* When the body chevron ALSO rides an intent line that carries Open, the
- * reservation grows by its 14px and one more column gap. */
+ * reservation grows by the body trigger's own width and one more column gap.
+ * That width is var(--tap-min, 14px), NOT a hard-coded 14px: on a phone the
+ * .bodyTrigger block below grows it to --tap-min (44px), and a hard-coded 14px
+ * under-reserves by 30px, so the line sums past 100% and the body trigger wraps
+ * (roborev). The 14px term before it is the decorative disclosure chevron, which
+ * is only rendered on the non-delegate collapsed shape. */
 .row[data-intent-trailing="true"][data-body-trigger-intent="true"] .intentTriggerContent {
-  max-width: calc(100% - var(--tap-min, 28px) - 14px - 14px - var(--space-2) - var(--space-2) - var(--space-2));
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--tap-min, 14px) - var(--space-2) - var(--space-2) - var(--space-2));
+}
+
+/* A summary-less row (data-intent-suppressed) renders NO decorative chevron -
+ * the body trigger is its only one - so the combined reservation above
+ * over-reserves a 14px chevron plus a gap it never renders, narrowing the
+ * intent on a phone (roborev). Reserve only the Open control, the body trigger,
+ * and the two gaps between them: the decorative-chevron 14px term is gone and
+ * every remaining term is a rendered item. */
+.row[data-intent-trailing="true"][data-body-trigger-intent="true"][data-intent-suppressed="true"] .intentTriggerContent {
+  max-width: calc(100% - var(--tap-min, 28px) - var(--tap-min, 14px) - var(--space-2) - var(--space-2));
 }
 
 .summaryLine {
@@ -200,25 +265,37 @@
   outline-offset: 2px;
 }
 
-/* The agent's stated reason for the call - the one part of the row written for
- * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
- * review call) italics: a rationale reads as commentary on the call, set off
- * from the machine text below it without a colour or size of its own.
+/* Phone tap floor (tokens.css's --tap-min, decision 4 of the mobile session
+ * layout design): the two-level body trigger is sometimes the row's ONLY
+ * control (a summary-less delegate row, issue #1253) and would otherwise be a
+ * bare
+ * 14px chevron. min-*, not width/height, mirroring iconbutton.module.css's own
+ * phone block, so the desktop rules above stay the desktop rule. The
+ * [data-intent-trailing] reservations above reserve the grown width through
+ * the same var() fallback.
  *
- * overflow-wrap:anywhere so long machine text can still break when the
- * intent itself is the long part. */
-.intent {
-  flex: 1 1 0;
-  min-width: 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  /* The title line-height (1.3, not the body's 1.5): the rationale-to-call
-   * gap is mostly half-leading, so tightening the line box is what actually
-   * pulls the call up against its description. */
-  line-height: var(--line-height-title);
-  font-style: italic;
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
+ * Scoped to the IN-FLOW intent-line trigger (.row > .bodyTrigger) on purpose.
+ * The other body trigger is an ABSOLUTE overlay across the summary line
+ * (position: absolute; inset: 0 above), whose height comes FROM its containing
+ * block: forcing it to a 44px min-height overflows a short summary line
+ * downward, so the invisible button escapes into the rows and gaps below and
+ * captures taps/focus there (roborev). The overlay keeps the line's own height
+ * as its hit target - which is what it always had - and only the standalone
+ * intent-line trigger, which has no line box of its own, takes the floor. */
+@media (max-width: 899px) {
+  .row[data-intent-trailing="true"] > .bodyTrigger {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+    /* The base .bodyTrigger is align-items: baseline, which seats the 14px
+     * chevron at the TOP of the grown 44px hit target (measured: topInset 0,
+     * bottomInset 30, chevron center 15px above the box center - roborev Low).
+     * Center the glyph in the target instead. The row's baseline alignment
+     * keeps the chevron level with the intent text either way (measured
+     * unchanged: chevron top 1px above / bottom 3px above the text line), so
+     * this only moves the invisible box, not the row's visual baseline. */
+    align-items: center;
+    justify-content: center;
+  }
 }
 
 /* verb + target + meta, the descriptor's own summary() string: the sans
