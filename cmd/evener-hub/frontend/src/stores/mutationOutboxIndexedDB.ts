@@ -389,6 +389,7 @@ export class MutationOutboxIndexedDB {
             createdAt: source.createdAt,
             targetRef: source.targetRef,
             threadId: source.threadId,
+            instanceId: source.instanceId,
             method: source.method,
             payload: source.payload,
             attachments: source.attachments,
