@@ -483,13 +483,13 @@ type waitConfig struct {
 	startedAfter time.Time
 }
 
-// withRendezvousTimeout applies the production startup budget when it is
 // completionOwnedResumeTimeout is the hub-side bound on a completion-owned
 // resume's rendezvous wait, mirroring the client's own RESUME_REQUEST_TIMEOUT_MS
 // (10m): no client waits longer, so the bound only fires for callers with no
 // deadline of their own. A var so tests can shrink it.
 var completionOwnedResumeTimeout = 10 * time.Minute
 
+// withRendezvousTimeout applies the production startup budget when it is
 // positive. A non-positive timeout leaves the caller's context as the only
 // bound, which lets deterministic host-process tests await the rendezvous edge
 // itself instead of turning an arbitrary duration into their behavior oracle.

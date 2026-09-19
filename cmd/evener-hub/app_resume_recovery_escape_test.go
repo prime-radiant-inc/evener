@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"sync/atomic"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -25,28 +27,50 @@ import (
 // persistedUnconfirmedRecovery returns resume locks holding the authority a
 // force stop persisted before the hub died — ResumeRequired set, exit never
 // confirmed — plus the state root the authority is durable in.
-func persistedUnconfirmedRecovery(t *testing.T, sessionID string) (*hubcore.ResumeLocks, string) {
+func persistedUnconfirmedRecovery(t *testing.T, sessionID string) (*hubcore.ResumeLocks, string, daemonprocess.Target) {
 	t.Helper()
 	stateRoot := t.TempDir()
 	locks, err := hubcore.NewPersistentResumeLocks(stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, daemonprocess.Target{PID: 4242, SessionID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now()}); err != nil {
+	owner := daemonprocess.Target{PID: 4242, SessionID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now().Round(0)}
+	if err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	state := locks.RecoveryState(sessionID)
 	if !state.ResumeRequired || state.ExitConfirmed {
 		t.Fatalf("setup did not stage the persisted-unconfirmed state: %+v", state)
 	}
-	return locks, stateRoot
+	return locks, stateRoot, owner
+}
+
+// reloadedRecovery recreates the locks from disk — the escape's production
+// scenario is a hub restart — and asserts the owner identity round-tripped:
+// a broken Owner* tag or reload mapping would silently keep the refusal
+// forever (the bug this series fixes) with every other assertion green.
+func reloadedRecovery(t *testing.T, stateRoot string, sessionID string, want daemonprocess.Target) *hubcore.ResumeLocks {
+	t.Helper()
+	locks, err := hubcore.NewPersistentResumeLocks(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := locks.RecoveryOwner(sessionID)
+	if !ok {
+		t.Fatal("owner identity did not survive the restart")
+	}
+	if owner.PID != want.PID || owner.StateDir != want.StateDir || !owner.StartedAt.Equal(want.StartedAt) || owner.SessionID != want.SessionID {
+		t.Fatalf("owner identity round-tripped incorrectly: got %+v, want %+v", owner, want)
+	}
+	return locks
 }
 
 func TestResumeConfirmsExitWhenRecoveryHasNoClaim(t *testing.T) {
 	runDir := t.TempDir()
 	roster := liveClaimRoster(runDir, &fakeProber{})
 	sessionID := "stuck-owner"
-	locks, stateRoot := persistedUnconfirmedRecovery(t, sessionID)
+	_, stateRoot, owner := persistedUnconfirmedRecovery(t, sessionID)
+	locks := reloadedRecovery(t, stateRoot, sessionID, owner)
 	spawned := false
 	sentinel := errors.New("spawn sentinel")
 	cfg := hubcore.WebConfig{
@@ -95,7 +119,7 @@ func TestResumeStillRefusesUnconfirmedExitWithLiveClaim(t *testing.T) {
 	spawned := false
 	cfg := hubcore.WebConfig{
 		Roster:      roster,
-		ResumeLocks: func() *hubcore.ResumeLocks { locks, _ := persistedUnconfirmedRecovery(t, sessionID); return locks }(),
+		ResumeLocks: func() *hubcore.ResumeLocks { locks, _, _ := persistedUnconfirmedRecovery(t, sessionID); return locks }(),
 		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			spawned = true
 			return rendezvous.Entry{}, errors.New("spawn sentinel")
@@ -127,7 +151,7 @@ func TestResumeStillRefusesUnconfirmedExitWithUnverifiedClaim(t *testing.T) {
 	if len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatal("setup did not stage an unconfirmed claim")
 	}
-	locks, _ := persistedUnconfirmedRecovery(t, sessionID)
+	locks, _, _ := persistedUnconfirmedRecovery(t, sessionID)
 	if err := locks.PersistForceStop([]string{forkAlias, sessionID}, sessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +183,7 @@ func TestResumeRefusesClaimlessRecoveryWhileOwnerProcessLives(t *testing.T) {
 	runDir := t.TempDir()
 	roster := liveClaimRoster(runDir, &fakeProber{})
 	sessionID := "markerless-live-owner"
-	locks, _ := persistedUnconfirmedRecovery(t, sessionID)
+	locks, _, _ := persistedUnconfirmedRecovery(t, sessionID)
 	spawned := false
 	cfg := hubcore.WebConfig{
 		Roster:      roster,
@@ -216,5 +240,47 @@ func TestResumeRefusesClaimlessRecoveryWithoutOwnerProof(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
 		t.Fatalf("proofless recovery did not refuse: %v", err)
+	}
+}
+
+// closeTrackingProcess is a live-process fixture that records its Close, so
+// the refusal path's handle discipline is observable.
+type closeTrackingProcess struct {
+	closed *atomic.Bool
+}
+
+func (p *closeTrackingProcess) Kill() error                { return nil }
+func (p *closeTrackingProcess) Wait(context.Context) error { return nil }
+func (p *closeTrackingProcess) Close() error {
+	p.closed.Store(true)
+	return nil
+}
+
+// The Medium RoboRev reported against the escape's refusal path:
+// controller.Open returns a live process handle (a pidfd on Linux) when the
+// persisted owner is still alive — the refusal case — and discarding it
+// leaked one fd per Resume attempt. The refusal must close what it opens.
+func TestResumeRefusalClosesTheOpenedOwnerProcess(t *testing.T) {
+	runDir := t.TempDir()
+	roster := liveClaimRoster(runDir, &fakeProber{})
+	sessionID := "leaky-owner"
+	locks, _, _ := persistedUnconfirmedRecovery(t, sessionID)
+	closed := &atomic.Bool{}
+	cfg := hubcore.WebConfig{
+		Roster:      roster,
+		ResumeLocks: locks,
+		DaemonProcesses: forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+			return &closeTrackingProcess{closed: closed}, nil
+		}),
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, errors.New("spawn sentinel")
+		}},
+	}
+	_, err := hubThreadResume(context.Background(), cfg, nil, appwire.ThreadResumeParams{Session: sessionID})
+	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+		t.Fatalf("live owner did not refuse: %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("refusal path leaked the opened owner process handle")
 	}
 }

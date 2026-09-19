@@ -657,7 +657,13 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if controller == nil {
 				controller = daemonprocess.NewController()
 			}
-			if _, err := controller.Open(owner); !errors.Is(err, daemonprocess.ErrExited) {
+			process, err := controller.Open(owner)
+			if process != nil {
+				// The refusal case is exactly the one where Open returns a
+				// live process handle (a pidfd on Linux); the caller owns it.
+				defer func() { _ = process.Close() }()
+			}
+			if !errors.Is(err, daemonprocess.ErrExited) {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
 			}
 			if err := cfg.ResumeLocks.ConfirmForceStop(state.ResumeSessionID); err != nil {
