@@ -206,6 +206,43 @@ test("a stale lease still notifies after its non-authoritative blocking write co
 	await runtime.stop();
 });
 
+test("durably keeps raw composer anchors and attachment metadata beside wire input", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const composerText = "  before [image 7]\\nafter  ";
+	const wireInput = [
+		{ type: "text", text: "  before (attached image 7: screenshot.png)\\nafter  " },
+		{ type: "image", mediaType: "image/png", data: "AQIDBAU=", name: "screenshot.png" },
+	] as const;
+
+	await runtime.submit({
+		...request("send"),
+		input: [...wireInput],
+		composer: {
+			text: composerText,
+			attachments: [
+				{ marker: 7, mediaType: "image/png", data: "AQIDBAU=", name: "screenshot.png" },
+			],
+		},
+	});
+
+	const queued = await runtime.storage.getOutbox("mutation-1");
+	expect(queued).toMatchObject({
+		composerText,
+		attachments: [
+			{
+				presentationId: "test-uuid",
+				marker: 7,
+				name: "screenshot.png",
+				mediaType: "image/png",
+			},
+		],
+		payload: { input: wireInput },
+		optimisticDisplay: { method: "turn/start", input: wireInput },
+	});
+});
+
 test.each([
 	["non-authoritative", { authoritative: false }],
 	["not-loaded", { status: "notLoaded" }],
