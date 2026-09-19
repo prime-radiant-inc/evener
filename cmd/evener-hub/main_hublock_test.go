@@ -2,18 +2,184 @@ package hub
 
 import (
 	"context"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/internal/plugins"
 )
+
+func TestRunMainHubStartupRecoveryChild(t *testing.T) {
+	if !slices.Contains(os.Args, "startup-recovery-child") && !slices.Contains(os.Args, "startup-recovery-replay-child") {
+		return
+	}
+	index := slices.Index(os.Args, "startup-recovery-child")
+	barrier := true
+	if index < 0 {
+		index = slices.Index(os.Args, "startup-recovery-replay-child")
+		barrier = false
+	}
+	if index < 0 || index+1 >= len(os.Args) {
+		t.Fatal("startup recovery child missing state root")
+	}
+	stateRoot := os.Args[index+1]
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var events, resume *os.File
+	if barrier {
+		events = os.NewFile(3, "startup-recovery-events")
+		resume = os.NewFile(4, "startup-recovery-resume")
+		defer events.Close()
+		defer resume.Close()
+	}
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(stateRoot, "run")
+	cfg.StateGlob = filepath.Join(stateRoot, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(stateRoot, "index.db")
+	cfg.HubStateRoot = stateRoot
+	cfg.PluginAutoUpgrade = false
+	deps := mainDeps{
+		loadRegistry: hermeticRegistryLoader,
+		loadConfig:   func(string) (Config, error) { return cfg, nil },
+		ensureDirs:   func() error { return nil },
+		acquireLock:  hostlock.AcquireLock,
+		newToken:     func() (string, error) { return "hub-token", nil },
+		loadAuthToken: func(string) (string, error) {
+			return "auth-token", nil
+		},
+		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		},
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer) error { return nil },
+	}
+	if barrier {
+		deps.afterDeletionStore = func(*hubcore.DeletionStore) error {
+			if _, err := events.Write([]byte{1}); err != nil {
+				return err
+			}
+			var signal [1]byte
+			_, err := io.ReadFull(resume, signal[:])
+			return err
+		}
+	}
+	if err := runMain(nil, os.Stderr, deps); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunMainImportsPendingProjectDeletionAfterOwnedStartupBarrier(t *testing.T) {
+	root := t.TempDir()
+	cfgRoot := filepath.Join(root, "hub")
+	if err := os.MkdirAll(cfgRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := identifier.MustNewSessionID()
+	authority, err := interactiveartifacts.OpenHostAuthority(filepath.Join(cfgRoot, "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := authority.Installation()
+	if _, err := authority.PrepareRoot(t.Context(), interactiveartifacts.RootRequest{SessionID: sessionID, ProjectID: "project-0123456789", RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deletions, err := hubcore.NewDeletionStore(cfgRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	if _, err := deletions.BeginProject("project-0123456789", []hubcore.DeletionTarget{{Ref: ref, ThreadID: sessionID}}, true); err != nil {
+		t.Fatal(err)
+	}
+	eventRead, eventWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeRead, resumeWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventRead.Close()
+	defer eventWrite.Close()
+	defer resumeRead.Close()
+	defer resumeWrite.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunMainHubStartupRecoveryChild$", "--", "startup-recovery-child", cfgRoot)
+	cmd.ExtraFiles = []*os.File{eventWrite, resumeRead}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := eventWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumeRead.Close(); err != nil {
+		t.Fatal(err)
+	}
+	barrierCtx, barrierCancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer barrierCancel()
+	reached := make(chan error, 1)
+	go func() {
+		var signal [1]byte
+		_, err := io.ReadFull(eventRead, signal[:])
+		reached <- err
+	}()
+	select {
+	case err := <-reached:
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatal(err)
+		}
+	case <-barrierCtx.Done():
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatal("startup helper did not reach deletion import barrier")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("startup helper exited before crash barrier was reaped")
+	}
+	replay := exec.Command(os.Args[0], "-test.run=^TestRunMainHubStartupRecoveryChild$", "--", "startup-recovery-replay-child", cfgRoot)
+	replay.Stderr = os.Stderr
+	if err := replay.Run(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := interactiveartifacts.OpenHostAuthority(filepath.Join(cfgRoot, "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	policy, err := reopened.Policy(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy) != 1 || !policy[0].Tombstone {
+		t.Fatalf("startup did not import pending project deletion: %+v", policy)
+	}
+}
 
 // TestRunMainHubLockDerivesFromConfiguredHubStateRoot guards against
 // hub.lock's path silently reverting to a raw home-dir join: a configured

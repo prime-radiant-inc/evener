@@ -105,13 +105,14 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
-	loadConfig      func(string) (Config, error)
-	ensureDirs      func() error
-	acquireLock     func(string) (func(), error)
-	newToken        func() (string, error)
-	loadAuthToken   func(string) (string, error)
-	loadCredentials func(string) (*credentials.Store, error)
-	loadRegistry    hubcore.RegistryLoader
+	loadConfig         func(string) (Config, error)
+	ensureDirs         func() error
+	acquireLock        func(string) (func(), error)
+	newToken           func() (string, error)
+	loadAuthToken      func(string) (string, error)
+	loadCredentials    func(string) (*credentials.Store, error)
+	loadRegistry       hubcore.RegistryLoader
+	afterDeletionStore func(*hubcore.DeletionStore) error
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
 	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
@@ -395,6 +396,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if err != nil {
 		_ = hubListener.Close()
 		return fmt.Errorf("load deletion state: %w", err)
+	}
+	if deps.afterDeletionStore != nil {
+		if err := deps.afterDeletionStore(deletionStore); err != nil {
+			_ = hubListener.Close()
+			return fmt.Errorf("deletion startup barrier: %w", err)
+		}
 	}
 	authority, err := interactiveartifacts.OpenHostAuthority(filepath.Join(hubStateRoot, "artifacts"))
 	if err != nil {
