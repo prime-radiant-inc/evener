@@ -340,10 +340,16 @@ Foreground timeout / promotion return shape:
   "status": "running",
   "reason": "foreground_timeout",
   "timed_out": true,
+  "wait_elapsed_ms": 120000,
   "output": "bounded output text",
   "truncated": false
 }
 ```
+
+`wait_elapsed_ms` is how long the foreground wait actually blocked before the
+promotion. It lets the agent's pacing arithmetic use the real wait (the session
+command timeout that expired) rather than the duration the command was asked to
+run, which can be much longer.
 
 Shell approval is not fully designed here. If policy requires approval before a shell command may start, Evener must not execute before approval. The shipped contract permits either:
 
