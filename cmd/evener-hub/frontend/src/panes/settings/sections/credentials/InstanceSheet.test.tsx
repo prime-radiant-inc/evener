@@ -2774,4 +2774,50 @@ describe("the form", () => {
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
+
+  // The baseline rebase must not manufacture a pending change: a field the save
+  // did not declare whose store value moved concurrently takes the landed value,
+  // so Save stays clean instead of reverting the other client's edit.
+  test("a re-anchor does not turn a concurrently changed unedited field into a pending overwrite", async () => {
+    const seeded = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "OLD",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(seeded, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "openai");
+    // Another client changes apiKeyEnv; the draft keeps its seeded value because
+    // the reseed effect keys on the instance name only.
+    await act(async () => {
+      credentialsStore.setState({
+        instances: [{ ...seeded, apiKeyEnv: "FOREIGN" }],
+        availableProviders: [OPENAI],
+      });
+    });
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      surface: "openai",
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...seeded,
+      surface: "openai",
+      apiKeyEnv: "FOREIGN",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // The unedited apiKeyEnv takes the landed (foreign) value; nothing pending.
+    expect(field("API key environment variable").value).toBe("FOREIGN");
+    expect(saveButton().disabled).toBe(true);
+  });
 });

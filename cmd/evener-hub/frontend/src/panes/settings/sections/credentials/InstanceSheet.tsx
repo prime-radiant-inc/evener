@@ -722,13 +722,28 @@ export function InstanceSheet({
               .availableProviders.find((p) => p.id === landed.providerId);
             const landedDraft = draftFor(landed, landedTemplate);
             setInitial(landedDraft);
-            // When this save did not author or clear the Base URL, the draft's
-            // copy is the OLD resolved URL (a variable or protocol/surface change
-            // moved the listing's). Leaving it would make the next Save emit that
-            // stale URL as an explicit override, so take the landed resolution.
-            if (params.baseUrl === undefined && !params.clearBaseUrl) {
-              setDraft((current) => (current === null ? current : { ...current, baseUrl: landedDraft.baseUrl }));
-            }
+            // Rebase the baseline to what landed, but carry the DRAFT forward
+            // only where this save declared the field. Every other field takes
+            // the landed value, so a value another client changed under the
+            // draft - or a derived field like the resolved Base URL - cannot
+            // masquerade as a pending overwrite; the fields the user did edit
+            // keep their draft values, so a revert stays correctly dirty.
+            const declared = changedFields(params);
+            setDraft((current) =>
+              current === null
+                ? current
+                : {
+                    name: declared.has("name") ? current.name : landedDraft.name,
+                    baseUrl: declared.has("baseUrl") ? current.baseUrl : landedDraft.baseUrl,
+                    protocol: declared.has("protocol") ? current.protocol : landedDraft.protocol,
+                    surface: declared.has("surface") ? current.surface : landedDraft.surface,
+                    vars: declared.has("vars") ? current.vars : landedDraft.vars,
+                    apiKeyEnv: declared.has("apiKeyEnv") ? current.apiKeyEnv : landedDraft.apiKeyEnv,
+                    credentialHeader: declared.has("credentialHeader")
+                      ? current.credentialHeader
+                      : landedDraft.credentialHeader,
+                  },
+            );
           } else {
             // The save was superseded and its landing could not be confirmed.
             // The fields a draft edits are deliberately excluded from
