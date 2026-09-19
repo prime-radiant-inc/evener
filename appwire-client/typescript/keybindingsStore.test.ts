@@ -301,6 +301,45 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft?.generation).toBe(3);
   });
 
+  test("a draft is stale across a generation change even when the new hub reports the same revision", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toMatchObject({ revision: 3, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
+  test("editing a conflicted draft cannot launder its generation, and only rebase clears the conflict", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().draftConflict).toBe(true);
+    const conflictedGeneration = store.getState().draft?.generation;
+
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Meta+Shift+P" }];
+    store.getState().editDraft(otherRules);
+    expect(store.getState().draft).toEqual({
+      version: 1,
+      revision: 3,
+      rules: otherRules,
+      generation: conflictedGeneration,
+    });
+    expect(store.getState().draftConflict).toBe(true);
+
+    store.getState().rebaseDraft(3);
+    expect(store.getState().draft?.generation).not.toBe(conflictedGeneration);
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
   test("persists the intent before the PATCH leaves, clears it on the ack and applies the canonical payload", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
@@ -1443,6 +1482,8 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
     after: { writeUncertain: boolean; stored: "intact" | null; hubError: boolean };
     /** Brings the store back to a confirmed state the way its host would. */
     settle: (store: KeybindingsStore) => Promise<void>;
+    /** A fenced write settles under a new generation and must remain stale. */
+    draftConflictAfterSettle?: boolean;
   }
 
   const refresh = async (store: KeybindingsStore) => {
@@ -1458,6 +1499,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.beginReadyGeneration();
         await refresh(store);
       },
+      draftConflictAfterSettle: true,
     },
     {
       name: "fenced out by support dropping before the reply lands",
@@ -1468,6 +1510,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.setSupport("supported");
         await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
       },
+      draftConflictAfterSettle: true,
     },
     {
       // The oracle's wedge: the draft drops the override, and a foreign binding
@@ -1507,7 +1550,15 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
 
   test.each(scenarios)(
     "$name",
-    async ({ rules = proposed, arrange, reply = payload(4, rules), rejects, after, settle }) => {
+    async ({
+      rules = proposed,
+      arrange,
+      reply = payload(4, rules),
+      rejects,
+      after,
+      settle,
+      draftConflictAfterSettle = false,
+    }) => {
       const registry = registryWithDefaults();
       const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
       const client = clientServing(3, [applied]);
@@ -1535,7 +1586,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       expect(store.getState()).toMatchObject({
         saving: false,
         writeUncertain: false,
-        draftConflict: false,
+        draftConflict: draftConflictAfterSettle,
         loaded: true,
       });
       expect(() => store.getState().editDraft([])).not.toThrow();

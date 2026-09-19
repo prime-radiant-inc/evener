@@ -333,9 +333,13 @@ function cloneRules(rules: readonly KeybindingsRule[]): KeybindingsRule[] {
 }
 
 /** A draft composed against one confirmed revision is stale once the hub has
- * confirmed a different one. */
-function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: number): boolean {
-  return draft !== null && draft.revision !== confirmedRevision;
+ * confirmed a different one. A ready-generation change is a new hub session,
+ * whose revision numbering may restart, so a stamped draft is stale even when
+ * the new session happens to report the same revision. */
+function staleDraft(draft: KeybindingsDraft | null, confirmedRevision: number, currentGeneration: number): boolean {
+  if (draft === null) return false;
+  if (draft.generation !== null && draft.generation !== currentGeneration) return true;
+  return draft.revision !== confirmedRevision;
 }
 
 function invalidDraft(): never {
@@ -737,7 +741,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         storageUnavailable: false,
         draftUnreadable: false,
         draftError: null,
-        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
+        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision, fence.generation),
       };
     } catch (error) {
       // An UnreadableDraftError names the RECORD as the problem, not the
@@ -876,7 +880,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       loadError: payload.loadError ?? null,
       conflict: null,
       draft,
-      draftConflict: staleDraft(draft, payload.revision),
+      draftConflict: staleDraft(draft, payload.revision, fence.generation),
       ...extra,
       ...resolved,
     });
@@ -1385,7 +1389,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
     const generation = existing !== null ? existing.generation : currentGeneration();
     const draft: KeybindingsDraft = { version: 1, revision, rules: checked, generation };
-    setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
+    setState({ draft, draftConflict: staleDraft(draft, current.revision, fence.generation), draftError: null });
   }
 
   /** Settles a confirmed write against `checkpoint`. `payload` applies
