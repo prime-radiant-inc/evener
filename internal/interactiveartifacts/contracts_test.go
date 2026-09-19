@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -291,5 +292,139 @@ func TestModelSchemaRejectsNonserializableContract(t *testing.T) {
 	schema := &jsonschema.Schema{Enum: []any{func() {}}}
 	if _, err := ModelSchema(schema); err == nil {
 		t.Fatal("accepted a schema that cannot be transmitted as JSON")
+	}
+}
+
+func artifactMetadataJSON(id string) string {
+	return `{"artifactId":"` + id + `","title":"T","summary":"S","format":"html","formatVersion":1,"sourceRevision":1,"stateVersion":1,"createdAt":"2026-09-18T00:00:00Z","updatedAt":"2026-09-18T00:00:00Z"}`
+}
+
+func stateJSONWithSize(size int) string {
+	const prefix = `{"value":"`
+	const suffix = `"}`
+	return prefix + strings.Repeat("a", size-len(prefix)-len(suffix)) + suffix
+}
+
+func TestResultSemanticFieldLimits(t *testing.T) {
+	metadata := artifactMetadataJSON("A")
+	for _, tool := range []string{"artifact_read", "artifact_get_view"} {
+		for _, tt := range []struct {
+			name, body string
+			valid      bool
+		}{
+			{"empty source excerpt", `{"html":"","sourceSha256":"hash"}`, true},
+			{"source at limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes) + `","sourceSha256":"hash"}`, true},
+			{"source over limit", `{"html":"` + strings.Repeat("a", MaxSourceBytes+1) + `","sourceSha256":"hash"}`, false},
+		} {
+			t.Run(tool+"/"+tt.name, func(t *testing.T) {
+				raw := strings.TrimSuffix(metadata, "}") + `,"source":` + tt.body + `}`
+				err := ValidateResult(tool, []byte(raw))
+				if (err == nil) != tt.valid {
+					t.Fatalf("valid=%v error=%v", tt.valid, err)
+				}
+			})
+		}
+		for _, tt := range []struct {
+			name, state string
+			valid       bool
+		}{{"state at limit", stateJSONWithSize(MaxStateBytes), true}, {"state over limit", stateJSONWithSize(MaxStateBytes + 1), false}} {
+			t.Run(tool+"/"+tt.name, func(t *testing.T) {
+				raw := strings.TrimSuffix(metadata, "}") + `,"state":` + tt.state + `}`
+				err := ValidateResult(tool, []byte(raw))
+				if (err == nil) != tt.valid {
+					t.Fatalf("valid=%v error=%v", tt.valid, err)
+				}
+			})
+		}
+	}
+	for _, tt := range []struct {
+		name, message string
+		valid         bool
+	}{{"diagnostic at limit", strings.Repeat("é", 2048), true}, {"diagnostic over limit", strings.Repeat("é", 2049), false}} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := strings.TrimSuffix(metadata, "}") + `,"diagnostics":[{"sourceRevision":1,"message":"` + tt.message + `","kind":"runtime"}]}`
+			err := ValidateResult("artifact_read", []byte(raw))
+			if (err == nil) != tt.valid {
+				t.Fatalf("valid=%v error=%v", tt.valid, err)
+			}
+		})
+	}
+}
+
+func TestResultSchemasRequireNonemptyIdentities(t *testing.T) {
+	metadata := artifactMetadataJSON("A")
+	for _, tt := range []struct{ tool, raw string }{
+		{"artifact_publish", `{"status":"committed","mutationId":"","artifactId":"A","sourceRevision":1,"stateVersion":1}`},
+		{"artifact_save_state", `{"status":"committed","mutationId":"M","artifactId":"","sourceRevision":1,"stateVersion":1}`},
+		{"artifact_read", artifactMetadataJSON("")},
+		{"artifact_list", `{"artifacts":[` + artifactMetadataJSON("") + `]}`},
+		{"artifact_open", strings.TrimSuffix(metadata, "}") + `,"launch":{"artifactId":""}}`},
+		{"artifact_get_view", artifactMetadataJSON("")},
+	} {
+		t.Run(tt.tool, func(t *testing.T) {
+			if err := ValidateResult(tt.tool, []byte(tt.raw)); err == nil {
+				t.Fatal("accepted empty result identity")
+			}
+		})
+	}
+	validStateKey := strings.TrimSuffix(metadata, "}") + `,"state":{"artifactId":"","mutationId":""}}`
+	if err := ValidateResult("artifact_read", []byte(validStateKey)); err != nil {
+		t.Fatalf("identity-like saved-state keys were constrained: %v", err)
+	}
+}
+
+func TestReadLineBoundsRequireSourceInclude(t *testing.T) {
+	for _, model := range []bool{false, true} {
+		for _, tt := range []struct {
+			raw   string
+			valid bool
+		}{
+			{`{"artifactId":"A"}`, true},
+			{`{"artifactId":"A","include":null,"sourceStartLine":1}`, false},
+			{`{"artifactId":"A","include":[],"sourceEndLine":2}`, false},
+			{`{"artifactId":"A","include":["state"],"sourceStartLine":1}`, false},
+			{`{"artifactId":"A","include":["source"],"sourceStartLine":1}`, true},
+		} {
+			_, err := ParseRequest("artifact_read", []byte(tt.raw), model)
+			if (err == nil) != tt.valid {
+				t.Fatalf("model=%v valid=%v error=%v for %s", model, tt.valid, err, tt.raw)
+			}
+		}
+	}
+}
+
+func TestEveryResultVariantHasExecutableShape(t *testing.T) {
+	metadata := artifactMetadataJSON("A")
+	successes := map[string][]struct {
+		raw   string
+		valid bool
+	}{
+		"artifact_publish":           {{`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":1}`, true}, {`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1}`, false}},
+		"artifact_read":              {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"hash"},"state":{"n":1.0},"diagnostics":[{"sourceRevision":1,"message":"m","kind":"validation"}]}`, true}, {strings.TrimSuffix(metadata, "}") + `,"private":true}`, false}},
+		"artifact_list":              {{`{"artifacts":[` + metadata + `],"nextCursor":"opaque"}`, true}, {`{"nextCursor":"opaque"}`, false}},
+		"artifact_open":              {{strings.TrimSuffix(metadata, "}") + `,"launch":{"artifactId":"A"}}`, true}, {metadata, false}},
+		"artifact_get_view":          {{strings.TrimSuffix(metadata, "}") + `,"source":{"html":"H","sourceSha256":"hash"},"state":{"n":1e0}}`, true}, {strings.TrimSuffix(metadata, "}") + `,"state":[]}`, false}},
+		"artifact_save_state":        {{`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":2}`, true}, {`{"status":"committed","mutationId":"M","artifactId":"A","sourceRevision":1,"stateVersion":2,"state":{}}`, false}},
+		"artifact_report_diagnostic": {{`{"status":"acknowledged"}`, true}, {`{"status":"committed"}`, false}},
+	}
+	for tool, cases := range successes {
+		for _, tt := range cases {
+			err := ValidateResult(tool, []byte(tt.raw))
+			if (err == nil) != tt.valid {
+				t.Errorf("%s valid=%v error=%v for %s", tool, tt.valid, err, tt.raw)
+			}
+		}
+	}
+	codes := []ErrorCode{NotFoundOrForbidden, SourceConflict, StateConflict, MutationIDReused, UnsupportedFormat, InvalidSource, InvalidState, TooLarge, QuotaExceeded, Deleted, ServiceUnavailable, Busy}
+	for _, code := range codes {
+		retryable := code == Busy
+		versions := ""
+		if code == SourceConflict || code == StateConflict {
+			versions = `,"sourceRevision":3,"stateVersion":4`
+		}
+		raw := `{"status":"rejected","error":{"code":"` + string(code) + `","retryable":` + strconv.FormatBool(retryable) + versions + `}}`
+		if err := ValidateResult("artifact_read", []byte(raw)); err != nil {
+			t.Errorf("valid %s rejection: %v", code, err)
+		}
 	}
 }
