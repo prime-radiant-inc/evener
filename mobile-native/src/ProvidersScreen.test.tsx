@@ -194,6 +194,46 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 	).toBe(true);
 });
 
+it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
+	const hub = scriptedClient(rows);
+	const retry = vi.fn();
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry,
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Add provider instance" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("draft-name");
+	});
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const editorInput = tree.root.findByProps({ accessibilityLabel: "Instance name" });
+	expect(editorInput.props.value).toBe("draft-name");
+	const reconnects = tree.root.findAllByProps({ accessibilityLabel: "Reconnect" });
+	expect(reconnects).toHaveLength(2);
+	const modalReconnect = reconnects[reconnects.length - 1];
+	if (!modalReconnect) throw new Error("modal reconnect action was not rendered");
+	await act(async () => {
+		modalReconnect.props.onPress();
+	});
+	expect(retry).toHaveBeenCalledOnce();
+	expect(editorInput.props.value).toBe("draft-name");
+});
+
 it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = {

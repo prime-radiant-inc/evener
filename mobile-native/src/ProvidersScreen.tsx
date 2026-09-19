@@ -298,6 +298,7 @@ function Providers({
         <SafeAreaView
           style={[styles.fill, { backgroundColor: colors.background }]}
         >
+          {!ready && <ConnectionStatus />}
           <View
             style={{
               flexDirection: "row",

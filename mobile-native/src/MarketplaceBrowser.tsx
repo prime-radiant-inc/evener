@@ -23,6 +23,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, type LiveReadiness, whenReady } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
@@ -437,6 +438,7 @@ function AddMarketplace({
       <SafeAreaView
         style={[styles.fill, { backgroundColor: colors.background }]}
       >
+        {!ready && <ConnectionStatus />}
         <View style={[styles.row, { paddingHorizontal: 16 }]}>
           <View style={styles.fill}>
             <Copy muted>{hubName}</Copy>

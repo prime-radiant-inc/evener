@@ -112,3 +112,46 @@ it("MarketplaceBrowser re-reads its list once the connection returns to ready af
 
 	expect(hub.methods.filter((m) => m === "evener/marketplace/list")).toHaveLength(2);
 });
+
+it("keeps the marketplace draft and exposes reconnect inside its modal", async () => {
+	const hub = pluginsClient([plugin]);
+	const retry = vi.fn();
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry,
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("https://example.test/plugins.git");
+	});
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	const sourceInput = tree.root.findByProps({ accessibilityLabel: "Marketplace source" });
+	expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
+	const reconnects = tree.root.findAllByProps({ accessibilityLabel: "Reconnect" });
+	expect(reconnects).toHaveLength(2);
+	const modalReconnect = reconnects[reconnects.length - 1];
+	if (!modalReconnect) throw new Error("modal reconnect action was not rendered");
+	await act(async () => {
+		modalReconnect.props.onPress();
+	});
+	expect(retry).toHaveBeenCalledOnce();
+	expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
+});
