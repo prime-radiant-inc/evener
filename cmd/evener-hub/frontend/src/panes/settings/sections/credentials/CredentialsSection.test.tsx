@@ -2277,6 +2277,51 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
   });
 
+  // The hub persisted the rename but could not finish it, and its registry is
+  // on a fallback listing that does NOT carry the new row. The discriminator is
+  // authoritative, so the sheet steers anyway - and must survive the gap: the
+  // held entry is all that keeps `instance` defined until the listing catches
+  // up. Clearing it as part of steering (or letting the `[name]` effect drop it
+  // unconditionally) closes the sheet on itself the moment it moves, leaving
+  // the user with only a toast and no editor.
+  test("a persisted rename whose listing omits the new row keeps the sheet open until the listing catches up", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    let caughtUp = false;
+    fake.on("evener/instance/list", () =>
+      caughtUp ? { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] } : LIST,
+    );
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/OAuth record not read/);
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // The listing has not caught up, so the held entry is keeping the sheet
+    // alive: it is still open, not closed on the missing row.
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    // The registry catches up: the sheet follows to the new name.
+    caughtUp = true;
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+  });
+
   // A refusal carries no such discriminator, so it stays the plain save failure
   // it was, with the sheet left where it was.
   test("a rename error without the persisted discriminator stays a plain failure", async () => {

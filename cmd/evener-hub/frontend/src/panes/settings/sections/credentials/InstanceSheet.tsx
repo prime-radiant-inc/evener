@@ -364,12 +364,23 @@ export function InstanceSheet({
   useEffect(() => {
     if (name !== null && instance === undefined) onClose();
   }, [name, instance, onClose]);
-  // The section moved the selection to the new name: the held instance has
-  // done its job, and holding it any longer would keep a ghost on screen.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: name is a deliberate trigger-only dep - the body only drops the held instance, but must re-run on every name change to release it
+  // The section moved the selection: the held instance has done its job once
+  // the section is on a name the listing can carry, and holding it longer
+  // would keep a ghost on screen. It has NOT done its job when the selection
+  // moved to a name the listing does not carry yet - a rename the hub persisted
+  // while its registry is on a fallback listing omits the new row, and dropping
+  // the held entry then leaves `instance` undefined, so the sheet closes on
+  // itself the moment it steers. Hold it until the listing catches up (stored
+  // appears), the section moves to a different name, or the sheet is dismissed.
+  // `name === renamingFrom?.name` is the rename still in flight: the sheet is
+  // on the old name and the held entry is what carries the store's own gap
+  // between the write landing and the section re-selecting, so a listing churn
+  // under that same name must not release it.
   useEffect(() => {
-    setRenamingFrom(undefined);
-  }, [name]);
+    if (name === null || (stored !== undefined && name !== renamingFrom?.name)) {
+      setRenamingFrom(undefined);
+    }
+  }, [name, stored, renamingFrom]);
   // A layout effect, not the passive one above: a response can land between
   // the commit that dismissed the sheet and a passive effect, and a mirror
   // that is one beat stale lets exactly the save this guards slip through.
@@ -505,7 +516,6 @@ export function InstanceSheet({
       if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
         await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
         if (shownName.current === instance.name) {
-          setRenamingFrom(undefined);
           onRenamed(params.newName);
         }
         toast.push("warning", friendlyErrorMessage(err));
