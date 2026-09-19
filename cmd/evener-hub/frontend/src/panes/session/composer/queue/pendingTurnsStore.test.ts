@@ -773,6 +773,41 @@ test("an applied pending receipt settles transport without dropping optimistic s
   expect(coldStart.result.current).toBe(true);
 });
 
+// RoboRev PR #1873 medium, the fresh review's cold-start finding: the
+// skeleton counted every pending "send" entry, canceled ones included. A
+// turn/start a Stop canceled before dispatch is provably never sent - no
+// turn is coming because of it - so it must not hold the skeleton up; the
+// session shows its empty state instead of a loading frame that only Retry
+// or teardown could clear. The same exclusion class the Composer's
+// ownPendingSend and PendingChips' isOptimistic already carry.
+test("a born-canceled send does not hold the cold-start skeleton", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  // A turn/start row a Stop canceled before dispatch - born-canceled, never
+  // sent, exactly the shape the durable cancel writes.
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before it sent" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stopped before it sent" }] },
+  });
+  await storage.cancelUnattempted("ref_a");
+
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
+  await flushPendingTurnsProjectionForTests();
+
+  // The canceled row stays visible where its Retry affordance lives (the
+  // queue strip's durable rows) - the exclusion lives in the skeleton's
+  // predicate, not in the projection.
+  expect(pending.result.current).toEqual([expect.objectContaining({ state: "canceled" })]);
+  // ... but a turn that provably never sent does not mean a turn is coming:
+  expect(coldStart.result.current).toBe(false);
+});
+
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

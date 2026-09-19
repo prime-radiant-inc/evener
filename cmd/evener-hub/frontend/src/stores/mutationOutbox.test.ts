@@ -297,6 +297,42 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.getOptimistic(persisted.clientMutationId)).toBeUndefined();
   });
 
+  test("a pending receipt keeps an accepted note's copy without an optimistic display", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    const persisted = await store.enqueueIntent({
+      targetRef: TARGET,
+      threadId: "thread-1",
+      method: "notes/human/set",
+      payload: { ref: TARGET, expectedInstanceId: "instance-1", note: "whiteboard text" },
+      attachments: [],
+      // Production note intents carry no display (threads.ts's setHumanNote):
+      // nothing renders while a note waits on its canonical reflection, so
+      // nothing here satisfies the input-array retention shape.
+      optimisticDisplay: null,
+    });
+
+    // The daemon reports notes/human/set as pending at acceptance
+    // (acceptedClientMutationProjection): accepted, but no authoritative state
+    // describes the write yet. The copy must be kept anyway - it is what
+    // distinguishes accepted-pending from settled-elsewhere in the note
+    // draft's post-retry lookup - and reconcileIdentities settles it once a
+    // read projects the mutation id.
+    expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    expect(await store.getOptimistic(persisted.clientMutationId)).toMatchObject({
+      clientMutationId: persisted.clientMutationId,
+      targetRef: TARGET,
+      method: "notes/human/set",
+      state: "accepted",
+      optimisticDisplay: null,
+    });
+
+    // The kept copy is not permanent: reconciliation settles it exactly like
+    // an accepted turn's copy.
+    expect(await store.settleApplied(persisted.clientMutationId)).toBe(true);
+    expect(await store.getOptimistic(persisted.clientMutationId)).toBeUndefined();
+  });
+
   test("an aborted pending receipt handoff retains the transport owner without an optimistic duplicate", async () => {
     const crashingTab = new MutationOutboxIndexedDB({
       indexedDB,
