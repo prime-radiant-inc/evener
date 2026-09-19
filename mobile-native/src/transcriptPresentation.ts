@@ -1,5 +1,9 @@
 import {
 	presetContent,
+	sessionTokens,
+	tokenUnitLabel,
+	type EvenerUsage,
+	type SessionTokens,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type {
@@ -14,11 +18,50 @@ export type ActivityPresentation = {
 };
 
 // The session accounting the transcript footer shows: the conversation's
-// token aggregate and cost (the package ThreadModel's usage/cost fields), each
-// null when the display config hides it or the daemon reported none.
+// token total (the package's turn-summed sessionTokens derivation, shared
+// with the web details panel), the thread's own cumulative cache/total
+// breakdown, and cost - each undefined/null when the display config hides it
+// or the daemon reported none.
+//
+// cacheReadTokens/totalTokens are read independently of inputTokens/
+// outputTokens/scope: the wire's EvenerUsage permits a sparse cumulative
+// object (cache or total alone, with no input/output pair at all), and
+// sessionTokens has no per-turn equivalent for them, so they must survive
+// even when sessionTokens falls back to summing turns or returns null
+// outright. They are always whole-session figures (EvenerThread.Usage is not
+// windowed the way turns are), so they carry no scope of their own and must
+// never inherit whatever scope the derived input/output pair got.
 export interface SessionAccounting {
-	usage: MobileConversation["usage"];
+	usage:
+		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
+		| null;
 	cost: string | null;
+}
+
+export interface UsageRow {
+	label: "Input" | "Output" | "Cached" | "Total";
+	value: number;
+	unit: string;
+}
+
+// usageRows picks the footer's visible rows and labels each with what it
+// actually counts. Input/Output take the derived pair's own scope (a
+// truncated turn window says so); Cached/Total are always the thread's whole
+// -session cumulative figures, so they always read plainly, independent of
+// whatever scope the derived pair got.
+export function usageRows(usage: SessionAccounting["usage"]): UsageRow[] {
+	if (!usage) return [];
+	const derivedUnit = tokenUnitLabel(usage.scope);
+	const cumulativeUnit = tokenUnitLabel(undefined);
+	const candidates: [UsageRow["label"], number | undefined, string][] = [
+		["Input", usage.inputTokens, derivedUnit],
+		["Output", usage.outputTokens, derivedUnit],
+		["Cached", usage.cacheReadTokens, cumulativeUnit],
+		["Total", usage.totalTokens, cumulativeUnit],
+	];
+	return candidates
+		.filter((row): row is [UsageRow["label"], number, string] => row[1] !== undefined)
+		.map(([label, value, unit]) => ({ label, value, unit }));
 }
 
 export interface NativeTranscriptPresentation {
@@ -167,13 +210,32 @@ function eventVisible(
 	return config.advanced.systemEvents;
 }
 
+// A cumulative field's Go zero value ("0") signals absence, not a real
+// measurement of zero — the same rule sessionTokens applies to inputTokens/
+// outputTokens (threadUsage.ts). cacheReadTokens/totalTokens get no such
+// derivation of their own (they are read straight off the wire), so that
+// rule is applied here, once, at the point they are read.
+function noZero(value: number | undefined): number | undefined {
+	return value === 0 ? undefined : value;
+}
+
 function accountingFor(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
+	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
+	const cacheReadTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.cacheReadTokens) : undefined;
+	const totalTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.totalTokens) : undefined;
 	return {
-		usage: config.advanced.tokenCounts ? conversation.usage : null,
+		usage:
+			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
+				? {
+						...(tokens ?? {}),
+						...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+						...(totalTokens !== undefined ? { totalTokens } : {}),
+					}
+				: null,
 		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};
 }
