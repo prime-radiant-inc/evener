@@ -151,7 +151,7 @@ type dropResponseTransport struct {
 
 func (t dropResponseTransport) Send(ctx context.Context, message appwire.Message) error {
 	if message.Response != nil {
-		_ = t.Transport.Close()
+		_ = t.Close()
 		return io.ErrClosedPipe
 	}
 	return t.Transport.Send(ctx, message)
@@ -216,6 +216,118 @@ func completeBrokerIdentity(rootID string) appwire.BrokerDaemonIdentity {
 		PID: 42, Address: "127.0.0.1:4131", Endpoint: "ws://127.0.0.1:4131/rpc", Protocol: appwire.ProtocolVersion,
 		SourceID: "local", ThreadID: rootID, SessionID: rootID, InstanceID: rootID, WorkspaceRef: "local:" + rootID,
 		WorkingDir: "/work", StateDir: "/state", StartedAt: time.Unix(123, 456).UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func TestDirectRebootstrapRejectsStandaloneDaemonBeforeCandidateActivation(t *testing.T) {
+	hubSide, daemonSide := net.Pipe()
+	hubTransport := appwire.NewStreamTransportWithLimit(hubSide, appwire.PrivateBrokerFrameLimit)
+	defer hubTransport.Close() //nolint:errcheck
+	daemon := NewDaemonBroker(DaemonBrokerConfig{})
+	validateCalled := false
+	completeCalled := false
+	err := daemon.AcceptRebootstrap(t.Context(), appwire.NewStreamTransportWithLimit(daemonSide, appwire.PrivateBrokerFrameLimit), DaemonRebootstrapCallbacks{
+		Validate: func(appwire.BrokerDaemonIdentity) (appwire.BrokerDaemonIdentity, uint64, error) {
+			validateCalled = true
+			return appwire.BrokerDaemonIdentity{}, 1, nil
+		},
+		Complete: func(uint64) error {
+			completeCalled = true
+			return nil
+		},
+	})
+	if !errors.Is(err, ErrBrokerAuthentication) {
+		t.Fatalf("AcceptRebootstrap error = %v, want authentication rejection", err)
+	}
+	if validateCalled || completeCalled {
+		t.Fatalf("standalone daemon activated candidate callbacks: validate=%v complete=%v", validateCalled, completeCalled)
+	}
+	if message, err := hubTransport.Recv(t.Context()); err == nil {
+		t.Fatalf("standalone daemon sent an install response: %+v", message)
+	}
+	daemon.mu.Lock()
+	client, epoch := daemon.client, daemon.daemonEpoch
+	daemon.mu.Unlock()
+	if client != nil || epoch != "" {
+		t.Fatalf("standalone daemon accepted candidate client=%v epoch=%q", client != nil, epoch)
+	}
+}
+
+func TestDirectRebootstrapRejectsAlteredOriginalAssociationBeforeCandidateActivation(t *testing.T) {
+	authority, err := OpenHostAuthority(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close() //nolint:errcheck
+	rootID := identifier.MustNewSessionID()
+	identity := completeBrokerIdentity(rootID)
+
+	launchHubSide, launchDaemonSide := net.Pipe()
+	launchHub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchHubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "launch", HubEpoch: "hub-one", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	daemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchDaemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "launch",
+	})
+	defer daemon.Close() //nolint:errcheck
+	go func() { _ = launchHub.Serve(t.Context()) }()
+	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := launchHub.ExpectOwnership(identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.InstallOwnership(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	daemon.mu.Lock()
+	priorClient := daemon.client
+	priorEpoch := daemon.daemonEpoch
+	altered := daemon.association
+	daemon.mu.Unlock()
+	altered.NamespaceID += "-altered"
+
+	hubSide, daemonSide := net.Pipe()
+	hubTransport := appwire.NewStreamTransportWithLimit(hubSide, appwire.PrivateBrokerFrameLimit)
+	defer hubTransport.Close() //nolint:errcheck
+	validateCalled := false
+	completeCalled := false
+	daemonDone := make(chan error, 1)
+	go func() {
+		daemonDone <- daemon.AcceptRebootstrap(t.Context(), appwire.NewStreamTransportWithLimit(daemonSide, appwire.PrivateBrokerFrameLimit), DaemonRebootstrapCallbacks{
+			Validate: func(appwire.BrokerDaemonIdentity) (appwire.BrokerDaemonIdentity, uint64, error) {
+				validateCalled = true
+				return identity, 2, nil
+			},
+			Complete: func(uint64) error {
+				completeCalled = true
+				return nil
+			},
+		})
+	}()
+	install := appwire.BrokerInstallParams{
+		HubEpoch: "hub-two", DaemonEpoch: "daemon-two", Capability: "connection-capability",
+		Association: altered, ExpectedDaemonIdentity: identity,
+	}
+	if err := hubTransport.Send(t.Context(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodBrokerInstall, install)); err != nil {
+		t.Fatalf("send altered install: %v", err)
+	}
+	if message, err := hubTransport.Recv(t.Context()); err == nil {
+		t.Fatalf("altered association received an install response: %+v", message)
+	}
+	if err := <-daemonDone; !errors.Is(err, ErrBrokerAuthentication) {
+		t.Fatalf("AcceptRebootstrap error = %v, want authentication rejection", err)
+	}
+	if validateCalled || completeCalled {
+		t.Fatalf("altered association activated candidate callbacks: validate=%v complete=%v", validateCalled, completeCalled)
+	}
+	daemon.mu.Lock()
+	retainedClient := daemon.client
+	retainedEpoch := daemon.daemonEpoch
+	daemon.mu.Unlock()
+	if retainedClient != priorClient || retainedEpoch != priorEpoch {
+		t.Fatal("altered association replaced the original authenticated connection")
 	}
 }
 

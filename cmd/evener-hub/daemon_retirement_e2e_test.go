@@ -603,7 +603,7 @@ func TestOwnedDaemonArtifactBrokerHandshakePrecedesRendezvous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(constructorIndex < establishedIndex && establishedIndex < registeredIndex) {
+	if constructorIndex >= establishedIndex || establishedIndex >= registeredIndex {
 		t.Fatalf("startup order constructor=%d broker=%d rendezvous=%d, events=%+v", constructorIndex, establishedIndex, registeredIndex, handle.events.history())
 	}
 	if _, err := authority.RootAssociation(t.Context(), f.sessionID); err != nil {
