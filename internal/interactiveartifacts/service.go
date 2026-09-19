@@ -167,9 +167,11 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if r.Method == http.MethodPost && !selectedProtocolMessage(r, body, s.ready.CoreVersion) {
-			http.Error(w, "artifact service requires a single message in its selected MCP profile", http.StatusBadRequest)
-			return
+		if r.Method == http.MethodPost {
+			if err := validateProtocolMessage(r, body, s.ready.CoreVersion); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		// Buffer the complete SDK response before headers become observable. Failure
@@ -190,33 +192,53 @@ func (s *service) guard(host string, next http.Handler) http.Handler {
 	})
 }
 
-// selectedProtocolMessage prevents the SDK's legacy batch path from dispatching
-// multiple domain calls behind one HTTP admission lease or buffering a combined
-// response beyond the service budget. The SDK still owns single-message codecs.
-func selectedProtocolMessage(r *http.Request, body []byte, version string) bool {
+// The ID-only SDK envelope must fit within the list's 4096-byte reserve,
+// leaving room for the fixed result wrapper, text fallback and bounded cursor.
+const maxRequestIDEnvelopeBytes = 1024
+
+// validateProtocolMessage keeps one SDK message within one HTTP admission lease
+// and bounds the caller-controlled response ID. The SDK owns the wire codec.
+func validateProtocolMessage(r *http.Request, body []byte, version string) error {
+	invalid := errors.New("artifact service requires a single message in its selected MCP profile")
 	headers := r.Header.Values("MCP-Protocol-Version")
 	if len(headers) > 1 || (len(headers) == 1 && headers[0] != version) {
-		return false
+		return invalid
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] == '[' {
-		return false
+		return invalid
 	}
 	message, err := jsonrpc.DecodeMessage(body)
 	if err != nil {
-		return false
+		return invalid
 	}
-	if request, ok := message.(*jsonrpc.Request); ok && request.Method == "initialize" {
-		var params mcp.InitializeParams
-		if !request.IsCall() || json.Unmarshal(request.Params, &params) != nil || params.ProtocolVersion != version {
-			return false
+	if request, ok := message.(*jsonrpc.Request); ok {
+		if request.IsCall() {
+			// This sizing object is never sent. The pinned SDK's encoding handles
+			// escaped string IDs exactly as it will encode the actual response.
+			envelope, err := jsonrpc.EncodeMessage(&jsonrpc.Response{ID: request.ID})
+			if err != nil {
+				return invalid
+			}
+			if len(envelope) > maxRequestIDEnvelopeBytes {
+				return errors.New("artifact request ID exceeds service size limit")
+			}
 		}
-		// Initial requests legitimately have no negotiated-version header. Keep
-		// even that single initialize out of the SDK's legacy transport profile.
-		r.Header.Set("MCP-Protocol-Version", version)
-		return true
+		if request.Method == "initialize" {
+			var params mcp.InitializeParams
+			if !request.IsCall() || json.Unmarshal(request.Params, &params) != nil || params.ProtocolVersion != version {
+				return invalid
+			}
+			// Initial requests legitimately have no negotiated-version header. Keep
+			// even that single initialize out of the SDK's legacy transport profile.
+			r.Header.Set("MCP-Protocol-Version", version)
+			return nil
+		}
 	}
-	return len(headers) == 1
+	if len(headers) != 1 {
+		return invalid
+	}
+	return nil
 }
 
 func hasHeader(h http.Header, name string) bool {

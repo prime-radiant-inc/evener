@@ -31,10 +31,14 @@ func awaitSupervisor(t *testing.T, s *Supervisor, predicate func(ServiceStatus) 
 		}
 	}
 }
-func TestSupervisorCircuitUsesRealFailedChildBoundaries(t *testing.T) {
+func blockedOwnerSupervisor(t *testing.T) (*Supervisor, func(), chan time.Duration, chan struct{}) {
+	t.Helper()
 	root := filepath.Join(t.TempDir(), "private")
 	owner, err := startService(root, StoreOptions{})
 	requireNoError(t, err)
+	var closeOnce sync.Once
+	closeOwner := func() { closeOnce.Do(func() { requireNoError(t, owner.close(context.Background())) }) }
+	t.Cleanup(closeOwner)
 	waits := make(chan time.Duration)
 	advance := make(chan struct{})
 	s := NewSupervisor(root, SupervisorOptions{Policy: testPolicy, command: []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process"}, Now: fixedClock, Jitter: func() float64 { return 0.5 }, Wait: func(ctx context.Context, d time.Duration) error {
@@ -51,6 +55,10 @@ func TestSupervisorCircuitUsesRealFailedChildBoundaries(t *testing.T) {
 		}
 	}})
 	t.Cleanup(func() { requireNoError(t, s.Close()) })
+	return s, closeOwner, waits, advance
+}
+func TestSupervisorCircuitUsesRealFailedChildBoundaries(t *testing.T) {
+	s, closeOwner, waits, advance := blockedOwnerSupervisor(t)
 	if _, err := s.Ensure(context.Background()); err == nil {
 		t.Fatal("second writer started")
 	}
@@ -64,7 +72,7 @@ func TestSupervisorCircuitUsesRealFailedChildBoundaries(t *testing.T) {
 	if status.ProcessesStarted != 5 || status.ProcessesReaped != 5 || status.LiveProcesses != 0 {
 		t.Fatalf("failed children unreaped: %+v", status)
 	}
-	requireNoError(t, owner.close(context.Background()))
+	closeOwner()
 	ready, err := s.Retry(context.Background())
 	requireNoError(t, err)
 	if ready.ServiceID == "" || s.Status().ProcessesStarted != 6 {
@@ -218,5 +226,56 @@ func TestSupervisorObservedExitWithdrawsReadiness(t *testing.T) {
 			reapOnce.Do(func() { close(releaseReap) })
 			<-backoff
 		})
+	}
+}
+
+func TestSupervisorRetryPreservesClosedCircuit(t *testing.T) {
+	s, _, waits, advance := blockedOwnerSupervisor(t)
+	if _, err := s.Ensure(t.Context()); err == nil {
+		t.Fatal("second writer started")
+	}
+	for range 4 {
+		<-waits
+		advance <- struct{}{}
+	}
+	awaitSupervisor(t, s, func(status ServiceStatus) bool { return status.CircuitOpen })
+	requireNoError(t, s.Close())
+	before := s.Status()
+	s.mu.Lock()
+	changed := s.changed
+	s.mu.Unlock()
+	if _, err := s.Retry(t.Context()); err == nil {
+		t.Fatal("closed supervisor accepted Retry")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status != before || s.status.State != "closed" || s.changed != changed || len(s.retry) != 0 {
+		t.Fatalf("Retry mutated closed circuit: before=%+v after=%+v", before, s.status)
+	}
+}
+
+func TestSupervisorRetryPreservesOrdinaryBackoff(t *testing.T) {
+	s, closeOwner, waits, advance := blockedOwnerSupervisor(t)
+	if _, err := s.Ensure(t.Context()); err == nil {
+		t.Fatal("second writer started")
+	}
+	<-waits
+	before := s.Status()
+	s.mu.Lock()
+	changed := s.changed
+	s.mu.Unlock()
+	_, err := s.Retry(t.Context())
+	requireCode(t, err, ServiceUnavailable)
+	s.mu.Lock()
+	unchanged := s.status == before && s.changed == changed && len(s.retry) == 0
+	s.mu.Unlock()
+	if !unchanged {
+		t.Errorf("Retry mutated scheduled backoff: before=%+v after=%+v", before, s.Status())
+	}
+	closeOwner()
+	advance <- struct{}{}
+	status := awaitSupervisor(t, s, func(status ServiceStatus) bool { return status.State == "ready" })
+	if status.ProcessesStarted != 2 || status.ProcessesReaped != 1 || status.LiveProcesses != 1 {
+		t.Fatalf("incorrect scheduled recovery: %+v", status)
 	}
 }

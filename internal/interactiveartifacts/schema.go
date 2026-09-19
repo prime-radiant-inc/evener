@@ -84,14 +84,15 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 		if err != nil {
 			return nil, err
 		}
+		creation := forbids("artifactId", "expectedSourceRevision", "expectedStateVersion")
+		creation.Properties = map[string]*jsonschema.Schema{"initialState": {Default: json.RawMessage(`{}`)}}
 		schema.OneOf = []*jsonschema.Schema{
-			forbids("artifactId", "expectedSourceRevision", "expectedStateVersion"),
+			creation,
 			{Required: []string{"artifactId", "expectedSourceRevision", "expectedStateVersion"}, Not: &jsonschema.Schema{Required: []string{"initialState"}}},
 		}
 		schema.Properties["html"].MinLength = new(1)
 		schema.Properties["format"].Default = json.RawMessage(`"html"`)
 		schema.Properties["formatVersion"].Default = json.RawMessage(`1`)
-		schema.Properties["initialState"].Default = json.RawMessage(`{}`)
 	case "artifact_read":
 		schema, err = infer[ReadRequest]()
 		if err != nil {
