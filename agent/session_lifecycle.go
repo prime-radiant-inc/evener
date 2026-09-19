@@ -2912,10 +2912,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// Recorded for the duration of the drain so a skill-selection failure for
 	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
 	// can tag its TurnFailure as a resolution boundary too — this turn's mere
-	// acceptance already cleared askPending before the drain ever ran.
+	// acceptance already cleared askPending before the drain ever ran. Cleared
+	// by defer so a panic mid-drain cannot leak the claim id: a leaked id
+	// would let an unrelated later recordFailedSteeringSelection mistag its
+	// own TurnFailure SteeringCarrier and wrongly resolve an ask on restore.
 	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
+	defer s.setSteeringCarrierClaimDrain("")
 	delivered := s.injectDrainedSteering()
-	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
