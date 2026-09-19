@@ -21,6 +21,11 @@ func TestCheckGateFlagsRefusesWhatTheGateCannotCarry(t *testing.T) {
 		{name: "bare --", args: []string{"--"}, want: 2},
 		{name: "-args as a value is fine", args: []string{"-run", "-args"}, want: 0},
 		{name: "-- as a value is fine", args: []string{"-ldflags", "--"}, want: 0},
+		// -tags is a value-taking flag the selection walker handles by name, so
+		// the shared consumesValue leaves it out; this walker must still consume
+		// its value.
+		{name: "-C as a -tags value is fine", args: []string{"-tags", "-C"}, want: 0},
+		{name: "a terminator after a -tags value is still refused", args: []string{"-tags", "-run", "-args"}, want: 2},
 		{name: "-C in argv", args: []string{"-C", "x"}, want: 2},
 		{name: "-C inline in argv", args: []string{"-C=x"}, want: 2},
 		{name: "GOFLAGS -C", goflags: "-C=/tmp", args: []string{"-short"}, want: 2},

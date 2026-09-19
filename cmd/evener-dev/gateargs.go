@@ -79,8 +79,10 @@ func firstRefusedArg(args []string, refuseTerminators bool) (string, bool) {
 			return name, true
 		}
 		// Only a value written as the next argument is consumed; an inline
-		// value (`-count=1`) must not swallow the flag after it.
-		if consumesValue(name) && !inline {
+		// value (`-count=1`) must not swallow the flag after it. takesValue
+		// includes -tags, which consumesValue leaves out because
+		// packageSelectionFlags handles that flag by name.
+		if takesValue(name) && !inline {
 			i++
 		}
 	}
