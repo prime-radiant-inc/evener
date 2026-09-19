@@ -309,7 +309,7 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey } from "./reducer";
+export type { NotificationRoutingKey, TurnHistoryMergeResult } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -321,6 +321,7 @@ export {
   joinedReasoningParagraphs,
   joinWarningParts,
   mergeOlderItemPage,
+  mergeTurnHistory,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,

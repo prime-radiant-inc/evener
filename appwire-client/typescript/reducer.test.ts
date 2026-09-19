@@ -14,6 +14,7 @@ import {
   hydrateThread,
   imageSessionRouteForSession,
   mergeOlderItemPage,
+  mergeTurnHistory,
   notificationTargetsThread,
   prependOlderTurns,
   RAW_WARNING_FRAME_MAX_CHARS,
@@ -3215,6 +3216,592 @@ test("mergeOlderItemPage keeps normalized fresh traversal when an older bridge j
     id: "item_tool_1_0",
     output: "later",
   });
+||||||| parent of d844ca997 (feat(appwire): expose transcript history merge contract)
+test("mergeTurnHistory keeps older fallback fields and fragments while fresh fields win", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-old",
+      status: "completed",
+      usage: { inputTokens: 500, outputTokens: 20 },
+      items: [
+        {
+          id: "old-only",
+          transcriptKey: "old-only",
+          turnId: "turn-old",
+          type: "agentMessage",
+          text: "older-only item",
+          position: { entry: 1, item: 0 },
+          status: "completed",
+        },
+        {
+          id: "old-shared",
+          transcriptKey: "shared-item",
+          turnId: "turn-old",
+          type: "agentMessage",
+          text: "older text",
+          position: { entry: 2, item: 0 },
+          status: "completed",
+        },
+      ],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn-fresh",
+      status: "completed",
+      items: [
+        {
+          id: "fresh-shared",
+          transcriptKey: "shared-item",
+          turnId: "turn-fresh",
+          type: "agentMessage",
+          text: "fresh text",
+          position: { entry: 2, item: 0 },
+          status: "completed",
+        },
+        {
+          id: "fresh-only",
+          transcriptKey: "fresh-only",
+          turnId: "turn-fresh",
+          type: "agentMessage",
+          text: "fresh-only item",
+          position: { entry: 3, item: 0 },
+          status: "completed",
+        },
+      ],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-fresh");
+  expect(merged.turns[0]?.usage).toEqual({
+    inputTokens: 500,
+    outputTokens: 20,
+  });
+  expect(merged.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["old-only", "shared-item", "fresh-only"]);
+  expect(merged.turns[0]?.items.find((item) => item.transcriptKey === "shared-item")?.text).toBe("fresh text");
+});
+
+test("mergeTurnHistory returns the fresh view when older history contributes nothing", () => {
+  const newer: TurnModel[] = [{ id: "turn-1", status: "completed", items: [], usage: { inputTokens: 1 } }];
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [],
+      usage: { inputTokens: 99 },
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toBe(newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(false);
+});
+
+test("mergeTurnHistory does not fold duplicate fresh fragments when older history contributes nothing", () => {
+  const older: TurnModel[] = [{ id: "turn-1", status: "completed", items: [] }];
+  const newer: TurnModel[] = [
+    { id: "turn-0", status: "completed", items: [] },
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "fresh-a",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "a",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "fresh-b",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "b",
+          status: "completed",
+        },
+      ],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toBe(newer);
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["turn-0", "turn-1", "turn-1"]);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(false);
+});
+
+test("mergeTurnHistory treats matching fresh fragments as one coverage window", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      usage: { inputTokens: 1 },
+      items: [{ id: "item-a", turnId: "turn-1", type: "agentMessage", text: "a", status: "completed" }],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [{ id: "item-a", turnId: "turn-1", type: "agentMessage", text: "a", status: "completed" }],
+    },
+    {
+      id: "turn-1",
+      status: "completed",
+      usage: { inputTokens: 1 },
+      items: [{ id: "item-b", turnId: "turn-1", type: "agentMessage", text: "b", status: "completed" }],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toBe(newer);
+  expect(merged.turns).toHaveLength(2);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
+function orderedHistoryTurn(id: string, entry?: number): TurnModel {
+  return {
+    id,
+    status: "completed",
+    items:
+      entry === undefined
+        ? []
+        : [
+            {
+              id: `item-${id}`,
+              turnId: id,
+              type: "agentMessage",
+              text: id,
+              status: "completed",
+              position: { entry, item: 0 },
+            },
+          ],
+  };
+}
+
+test.each([
+  ["unmatched turn between anchors", ["A", "B", "C"], ["A", "C"], ["A", "B", "C"]],
+  ["unanchored history and fresh prefix", ["A", "B", "C"], ["D", "A", "C"], ["D", "A", "B", "C"]],
+  ["fresh unmatched turn wins the no-position tie", ["A", "B", "C"], ["A", "D", "C"], ["A", "D", "B", "C"]],
+  ["unmatched head and tail", ["X", "A", "C", "Z"], ["A", "C"], ["X", "A", "C", "Z"]],
+])("mergeTurnHistory weaves %s deterministically", (_name, olderIds, newerIds, expected) => {
+  const merged = mergeTurnHistory(
+    olderIds.map((id) => orderedHistoryTurn(id)),
+    newerIds.map((id) => orderedHistoryTurn(id)),
+  );
+  expect(merged.turns.map((turn) => turn.id)).toEqual(expected);
+  expect(merged.olderCoverage).toBe(true);
+});
+
+test("mergeTurnHistory uses canonical item positions to place an older run", () => {
+  const merged = mergeTurnHistory(
+    [orderedHistoryTurn("A", 1), orderedHistoryTurn("B", 2), orderedHistoryTurn("C", 4)],
+    [orderedHistoryTurn("A", 1), orderedHistoryTurn("D", 3), orderedHistoryTurn("C", 4)],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["A", "B", "D", "C"]);
+});
+
+test("mergeTurnHistory keeps live-only fields and warning items out of transcript coverage", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          {
+            id: "reasoning-1",
+            turnId: "turn-1",
+            type: "reasoning",
+            text: "same",
+            status: "completed",
+            pendingText: ["live delta"],
+            reasoningSummaries: [["same"]],
+          },
+          {
+            id: "warning-1",
+            turnId: "turn-1",
+            type: "warning",
+            text: "provider warning",
+            status: "completed",
+            warning: { source: "provider", title: "Provider", hint: "slow" },
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [{ id: "reasoning-1", turnId: "turn-1", type: "reasoning", text: "same", status: "completed" }],
+      },
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns[0]?.items).toHaveLength(2);
+  expect(merged.turns[0]?.items[0]?.pendingText).toEqual(["live delta"]);
+  expect(merged.turns[0]?.items[0]?.reasoningSummaries).toEqual([["same"]]);
+  expect(merged.turns[0]?.items[1]).toMatchObject({ type: "warning", warning: { title: "Provider" } });
+
+  const warningOnly = mergeTurnHistory(
+    [
+      {
+        id: "turn-warning",
+        status: "completed",
+        items: [
+          {
+            id: "warning-only",
+            turnId: "turn-warning",
+            type: "warning",
+            text: "provider warning",
+            status: "completed",
+            warning: { title: "Provider" },
+          },
+        ],
+      },
+    ],
+    [{ id: "turn-warning", status: "completed", items: [] }],
+  );
+  expect(warningOnly.olderCoverage).toBe(false);
+  expect(warningOnly.turns[0]?.items).toHaveLength(1);
+
+  const unmatchedWarning = mergeTurnHistory(
+    [
+      {
+        id: "unmatched-warning-turn",
+        status: "completed",
+        items: [
+          {
+            id: "unmatched-warning",
+            turnId: "unmatched-warning-turn",
+            type: "warning",
+            text: "provider warning",
+            status: "completed",
+            warning: { title: "Provider" },
+          },
+        ],
+      },
+    ],
+    [],
+  );
+  expect(unmatchedWarning.olderCoverage).toBe(false);
+  expect(unmatchedWarning.turns[0]?.items).toHaveLength(1);
+});
+
+test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {
+  const sharedItem = {
+    id: "shared-item",
+    turnId: "turn-a",
+    type: "agentMessage",
+    text: "shared",
+    status: "completed",
+  };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-a", status: "completed", usage: { inputTokens: 10 }, items: [] }],
+    [
+      { id: "turn-a", status: "completed", items: [sharedItem] },
+      { id: "turn-b", status: "completed", items: [{ ...sharedItem, turnId: "turn-b" }] },
+    ],
+  );
+
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-b");
+  expect(merged.turns[0]?.usage).toEqual({ inputTokens: 10 });
+  expect(merged.turns[0]?.items).toHaveLength(1);
+});
+
+function historyTurnWithItems(id: string, itemIds: string[]): TurnModel {
+  return {
+    id,
+    status: "completed",
+    items: itemIds.map((itemId) => ({
+      id: itemId,
+      turnId: id,
+      type: "agentMessage",
+      text: itemId,
+      status: "completed",
+    })),
+  };
+}
+
+test.each([
+  ["collapsed anchor alone", ["F"], ["F", "B"]],
+  ["fresh prefix", ["X", "F"], ["X", "F", "B"]],
+  ["fresh suffix", ["F", "Y"], ["F", "Y", "B"]],
+  ["fresh prefix and suffix", ["X", "F", "Y"], ["X", "F", "Y", "B"]],
+])("mergeTurnHistory retains a run between collapsed anchors with %s", (_name, freshIds, expectedIds) => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      historyTurnWithItems("B", ["item-B"]),
+      historyTurnWithItems("C", ["item-C"]),
+    ],
+    freshIds.map((id) => historyTurnWithItems(id, id === "F" ? ["item-A", "item-C"] : [])),
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(expectedIds);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item-B")).toHaveLength(1);
+});
+
+test("mergeTurnHistory retains a warning-only run between collapsed anchors", () => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      {
+        id: "B",
+        status: "completed",
+        items: [{ id: "warning-B", turnId: "B", type: "warning", text: "live warning", status: "completed" }],
+      },
+      historyTurnWithItems("C", ["item-C"]),
+    ],
+    [historyTurnWithItems("F", ["item-A", "item-C"])],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["F", "B"]);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns[1]?.items).toMatchObject([{ id: "warning-B", type: "warning" }]);
+});
+
+test("mergeTurnHistory retains runs across multiple collapsed anchor groups", () => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      historyTurnWithItems("B", ["item-B"]),
+      historyTurnWithItems("C", ["item-C"]),
+      historyTurnWithItems("D", ["item-D"]),
+      historyTurnWithItems("E", ["item-E"]),
+      historyTurnWithItems("F", ["item-F"]),
+      historyTurnWithItems("G", ["item-G"]),
+    ],
+    [
+      historyTurnWithItems("X", []),
+      historyTurnWithItems("H", ["item-A", "item-C"]),
+      historyTurnWithItems("I", ["item-F", "item-G"]),
+      historyTurnWithItems("Y", []),
+    ],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["X", "H", "B", "D", "E", "I", "Y"]);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(
+    merged.turns
+      .flatMap((turn) => turn.items)
+      .map((item) => item.id)
+      .sort(),
+  ).toEqual(["item-A", "item-B", "item-C", "item-D", "item-E", "item-F", "item-G"].sort());
+});
+
+test("mergeTurnHistory preserves fresh ordering when its window extends before retained turns", () => {
+  const older: TurnModel[] = [
+    { id: "turn-1", status: "completed", items: [], usage: { inputTokens: 1 } },
+    { id: "turn-2", status: "completed", items: [], usage: { inputTokens: 2 } },
+  ];
+  const newer: TurnModel[] = [
+    { id: "turn-0", status: "completed", items: [], usage: { inputTokens: 0 } },
+    { id: "turn-1", status: "completed", items: [], usage: { inputTokens: 1 } },
+    { id: "turn-2", status: "completed", items: [], usage: { inputTokens: 2 } },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toBe(newer);
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["turn-0", "turn-1", "turn-2"]);
+});
+
+test("mergeTurnHistory preserves fresh ordering when matching older fields contribute", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      usage: { inputTokens: 500 },
+      items: [
+        {
+          id: "shared-old",
+          transcriptKey: "shared",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "old",
+          position: { entry: 1, item: 0 },
+          status: "completed",
+        },
+      ],
+    },
+    { id: "turn-2", status: "completed", items: [], usage: { inputTokens: 2 } },
+  ];
+  const newer: TurnModel[] = [
+    { id: "turn-0", status: "completed", items: [], usage: { inputTokens: 0 } },
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "shared-new",
+          transcriptKey: "shared",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "new",
+          position: { entry: 1, item: 0 },
+          status: "completed",
+        },
+      ],
+    },
+    { id: "turn-2", status: "completed", items: [], usage: { inputTokens: 2 } },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["turn-0", "turn-1", "turn-2"]);
+  expect(merged.turns[1]?.usage).toEqual({ inputTokens: 500 });
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
+test("mergeTurnHistory folds matching fresh fragments once and keeps disjoint items", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "old",
+          transcriptKey: "old",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "old",
+          status: "completed",
+        },
+      ],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "fresh-a",
+          transcriptKey: "fresh-a",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "a",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "fresh-b",
+          transcriptKey: "fresh-b",
+          turnId: "turn-1",
+          type: "agentMessage",
+          text: "b",
+          status: "completed",
+        },
+      ],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["old", "fresh-a", "fresh-b"]);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(false);
+});
+
+test("mergeTurnHistory keeps unproven disjoint turn fragments separate", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "old-fragment",
+        status: "completed",
+        items: [
+          {
+            id: "old-item",
+            turnId: "old-fragment",
+            type: "agentMessage",
+            text: "old",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "fresh-fragment",
+        status: "completed",
+        items: [
+          {
+            id: "fresh-item",
+            turnId: "fresh-fragment",
+            type: "agentMessage",
+            text: "fresh",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["old-fragment", "fresh-fragment"]);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(false);
+});
+
+test("mergeTurnHistory does not treat retained observation metadata as transcript coverage", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "item-1",
+          turnId: "turn-1",
+          type: "reasoning",
+          text: "same",
+          status: "completed",
+          observedStartedAt: "2026-09-18T00:00:01.000Z",
+        },
+      ],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "item-1",
+          turnId: "turn-1",
+          type: "reasoning",
+          text: "same",
+          status: "completed",
+        },
+      ],
+    },
+  ];
+
+  const merged = mergeTurnHistory(older, newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns[0]?.items[0]?.observedStartedAt).toBe("2026-09-18T00:00:01.000Z");
 });
 
 test("mergeOlderItemPage coalesces every transitively overlapping fragment", () => {
