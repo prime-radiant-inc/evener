@@ -306,3 +306,62 @@ func TestForceStopValidatesSiblingDeletionBeforeCancelingActiveResume(t *testing
 		}
 	})
 }
+
+// TestForceStopRefusedAfterUncanceledDrainRollsBackFence is the Medium RoboRev
+// reported against the post-ownership refusals: after BeginForceStop and
+// cancelActiveResumes, a refusal returned without Reject, so Epoch and
+// LastRecoverySequence stayed advanced even though the drain canceled no
+// Resume and the stop was refused. A drain that stopped nothing leaves the
+// refusal admission-neutral, the way the pre-cancellation refusals already
+// are; only a drain that actually canceled a Resume keeps the advance.
+func TestForceStopRefusedAfterUncanceledDrainRollsBackFence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		runDir, sessionID := t.TempDir(), hubtest.SessionID(t)
+		writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StartedAt: time.Now()})
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := deletionTargetState
+		calls := 0
+		// The request's entry fence check passes; the deletion record is
+		// published before the post-ownership re-validation that refuses.
+		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+			calls++
+			return hubcore.DeletionStateDeleting, calls > 1
+		}
+		defer func() { deletionTargetState = original }()
+		var events []string
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				events = append(events, "open")
+				return &forceStopProcess{events: &events}, nil
+			})}
+		before := locks.RecoveryState(sessionID)
+		// Hold the alias reservation the way an unrelated action does, so the
+		// request's TryLock falls back to cancel-then-acquire and the deletion
+		// validation runs only after ownership. No Resume is active, so the
+		// drain below the fence cancels nothing.
+		locks.For(sessionID).Lock()
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait() // the request is waiting for the held reservation
+		locks.For(sessionID).Unlock()
+		err = <-stopped
+		if err == nil {
+			t.Fatal("force stop with a racing deletion succeeded")
+		}
+		if !isTargetDeletedError(err) {
+			t.Fatalf("force stop error = %v, want the target-deleted refusal", err)
+		}
+		if after := locks.RecoveryState(sessionID); after != before {
+			t.Fatalf("refused force stop left the admission fence applied: before=%+v, after=%+v", before, after)
+		}
+		if slices.Contains(events, "kill") {
+			t.Fatalf("a refused force stop reached process control: %v", events)
+		}
+	})
+}

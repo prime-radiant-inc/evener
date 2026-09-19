@@ -59,6 +59,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// publication itself, so that case keeps the cancel-then-check order the
 	// post-ownership re-check below re-validates authoritatively. New Resume
 	// admissions stay fenced across the drain by the stop fence itself.
+	// canceledResumes tracks whether this request actually stopped an active
+	// Resume: a refusal that follows keeps the fence's advance only when it
+	// does, because the stop attempt then already mutated the world those
+	// epochs guard.
+	var canceledResumes bool
 	if stopAliases := cfg.ResumeLocks.ActiveResumeStopAliases(ref.ThreadID); stopAliases != nil {
 		reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, stopAliases)
 		releaseReservations := func() {
@@ -71,6 +76,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			return err
 		}
 		if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
+			canceledResumes = true
 			defer stop.Release()
 			if err := stop.Wait(ctx); err != nil {
 				releaseReservations()
@@ -216,11 +222,23 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// A Resume can register after the initial snapshot while process discovery
 	// is running. The fence now prevents new registrations; cancel and drain
 	// any operation that entered that window before waiting for ownership.
-	releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+	releaseResumes, drainCanceled, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 	if err != nil {
 		return forceStopResumeStopError(err)
 	}
+	canceledResumes = canceledResumes || drainCanceled
 	defer releaseResumes()
+	// A refusal after the drain keeps the fence's advance only when the drain
+	// actually stopped a Resume. A drain that canceled nothing leaves the
+	// refusal admission-neutral, the way the pre-cancellation refusals above
+	// are: the epochs and the connection-level sequence this fence advanced
+	// roll back before the release below.
+	refuseStop := func(err error) error {
+		if !canceledResumes {
+			fenceRecovery.Reject()
+		}
+		return err
+	}
 	if sources != nil {
 		if source, ok := sources.Source("local"); ok {
 			if local, ok := source.(*appsource.LocalDaemonSource); ok {
@@ -232,24 +250,24 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if !reservationsHeld {
 		for _, id := range aliases {
 			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
-				return err
+				return refuseStop(err)
 			}
 			acquired++
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return refuseStop(err)
 	}
 	currentTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
 	if currentTarget != recoveryTarget {
-		return appwire.Unavailable("session recovery authority changed; retry force stop")
+		return refuseStop(appwire.Unavailable("session recovery authority changed; retry force stop"))
 	}
 	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget, params.ExpectedDaemon)
 	if err != nil {
-		return appwire.Unavailable(err.Error())
+		return refuseStop(appwire.Unavailable(err.Error()))
 	}
 	if err := expectedDaemonConflict(current, params.ExpectedDaemon); err != nil {
-		return err
+		return refuseStop(err)
 	}
 	// A deletion record may name any alias in the ownership group, not only
 	// the one the request addressed. Loop over every alias here, the way the
@@ -257,7 +275,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// a sibling-alias fence cannot slip past the cancel-then-acquire fallback
 	// before the exited/kill branch.
 	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
-		return err
+		return refuseStop(err)
 	}
 	if exited {
 		// There is no retained process handle to reverify. An unchanged marker
@@ -267,19 +285,19 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			if err == nil {
 				err = errors.New("daemon is live after initial exit observation")
 			}
-			return appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err))
+			return refuseStop(appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err)))
 		}
 		// An exited claim cannot replace newer authority held by any alias
 		// it would overwrite, even when the requested alias still names it.
 		for _, alias := range aliases {
 			authority := cfg.ResumeLocks.RecoveryState(alias).ResumeSessionID
 			if authority != "" && authority != target.SessionID {
-				return appwire.Unavailable("exited daemon claim conflicts with alias recovery authority")
+				return refuseStop(appwire.Unavailable("exited daemon claim conflicts with alias recovery authority"))
 			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return refuseStop(err)
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
@@ -332,9 +350,13 @@ func forceStopResumeStopError(err error) error {
 
 // cancelActiveResumes is called after Stop installed its admission fences, but
 // before it waits for ownership. It closes the discovery/registration race
-// without waiting for child reaping while holding any session mutex.
-func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliases []string) (func(), error) {
+// without waiting for child reaping while holding any session mutex. It also
+// reports whether any alias had an active Resume to cancel, so a refusal that
+// follows can tell a drain that mutated the world from one that canceled
+// nothing.
+func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliases []string) (func(), bool, error) {
 	var stops []*hubcore.ResumeStop
+	canceled := false
 	release := func() {
 		for _, stop := range stops {
 			stop.Release()
@@ -343,13 +365,14 @@ func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliase
 	for _, alias := range aliases {
 		if stop := locks.BeginActiveResumeStop(alias); stop != nil {
 			stops = append(stops, stop)
+			canceled = true
 			if err := stop.Wait(ctx); err != nil {
 				release()
-				return nil, err
+				return nil, canceled, err
 			}
 		}
 	}
-	return release, nil
+	return release, canceled, nil
 }
 
 // tryLockForceStopReservations takes every per-alias reservation without
@@ -475,7 +498,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 				return confirmedStoppedDecision{}, err
 			}
 		}
-		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+		releaseResumes, _, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
 			return confirmedStoppedDecision{}, err
 		}
