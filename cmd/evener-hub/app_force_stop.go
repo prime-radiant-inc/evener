@@ -373,8 +373,16 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		}
 		// The record landed (the rename committed; a later sync step failed):
 		// the recovery obligation is installed, so this refusal DID mutate the
-		// world and the fence must publish — pre-stop admissions are stale and
-		// the obligation stands for the explicit Resume to answer.
+		// world and the root fence must publish — pre-stop admissions are stale
+		// and the obligation stands for the explicit Resume to answer. No
+		// signal ever reached the shared process, though, so the
+		// pre-cancellation descendant fences guard processes nothing happened
+		// to: they reject like every refusal that canceled nothing.
+		if !canceledResumes {
+			for _, fence := range preCancellationDescendants {
+				fence.Reject()
+			}
+		}
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {

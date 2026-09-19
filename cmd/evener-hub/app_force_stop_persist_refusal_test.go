@@ -169,3 +169,54 @@ func TestForceStopCommittedPersistErrorStillPublishesTheFence(t *testing.T) {
 		t.Fatal("committed record was not visible to a reload")
 	}
 }
+
+// The committed-with-error refusal must publish the ROOT fence — the
+// obligation landed — while the pre-cancellation descendant fences still
+// reject: no signal ever reached the shared process, so nothing happened to
+// the descendants, and leaving their fences published would stale child
+// clients for a stop that never touched them. RoboRev reported the split on
+// the committed-signal fix.
+func TestForceStopCommittedPersistErrorRejectsDescendantFences(t *testing.T) {
+	stateDir, runDir := t.TempDir(), t.TempDir()
+	parent := buildRPCParentSession(t, stateDir)
+	child := buildUpgradeDelegate(t, stateDir, parent)
+	stateRoot := t.TempDir()
+	locks, err := hubcore.NewPersistentResumeLocks(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := rendezvous.Entry{PID: 4242, SessionID: parent, ThreadID: parent, StateDir: stateDir, Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, entry)
+	var events []string
+	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, HubStateRoot: stateRoot, ResumeLocks: locks,
+		DeletionStore: func() *hubcore.DeletionStore {
+			s, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s
+		}(),
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			return &forceStopProcess{events: &events}, nil
+		})}
+	parentBefore := locks.RecoveryState(parent)
+	childBefore := locks.RecoveryState(child)
+	boom := errors.New("after-rename sync failed")
+	locks.SetRecoveryStoreFaultsForTest(nil, func() error { return boom })
+	err = forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + parent}, nil)
+	if err == nil || !strings.Contains(err.Error(), "persist session recovery") {
+		t.Fatalf("committed-with-error did not surface as the stop's error: %v", err)
+	}
+	parentAfter := locks.RecoveryState(parent)
+	childAfter := locks.RecoveryState(child)
+	if parentAfter.Epoch != parentBefore.Epoch+1 || !parentAfter.ResumeRequired {
+		t.Fatalf("root fence did not publish the committed obligation: before=%+v after=%+v", parentBefore, parentAfter)
+	}
+	if childAfter.Epoch != childBefore.Epoch || childAfter.LastRecoverySequence != childBefore.LastRecoverySequence {
+		t.Fatalf("descendant fence published though nothing signaled the shared process: before=%+v after=%+v", childBefore, childAfter)
+	}
+	if slices.Contains(events, "kill") {
+		t.Fatal("persist failure still signaled the daemon")
+	}
+}
