@@ -73,7 +73,7 @@ export interface MarketplaceSheetProps {
   /** The client identity that owned this render's mutation. */
   connectionClient: AppwireClientLike | null;
   /** Records a completed registry removal for the owning connection only. */
-  onAppliedRemoval: (name: string, owner: AppwireClientLike | null) => void;
+  onAppliedRemoval: (name: string, owner: AppwireClientLike | null, publicationVersion: number) => void;
 }
 
 function lastUpdatedText(seconds: number): string {
@@ -286,11 +286,18 @@ export function MarketplaceSheet({
       if (outcome !== undefined) {
         // The registry removal already landed. Close the completed confirm and
         // keep this entry from issuing the same removal again while an
-        // unavailable applied list is reconciled through the normal fetch.
-        onAppliedRemoval(removalName, removalClient);
+        // applied list is reconciled through the normal fetch. An accepted
+        // snapshot that already omits the target is the reconciliation, so a
+        // retry guard is only needed while the target remains or the list is
+        // unavailable.
+        const current = extensionsStore.getState();
+        const targetPresent = current.marketplaces?.some((marketplace) => marketplace.name === removalName) ?? false;
+        if (current.marketplaces === null || targetPresent) {
+          onAppliedRemoval(removalName, removalClient, current.marketplacesPublicationVersion);
+          void extensionsStore.getState().fetchMarketplaces();
+        }
         if (liveName.current === removalName) setPendingRemove(false);
         toasts.push("warning", "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.");
-        if (outcome.kind === "unavailable") void extensionsStore.getState().fetchMarketplaces();
       } else {
         // Ordinary failures keep the existing retryable error behavior.
         toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
