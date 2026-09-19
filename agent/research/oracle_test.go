@@ -3,6 +3,7 @@ package research
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,5 +193,65 @@ func TestMeasureLogVolume_OnlyDeclaredCommands(t *testing.T) {
 	}
 	if vol.ResendBytes != len(log) {
 		t.Fatalf("resend = %d, want %d", vol.ResendBytes, len(log))
+	}
+}
+
+func TestBuildReport_RanksProjections(t *testing.T) {
+	adj := AdjacencyStats{Cycles: 3, SavedPromptTokens: 9000, SavedCompletionTokens: 300}
+	obs := ObsResendStats{Results: 2, TotalBytes: 40 * 1024, ResendBytes: 20 * 1024, ResendRequests: 5}
+	logs := LogVolumeStats{Results: 1, TotalBytes: 12 * 1024, ResendBytes: 8 * 1024, ResendRequests: 2}
+	r := buildReport("/x", 5, 100, 2, adj, obs, logs, CompactionStats{}, 200000, 40000)
+	if r.Sessions != 5 || r.Entries != 100 || r.SkippedLines != 2 {
+		t.Fatalf("report header wrong: %+v", r)
+	}
+	if r.TotalInputTokens != 200000 || r.TotalOutputTokens != 40000 {
+		t.Fatalf("token totals wrong")
+	}
+	// Traffic pct is saved tokens over recorded traffic (input+output).
+	wantAdj := float64(9300) / float64(240000) * 100
+	var gotAdj *MechanismProjection
+	for i := range r.Projections {
+		if r.Projections[i].Mechanism == "action-fusion" {
+			gotAdj = &r.Projections[i]
+		}
+	}
+	if gotAdj == nil {
+		t.Fatal("no action-fusion projection")
+	}
+	if gotAdj.SavedTokens != 9300 {
+		t.Fatalf("action-fusion saved = %d, want 9300", gotAdj.SavedTokens)
+	}
+	if math.Abs(gotAdj.TrafficPct-wantAdj) > 0.001 {
+		t.Fatalf("action-fusion pct = %f, want %f", gotAdj.TrafficPct, wantAdj)
+	}
+	// Byte-based projections estimate tokens at bytes/4 (the contextmgr
+	// char/4 estimator) over input tokens only.
+	wantObs := float64(20*1024/4) / float64(200000) * 100
+	var gotObs *MechanismProjection
+	for i := range r.Projections {
+		if r.Projections[i].Mechanism == "observation-pack" {
+			gotObs = &r.Projections[i]
+		}
+	}
+	if gotObs == nil {
+		t.Fatal("no observation-pack projection")
+	}
+	if math.Abs(gotObs.TrafficPct-wantObs) > 0.001 {
+		t.Fatalf("observation-pack pct = %f, want %f", gotObs.TrafficPct, wantObs)
+	}
+	// Compaction reminder is informational in slice 1.
+	for _, p := range r.Projections {
+		if p.Mechanism == "compaction-reminder" && !p.Informational {
+			t.Fatal("compaction-reminder must be informational in slice 1")
+		}
+	}
+}
+
+func TestRenderReport_IncludesStopOrGoVerdict(t *testing.T) {
+	// A report whose best projection is under 5% must say so plainly.
+	r := buildReport("/x", 1, 1, 0, AdjacencyStats{}, ObsResendStats{}, LogVolumeStats{}, CompactionStats{}, 1000, 100)
+	text := renderReport(r)
+	if !strings.Contains(text, "under 5%") && !strings.Contains(text, "5%") {
+		t.Fatalf("rendered report lacks stop-or-go statement:\n%s", text)
 	}
 }

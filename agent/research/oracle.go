@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -311,4 +312,221 @@ func measureLogVolume(entries []transcript.Entry, minBytes int) LogVolumeStats {
 		ResendBytes:    st.ResendBytes,
 		ResendRequests: st.ResendRequests,
 	}
+}
+
+// CompactionStats records where compaction boundaries (checkpoints and
+// summaries) fell relative to assistant requests, and the prompt-token
+// high-water mark when each boundary landed.
+type CompactionStats struct {
+	Compactions         []compactionPoint
+	MaxPromptTokensSeen int
+	RequestsBetween     []int // assistant requests between consecutive boundaries
+}
+
+type compactionPoint struct {
+	RequestIndex int             // ordinal of the assistant request most recently seen
+	PromptTokens int             // that request's input tokens
+	Kind         schema.TurnKind // TurnCheckpoint or TurnSummary
+}
+
+// MechanismProjection is one ranked candidate.
+type MechanismProjection struct {
+	Mechanism     string  // "action-fusion", "observation-pack", "log-reducer", "compaction-reminder"
+	SavedTokens   int     // projected absolute token savings (input + output where applicable)
+	TrafficPct    float64 // percent of corpus recorded traffic
+	Basis         string  // human explanation of the measurement
+	Informational bool    // true when no pct projection is computed (compaction timing)
+}
+
+type OracleReport struct {
+	GeneratedAt       time.Time
+	StateBase         string
+	Sessions          int
+	Entries           int
+	SkippedLines      int
+	TotalInputTokens  int
+	TotalOutputTokens int
+	Adjacency         AdjacencyStats
+	LargeObs          ObsResendStats
+	LogVolume         LogVolumeStats
+	Compaction        CompactionStats
+	Projections       []MechanismProjection
+}
+
+func measureCompaction(entries []transcript.Entry) CompactionStats {
+	var st CompactionStats
+	requests := 0
+	for i := range entries {
+		turn := entries[i].Turn
+		switch turn.Kind {
+		case schema.TurnAssistant:
+			requests++
+			if turn.Usage.InputTokens > st.MaxPromptTokensSeen {
+				st.MaxPromptTokensSeen = turn.Usage.InputTokens
+			}
+		case schema.TurnCheckpoint, schema.TurnSummary:
+			st.Compactions = append(st.Compactions, compactionPoint{
+				RequestIndex: requests,
+				PromptTokens: st.MaxPromptTokensSeen,
+				Kind:         turn.Kind,
+			})
+		}
+	}
+	prev := 0
+	for _, p := range st.Compactions {
+		st.RequestsBetween = append(st.RequestsBetween, p.RequestIndex-prev)
+		prev = p.RequestIndex
+	}
+	return st
+}
+
+const researchBytesPerToken = 4 // matches the contextmgr char/4 estimator
+
+func buildReport(stateBase string, sessions, entries, skipped int, adj AdjacencyStats, obs ObsResendStats, logs LogVolumeStats, comp CompactionStats, totalIn, totalOut int) *OracleReport {
+	r := &OracleReport{
+		GeneratedAt: time.Now().UTC(),
+		StateBase:   stateBase, Sessions: sessions, Entries: entries, SkippedLines: skipped,
+		TotalInputTokens: totalIn, TotalOutputTokens: totalOut,
+		Adjacency: adj, LargeObs: obs, LogVolume: logs, Compaction: comp,
+	}
+	traffic := totalIn + totalOut
+	pct := func(saved int) float64 {
+		if traffic == 0 {
+			return 0
+		}
+		return float64(saved) / float64(traffic) * 100
+	}
+	r.Projections = []MechanismProjection{
+		{
+			Mechanism:   "action-fusion",
+			SavedTokens: adj.SavedPromptTokens + adj.SavedCompletionTokens,
+			TrafficPct:  pct(adj.SavedPromptTokens + adj.SavedCompletionTokens),
+			Basis: fmt.Sprintf("%d edit-then-command cycles; savings are the intervening request's tokens",
+				adj.Cycles),
+		},
+		{
+			Mechanism:   "observation-pack",
+			SavedTokens: obs.ResendBytes / researchBytesPerToken,
+			TrafficPct:  float64(obs.ResendBytes/researchBytesPerToken) / float64(max(totalIn, 1)) * 100,
+			Basis: fmt.Sprintf("%d oversized results, %d re-sent bytes after their first two requests (bytes/4 token estimate)",
+				obs.Results, obs.ResendBytes),
+		},
+		{
+			Mechanism:   "log-reducer",
+			SavedTokens: logs.ResendBytes / researchBytesPerToken,
+			TrafficPct:  float64(logs.ResendBytes/researchBytesPerToken) / float64(max(totalIn, 1)) * 100,
+			Basis: fmt.Sprintf("%d build/test logs, %d re-sent bytes; overlaps observation-pack headroom (not additive)",
+				logs.Results, logs.ResendBytes),
+		},
+		{
+			Mechanism:     "compaction-reminder",
+			Informational: true,
+			Basis: fmt.Sprintf("%d compaction boundaries; max prompt tokens before one: %d; informational in slice 1",
+				len(comp.Compactions), comp.MaxPromptTokensSeen),
+		},
+	}
+	return r
+}
+
+func renderReport(r *OracleReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "oracle report (%s)\n", r.GeneratedAt.Format(time.RFC3339))
+	fmt.Fprintf(&b, "sessions: %d, entries: %d, skipped lines: %d\n", r.Sessions, r.Entries, r.SkippedLines)
+	fmt.Fprintf(&b, "recorded input tokens: %d, output tokens: %d\n", r.TotalInputTokens, r.TotalOutputTokens)
+	fmt.Fprintf(&b, "compaction boundaries: %d\n\n", len(r.Compaction.Compactions))
+	fmt.Fprintf(&b, "projected savings (per mechanism, upper bounds; observation-pack and log-reducer overlap):\n")
+	best := 0.0
+	for _, p := range r.Projections {
+		if p.Informational {
+			fmt.Fprintf(&b, "  - %s: informational. %s\n", p.Mechanism, p.Basis)
+			continue
+		}
+		fmt.Fprintf(&b, "  - %s: %d tokens (%.2f%% of recorded traffic). %s\n", p.Mechanism, p.SavedTokens, p.TrafficPct, p.Basis)
+		if p.TrafficPct > best {
+			best = p.TrafficPct
+		}
+	}
+	fmt.Fprintf(&b, "\nstop-or-go: best non-informational projection is %.2f%%; the go threshold is 5%%.\n", best)
+	if best < 5 {
+		fmt.Fprintf(&b, "VERDICT: best mechanism projects under 5%% of recorded traffic. Stop and report before building the spine.\n")
+	} else {
+		fmt.Fprintf(&b, "VERDICT: headroom above the 5%% threshold. Proceed to the spine.\n")
+	}
+	return b.String()
+}
+
+// OracleOptions configures one oracle corpus run.
+type OracleOptions struct {
+	StateBase string // resolved state base
+	Limit     int    // max sessions, newest first; 0 = all
+	OutPath   string // JSONL file; one report record appended per run
+	Stdout    io.Writer
+}
+
+// RunOracle measures a corpus and appends the report record to opts.OutPath.
+func RunOracle(opts OracleOptions) (*OracleReport, error) {
+	if _, err := os.Stat(opts.StateBase); err != nil {
+		return nil, fmt.Errorf("stat state base: %w", err)
+	}
+	transcripts, err := walkSessionTranscripts(opts.StateBase, opts.Limit)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		totalEntries, totalSkipped int
+		adj                        AdjacencyStats
+		obs                        ObsResendStats
+		logs                       LogVolumeStats
+		comp                       CompactionStats
+		totalIn, totalOut          int
+	)
+	for _, st := range transcripts {
+		entries, skipped, err := loadEntries(st.Path)
+		if err != nil {
+			// Unreadable single sessions do not sink the corpus run.
+			fmt.Fprintf(opts.Stdout, "skipping unreadable transcript %s: %v\n", st.Path, err)
+			continue
+		}
+		totalSkipped += skipped
+		totalEntries += len(entries)
+		a := measureAdjacency(entries)
+		adj.Cycles += a.Cycles
+		adj.SavedPromptTokens += a.SavedPromptTokens
+		adj.SavedCompletionTokens += a.SavedCompletionTokens
+		o := measureLargeObservations(entries, 10*1024)
+		obs.Results += o.Results
+		obs.TotalBytes += o.TotalBytes
+		obs.ResendBytes += o.ResendBytes
+		obs.ResendRequests += o.ResendRequests
+		l := measureLogVolume(entries, 4*1024)
+		logs.Results += l.Results
+		logs.TotalBytes += l.TotalBytes
+		logs.ResendBytes += l.ResendBytes
+		logs.ResendRequests += l.ResendRequests
+		comp.Compactions = append(comp.Compactions, measureCompaction(entries).Compactions...)
+		for i := range entries {
+			if entries[i].Turn.Kind == schema.TurnAssistant {
+				totalIn += entries[i].Turn.Usage.InputTokens
+				totalOut += entries[i].Turn.Usage.OutputTokens
+			}
+		}
+	}
+	report := buildReport(opts.StateBase, len(transcripts), totalEntries, totalSkipped,
+		adj, obs, logs, comp, totalIn, totalOut)
+	if opts.OutPath != "" {
+		line, err := json.Marshal(report)
+		if err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(opts.OutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("open oracle ledger: %w", err)
+		}
+		defer f.Close()
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return nil, err
+		}
+	}
+	fmt.Fprint(opts.Stdout, renderReport(report))
+	return report, nil
 }
