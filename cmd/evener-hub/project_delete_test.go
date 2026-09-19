@@ -1196,6 +1196,37 @@ func TestCleanupProjectDeletionTargetRemovesMetaLockOnSuccess(t *testing.T) {
 	}
 }
 
+// TestCleanupProjectDeletionTargetIgnoresMetaLockRemovalFailure pins the low
+// finding: once the sweep has succeeded and the metadata is gone, a failure to
+// unlink the now-obsolete lock file must not fail the deletion — that would
+// report the dead session as "skipped" and retain its archive/favorite/pin
+// decisions. The lock has no functional role after the tombstone is in place.
+func TestCleanupProjectDeletionTargetIgnoresMetaLockRemovalFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".meta.json.lock" {
+			return errors.New("lock unlink failed")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	deleted, skip, _ := web.cleanupProjectDeletionTargetAndDecisions(stateDir, webTestSessionID)
+	if !deleted || skip != nil {
+		t.Fatalf("a lock-unlink failure must not fail the deletion: deleted=%v skip=%+v", deleted, skip)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("metadata must be removed by the successful sweep: %v", err)
+	}
+}
+
 func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "work")

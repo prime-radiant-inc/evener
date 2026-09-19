@@ -1182,7 +1182,14 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 		if !found {
 			if !determinate {
 				// An indeterminate miss (corrupt meta, unlistable dir) is not
-				// proof of deletion; never evict a valid cached row for it.
+				// proof of deletion; never evict a valid cached row for it. A
+				// concurrent fold or Rebuild may have indexed this id between the
+				// top-level cache miss and this probe, so consult the index once
+				// more and return a row it now holds: that only reads the cache,
+				// it never evicts, so the indeterminate guarantee is untouched.
+				if live, ok := i.findCached(sessionID); ok {
+					return live, true
+				}
 				return PastEntry{}, false
 			}
 			// Evict only if this id's index state still matches what the probe

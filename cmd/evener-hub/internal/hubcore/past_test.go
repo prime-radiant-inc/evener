@@ -306,7 +306,8 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe(t *t
 
 // fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict pins the Medium: a
 // probe that cannot read a project (unlistable sessions dir) is not proof of
-// deletion, so Find must not evict a valid cached row for it.
+// deletion, so Find must not evict a valid cached row for it — it returns the
+// row the index still holds instead of reporting a false miss.
 func fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
@@ -360,8 +361,11 @@ func fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict(t *testing.T) {
 	}
 	defer func() { idx.afterFindProbe = nil }()
 
-	if _, ok := idx.Find(id); ok {
-		t.Fatal("expected a miss while the sessions dir is unreadable")
+	// The probe is indeterminate, so the cached row must survive; Find reports
+	// the row the index still holds rather than a false miss.
+	got, ok := idx.Find(id)
+	if !ok || got.ID != id {
+		t.Fatalf("Find returned %+v, %v for a cached session an indeterminate probe must not evict", got, ok)
 	}
 	if _, ok := idx.findCached(id); !ok {
 		t.Fatal("an indeterminate probe miss evicted a valid cached session")
@@ -555,6 +559,39 @@ func fuzzScenarioPastIndex_RebuildPrunesStaleIDGenerations(t *testing.T) {
 	idx.mu.RUnlock()
 	if still {
 		t.Fatal("Rebuild kept a generation fence for an id it no longer indexes")
+	}
+}
+
+// fuzzScenarioPastIndex_IndeterminateMissReturnsConcurrentlyIndexedRow pins the
+// low finding: a concurrent fold or Rebuild can index the id between Find's
+// top-level cache miss and its probe; if that probe is indeterminate, Find must
+// still return the row the index now holds rather than report a false miss.
+// Returning a cached row is not eviction, so the "never evict on an
+// indeterminate miss" guarantee is untouched.
+func fuzzScenarioPastIndex_IndeterminateMissReturnsConcurrentlyIndexedRow(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	// A matched project whose id is invalid makes probeOne indeterminate rather
+	// than an authoritative absence (see ValidateProjectID's 10-char suffix rule).
+	if err := os.MkdirAll(filepath.Join(projects, "not-a-project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex(filepath.Join(projects, "*"))
+
+	idx.afterFindCacheMiss = func() {
+		// A concurrent writer indexed the session between Find's top-level cache
+		// miss and its probe.
+		foldNow(t, idx, PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "raced"}})
+	}
+	defer func() { idx.afterFindCacheMiss = nil }()
+
+	got, ok := idx.Find(id)
+	if !ok {
+		t.Fatal("Find reported a miss for a session a concurrent writer had indexed")
+	}
+	if got.ID != id {
+		t.Fatalf("Find returned %q, want %q", got.ID, id)
 	}
 }
 

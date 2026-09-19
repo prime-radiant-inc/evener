@@ -606,10 +606,14 @@ func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) err
 	// The metadata is durably gone and the tombstone now fences any writer, so
 	// the lock inode has no further role: a writer that opens a fresh lock still
 	// re-checks the tombstone under it, and every later write is refused. Drop it
-	// so a completed deletion does not leave a dead lock file per session.
+	// so a completed deletion does not leave a dead lock file per session. This
+	// is best-effort: the deletion has already succeeded, and failing here would
+	// report a session whose metadata and transcript are gone as "skipped",
+	// retain its archive/favorite/pin decisions, and leave the deletion record
+	// disagreeing with the tree. Log and continue.
 	lockPath := filepath.Join(stateDir, "sessions", sessionID+".meta.json.lock")
 	if err := removeProjectSessionFile(lockPath); err != nil && !os.IsNotExist(err) {
-		return err
+		fmt.Fprintf(os.Stderr, "[hub] cleanupProjectDeletionTarget(%s): remove stale meta lock: %v\n", sessionID, err)
 	}
 	return nil
 }

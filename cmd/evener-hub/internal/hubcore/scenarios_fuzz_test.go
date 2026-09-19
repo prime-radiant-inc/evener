@@ -124,6 +124,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_EvictingUnrelatedIDPreservesInFlightFold,
 		fuzzScenarioPastIndex_ConfirmedMissPrunesIDGeneration,
 		fuzzScenarioPastIndex_RebuildPrunesStaleIDGenerations,
+		fuzzScenarioPastIndex_IndeterminateMissReturnsConcurrentlyIndexedRow,
 		fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate,
 		fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict,
 		fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange,
