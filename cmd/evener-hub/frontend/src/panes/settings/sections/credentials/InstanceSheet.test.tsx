@@ -2915,4 +2915,42 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved v2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
+
+  // The real transport ordering: the superseding read is issued after this
+  // write, but its response arrives AFTER the write's (evener/instance/list runs
+  // inline on the connection's serial worker). The store therefore still holds
+  // the pre-save listing when the edit's await resolves, and the sheet must
+  // settle a post-write read before comparing.
+  test("a superseded save re-anchors when the superseding read lands after the edit response", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    const resolvers: ((value: InstanceListResponse) => void)[] = [];
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>((resolve) => resolvers.push(resolve)));
+    const pendingRead = credentialsStore.getState().fetch();
+
+    await act(async () => {
+      finish({ instances: [landed], availableProviders: [OPENAI] });
+    });
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
+    await act(async () => {
+      for (const resolve of resolvers) resolve({ instances: [landed], availableProviders: [OPENAI] });
+    });
+    await pendingRead;
+
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+    expect(saveButton().disabled).toBe(true);
+  });
 });

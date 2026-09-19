@@ -695,7 +695,17 @@ export function InstanceSheet({
           authoritative = response.instances.find((entry) => entry.name === authoritativeName);
         },
       });
-      const listedInstances = credentialsStore.getState().instances;
+      let listedInstances = credentialsStore.getState().instances;
+      if (!applied) {
+        // The verdict says a newer read won the ordering race. That read was
+        // issued after this write, but its response arrives AFTER this write's
+        // (evener/instance/list is not a concurrent method - it runs inline on
+        // the connection's serial worker), so the listing sampled right now is
+        // still the PRE-save one. Settle a read that started after the write
+        // before comparing the listing against the mutation's own captured row.
+        await credentialsStore.getState().fetch();
+        listedInstances = credentialsStore.getState().instances;
+      }
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can
