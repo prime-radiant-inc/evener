@@ -394,11 +394,18 @@ func TestHostAuthorityAdoptsRenamedIdentityAndLatchesDebt(t *testing.T) {
 
 func TestHostAuthorityFirstCreateSyncDebtRetainsCandidate(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "artifacts")
-	syncs := 0
+	parent, err := filepath.EvalSymlinks(filepath.Dir(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := filepath.Join(parent, filepath.Base(root))
+	leafSyncs := 0
 	authority, err := openHostAuthority(root, authorityHooks{
 		SyncDir: func(directory *os.File) error {
-			syncs++
-			if syncs == 3 {
+			if filepath.Clean(directory.Name()) == filepath.Clean(leaf) {
+				leafSyncs++
+			}
+			if leafSyncs == 2 {
 				return errors.New("initial directory sync barrier")
 			}
 			return directory.Sync()
@@ -504,6 +511,49 @@ func TestHostAuthorityRetriesNestedParentDurabilityObligation(t *testing.T) {
 	defer reopened.Close()
 	if got := reopened.Installation(); got != installation {
 		t.Fatalf("installation changed after nested parent durability recovery: got=%+v want=%+v", got, installation)
+	}
+}
+
+func TestHostAuthorityRechecksPreexistingAncestorBeforeCreatingSuffix(t *testing.T) {
+	base := t.TempDir()
+	ancestor := filepath.Join(base, "existing")
+	if err := os.Mkdir(ancestor, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(ancestor, "inner", "artifacts")
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentFault := true
+	syncDir := func(directory *os.File) error {
+		if parentFault && filepath.Clean(directory.Name()) == filepath.Clean(resolvedBase) {
+			return errors.New("preexisting ancestor parent barrier")
+		}
+		return directory.Sync()
+	}
+	if _, err := openHostAuthority(root, authorityHooks{SyncDir: syncDir}); err == nil {
+		t.Fatal("authority opened while a preexisting ancestor parent remained unsynced")
+	}
+	if _, err := os.Stat(filepath.Join(root, authorityFilename)); !os.IsNotExist(err) {
+		t.Fatalf("authority file appeared before preexisting ancestor barrier was released: %v", err)
+	}
+	parentFault = false
+	first, err := openHostAuthority(root, authorityHooks{SyncDir: syncDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := first.Installation()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.Installation(); got != installation {
+		t.Fatalf("installation changed after preexisting ancestor durability recovery: got=%+v want=%+v", got, installation)
 	}
 }
 

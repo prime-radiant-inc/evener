@@ -151,21 +151,14 @@ func OpenHostAuthority(privateDir string) (*HostAuthority, error) {
 }
 
 func openHostAuthority(privateDir string, hooks authorityHooks) (*HostAuthority, error) {
-	directory, created, err := prepareStoreDirectory(privateDir)
+	directory, _, err := prepareStoreDirectory(privateDir)
 	if err != nil {
 		return nil, err
 	}
 	authorityPath := filepath.Join(directory, authorityFilename)
-	for _, createdDirectory := range created {
-		if err := syncDirectory(filepath.Dir(createdDirectory), hooks); err != nil {
+	if _, err := os.Lstat(authorityPath); errors.Is(err, os.ErrNotExist) {
+		if err := syncAuthorityParentChain(directory, hooks); err != nil {
 			return nil, fmt.Errorf("sync artifact authority parent directory: %w", err)
-		}
-	}
-	if len(created) == 0 {
-		if _, err := os.Lstat(authorityPath); errors.Is(err, os.ErrNotExist) {
-			if err := syncAuthorityParentChain(directory, hooks); err != nil {
-				return nil, fmt.Errorf("sync artifact authority parent directory: %w", err)
-			}
 		}
 	}
 	if err := syncDirectory(directory, hooks); err != nil {
