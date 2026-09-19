@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,10 +21,25 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { PluginRefParams } from "@evener/appwire-client";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import type {
+  ConnectionState,
+  MarketplaceEntry,
+  PluginRefParams,
+} from "@evener/appwire-client";
+import {
+  createMarketplacesStore,
+  createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import {
+  isReady,
+  useConnectionDisplay,
+  useLiveReadiness,
+  useRenderClient,
+  whenReady,
+} from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -36,6 +52,15 @@ import {
 } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+type AppliedRemovalGuard = {
+  client: ConversationClientLike;
+  names: ReadonlySet<string>;
+};
+
+const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
+const MARKETPLACE_CLEANUP_WARNING =
+  "Marketplace removed; clone cleanup failed. Remove leftover clone files manually.";
 
 export function PluginsScreen({
   route,
@@ -52,12 +77,22 @@ export function PluginsScreen({
   // credential store is (credentialStore.ts), as committed state a discarded
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
-  const { activeProfile, client, state, retry } = useConnection();
+  const { activeProfile, client, state, fatal, retry } = useConnection();
+  const display = useConnectionDisplay(route.params.hubId, state, fatal);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
+  // A flap keeps `client` set (the connection layer's own generation guard -
+  // hubConnection.ts), but a manual retry clears it, then reports a fresh
+  // client while it is still dialing; the list keeps rendering the previous
+  // one through the whole gap, never the not-yet-ready replacement, rather
+  // than dropping to the wall for a moment the banner should cover just as
+  // well as a passive reconnect does. Scoped to the hub: see
+  // useRenderClient's own doc.
+  const renderClient = useRenderClient(client, state, route.params.hubId);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
     );
-  if (!client || state !== "ready")
+  if (display === "wall" || !renderClient)
     return (
       <View style={{ padding: 20 }}>
         <Copy>Connect to {activeProfile.name} to manage plugins.</Copy>
@@ -65,12 +100,17 @@ export function PluginsScreen({
       </View>
     );
   return (
-    <Plugins
-      key={activeProfile.id}
-      client={client}
-      hubName={activeProfile.name}
-      gate={gate}
-    />
+    <>
+      {display === "banner" ? <ConnectionStatus /> : null}
+      <Plugins
+        key={activeProfile.id}
+        client={renderClient}
+        connectionState={state}
+        canUseConnection={canUseConnection}
+        hubName={activeProfile.name}
+        gate={gate}
+      />
+    </>
   );
 }
 
@@ -78,22 +118,43 @@ function Plugins({
   client,
   hubName,
   gate,
+  connectionState,
+  canUseConnection,
 }: {
   client: ConversationClientLike;
   hubName: string;
   gate: PluginMutationGate;
+  connectionState: ConnectionState;
+  canUseConnection: () => boolean;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
+  const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
+  const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [marketplaceWarningClient, setMarketplaceWarningClient] =
+    useState<ConversationClientLike | null>(null);
   const [details, setDetails] = useState(false);
   const editorVersion = useRef(0);
+  const currentClient = useRef(client);
+  currentClient.current = client;
+  const [appliedRemovalGuard, setAppliedRemovalGuard] =
+    useState<AppliedRemovalGuard>(() => ({
+      client,
+      names: new Set(),
+    }));
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === client
+      ? appliedRemovalGuard.names
+      : EMPTY_APPLIED_REMOVALS;
+  const visibleMarketplaceWarning =
+    marketplaceWarningClient === client ? MARKETPLACE_CLEANUP_WARNING : null;
   const entry = state.plugins?.find(
     (item) =>
       item.plugin === selected?.plugin &&
@@ -105,6 +166,68 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  useEffect(() => {
+    setAppliedRemovalGuard((current) =>
+      current.client === client ? current : { client, names: new Set() },
+    );
+    setMarketplaceWarningClient((current) =>
+      current === client ? current : null,
+    );
+  }, [client]);
+  const reconcileAppliedRemovals = useCallback(
+    (
+      marketplaces: readonly MarketplaceEntry[],
+      owner: ConversationClientLike,
+    ): void => {
+      if (currentClient.current !== owner) return;
+      const currentNames = new Set(marketplaces.map((item) => item.name));
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        const next = new Set([...current.names].filter((name) => currentNames.has(name)));
+        return next.size === current.names.size
+          ? current
+          : { client: owner, names: next };
+      });
+    },
+    [],
+  );
+  const markAppliedRemoval = useCallback(
+    (name: string, owner: ConversationClientLike): boolean => {
+      if (currentClient.current !== owner) return false;
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        const names = new Set(current.names);
+        names.add(name);
+        return { client: owner, names };
+      });
+      setMarketplaceWarningClient(owner);
+      return true;
+    },
+    [],
+  );
+  // The browser's first list read is a passive effect. Bind this screen-owned
+  // store before child effects run so that first read is not mistaken for a
+  // reconnect and issued twice by the lifecycle's wanted-list recovery.
+  useLayoutEffect(() => {
+    marketplaces.connectionChanged(client, connectionState);
+  }, [marketplaces, client, connectionState]);
+  useLayoutEffect(() => {
+    marketplaces.start();
+    return () => marketplaces.dispose();
+  }, [marketplaces]);
+  // Tells the store which connection its list belongs to, on every
+  // transition that connection reports - a passive flap keeps `client`
+  // itself unchanged (this effect's other dep), so the mount effect below is
+  // never rebuilt for one, and only this call tells the store the flap
+  // happened and to recover once ready again (storeLifecycle.ts's
+  // connectionChanged). Declared BEFORE the mount effect: on mount, nothing
+  // has asked for the list yet, so this call's own "does anything want the
+  // list" check (wantsList) is answered honestly before fetchPlugins() below
+  // says yes - reversed, this call would see fetchPlugins()'s read already
+  // marked live and refetch a second time for the same first load.
+  useEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchPlugins();
@@ -128,8 +251,9 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    const outcome = await runGatedMutation(gate, action);
+    const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(
@@ -138,7 +262,7 @@ function Plugins({
     else if (success) setNotice(success);
   }
   function remove() {
-    if (!selected || busy) return;
+    if (!selected || busy || !canUseConnection()) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -150,7 +274,7 @@ function Plugins({
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            if (version === editorVersion.current)
+            if (version === editorVersion.current && canUseConnection())
               void act(() =>
                 state.removePlugin(target.plugin, target.marketplace),
               );
@@ -178,16 +302,23 @@ function Plugins({
           Browse
         </Action>
       </View>
+      <ErrorMessage message={visibleMarketplaceWarning} />
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
           hubName={hubName}
           installed={model}
           gate={gate}
+          connectionState={connectionState}
+          canUseConnection={canUseConnection}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
           }}
+          appliedRemovalNames={appliedRemovalNames}
+          onAppliedRemoval={markAppliedRemoval}
+          onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+          marketplaces={marketplaces}
         />
       ) : (
         <FlatList
@@ -199,7 +330,7 @@ function Plugins({
           keyboardShouldPersistTaps="handled"
           refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void state.fetchPlugins();
+            if (canUseConnection()) void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -220,9 +351,10 @@ function Plugins({
               <ErrorMessage message={listError} />
               {listError && (
                 <Action
-                  onPress={() => {
+                  disabled={!ready}
+                  onPress={whenReady(canUseConnection, () => {
                     void state.fetchPlugins();
-                  }}
+                  })}
                 >
                   Retry
                 </Action>
@@ -308,7 +440,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
@@ -326,7 +458,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(value) => {
                     const target = selected;
                     void act(() =>
@@ -340,7 +472,7 @@ function Plugins({
                 />
               </View>
               <Action
-                disabled={busy}
+                disabled={busy || !ready}
                 onPress={() => {
                   const target = selected;
                   void act(
@@ -366,7 +498,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={busy} onPress={remove}>
+              <Action disabled={busy || !ready} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

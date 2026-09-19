@@ -86,7 +86,7 @@ describe("one call reduces a gated mutation to the copy's three outcomes", () =>
   test("a run resolves to ran", async () => {
     const gate = createPluginMutationGate();
     await expect(
-      runGatedMutation(gate, async () => undefined),
+      runGatedMutation(gate, () => true, async () => undefined),
     ).resolves.toBe("ran");
   });
 
@@ -96,15 +96,32 @@ describe("one call reduces a gated mutation to the copy's three outcomes", () =>
     void gate.run(() => first.promise);
 
     await expect(
-      runGatedMutation(gate, async () => undefined),
+      runGatedMutation(gate, () => true, async () => undefined),
     ).resolves.toBe("refused");
   });
 
   test("a throw resolves to failed and does not propagate its error", async () => {
     const gate = createPluginMutationGate();
     await expect(
-      runGatedMutation(gate, () => Promise.reject(new Error("write failed"))),
+      runGatedMutation(gate, () => true, () => Promise.reject(new Error("write failed"))),
     ).resolves.toBe("failed");
+    expect(gate.isBusy()).toBe(false);
+  });
+
+  // The one place every screen's mutations funnel readiness through: a
+  // caller that forgets a `disabled`/`whenReady` check, or fires one
+  // programmatically, still cannot reach the wire while disconnected. This
+  // outcome must stay distinct from a busy refusal so screens do not show
+  // "another change" when the connection is the reason nothing ran.
+  test("not ready is distinct from busy without running the action or taking the gate's lock", async () => {
+    const gate = createPluginMutationGate();
+    let ran = false;
+    await expect(
+      runGatedMutation(gate, () => false, async () => {
+        ran = true;
+      }),
+    ).resolves.toBe("not-ready");
+    expect(ran).toBe(false);
     expect(gate.isBusy()).toBe(false);
   });
 });
