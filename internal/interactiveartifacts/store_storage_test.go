@@ -119,12 +119,14 @@ func TestStoreSQLiteFullDoesNotAcknowledgeMutation(t *testing.T) {
 	}
 	var receipts int
 	requireNoError(t, s.db.QueryRowContext(ctx, "SELECT count(*) FROM artifact_mutations WHERE mutation_id='full'").Scan(&receipts))
+	assertUsage(t, s)
 	if receipts != 0 {
 		t.Fatal("failed write persisted receipt")
 	}
 	requireNoError(t, s.db.QueryRowContext(ctx, "PRAGMA max_page_count=10000").Scan(&capped))
 	receipt, err := s.Publish(ctx, hash, raw, PublicationOrigin{})
 	requireNoError(t, err)
+	assertUsage(t, s)
 	if receipt.SourceRevision != 2 {
 		t.Fatal("failed request cannot be retried")
 	}

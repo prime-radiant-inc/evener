@@ -17,6 +17,9 @@ import (
 	_ "modernc.org/sqlite" // SQLite is the durable artifact domain store.
 )
 
+// StoreSchemaVersion identifies the durable database schema used by service readiness.
+const StoreSchemaVersion = 2
+
 // storeHooks expose narrow fault boundaries to package process qualification.
 // beforeAdmission runs before mu; commit hooks run while the writer owns mu.
 // They are fixed when opening the store and must not call back into it.
@@ -145,7 +148,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 1 {
+	if version != 0 && version != StoreSchemaVersion {
 		return fmt.Errorf("unsupported artifact schema version %d", version)
 	}
 	if version == 0 {
@@ -156,7 +159,10 @@ func (s *Store) initialize(ctx context.Context) error {
 		if tables != 0 {
 			return errors.New("unversioned artifact database has existing tables")
 		}
-		if _, err := tx.ExecContext(ctx, storeSchema); err != nil {
+		if _, err := tx.ExecContext(ctx, storeSchema+storeQuotaSchema); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", StoreSchemaVersion)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO store_identity(service_id) VALUES(?)", randomID()); err != nil {
@@ -178,7 +184,7 @@ const storeSchema = `
  CREATE TABLE artifact_mutations(realm_id TEXT NOT NULL,principal_id TEXT NOT NULL,operation TEXT NOT NULL,mutation_id TEXT NOT NULL,request_fingerprint TEXT NOT NULL,namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id),artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),outcome_code TEXT NOT NULL,result_json BLOB,committed_at TEXT NOT NULL,PRIMARY KEY(realm_id,principal_id,operation,mutation_id));
  CREATE TABLE artifact_diagnostics(id INTEGER PRIMARY KEY,artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),revision INTEGER NOT NULL,message TEXT NOT NULL,kind TEXT NOT NULL,reported_at INTEGER NOT NULL);
  CREATE INDEX diagnostics_by_artifact ON artifact_diagnostics(artifact_id,revision,id);
- PRAGMA user_version=1;
+ 
 `
 
 func (s *Store) Close() error {
