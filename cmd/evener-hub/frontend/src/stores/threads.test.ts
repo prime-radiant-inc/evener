@@ -42,7 +42,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace"
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -10619,6 +10619,71 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       fake.calls.some((call) => call.method === "turn/queue"),
     );
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
+  // RoboRev PR #1873 Low, the fresh review: the click-time capture was
+  // awaited OUTSIDE the try whose catch disarms the ref when the durable
+  // enqueue fails, so a capture that rejects - a stalled read's
+  // MutationStorageTimeoutError, a VersionError from a versionchange, a
+  // retired connection - aborted the submission AND left the ref armed in
+  // dispatchableMutationRefs with no durable row behind it. A later
+  // discovery pass that names the ref then ran its dispatch work anyway,
+  // for a ref with nothing of its own to dispatch. The failed capture must
+  // be treated exactly like the failed enqueue it precedes: disarmed on the
+  // way out.
+  test("a rejecting stop-epoch capture aborts the submission without leaving the ref's dispatch bookkeeping armed", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+      // The ref's one durable row is terminal: a canceled row keeps the ref
+      // in listTargetRefs - so a later discovery pass names it - while
+      // nextDispatchable provably has nothing to give. Exactly the ref whose
+      // stale arm would cost a dispatch pass's work for nothing.
+      const seeded = await storage.enqueueIntent(queueIntent("canceled before the failed click"));
+      await storage.cancelUnattempted("ref_a");
+      expect((await storage.getOutbox(seeded.clientMutationId))?.state).toBe("canceled");
+
+      // The capture fails the way a stalled or retired connection does.
+      storage.readStopEpoch = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+
+      // The submission aborts and leaves nothing durable behind.
+      await expect(threadsStore.getState().queue("ref_a", "past a stalled capture")).rejects.toThrow(
+        MutationStorageTimeoutError,
+      );
+      expect((await storage.listOutbox("ref_a")).filter((record) => record.state === "submitting")).toEqual([]);
+
+      // A later discovery pass names the ref (its canceled row). What the
+      // pass must NOT do is dispatch work for it: the failed click armed
+      // nothing. scheduleMutationDispatch filters refs through the armed
+      // bookkeeping and calls the dispatcher synchronously within the pass,
+      // right after the persistence notification - so once the pass has
+      // named the ref, the dispatcher either was or was not asked, with no
+      // further settling in between.
+      let discoveredRefA = false;
+      const unsubscribed = subscribeMutationPersistence((refs) => {
+        if (refs.includes("ref_a")) discoveredRefA = true;
+      });
+      const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushUntilArrived("the discovery pass to name the ref", () => discoveredRefA);
+        expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
+        // And nothing reached the wire for the ref's dead row either.
+        expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+      } finally {
+        dispatchTargets.mockRestore();
+        unsubscribed();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // §9 item 4: a canceled row must not ride a Resume back out. The stopped

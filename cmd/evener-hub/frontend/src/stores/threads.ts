@@ -1644,11 +1644,15 @@ async function enqueueMutationIntent(
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  // The click-time capture, awaited at the write it fences.
-  const barrier: MutationStopBarrier | undefined =
-    barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
   let record: MutationOutboxRecord;
   try {
+    // The click-time capture, awaited at the write it fences. A rejecting
+    // read (MutationStorageTimeoutError, VersionError, a retired connection)
+    // is a failed submission exactly like a failed enqueue: the catch below
+    // disarms the ref this click armed, so a transient read failure leaves no
+    // stale dispatch bookkeeping for later discovery passes to act on.
+    const barrier: MutationStopBarrier | undefined =
+      barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
     record =
       durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
