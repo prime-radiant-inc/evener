@@ -293,21 +293,20 @@ function normalizedCredentialHeader(raw: string): string {
  * RESOLVED value (baseUrl/protocol/surface inherit from the base provider) or
  * an OMITTED field (apiKeyEnv/credentialHeader, which the hub omits when the
  * authored value is invalid or a literal secret) - neither is proof of the
- * clear, so the plain-save path fails closed on every clear rather than accept
- * any same-name instance as the clear's landing. The rename path passes
- * `failClosedOnClear: false`: a rename is confirmed by the untouched identity
- * fields it did not change, and a clear riding along is simply unverifiable
- * rather than a reason to drop a rename that plainly landed. A declared header
- * is compared after the hub's own normalization. A declared var has to be
- * present and equal, key by key. */
-function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams, failClosedOnClear: boolean): boolean {
-  const cleared =
-    params.clearBaseUrl ||
-    params.clearProtocol ||
-    params.clearSurface ||
-    params.clearApiKeyEnv ||
-    params.clearCredentialHeader;
-  if (cleared && failClosedOnClear) return false;
+ * clear, so an ENDPOINT clear (baseUrl/protocol/surface) always fails closed;
+ * a credential clear fails closed only when `failClosedOnCredentialClear` is
+ * set, which the plain-save path does and the rename path does not: a rename
+ * riding along with a credential clear is confirmed by the untouched identity
+ * fields it did not change, and the clear is merely unverifiable. A declared
+ * header is compared after the hub's own normalization. A declared var has to
+ * be present and equal, key by key. */
+function declaredValuesLanded(
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+  failClosedOnCredentialClear: boolean,
+): boolean {
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (failClosedOnCredentialClear && (params.clearApiKeyEnv || params.clearCredentialHeader)) return false;
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;

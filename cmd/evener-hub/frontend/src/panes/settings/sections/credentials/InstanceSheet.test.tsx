@@ -2216,4 +2216,44 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
+
+  // The credential-clear exemption above is only for clears whose landed value
+  // the rename does not depend on. An ENDPOINT clear (baseUrl here) is
+  // unverifiable and also removes baseUrl and endpointFingerprint from the
+  // untouched comparison, so a replacement under the new name with any endpoint
+  // must not be confirmed as this rename.
+  test("a superseded rename that clears the endpoint is not confirmed by an arbitrary replacement", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      clearBaseUrl: true,
+      originClientId: "test-tab",
+    });
+
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://other.example.test/y",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
 });
