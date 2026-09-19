@@ -173,30 +173,66 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
   );
 }
 
-// SettleAfterReadStorage arms a one-shot barrier: after the Nth listOutbox
-// read following arming completes, it awaits a caller-supplied real storage
-// write before returning the rows the read already took. That places a
-// concurrent commit exactly between two persistence reads without a sleep or a
-// widened deadline.
-class SettleAfterReadStorage extends MutationOutboxIndexedDB {
-  #reads = 0;
-  #settleAfterRead: number | undefined;
+// SettleAfterRetryLookup arms a one-shot barrier on the RETRY FLOW'S OWN reads
+// instead of a global listOutbox count (issue #1723): the retry's
+// post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
+// still-blocked record - the retry's last storage touch before handleRetry's
+// own reads) arms the barrier, and the second TARGET-scoped listOutbox read
+// CREATED after that arm fires it. The first such read is the retry's own
+// projection refresh (inside retryBlockedPendingTurn), the second is
+// handleRetry's refresh, and handleRetry's decision read follows that refresh
+// directly, so the concurrent commit lands between handleRetry's refresh and
+// its decision read - the window where a settle from another tab is the benign
+// no-op the flow owes, not a "still cannot be checked" error for a row the
+// retry had already made moot.
+//
+// Reads are counted at CREATION, not completion. A background refresh whose
+// read was created before the arm (handleReady's notify-driven projection
+// refresh) cannot consume a slot however late its rows land, and global
+// discovery scans carry no target and never count. Persistence reads added or
+// removed anywhere before the retry's own final lookup no longer shift the
+// target at all; the only shape this depends on is handleRetry's own
+// back-to-back refresh-then-decision reads, which is the very behavior the
+// test exists to pin.
+class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
+  #blockedLookups = 0;
+  #armed = false;
+  #listReadsSinceArm = 0;
   #onSettle: (() => Promise<void>) | undefined;
-  settleAfterRead(readIndex: number, fn: () => Promise<void>): void {
-    this.#reads = 0;
-    this.#settleAfterRead = readIndex;
+
+  settleOnRetryRefresh(fn: () => Promise<void>): void {
     this.#onSettle = fn;
   }
-  override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
-    const rows = await super.listOutbox(targetRef);
-    this.#reads += 1;
-    if (this.#settleAfterRead === this.#reads) {
-      const fn = this.#onSettle;
-      this.#settleAfterRead = undefined;
-      this.#onSettle = undefined;
-      await fn?.();
+
+  override async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
+    const record = await super.getOutbox(clientMutationId);
+    // retryBlockedMutation reads a still-blocked record exactly twice when it
+    // proceeds: the extant-state recheck ahead of handleReady, and the final
+    // lookup after its reconciliation. The second read is the boundary between
+    // the retry's machinery and handleRetry's own reads.
+    if (this.#onSettle && record?.state === "blockedUnknown") {
+      this.#blockedLookups += 1;
+      if (this.#blockedLookups === 2) {
+        this.#armed = true;
+        this.#listReadsSinceArm = 0;
+      }
     }
-    return rows;
+    return record;
+  }
+
+  override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
+    // Counted at entry, before the rows are read: the settle commits ahead of
+    // handleRetry's refresh rows, so the refresh publishes the reopened state
+    // and the decision read that follows it sees that too.
+    if (this.#onSettle && this.#armed && targetRef !== undefined) {
+      this.#listReadsSinceArm += 1;
+      if (this.#listReadsSinceArm === 2) {
+        const fn = this.#onSettle;
+        this.#onSettle = undefined;
+        await fn?.();
+      }
+    }
+    return await super.listOutbox(targetRef);
   }
 }
 
@@ -500,7 +536,7 @@ describe("durable recovery rows", () => {
   // made moot. The decision must be made on the post-refresh state.
   test("a settle landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
     const ref = "ref_a";
-    const storage = new SettleAfterReadStorage();
+    const storage = new SettleAfterRetryLookup();
     setMutationStorageForTests(storage);
     const fake = connectFakeClient();
     await hydrate(fake, ref);
@@ -519,9 +555,11 @@ describe("durable recovery rows", () => {
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox(ref))[0];
     if (!original) throw new Error("missing seeded blocked mutation");
-    // The read the retry flow takes immediately before its decision is its 9th
-    // persistence read; the other tab reopens the record right after it.
-    storage.settleAfterRead(9, async () => {
+    // The other tab reopens the record between handleRetry's projection
+    // refresh and its decision read (the barrier class above arms on the
+    // retry flow's own reads, so persistence-read shifts elsewhere in the flow
+    // cannot misplace the settle - issue #1723).
+    storage.settleOnRetryRefresh(async () => {
       await otherTab.restoreProvenAbsent(ref, new Set());
     });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
