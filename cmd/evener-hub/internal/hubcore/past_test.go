@@ -165,6 +165,60 @@ func fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild pins the
+// successful re-probe path: a Rebuild scans while the session does not yet
+// exist, the session is created, and the Rebuild publishes its (session-less)
+// scan between Find's probe and its fold. Find must re-probe and index the
+// session instead of reporting a miss.
+func fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	prevSwap := pastBeforeRebuildSwap
+	pastBeforeRebuildSwap = func() {
+		close(paused)
+		<-release
+	}
+	defer func() { pastBeforeRebuildSwap = prevSwap }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = idx.Rebuild()
+	}()
+	<-paused // the scan saw an empty projects root and is paused before its swap
+
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+
+	var once sync.Once
+	idx.afterFindProbe = func() {
+		// Publish the Rebuild's empty scan between the probe and the fold. Find
+		// re-probes, so the seam fires again; release only once.
+		once.Do(func() {
+			close(release)
+			<-done
+		})
+	}
+	defer func() { idx.afterFindProbe = nil }()
+
+	got, ok := idx.Find(id)
+	if !ok {
+		t.Fatal("Find missed a session created during a Rebuild scan")
+	}
+	if got.ID != id {
+		t.Fatalf("Find returned %q, want %q", got.ID, id)
+	}
+	if _, ok := idx.findCached(id); !ok {
+		t.Fatal("the session was not indexed after the re-probe")
+	}
+}
+
 // fuzzScenarioPastIndex_FindDoesNotResurrectSessionRemovedByRebuild pins that a
 // Rebuild completing during Find's probe (its scan did not find the session,
 // because it was deleted after the probe read it) suppresses the fold instead of
