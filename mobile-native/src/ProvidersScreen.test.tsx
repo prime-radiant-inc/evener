@@ -242,6 +242,61 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	expect(text).toContain("Edit instance");
 });
 
+// A removal asserts the row's endpoint too. The hub's refusal of that
+// assertion is the same class as the editor's - not the generic "could not be
+// confirmed" failure, whose advice to refresh by hand is the only way out of a
+// retry that re-sends the same stale fingerprint. The removal's refusal
+// clears the selection like a completed removal, re-reads the provider list so
+// the next attempt asserts the destination now on screen, and warns in this
+// client's own words.
+it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows, {
+		"evener/instance/remove": [
+			new WireError(
+				"work no longer resolves to the endpoint this form was opened on",
+				-32013,
+				{ evenerErrorInfo: ErrorEndpointConflict },
+			),
+		],
+		"evener/instance/list": [rows, rows],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await openRemoveConfirmation(tree);
+
+	const removal = hub.requests.find(
+		(request) => request.method === "evener/instance/remove",
+	);
+	expect(removal?.params).toMatchObject({
+		name: "work",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/remove",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("changed to a different endpoint");
+	expect(text).not.toContain("The operation could not be confirmed");
+	// Secret-safety: the hub's text can echo submitted values and never renders.
+	expect(text).not.toContain("work no longer resolves");
+	// Cleared like a completed removal: the detail and its actions are gone.
+	expect(text).not.toContain("Remove instance");
+	expect(text).not.toContain("Test credentials");
+});
+
 // Finding 1: a create collision is a genuine hub conflict (evenerErrorInfo
 // "conflict"), not an asserted-destination refusal. Create takes no endpoint
 // assertion, so it can never carry the endpoint discriminant; the editor must

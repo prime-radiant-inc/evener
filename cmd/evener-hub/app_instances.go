@@ -1450,6 +1450,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return err
 	}
 
+	// Whether the config authored this instance is read before the cleanup, so
+	// its failure below is classified by the same question every later branch
+	// asks: an authored entry resolves from the config, an implicit instance
+	// from the layer supplyOf names. A pure map read, so moving it ahead of the
+	// cleanup changes nothing it observes.
+	_, authored := before.Providers[name]
+
 	removed, err := c.removeCredentials(name)
 	if err != nil {
 		// The cleanup never reached the config, so a clean restore leaves
@@ -1457,7 +1464,26 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// every other client's status for this name is stale against, and the
 		// hub owes them the broadcast even though the entry itself never
 		// moved - restoreFailedRemoval wraps its own result in that case.
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured", supplyAny)
+		//
+		// An authored entry never moved, so the instance resolves from the config
+		// whatever happens to its credentials, and the configured frame with
+		// supplyAny's strict question is the honest report. An implicit instance
+		// has no entry to fall back on - the layer supplyOf names is what carries
+		// it - so when the cleanup deleted that layer and the restore cannot put
+		// it back, the instance no longer resolves: the removal stands, the frame
+		// must say so, and the discriminator goes with it, because
+		// instanceRemoveError reads it to tell the client the removal applied
+		// rather than leaving it to retry a removal that stands. supplyConfig is
+		// the provider carrying the row, with no credential of the user's at
+		// stake, so it keeps the configured frame.
+		frame, supplies := "the instance is still configured", supplyAny
+		if !authored {
+			supplies = supplyOf(locked)
+			if supplies != supplyConfig {
+				frame = "the removal stands"
+			}
+		}
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, frame, supplies)
 		return restoreErr
 	}
 
@@ -1468,7 +1494,6 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// still written when its `default` named this instance, because dropping
 	// that pointer is a real change to a file that already exists - leaving it
 	// behind would name an instance the next load cannot find.
-	_, authored := before.Providers[name]
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.

@@ -1583,6 +1583,45 @@ func TestInstances_RemoveStandsWhenAnImplicitDefaultLosesItsKeyOnRollback(t *tes
 	}
 }
 
+// removeCredentials deletes the stored key first and only then the OAuth
+// record, so its own failure can leave the key already gone. On an implicit
+// instance - no [providers.<name>] entry, the stored key IS what carries it - a
+// put-back that also fails leaves the instance unresolvable, so the removal
+// stands and the caller must hear that rather than a retry against an instance
+// that is already gone. The config-write and reload branches classify this with
+// supplyOf(locked); the cleanup branch asked supplyAny with the "still
+// configured" frame and was the one site left behind.
+// TestInstances_RemoveMarksAppliedWhenTheDeletedCredentialCannotBeRestored is
+// the authored sibling: there [providers.work] never moved, so supplyAny and
+// the configured frame are right and no discriminator is owed.
+func TestInstances_RemoveStandsWhenTheCleanupFailsOnAnImplicitStoredKey(t *testing.T) {
+	f := newFlakyReloadFixture(t, "groq", func(int) bool { return false })
+	if before := entry(t, f.ctl.List(), "groq"); before.ActiveSource != "store" || !before.Implicit {
+		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
+	}
+	// The cleanup deletes the stored key and then fails on the OAuth delete; the
+	// put-back of the key fails too.
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the cleanup and restore failures reported")
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing frame: the carrying key is gone", err)
+	}
+	if strings.Contains(err.Error(), "still configured") {
+		t.Fatalf("Remove = %v, want no configured frame on an implicit instance whose key stayed deleted", err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying key stayed deleted", err, err)
+	}
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("stored key = %q, want it to stay deleted", v)
+	}
+}
+
 // The test above covers a rollback file that does not load either. This one
 // covers the branch where it does: the removal's reload fails, the rollback
 // lands, and the reload that follows it succeeds. The file the rollback puts

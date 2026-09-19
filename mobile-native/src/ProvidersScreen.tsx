@@ -24,6 +24,7 @@ import {
   credentialLayers,
   fromEnvironment,
   groupByProvider,
+  isEndpointConflict,
   styleInfoText,
 } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
@@ -44,10 +45,12 @@ import {
   useColors,
 } from "./ui";
 
-// The warnings shown when the hub reports a provider-instance write it APPLIED
-// before a later step failed. They are this client's own wording: the
-// rejection's text came from the hub and can echo submitted credentials, so it
-// must never reach the screen (the same rule the catch's generic error keeps).
+// The warnings shown for the two refusals the generic "could not be confirmed"
+// line would misreport: a provider-instance write the hub APPLIED before a
+// later step failed, and the hub's refusal of an asserted destination. They are
+// this client's own wording: the rejection's text came from the hub and can
+// echo submitted credentials, so it must never reach the screen (the same rule
+// the catch's generic error keeps).
 const APPLIED_REMOVAL_WARNING =
   "The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
 const APPLIED_RENAME_WARNING =
@@ -192,6 +195,19 @@ function Providers({
             ? APPLIED_REMOVAL_WARNING
             : APPLIED_RENAME_WARNING,
         );
+        void model.refresh();
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused an asserted endpoint: the instance moved since the
+        // row this action was confirmed against was listed, so nothing was
+        // written and a retry carrying the same fingerprint would be refused
+        // identically. Clear the editor and its selection like a completed
+        // write, re-read the provider list so the next attempt asserts the
+        // destination now on screen, and warn in our own words - the
+        // rejection's text can echo submitted values and is never shown.
+        close();
+        setActionWarning(ENDPOINT_CHANGED_WARNING);
         void model.refresh();
         return;
       }
