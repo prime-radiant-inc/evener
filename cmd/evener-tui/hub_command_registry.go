@@ -552,7 +552,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteDetail: "exit evener-tui",
 		Scopes:        hubCommandDashboard | hubCommandSession,
 		Run: func(_ *hubModel, _ string) tea.Cmd {
-			return tea.Quit
+			return quitCmd()
 		},
 	},
 }

@@ -7216,39 +7216,23 @@ describe("ConversationStore", () => {
     });
 
     // A message-less warning frame's text is the up-to-2000-char raw JSON
-    // fallback (rawWarningFrame); the live row's id must never embed it —
-    // that bloats timeline ids and the ownership keys they feed. It falls
-    // back to the literal "Warning" (the same sanitized title the row
-    // displays), never folded.text.
-    it("keeps the live row id short for a message-less warning with no active turn", async () => {
+    // fallback (rawWarningFrame), and the live id used to embed the
+    // sanitized title directly (`warning:${title}:${serial}`), which
+    // foldWarningParams only bounds to 2000 code points — far short of
+    // "short". Neither case's row id must ever embed folded.text or the
+    // title; that bloats timeline ids and the ownership keys they feed. The
+    // serial alone is already unique, so the id never needs either.
+    it.each<[string, Record<string, unknown>]>([
+      // No message/title/hint anywhere: folded.text is the bounded raw JSON
+      // fallback (up to 2000 chars) — the `extra` field forces it long
+      // enough that reusing folded.text for the id would be obvious.
+      ["a message-less warning with no active turn", { extra: "x".repeat(500) }],
+      ["an oversized title", { title: "T".repeat(2000) }],
+    ])("keeps the live row id short for %s", async (_case, warningFields) => {
       const store = await openProjectedThread(makeThread());
       store.getState().applyNotification({
         method: "warning",
-        // No message/title/hint anywhere: folded.text is the bounded raw
-        // JSON fallback (up to 2000 chars) — the `extra` field forces it
-        // long enough that reusing folded.text for the id would be obvious.
-        params: { ...target, extra: "x".repeat(500) },
-      } as AnyNotification);
-      const failureRow = store
-        .getState()
-        .conversation?.items.find((row) => row.kind === "failure");
-      expect(failureRow?.kind).toBe("failure");
-      if (failureRow?.kind === "failure") {
-        expect(failureRow.id.length).toBeLessThan(30);
-        expect(failureRow.id.startsWith("warning:")).toBe(true);
-      }
-    });
-
-    // The live id used to embed the sanitized title directly
-    // (`warning:${title}:${serial}`), which foldWarningParams only bounds to
-    // 2000 code points — far short of "short", and still enough to bloat
-    // this row's timeline id and the ownership keys it feeds. The serial
-    // alone is already unique, so the id never needs the title at all.
-    it("keeps the live row id short even for an oversized title", async () => {
-      const store = await openProjectedThread(makeThread());
-      store.getState().applyNotification({
-        method: "warning",
-        params: { ...target, title: "T".repeat(2000) },
+        params: { ...target, ...warningFields },
       } as AnyNotification);
       const failureRow = store
         .getState()

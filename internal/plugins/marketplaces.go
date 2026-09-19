@@ -313,17 +313,251 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	ref, ok := mk[name]
-	if !ok {
+	if _, ok := mk[name]; !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
-	if ref.Source.Kind != SourceDirectory {
-		if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+	// A directory source's install location is its own path, so a directory
+	// under the store's canonical name is normally a stale clone — the one a
+	// git->directory re-source failed to remove, say. Sweep it whatever the
+	// recorded kind, or it outlives the marketplace under a name nothing
+	// records and blocks that name for a later rename. What must not be swept
+	// is any record's directory source that names this path, the removed
+	// record's included: a legacy record can source from the clone itself, and
+	// that directory is then live data the sweep must keep.
+	clone := m.marketplaceDir(name)
+	present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), clone)
+	if present && !protect {
+		if err := marketplaceRemoveAll(clone); err != nil {
+			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
 		}
 	}
 	delete(mk, name)
 	return m.saveMarketplaces(mk)
+}
+
+// sweepDestroysSource reports whether removing (or renaming away) the directory
+// at clone would delete or break any path in sources — a registered
+// marketplace's directory source or recorded install location, or an edit's
+// incoming source. The store refuses such a source inside itself today, but
+// refuseSourceInStore is enforced only by AddMarketplace and EditMarketplace,
+// and the name migration neither re-checks it nor rewrites Source.Path, so a
+// record predating that rule (or seeded by hand) survives every later write; a
+// sweep must not be what finally deletes a live source.
+//
+// The model is what the sweep actually deletes: the tree at the clone path. A
+// source below clone goes with it — even through a symlink, since removing the
+// clone deletes the link — so the source is compared against the clone both as
+// recorded and after symlinks are resolved. The clone's ancestors are resolved
+// because the store root or its marketplaces directory can be a symlink and a
+// legacy record can name the physical path, but a final symlink at the clone
+// itself is not followed: RemoveAll removes the link, not its target. An
+// ancestor of clone is not deleted by RemoveAll and must not be protected, or
+// its stale clone would survive and hold the name.
+//
+// It reports the entry's presence as well as whether a source overlays it, and
+// every inspection failure degrades to protecting the source (a warning, never
+// an error): a path the filesystem will not consider — an over-long legacy name
+// — counts as absent, so the caller must skip the sweep rather than call
+// RemoveAll on a path it would only fail on.
+func (m *Manager) sweepDestroysSource(sources []string, clone string) (present, protect bool) {
+	present, err := pathPresentNoFollow(clone)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: checking marketplace clone %s: %v\n", clone, err)
+		return false, true
+	}
+	if !present {
+		return false, false
+	}
+	absClone, err := filepath.Abs(clone)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
+		return true, true
+	}
+	resolvedClone, err := resolveAncestors(clone)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
+		return true, true
+	}
+	underClone := func(path string) bool {
+		return pathWithinDir(absClone, path) || pathWithinDir(resolvedClone, path)
+	}
+	for _, source := range sources {
+		touches, err := sourceTouchesClone(source, underClone, 0)
+		if err != nil {
+			// A source the walk cannot inspect is one the sweep might still be
+			// the thing that deletes: protect it rather than run the sweep blind.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: checking directory source %s: %v\n", source, err)
+			return true, true
+		}
+		if touches {
+			return true, true
+		}
+	}
+	return true, false
+}
+
+// marketplaceProtectionPaths names the directory sources an operation must not
+// delete or move out from under a marketplace. Records named in exclude — whose
+// own paths the operation is intentionally relocating or replacing — are left
+// out, so a record cannot protect the very directory it is having changed.
+//
+// Only Source.Path is taken, not InstallLocation: the name migration represents
+// one marketplace under several alias names, and each alias carries the same
+// install location, so protecting them would refuse the merge the migration
+// exists to perform (TestMarketplaceNameMigration_MarksTheMergeItMakes and
+// five siblings). A directory source is the only recorded path a supported
+// operation never shares between names.
+func marketplaceProtectionPaths(mk Marketplaces, exclude ...string) []string {
+	skip := make(map[string]bool, len(exclude))
+	for _, name := range exclude {
+		skip[name] = true
+	}
+	var out []string
+	for name, ref := range mk {
+		if skip[name] {
+			continue
+		}
+		if ref.Source.Kind == SourceDirectory && ref.Source.Path != "" {
+			out = append(out, ref.Source.Path)
+		}
+	}
+	return out
+}
+
+// resolveAncestors canonicalizes every component of path except the last, so a
+// symlinked store root or marketplaces directory is followed but a final
+// symlink is not — RemoveAll and rename act on the link itself.
+func resolveAncestors(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", path, err)
+	}
+	dir, base := filepath.Split(abs)
+	if dir == "" {
+		return abs, nil
+	}
+	resolved, err := resolveForContainment(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, base), nil
+}
+
+// maxSymlinkHops bounds the source-link walk so a symlink cycle cannot spin.
+const maxSymlinkHops = 64
+
+// sourceTouchesClone reports whether deleting the tree at the clone would delete
+// or break the recorded source: whether any location the source's path passes
+// through sits at or beneath the clone. It walks the path as written —
+// resolving `.`/`..` in traversal order and following symlinks at each
+// component — because canonicalizing first would erase a `..` (or a link
+// target's `..`) that needs the clone to exist, and a full EvalSymlinks would
+// hide a hop that dips into the clone and back out.
+func sourceTouchesClone(source string, underClone func(string) bool, depth int) (bool, error) {
+	if depth > maxSymlinkHops {
+		// Deeper than any sane chain: assume the sweep holds a link the source
+		// needs and protect.
+		return true, nil
+	}
+	raw, err := absoluteUncleaned(source)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", source, err)
+	}
+	root := filepath.VolumeName(raw) + string(filepath.Separator)
+	current := root
+	for comp := range strings.SplitSeq(strings.TrimPrefix(raw, root), string(filepath.Separator)) {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			// Applied to the location the path has actually reached, so a
+			// `..` after a link into the clone walks back out of the clone.
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, comp)
+		if underClone(next) {
+			return true, nil
+		}
+		info, err := marketplaceLstat(next)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
+				// A component that is not there cannot be destroyed, and
+				// nothing after it can resolve through it either.
+				return false, nil
+			}
+			return false, fmt.Errorf("checking %s: %w", next, err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return false, fmt.Errorf("reading link %s: %w", next, err)
+		}
+		if !filepath.IsAbs(target) {
+			// Kept uncleaned: the target's own `.`/`..` components matter.
+			target = filepath.Dir(next) + string(filepath.Separator) + target
+		}
+		// The link itself, and the path it names, both go if the clone holds
+		// them — the final target alone would miss a hop back out of the clone.
+		if underClone(next) || underClone(target) {
+			return true, nil
+		}
+		// The target is a path in its own right: its own links and `..`
+		// components can lead through the clone even where this path's do not.
+		touches, err := sourceTouchesClone(target, underClone, depth+1)
+		if err != nil {
+			return false, err
+		}
+		if touches {
+			return true, nil
+		}
+		// Continue with the directory the link resolves to, so components after
+		// it apply to the location they actually see.
+		resolved, err := filepath.EvalSymlinks(next)
+		if err != nil {
+			return false, nil
+		}
+		current = resolved
+	}
+	return false, nil
+}
+
+// absoluteUncleaned makes path absolute without canonicalizing it, so a `.` or
+// `..` component survives for the traversal walk.
+func absoluteUncleaned(path string) (string, error) {
+	// A path may be written with the alternate separator (on Windows, `/` in a
+	// `C:/...` path); normalize it without canonicalizing `.`/`..`, which must
+	// survive for the walk.
+	path = filepath.FromSlash(path)
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd + string(filepath.Separator) + path, nil
+}
+
+// sourceTouchesPath reports whether a directory source at source depends on the
+// directory at path — it sits at, beneath, or resolves through it — so that
+// moving or removing that directory would break the source.
+func (m *Manager) sourceTouchesPath(source, path string) (bool, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", path, err)
+	}
+	resolvedPath, err := resolveAncestors(path)
+	if err != nil {
+		return false, err
+	}
+	under := func(p string) bool {
+		return pathWithinDir(absPath, p) || pathWithinDir(resolvedPath, p)
+	}
+	return sourceTouchesClone(source, under, 0)
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
@@ -385,6 +619,22 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 			// the paths this refuses.
 			if err := m.refuseSourceInStore(src.Path); err != nil {
 				return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, err)
+			}
+			if renaming {
+				// The rename moves the clone and the plugin cache, so a source
+				// that lives inside either moves too while Source.Path would
+				// still name the old location — leaving the marketplace
+				// recorded against a path that is gone. Refuse rather than save
+				// that.
+				for _, moved := range []string{m.marketplaceDir(name), filepath.Join(m.cacheDir(), name)} {
+					touches, err := m.sourceTouchesPath(src.Path, moved)
+					if err != nil {
+						return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, err)
+					}
+					if touches {
+						return MarketplaceRef{}, fmt.Errorf("marketplace %q: a directory source inside %s cannot be combined with a rename to %q", name, moved, newName)
+					}
+				}
 			}
 		}
 	}
@@ -465,7 +715,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, registryKeyOwners(reg, mk))
+		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, registryKeyOwners(reg, mk), resourcing)
 		if err != nil {
 			return fail(err)
 		}
@@ -478,12 +728,29 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if src.Kind == SourceDirectory {
 			if ref.Source.Kind != SourceDirectory {
 				clone := m.marketplaceDir(target)
-				afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+				// The old clone is redundant only where it is the marketplace's
+				// own. Another record's source or install location that names
+				// it, and the incoming source itself (a source can be a symlink
+				// inside the clone), must all survive; the record being edited
+				// is excluded, because its own old clone is what is redundant.
+				sources := append(marketplaceProtectionPaths(mk, name), src.Path)
+				present, protect := m.sweepDestroysSource(sources, clone)
+				if present && !protect {
+					afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+				}
 			}
 			_ = marketplaceRemoveAll(staging)
 			ref.InstallLocation = src.Path
 		} else {
 			dest := m.marketplaceDir(target)
+			// A swap replaces dest, deleting what was there when the aside copy
+			// goes. If another record's source or install location names dest,
+			// that data would go with it, so refuse the re-source rather than
+			// overwrite it. The record being edited is excluded: re-sourcing it
+			// is exactly what replaces its own old source.
+			if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), dest); protect {
+				return fail(fmt.Errorf("marketplace %q: the new install location %s holds a directory source another marketplace records", name, dest))
+			}
 			aside, err := m.swapInClone(staging, dest)
 			if err != nil {
 				return fail(err)
@@ -544,14 +811,15 @@ func runUndo(undo []func() error) error {
 	return errors.Join(errs...)
 }
 
-// moveMarketplace renames a marketplace on disk and in the registry: the
-// clone directory, when the source is not a directory and one is there; the
-// plugin cache directory, when one is there; and every <plugin>@name registry
-// entry, whose install path follows the cache. Neither store file is written.
-// On success it returns the ref and registry as they are to be recorded, and
-// the steps that put the directories back should a later step fail; a failure
-// puts back what it had moved itself and reports what it could not.
-func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry, owners map[string]string) (MarketplaceRef, Registry, []func() error, error) {
+// moveMarketplace renames a marketplace on disk and in the registry: the clone
+// directory, when one is there — moved for a non-directory source, swept for a
+// directory source, which never lives there; the plugin cache directory, when
+// one is there; and every <plugin>@name registry entry, whose install path
+// follows the cache. Neither store file is written. On success it returns the
+// ref and registry as they are to be recorded, and the steps that put the
+// directories back should a later step fail; a failure puts back what it had
+// moved itself and reports what it could not.
+func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk Marketplaces, reg Registry, owners map[string]string, resourcing bool) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
 		if undoErr := runUndo(undo); undoErr != nil {
@@ -559,8 +827,21 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		}
 		return MarketplaceRef{}, Registry{}, nil, err
 	}
+	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
+	// When the edit replaces the record's own source, that source is no longer
+	// data to protect — the re-source is what removes it. Every other record's
+	// directory source always is, and a pure rename keeps the edited record's
+	// too, because the rename would move its directory out from under it.
+	registeredSources := func() []string {
+		if resourcing {
+			return marketplaceProtectionPaths(mk, name)
+		}
+		return marketplaceProtectionPaths(mk)
+	}
 	if ref.Source.Kind != SourceDirectory {
-		oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
+		// The clone move follows a final symlink: pathPresent stats through it,
+		// so the move refuses rather than blindly renaming an entry it cannot
+		// read (TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent).
 		haveClone, err := pathPresent(oldDir)
 		if err != nil {
 			return fail(err)
@@ -569,6 +850,15 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		// directory before it writes an install location, so a fetch killed
 		// mid-clone leaves one behind that only the move takes with the name.
 		if haveClone {
+			// The move takes the directory with the name. If another record's
+			// source or install location names it, that move would strip the
+			// data out from under a live record — as a hand-seeded or
+			// pre-refuseSourceInStore store can arrange — so refuse instead.
+			// The record being renamed is excluded: its own clone is what moves.
+			_, displaced := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), oldDir)
+			if displaced {
+				return fail(fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir))
+			}
 			if err := marketplaceRename(oldDir, newDir); err != nil {
 				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
 			}
@@ -585,6 +875,27 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 				ref.InstallLocation = newDir
 			}
 		}
+	} else {
+		// A directory source never lives under the clone directory, so one
+		// there is residue — the clone a git->directory re-source failed to
+		// remove. Sweep it rather than moving it: moving it would park the
+		// same unrecorded directory under the new name, which is still a name
+		// nothing records it under. Nothing references it, so there is nothing
+		// to put back and no undo step to add — unless some record's directory
+		// source lives at or beneath it, which keeps the sweep from deleting a
+		// live source. Presence is the entry's own, not a stat through a final
+		// symlink: sweeping is what removes it either way, so an unreadable
+		// link must still be cleared rather than block a directory rename.
+		// The sweep here is destructive and runs before either store file is
+		// saved, so it must keep every current source — the edited record's
+		// included. A source beneath the old clone is then left in place rather
+		// than deleted ahead of a commit that can still fail.
+		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
+		if present && !protect {
+			if err := marketplaceRemoveAll(oldDir); err != nil {
+				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
+			}
+		}
 	}
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
 	haveCache, err := pathPresent(oldCache)
@@ -592,6 +903,13 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		return fail(err)
 	}
 	if haveCache {
+		// The cache move takes that directory with the name too. A source or
+		// install location recorded inside it — a hand-seeded store can arrange
+		// it, refuseSourceInStore only guards new operations — would be moved
+		// out from under its record, so refuse rather than break it.
+		if _, protect := m.sweepDestroysSource(registeredSources(), oldCache); protect {
+			return fail(fmt.Errorf("renaming plugin cache %s would move a path a marketplace records", oldCache))
+		}
 		if err := marketplaceRename(oldCache, newCache); err != nil {
 			return fail(fmt.Errorf("renaming plugin cache: %w", err))
 		}
@@ -797,6 +1115,22 @@ func pathPresent(path string) (bool, error) {
 			}
 			return false, fmt.Errorf("checking %s: %w", path, err)
 		}
+	}
+	return true, nil
+}
+
+// pathPresentNoFollow reports whether a directory entry exists at path without
+// resolving a final symlink — the entry RemoveAll and rename act on. It is what
+// a sweep needs: a clone link whose target is unreadable (a self-loop, a
+// permission wall) is still an entry the sweep must clear, where pathPresent's
+// stat-through-the-link would error and strand it. Only a missing entry is
+// absent; any other lstat error is the caller's to return.
+func pathPresentNoFollow(path string) (bool, error) {
+	if _, err := marketplaceLstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking %s: %w", path, err)
 	}
 	return true, nil
 }

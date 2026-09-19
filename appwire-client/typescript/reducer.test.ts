@@ -10,11 +10,13 @@ import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
+  foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
   mergeOlderItemPage,
   notificationTargetsThread,
   prependOlderTurns,
+  RAW_WARNING_FRAME_MAX_CHARS,
   resolvePendingEscalation,
 } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
@@ -4248,16 +4250,58 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
 // notifications into the active turn as ordinary items, mirroring
 // evener/steering/injected's own shape.
 
-test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
+// A hydrated model with one started turn ("turn_1") ready to receive a
+// warning notification - the preamble every test below needs before it can
+// send its own `warning` params.
+function warningTurnModel(): ThreadModel {
+  return applyNotification(
+    testHydrate(),
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
     },
     1001,
   );
+}
+
+// Spies on JSON.stringify and records the length of every string it was
+// asked to serialize - the pattern several oversized-frame tests below use
+// to prove the PRUNE bounds its input before JSON.stringify ever walks it,
+// not just the final output. Call `restore()` (in a `finally`) once done.
+function recordStringifyOutputLengths(): { lengths: number[]; restore: () => void } {
+  const originalStringify = JSON.stringify;
+  const lengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") lengths.push(result.length);
+    return result;
+  });
+  return { lengths, restore: () => spy.mockRestore() };
+}
+
+test("foldWarningParams scans each stored warning string once", () => {
+  const scannedLengths: number[] = [];
+  const originalExec = RegExp.prototype.exec;
+  const spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (this: RegExp, value: string) {
+    if (this.source === "\\S") scannedLengths.push(value.length);
+    return originalExec.call(this, value);
+  });
+
+  let folded: ReturnType<typeof foldWarningParams>;
+  try {
+    folded = foldWarningParams({ threadId: "thr_t", ref: "ref_t", title: "Title", hint: "Hint", source: "Source" });
+  } finally {
+    spy.mockRestore();
+  }
+
+  expect(folded).toEqual({ text: "", title: "Title", hint: "Hint", source: "Source" });
+  expect([...scannedLengths].sort((a, b) => a - b)).toEqual(
+    ["Title".length, "Hint".length, "Source".length].sort((a, b) => a - b),
+  );
+});
+
+test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4288,15 +4332,7 @@ test("warning mid-turn appends an item to the active turn with text=message and 
 });
 
 test("a runtime non-string title/hint/source folds to undefined, never a value ItemModel.warning claims is a string", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4331,15 +4367,7 @@ test("a runtime non-string title/hint/source folds to undefined, never a value I
 // leaves a future reader one missed hasWarningText call away from
 // rendering blank content. Normalize at the fold instead.
 test("a whitespace-only title/hint/source folds to undefined at the source, not just at each consumer", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4364,15 +4392,7 @@ test("a whitespace-only title/hint/source folds to undefined at the source, not 
 });
 
 test("two warnings in one turn get distinct ids in arrival order", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4405,15 +4425,7 @@ test("warning with no active turn only updates lastFrameAt (no turn fabricated c
 });
 
 test("a warning item survives a bare turn/completed settle stamp (composition with Part A)", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
   model = applyNotification(
     model,
     { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } },
@@ -4443,15 +4455,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
   // EventWarning plus `cause` (internal/appprojector/appwire_projection.go:
   // 520-535). cause has no model consumer — assert only that the item
   // lands with its meta; do not invent a field to carry it.
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4483,15 +4487,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
 });
 
 test("warning with object-form `warning.message` and no top-level message renders that nested message", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4504,15 +4500,7 @@ test("warning with object-form `warning.message` and no top-level message render
 });
 
 test("warning with bare-string `warning` and no top-level message renders that string", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   model = applyNotification(
     model,
@@ -4537,15 +4525,7 @@ test.each([
   ["object warning with non-string message", { message: 42 }],
   ["number warning", 42],
 ])("warning with no message anywhere (%s) renders the frame itself, bounded", (_case, warning) => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", warning };
   model = applyNotification(model, { method: "warning", params }, 1002);
@@ -4563,15 +4543,7 @@ test.each([
 // notificationTargetsThread before it ever reaches this fold; that is a
 // different, untested-here case, not what this test verifies.
 test('warning with a routed {"warning":42} frame renders that frame itself', () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42 };
   model = applyNotification(model, { method: "warning", params }, 1002);
@@ -4589,15 +4561,7 @@ test('warning with a routed {"warning":42} frame renders that frame itself', () 
 // `warning` IS a usable message and would short-circuit before the fallback
 // ever runs, making the bound assertion trivially true either way.
 test("an oversized warning frame's fallback text stays bounded", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "x".repeat(10_000) };
   model = applyNotification(model, { method: "warning", params }, 1002);
@@ -4615,17 +4579,8 @@ test("an oversized warning frame's fallback text stays bounded", () => {
 // rawWarningFrame(params) - the JSON.stringify of the whole frame, `extra`
 // included.
 test("an oversized warning frame's fallback text never splits a surrogate pair at the truncation boundary", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
-  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
   const EMOJI = "😀"; // U+1F600: one surrogate pair, two UTF-16 code units.
   const marker = '"extra":"';
   const withoutContent = JSON.stringify({ threadId: "thr_t", ref: "ref_t", warning: 42, extra: "" });
@@ -4633,7 +4588,7 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
   // Pad so the emoji's high surrogate lands exactly at index 2000 (0-indexed
   // 1999) of the stringified frame - the byte a naive slice(0, 2000) keeps,
   // cutting the low surrogate that follows.
-  const padLen = MAX_CHARS - 1 - contentStart;
+  const padLen = RAW_WARNING_FRAME_MAX_CHARS - 1 - contentStart;
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "a".repeat(padLen) + EMOJI };
   model = applyNotification(model, { method: "warning", params }, 1002);
 
@@ -4641,8 +4596,8 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
   expect(item.text.length).toBeGreaterThan(0);
   // Bounded by CODE POINTS, not UTF-16 units: keeping the boundary emoji
   // whole can run one code point's worth of extra UTF-16 units past
-  // MAX_CHARS, which is exactly what must happen instead of splitting it.
-  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  // RAW_WARNING_FRAME_MAX_CHARS, which is exactly what must happen instead of splitting it.
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(RAW_WARNING_FRAME_MAX_CHARS);
   const lastUnit = item.text.charCodeAt(item.text.length - 1);
   expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
 });
@@ -4656,24 +4611,15 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
 // be silently dropped rather than observed - spying on JSON.stringify's
 // argument inspects the pruned object BEFORE the outer bound ever runs.
 test("prunedForStringify's own field truncation never splits a surrogate pair either", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
-  const MAX_FIELD_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_FIELD_CHARS
   const EMOJI = "😀"; // U+1F600: one surrogate pair, two UTF-16 code units.
   // 1999 'a' code points + one emoji code point = exactly 2000 code points -
   // within the field cap, so a code-point-safe truncation must leave this
   // value untouched. A naive UTF-16 slice(0, 2000) instead cuts at UTF-16
   // index 2000 (extraValue.length is 2001, one past the emoji's high
   // surrogate), splitting the pair.
-  const extraValue = "a".repeat(MAX_FIELD_CHARS - 1) + EMOJI;
+  const extraValue = "a".repeat(RAW_WARNING_FRAME_MAX_CHARS - 1) + EMOJI;
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: extraValue };
 
   const originalStringify = JSON.stringify;
@@ -4682,8 +4628,11 @@ test("prunedForStringify's own field truncation never splits a surrogate pair ei
     if (prunedArg === undefined) prunedArg = args[0] as { extra?: unknown };
     return originalStringify(...args);
   });
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    spy.mockRestore();
+  }
 
   expect(prunedArg?.extra).toBe(extraValue);
 });
@@ -4695,17 +4644,8 @@ test("prunedForStringify's own field truncation never splits a surrogate pair ei
 // every string it actually expands is already bounded well under the huge
 // frame, never the full JSON blob.
 test("an oversized warning frame's fallback bounds its input before Array.from, not after", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
-  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
   const HUGE = 500_000;
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "x".repeat(HUGE) };
   const originalArrayFrom = Array.from;
@@ -4717,15 +4657,18 @@ test("an oversized warning frame's fallback bounds its input before Array.from, 
     return (originalArrayFrom as (...a: any[]) => unknown[])(...args);
   });
 
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    spy.mockRestore();
+  }
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(RAW_WARNING_FRAME_MAX_CHARS);
   expect(stringArgLengths.length).toBeGreaterThan(0);
   for (const len of stringArgLengths) {
     // Nowhere near the ~500,000-char frame: bounded well before expansion.
-    expect(len).toBeLessThan(MAX_CHARS * 4);
+    expect(len).toBeLessThan(RAW_WARNING_FRAME_MAX_CHARS * 4);
   }
 });
 
@@ -4736,23 +4679,9 @@ test("an oversized warning frame's fallback bounds its input before Array.from, 
 // only ever touches its output. The frame must be pruned (strings truncated,
 // arrays capped, depth capped) before it reaches JSON.stringify at all.
 test("an oversized warning frame's fallback bounds the frame before JSON.stringify walks it, not just its output", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
-  const originalStringify = JSON.stringify;
-  const outputLengths: number[] = [];
-  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
-    const result = originalStringify(...args);
-    if (typeof result === "string") outputLengths.push(result.length);
-    return result;
-  });
+  const { lengths: outputLengths, restore } = recordStringifyOutputLengths();
 
   const HUGE = 5_000_000; // a 5 MB single string field
   const params = {
@@ -4761,8 +4690,11 @@ test("an oversized warning frame's fallback bounds the frame before JSON.stringi
     warning: 42,
     extra: "z".repeat(HUGE),
   };
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    restore();
+  }
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text.length).toBeGreaterThan(0);
@@ -4775,15 +4707,7 @@ test("an oversized warning frame's fallback bounds the frame before JSON.stringi
 });
 
 test("an oversized warning frame's fallback prunes deep nesting before JSON.stringify walks it", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   // A deeply nested structure well past the prune's depth cap — without
   // pruning, JSON.stringify still walks every level.
@@ -4806,37 +4730,67 @@ test("an oversized warning frame's fallback prunes deep nesting before JSON.stri
 // bounds) can still sum to a huge object for JSON.stringify to walk. The
 // prune needs a total node budget too, not just per-level caps.
 test("an oversized warning frame's fallback bounds a many-key object, not just deep nesting or long strings", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const manyKeys: Record<string, string> = {};
   for (let i = 0; i < 100_000; i++) manyKeys[`key${i}`] = "v";
 
-  const originalStringify = JSON.stringify;
-  const outputLengths: number[] = [];
-  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
-    const result = originalStringify(...args);
-    if (typeof result === "string") outputLengths.push(result.length);
-    return result;
-  });
+  const { lengths: outputLengths, restore } = recordStringifyOutputLengths();
 
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: manyKeys };
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    restore();
+  }
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text.length).toBeGreaterThan(0);
   expect(outputLengths.length).toBeGreaterThan(0);
   for (const len of outputLengths) {
-    // 100,000 keys would stringify to well over a megabyte unbounded;
-    // the total node budget keeps JSON.stringify's own walk small.
+    // 100,000 keys would stringify to well over a megabyte unbounded; the
+    // per-object key cap (RAW_WARNING_FRAME_MAX_OBJECT_KEYS, 50) alone
+    // already keeps JSON.stringify's own walk small here - this flat,
+    // single-level object never grows past 50 nodes, so it says nothing
+    // about the total node budget on its own (see the node-budget test
+    // below, which reaches the same conclusion via branching instead).
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
+// The per-level caps (RAW_WARNING_FRAME_MAX_OBJECT_KEYS /
+// RAW_WARNING_FRAME_MAX_ARRAY_ITEMS, 50 each) bound how many entries survive
+// at any ONE level, but say nothing about the total across levels: many
+// small objects, each individually within the 50-key cap, can still sum to
+// far more than RAW_WARNING_FRAME_MAX_NODES (500) nodes overall. This frame
+// stays within every per-level cap at every level (50 keys, each holding a
+// 50-key object - 50 + 50*50 = 2,550 nodes) yet only the total node budget
+// stops JSON.stringify from walking all of it; the many-key test above
+// can't tell the two caps apart, since a single flat level never exceeds 50
+// nodes regardless of the total budget.
+test("an oversized warning frame's fallback bounds a tree that breaches only the total node budget, not any per-level cap", () => {
+  let model = warningTurnModel();
+
+  const branches: Record<string, Record<string, string>> = {};
+  for (let i = 0; i < 50; i++) {
+    const leaf: Record<string, string> = {};
+    for (let j = 0; j < 50; j++) leaf[`leaf${j}`] = "v";
+    branches[`branch${i}`] = leaf;
+  }
+
+  const { lengths: outputLengths, restore } = recordStringifyOutputLengths();
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: branches };
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    restore();
+  }
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
     expect(len).toBeLessThan(10_000);
   }
 });
@@ -4852,15 +4806,7 @@ test("an oversized warning frame's fallback bounds a many-key object, not just d
 // actually performs — so the test documents the true bound instead of
 // overclaiming that the walk never materializes the key list at all.
 test("an oversized warning frame's fallback enumerates keys once and never accesses more than the key cap's worth of property values", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const MAX_OBJECT_KEYS = 50; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_OBJECT_KEYS
   const target: Record<string, string> = {};
@@ -4897,29 +4843,18 @@ test("an oversized warning frame's fallback enumerates keys once and never acces
 // property NAME is — a single key whose own name is multi-megabyte still
 // rides through verbatim into the pruned object and JSON.stringify's walk.
 test("an oversized warning frame's fallback bounds an oversized property NAME, not just its value", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const HUGE = 5_000_000;
   const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: { [`k${"x".repeat(HUGE)}`]: "v" } };
 
-  const originalStringify = JSON.stringify;
-  const outputLengths: number[] = [];
-  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
-    const result = originalStringify(...args);
-    if (typeof result === "string") outputLengths.push(result.length);
-    return result;
-  });
+  const { lengths: outputLengths, restore } = recordStringifyOutputLengths();
 
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    restore();
+  }
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text.length).toBeGreaterThan(0);
@@ -4938,15 +4873,7 @@ test("an oversized warning frame's fallback bounds an oversized property NAME, n
 // prototype, though that has no observable effect here since the result
 // only ever reaches JSON.stringify).
 test("prunedForStringify preserves a wire key literally named __proto__ instead of setting a prototype", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = JSON.parse(
     '{"threadId":"thr_t","ref":"ref_t","warning":42,"extra":{"__proto__":{"marker":"present"}}}',
@@ -4957,21 +4884,49 @@ test("prunedForStringify preserves a wire key literally named __proto__ instead 
   expect(item.text).toContain("present");
 });
 
+// Two distinct wire keys that share their first RAW_WARNING_FRAME_MAX_CHARS
+// (2000) code points truncate to the identical boundedKey ("<2000 shared
+// chars>…") - a naive `pruned[boundedKey] = ...` assignment then has the
+// second key's value silently overwrite the first's, so one of the two
+// fields vanishes from the pruned object even though both survived pruning.
+// Spying on JSON.stringify's argument inspects the pruned object BEFORE the
+// outer frame bound runs (see the surrogate-pair test above): the two
+// truncated keys alone already exceed the frame's own 2000-code-point cap,
+// so item.text can never show both regardless of this bug - the loss has to
+// be observed one level in, on the object prunedForStringify actually built.
+test("prunedForStringify keeps both values when two keys truncate to the same bounded prefix", () => {
+  let model = warningTurnModel();
+
+  const sharedPrefix = "x".repeat(RAW_WARNING_FRAME_MAX_CHARS + 1);
+  const params = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    warning: 42,
+    extra: { [`${sharedPrefix}A`]: "valueA", [`${sharedPrefix}B`]: "valueB" },
+  };
+
+  const originalStringify = JSON.stringify;
+  let prunedArg: { extra?: Record<string, unknown> } | undefined;
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    if (prunedArg === undefined) prunedArg = args[0] as { extra?: Record<string, unknown> };
+    return originalStringify(...args);
+  });
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    spy.mockRestore();
+  }
+
+  expect(Object.values(prunedArg?.extra ?? {})).toEqual(expect.arrayContaining(["valueA", "valueB"]));
+});
+
 // Only the message-less raw-frame fallback was bounded; a huge message,
 // title, hint, or source string reaches item.text / ItemModel.warning
 // verbatim otherwise, leaving the same oversized-frame vector open through
 // a different field. Every string the fold puts into the model must be
 // bounded, not just the fallback.
 test("an oversized message, title, hint, and source are each bounded at the fold", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const HUGE = 5_000_000;
   const params = {
@@ -4985,12 +4940,11 @@ test("an oversized message, title, hint, and source are each bounded at the fold
   model = applyNotification(model, { method: "warning", params }, 1002);
 
   const item = itemAt(turnAt(model, 0), 0);
-  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
   expect(item.text.length).toBeGreaterThan(0);
-  expect(item.text.length).toBeLessThan(MAX_CHARS * 2);
-  expect(item.warning?.title?.length).toBeLessThan(MAX_CHARS * 2);
-  expect(item.warning?.hint?.length).toBeLessThan(MAX_CHARS * 2);
-  expect(item.warning?.source?.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.text.length).toBeLessThan(RAW_WARNING_FRAME_MAX_CHARS * 2);
+  expect(item.warning?.title?.length).toBeLessThan(RAW_WARNING_FRAME_MAX_CHARS * 2);
+  expect(item.warning?.hint?.length).toBeLessThan(RAW_WARNING_FRAME_MAX_CHARS * 2);
+  expect(item.warning?.source?.length).toBeLessThan(RAW_WARNING_FRAME_MAX_CHARS * 2);
 });
 
 // warningMessage and hasWarningText decide "is there any content here" with
@@ -5000,15 +4954,7 @@ test("an oversized message, title, hint, and source are each bounded at the fold
 // scan). Spies on String.prototype.trim to prove hasWarningText no longer
 // calls it at all.
 test("a huge warning message is never trimmed at full size before it's bounded", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const HUGE = 5_000_000;
   const originalTrim = String.prototype.trim;
@@ -5019,8 +4965,11 @@ test("a huge warning message is never trimmed at full size before it's bounded",
   });
 
   const params = { threadId: "thr_t", ref: "ref_t", message: "m".repeat(HUGE) };
-  model = applyNotification(model, { method: "warning", params }, 1002);
-  spy.mockRestore();
+  try {
+    model = applyNotification(model, { method: "warning", params }, 1002);
+  } finally {
+    spy.mockRestore();
+  }
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.text.length).toBeGreaterThan(0);
@@ -5032,19 +4981,11 @@ test("a huge warning message is never trimmed at full size before it's bounded",
 // that bound was invisible to the check - a message with more than 2000
 // leading blank code points then real text was misclassified as blank
 // (falling back to the raw-frame JSON dump instead of storing the message).
-// boundedContent then keeps the window starting at the message's own first
+// The stored value keeps the window starting at the message's own first
 // non-whitespace code point, not the leading padding, so the real text is
 // what item.text ends up holding.
 test("a warning message with more than 2000 leading blank code points is not misclassified as blank", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", message: `${" ".repeat(3000)}real content` };
   model = applyNotification(model, { method: "warning", params }, 1002);
@@ -5061,15 +5002,7 @@ test("a warning message with more than 2000 leading blank code points is not mis
 // visible to show. Invariant: stored warning strings are the bounded
 // prefix of the CONTENT, never of the padding in front of it.
 test("a warning title with more than 2000 leading blank code points renders its real text, not the padding", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", title: `${" ".repeat(3000)}URGENT` };
   model = applyNotification(model, { method: "warning", params }, 1002);
@@ -5078,21 +5011,27 @@ test("a warning title with more than 2000 leading blank code points renders its 
   expect(item.warning?.title).toBe("URGENT");
 });
 
+// The scan-for-content-then-bound-from-there rule above only has anything to
+// skip when the value actually needs truncating - a short title well under
+// the bound must survive verbatim, leading whitespace included, since no
+// bounding is happening at all.
+test("a short warning title keeps its leading whitespace when it's nowhere near the bound", () => {
+  let model = warningTurnModel();
+
+  const params = { threadId: "thr_t", ref: "ref_t", title: " URGENT" };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.warning?.title).toBe(" URGENT");
+});
+
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
 // mobile's warning fallback reads them from item.warning when text is blank -
 // see mobile/src/conversation/project.ts's warningFallbackText).
 test("a message-less warning with a title leaves text blank instead of falling back to the raw frame", () => {
-  let model = testHydrate();
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    },
-    1001,
-  );
+  let model = warningTurnModel();
 
   const params = { threadId: "thr_t", ref: "ref_t", title: "Sandbox blocked" };
   model = applyNotification(model, { method: "warning", params }, 1002);
