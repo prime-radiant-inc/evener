@@ -100,13 +100,11 @@ func TestPluginMarketplaceRemove(t *testing.T) {
 }
 
 // TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter
-// exercises round 4's #1890 fix at the CLI boundary: RemoveMarketplace's
-// unregister save has already landed (plugins.ErrMarketplaceUnregisteredCloneRemains)
-// by the time its clone-removal cleanup fails, so the CLI must not print a
-// plain failure - a user reading that as "removal failed" and retrying would
-// hit ErrMarketplaceNotFound and wrongly conclude the retry, not the first
-// call, removed it. The error still exits non-zero: the clone files are
-// real litter the caller needs to know about.
+// verifies the CLI's applied-with-litter outcome: RemoveMarketplace's
+// unregister save has already landed
+// (plugins.ErrMarketplaceUnregisteredCloneRemains) by the time its
+// clone-removal cleanup fails, so the CLI must describe the removed registry
+// entry and remaining clone files while still exiting non-zero.
 func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix directory permission to force a real removal failure")

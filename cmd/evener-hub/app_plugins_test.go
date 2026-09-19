@@ -587,14 +587,12 @@ func TestPlugins_Marketplace_RemoveAndRefreshRefusalsAreWireErrors(t *testing.T)
 }
 
 // TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError
-// exercises round 4's #1890 fix: RemoveMarketplace's unregister save has
-// already landed (plugins.ErrMarketplaceUnregisteredCloneRemains) by the
-// time its clone-removal cleanup fails, so marketplaceRefusalToWire's plain
-// refusal path is the wrong classification for it - a client reading that as
-// a refusal would retry and land on ErrMarketplaceNotFound, never learning
-// the marketplace it retried for is already gone. The distinct WireError
-// carries the updated list in Data.Applied so the caller reconciles instead
-// of retrying.
+// verifies the applied-with-litter wire outcome: RemoveMarketplace's
+// unregister save has already landed
+// (plugins.ErrMarketplaceUnregisteredCloneRemains) by the time its
+// clone-removal cleanup fails. The distinct WireError carries the updated
+// list in Data.Applied so the caller can reconcile instead of retrying a
+// removal whose registry entry is already gone.
 func TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix directory permission to force a real removal failure")
@@ -667,14 +665,11 @@ func TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError(t 
 }
 
 // TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFailure
-// exercises round 5's #1890 fix: the re-list RemoveMarketplace's litter path
-// runs to build Data.Applied is its own fresh read, unrelated to whether the
-// unregister-then-clone-cleanup already applied, and can fail on its own
-// account. Before this fix that dropped the typed WireError entirely and
-// returned the bare list error, so a caller could no longer tell "removed
-// with litter" from an ordinary failure and might retry into
-// ErrMarketplaceNotFound. hubPluginsReconcileAfterCloneLitter breaks that one
-// read (a real permission-denied, not a stub) without touching
+// verifies that the typed applied-with-litter outcome survives a failure in
+// the fresh read used to build Data.Applied. The read is unrelated to whether
+// the unregister-then-clone-cleanup already applied, so the hub keeps the
+// typed WireError and marks the applied snapshot unavailable. The seam breaks
+// that one read with a real permission-denied without touching
 // RemoveMarketplace's own successful unregister and failed clone cleanup.
 func TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
