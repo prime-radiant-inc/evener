@@ -3,8 +3,10 @@ package interactiveartifacts
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,5 +165,58 @@ func TestServiceControlEOFExitsOwnedProcess(t *testing.T) {
 	<-wait
 	if !child.cmd.ProcessState.Success() || s.Status().ProcessesReaped != 1 {
 		t.Fatalf("control EOF did not drain and exit: %v %+v", child.cmd.ProcessState, s.Status())
+	}
+}
+
+func TestSupervisorObservedExitWithdrawsReadiness(t *testing.T) {
+	for _, startup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("during-startup-%v", startup), func(t *testing.T) {
+			reaped, releaseReap := make(chan struct{}), make(chan struct{})
+			policyEntered, releasePolicy := make(chan struct{}), make(chan struct{})
+			backoff := make(chan struct{})
+			var reapOnce, policyOnce sync.Once
+			resume := func() { reapOnce.Do(func() { close(releaseReap) }); policyOnce.Do(func() { close(releasePolicy) }) }
+			s := NewSupervisor(filepath.Join(t.TempDir(), "private"), SupervisorOptions{
+				command: []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process"},
+				Policy: func(context.Context) ([]NamespacePolicy, error) {
+					if startup {
+						close(policyEntered)
+						<-releasePolicy
+					}
+					return nil, nil
+				},
+				afterReap: func() { close(reaped); <-releaseReap },
+				Wait:      func(ctx context.Context, _ time.Duration) error { close(backoff); <-ctx.Done(); return ctx.Err() },
+			})
+			t.Cleanup(func() { resume(); requireNoError(t, s.Close()) })
+			acquired := make(chan error, 1)
+			go func() { _, err := s.Ensure(t.Context()); acquired <- err }()
+			if startup {
+				<-policyEntered
+			} else {
+				requireNoError(t, <-acquired)
+			}
+			// This is the exact child PID just started by this supervisor; no process search.
+			owned, err := os.FindProcess(s.Status().PID)
+			requireNoError(t, err)
+			requireNoError(t, owned.Kill())
+			<-reaped
+			status := s.Status()
+			if status.State == "ready" || status.Readiness.Endpoint != "" || status.PID != 0 || status.LiveProcesses != 0 || status.ProcessesReaped != 1 {
+				t.Errorf("observed dead child remains ready: %+v", status)
+			}
+			if startup {
+				policyOnce.Do(func() { close(releasePolicy) })
+				if err := <-acquired; err == nil {
+					t.Error("published readiness after observed startup exit")
+				}
+			} else {
+				if _, err := s.Ensure(t.Context()); err == nil {
+					t.Error("Ensure returned observed dead child")
+				}
+			}
+			reapOnce.Do(func() { close(releaseReap) })
+			<-backoff
+		})
 	}
 }

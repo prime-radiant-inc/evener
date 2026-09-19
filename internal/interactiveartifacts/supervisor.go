@@ -24,6 +24,7 @@ type SupervisorOptions struct {
 	Jitter     func() float64
 	command    []string
 	extraFiles []*os.File
+	afterReap  func()
 }
 
 // ServiceStatus intentionally contains no endpoint credential or artifact data.
@@ -43,6 +44,7 @@ type ownedService struct {
 	done   chan struct{}
 	ready  Readiness
 	cancel context.CancelFunc
+	exited bool // protected by Supervisor.mu
 }
 type Supervisor struct {
 	root         string
@@ -124,22 +126,28 @@ func (s *Supervisor) run() {
 		child, err := s.start()
 		if err == nil {
 			s.mu.Lock()
-			s.child = child
-			s.status.State = "ready"
-			s.status.Readiness = child.ready
-			s.signal()
+			exited := child.exited
+			if !exited {
+				s.child = child
+				s.status.State = "ready"
+				s.status.Readiness = child.ready
+				s.signal()
+			}
 			s.mu.Unlock()
-			select {
-			case <-s.ctx.Done():
-				s.stop(child)
-				return
-			case <-child.done:
+			if !exited {
+				select {
+				case <-s.ctx.Done():
+					s.stop(child)
+					return
+				case <-child.done:
+				}
 			}
 			child.cancel()
 			_ = child.client.Close()
 		}
 		s.mu.Lock()
 		s.child = nil
+		s.status.Readiness = Readiness{}
 		now := s.options.Now()
 		kept := s.failures[:0]
 		for _, at := range s.failures {
@@ -231,7 +239,19 @@ func (s *Supervisor) start() (_ *ownedService, resultErr error) {
 		s.status.ProcessesReaped++
 		s.status.LiveProcesses--
 		s.status.PID = 0
+		child.exited = true
+		// Publish observed death before transport cleanup can block. Startup
+		// checks the same fence before advertising readiness after policy replay.
+		if s.child == child {
+			s.child = nil
+			s.status.State = "backoff"
+			s.status.Readiness = Readiness{}
+			s.signal()
+		}
 		s.mu.Unlock()
+		if s.options.afterReap != nil {
+			s.options.afterReap()
+		}
 		close(child.done)
 	}()
 	defer func() {
