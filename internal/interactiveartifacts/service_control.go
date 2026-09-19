@@ -208,6 +208,9 @@ type lifetimeTransport struct {
 	ctx context.Context
 }
 
-func (t *lifetimeTransport) Send(_ context.Context, m appwire.Message) error {
+func (t *lifetimeTransport) Send(ctx context.Context, m appwire.Message) error {
+	if err := ctx.Err(); err != nil {
+		return appwire.RequestNotSentError{Err: err}
+	}
 	return t.Transport.Send(t.ctx, m)
 }

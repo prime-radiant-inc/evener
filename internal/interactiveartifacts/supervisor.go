@@ -266,6 +266,9 @@ func compatible(ready Readiness) bool {
 func controlRequest(ctx context.Context, client *appwire.Client, method string, params, out any) error {
 	var result controlResult
 	if err := client.Request(ctx, method, params, &result); err != nil {
+		if unsent, ok := errors.AsType[appwire.RequestNotSentError](err); ok {
+			return unsent
+		}
 		return errors.New("artifact control unavailable; dispatched outcome may be uncertain")
 	}
 	if result.Error != nil {
@@ -280,14 +283,20 @@ func controlRequest(ctx context.Context, client *appwire.Client, method string, 
 	return nil
 }
 func (s *Supervisor) request(ctx context.Context, method string, params, out any) error {
+	if err := ctx.Err(); err != nil {
+		return appwire.RequestNotSentError{Err: err}
+	}
 	if _, err := s.Ensure(ctx); err != nil {
+		if ctx.Err() != nil {
+			return appwire.RequestNotSentError{Err: ctx.Err()}
+		}
 		return err
 	}
 	select {
 	case s.controlSlots <- struct{}{}:
 		defer func() { <-s.controlSlots }()
 	case <-ctx.Done():
-		return ctx.Err()
+		return appwire.RequestNotSentError{Err: ctx.Err()}
 	}
 	s.mu.Lock()
 	child := s.child
