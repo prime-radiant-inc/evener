@@ -218,7 +218,7 @@ function activityTree(revision = 1) {
 
 function continuedPartialTree() {
   return {
-    revision: 2,
+    revision: 1,
     root: {
       sessionId: "sess_root",
       ref: "ref_root",
@@ -338,7 +338,7 @@ function emptyExplainedTree() {
 
 function afterSkipTree() {
   return {
-    revision: 2,
+    revision: 1,
     root: {
       sessionId: "sess_root",
       ref: "ref_root",
@@ -1207,6 +1207,36 @@ describe("ActivityPanel", () => {
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
       ref: "ref_root",
       continuation: "partial-page-2",
+    });
+  });
+
+  test("a continuation page from a different revision is discarded for a fresh root", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      // The page answers the token at a revision the retained tree is not on.
+      if (continuation) return { data: { ...continuedPartialTree(), revision: 2 } };
+      rootCalls += 1;
+      return { data: activityTree(1) };
+    });
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    // The mismatched page is discarded and exactly one fresh root is fetched:
+    // the discard-triggered refresh coalesces with the pending-root drain.
+    await waitFor(() => expect(rootCalls).toBe(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(rootCalls).toBe(2);
+    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
+      ref: "ref_root",
     });
   });
 

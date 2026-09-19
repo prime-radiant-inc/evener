@@ -20,3 +20,13 @@ var sqliteURIPathEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23
 func sqliteDSN(dbPath string) string {
 	return "file:" + sqliteURIPathEscaper.Replace(dbPath) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 }
+
+// sqliteDSNImmediate is sqliteDSN with an IMMEDIATE transaction lock. The FTS
+// writer reads (row count, baseline token) before its first write, while
+// archive/favorite/pin writers share index.db; under the default deferred begin
+// a concurrent commit in that window invalidates the read snapshot and the
+// write upgrade fails with SQLITE_BUSY_SNAPSHOT, which busy_timeout does not
+// cover. Taking the write lock up front avoids it.
+func sqliteDSNImmediate(dbPath string) string {
+	return sqliteDSN(dbPath) + "&_txlock=immediate"
+}

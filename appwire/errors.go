@@ -29,6 +29,11 @@ const (
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
 	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
+	// ErrorTranscriptDisplayPostApply marks a transcript-display patch that
+	// APPLIED (the rename published the new revision) before a follow-up
+	// durable step failed; the error's data carries the applied canonical
+	// state. Same rule as ErrorKeybindingsPostRename, for the other store.
+	ErrorTranscriptDisplayPostApply ErrorInfo = "transcriptDisplayPostApply"
 )
 
 type MutationOutcome string

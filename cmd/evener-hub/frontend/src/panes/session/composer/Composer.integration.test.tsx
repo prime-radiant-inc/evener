@@ -640,7 +640,11 @@ test("a second message queues behind a committed start even when recovery projec
     status: { type: "idle" },
     evener: {
       ref: "ref_a",
-      capabilities: { ...FULL_CAPABILITIES, queue: false, steer: false, interrupt: false },
+      // A live idle snapshot's capability set: Steer, Interrupt and Queue
+      // advertise harness support (#1375), so an idle thread on a wired daemon
+      // carries them true. The false idle set the kata-8c65 window used to
+      // carry no longer exists.
+      capabilities: FULL_CAPABILITIES,
       queue: { revision: 0 },
     },
     turns: [],
@@ -943,6 +947,16 @@ function ackAskUserCall(
     fake.emitNotification({
       method: "item/completed",
       params: { ...base, item: { ...base.item, status: "completed" } },
+    });
+  });
+  act(() => {
+    // The hub stamps askPending onto the thread/status/changed frame that
+    // goes with the turn ending on this ask_user call
+    // (server/appwire_runtime.go's stampAskPendingOnStatusChange); askPending
+    // is the wire's own source for a pending ask (deriveAskQuestions.ts).
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
     });
   });
 }

@@ -4,6 +4,7 @@
 // Every function here is pure: given the same inputs, produces the same
 // (possibly reference-equal, for no-op cases) output.
 
+import { appendChunk, pendingTextJoined } from "./chunkview";
 import { type ItemImage, type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import type {
   AnyNotification,
@@ -73,201 +74,6 @@ function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
-// Streaming-delta chunk accumulation, in O(1) per delta.
-//
-// The pre-fix shape copied the whole accumulated chunk array on every delta
-// (pendingText: [...(item.pendingText ?? []), delta]) — O(current-length)
-// work per delta, O(n^2) total for an item streamed in n chunks; the
-// token-flood benchmark measured ~13x late/early per-delta cost growth at
-// 10k deltas (docs/superpowers/plans/wave4-report.md, "Token-flood
-// benchmark"). The public shape — ItemModel.pendingText: string[] of every
-// chunk, in arrival order, readable at any time mid-stream — is unchanged;
-// only the cost of producing the next state changed.
-//
-// Shape: a per-item append-only backing array plus, per fold state, an
-// IMMUTABLE fixed-length view of that backing (a Proxy over an empty array
-// target that presents backing[0..length) — real Array.prototype methods
-// work on it, Array.isArray is true, and every mutating trap throws). A
-// delta appends the chunk to the backing (O(1)) and mints a fresh view one
-// longer (O(1)) — no copy of any earlier chunk ever happens.
-// The view's brand also carries the running JOINED text (`brand.text`,
-// maintained per append), so the hot readers of a live view (settleItem,
-// AgentMessageItem's per-render markdown source) get the full text in O(1)
-// instead of paying the per-element Proxy-trap cost of a join.
-// Maintaining that join is not where the pre-fix quadratic cost lived,
-// though: `brand.text + delta` is the same flat-per-delta concatenation
-// item/toolOutput/delta's `output` uses — a rope on V8, a buffered primitive
-// on Hermes — so the array copy, not the string concat, is the one quadratic
-// shape appendChunk removes.
-//
-// Purity: the reducer's contract is immutable updates, and this preserves
-// it OBSERVATIONALLY. The one deliberate alias — new views share the
-// backing with the view they extend — is safe because a chunk is only ever
-// appended at the index one past the current view's fixed length: no view
-// already handed out can read that index (its length is frozen), so every
-// view ever returned reads the exact same bytes for its whole life. A fold
-// whose chunk history diverges from the backing's (a delta arriving on a
-// model state whose pendingText is not the backing's latest view — the
-// replay/branch/reset interleavings that would otherwise alias a future
-// push into an old view) takes copyChunkPrefix instead, detaching from the
-// shared backing entirely. So no output of applyNotification is ever
-// mutated by a later applyNotification — same inputs, same observable
-// outputs, which is the purity the file header promises.
-//
-// Why a Proxy view rather than "mutate the item's array in place": the
-// model is handed to React and tests that treat it as deeply immutable
-// (memo comparators, hydrate-vs-fold snapshots, expect(...).toEqual). A
-// bare mutable array would change observable content under an existing
-// reference after the fact, which is exactly the purity violation this
-// design exists to avoid; the view keeps each state's snapshot frozen.
-
-// Brands a view so appendChunk can recognize its own kind. Stored as a
-// non-enumerable symbol-keyed prop that ownKeys does not report, keeping
-// the view structurally identical to a plain string[] for every consumer
-// (toEqual, JSON.stringify, spread, iteration) while appendChunk still has
-// a way to check "is this one of mine" without an O(1)-breaking lookup.
-const CHUNK_VIEW = Symbol("evener.chunkView");
-
-// The per-view brand, carried ON THE PROXY TARGET as a non-enumerable
-// symbol-keyed prop (so the traps — one shared module-level handler, not a
-// fresh closure set per view — can read it with Reflect.get on the raw
-// target). `text` is the cached join of backing[0..length); it is only
-// current while the view is the backing's newest (length ===
-// backing.length), which is exactly when the O(1) readers use it.
-interface ChunkViewBrand {
-  backing: string[];
-  length: number;
-  text: string;
-}
-
-type ChunkView = string[] & { [CHUNK_VIEW]?: ChunkViewBrand };
-
-// "5" | "12" -> 5 | 12; anything else (including "length", symbols,
-// negatives, fractions) -> undefined. Canonical numeric-string form only.
-function chunkIndex(prop: string): number | undefined {
-  const n = Number(prop);
-  return Number.isInteger(n) && n >= 0 && String(n) === prop ? n : undefined;
-}
-
-// A view's brand, in ONE trap hit (a view created by chunkView answers
-// here; anything else — a plain array from tests or hydrate — returns
-// undefined). Callers that need both the backing and the length read them
-// off this single result rather than paying the get trap twice.
-function chunkBrand(chunks: string[]): ChunkViewBrand | undefined {
-  return (chunks as ChunkView)[CHUNK_VIEW];
-}
-
-// Every view shares this ONE handler (module-level, not minted per view):
-// the per-view state it needs — the brand — rides on the target, where the
-// traps read it with Reflect.get on the raw target (no closure capture, no
-// per-delta handler allocation). Every trap mirrors the exact descriptor
-// semantics of a real Array of that length so structural equality with a
-// plain string[] holds.
-const CHUNK_VIEW_HANDLER: ProxyHandler<string[]> = {
-  get(t, prop, receiver) {
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (prop === CHUNK_VIEW) return brand;
-    if (prop === "length") return brand?.length;
-    if (typeof prop === "string" && brand !== undefined) {
-      const i = chunkIndex(prop);
-      if (i !== undefined) return i < brand.length ? brand.backing[i] : undefined;
-    }
-    return Reflect.get(t, prop, receiver);
-  },
-  has(t, prop) {
-    if (prop === CHUNK_VIEW) return false;
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (typeof prop === "string" && brand !== undefined) {
-      const i = chunkIndex(prop);
-      if (i !== undefined) return i < brand.length;
-    }
-    return Reflect.has(t, prop);
-  },
-  ownKeys(t) {
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    const length = brand?.length ?? 0;
-    const keys: string[] = [];
-    for (let i = 0; i < length; i++) keys.push(String(i));
-    keys.push("length");
-    return keys;
-  },
-  getOwnPropertyDescriptor(t, prop) {
-    if (prop === CHUNK_VIEW) return undefined;
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (brand !== undefined) {
-      if (prop === "length") return { value: brand.length, writable: true, enumerable: false, configurable: false };
-      if (typeof prop === "string") {
-        const i = chunkIndex(prop);
-        if (i !== undefined) {
-          if (i >= brand.length) return undefined;
-          return { value: brand.backing[i], writable: true, enumerable: true, configurable: true };
-        }
-      }
-    }
-    return Reflect.getOwnPropertyDescriptor(t, prop);
-  },
-  set() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  deleteProperty() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  defineProperty() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  preventExtensions() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-};
-
-// Returns a fresh immutable view of backing[0..length). `text` (the cached
-// join of that prefix) may be passed by a caller that already knows it —
-// the append fast path does, saving the O(length) recompute.
-function chunkView(backing: string[], length: number, text?: string): string[] {
-  // A zero-length view has nothing to protect; an empty plain array is
-  // cheaper than a Proxy and toEqual-identical. Also keeps RawItemView's
-  // `chunks.length === 0` and AgentMessageItem's empty-array fallback on
-  // their existing code paths.
-  if (length === 0) return [];
-  const brand: ChunkViewBrand = { backing, length, text: text ?? backing.slice(0, length).join("") };
-  const target: string[] = [];
-  // configurable (not frozen) is REQUIRED by the Proxy invariants: a
-  // non-configurable target prop would force ownKeys to report the symbol,
-  // breaking toEqual/spread/JSON structural invisibility. Configurable, the
-  // traps below may hide it — exactly like the old closure-carried brand.
-  Object.defineProperty(target, CHUNK_VIEW, { value: brand, enumerable: false, writable: true, configurable: true });
-  return new Proxy(target, CHUNK_VIEW_HANDLER);
-}
-
-// Appends `delta` to `item.pendingText`, O(1). Fast path: the item's view
-// is the newest over its backing (the plain sequential-stream case, by far
-// the common one) — push and mint. Slow path (copy-on-branch): the item's
-// view is stale (a folded state that predates later pushes on the same
-// backing) or a plain array (hydrated/test-constructed). Copying is the
-// only correct option there: pushing onto the old view's backing would
-// overwrite a chunk some other view already reads, and pushing onto a plain
-// array would mutate an array the caller may still hold.
-function appendChunk(current: string[] | undefined, delta: string): string[] {
-  if (current === undefined) return copyChunkPrefix([], delta);
-  const brand = chunkBrand(current);
-  if (brand !== undefined && brand.length === brand.backing.length) {
-    brand.backing.push(delta);
-    return chunkView(brand.backing, brand.backing.length, brand.text + delta);
-  }
-  return copyChunkPrefix(current, delta);
-}
-
-// The joined text of a pendingText value, O(1) for a live view (the brand
-// caches it per append) and a plain join for anything else (a plain array
-// from tests or hydrate). THE one read both hot consumers — settleItem's
-// finalize and AgentMessageItem's per-render markdown source — go through,
-// so the O(1) brand-cache read lives in exactly one place.
-export function pendingTextJoined(chunks: string[]): string {
-  const brand = chunkBrand(chunks);
-  if (brand !== undefined && brand.length === brand.backing.length) return brand.text;
-  return chunks.join("");
-}
-
 // joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] —
 // per-summaryIndex chunk lists) into one string per summaryIndex, dropping
 // any paragraph that joins to nothing or to whitespace alone: a summary the
@@ -275,29 +81,12 @@ export function pendingTextJoined(chunks: string[]): string {
 // screen. Every per-summary join goes through pendingTextJoined, so a live
 // chunk view answers from its brand-cached text in O(1) rather than an
 // element-by-element Proxy walk on every render. THE reading of that field
-// for both hosts: the web's think block and native's reasoning row.
+// for the web's think block (cmd/evener-hub/frontend/src/panes/session/
+// transcript/messages/ThinkBlock.tsx) — check each host's own reasoning
+// row before assuming it reads this too; not every consumer does.
 export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
   if (!summaries) return [];
   return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
-}
-
-// Test-only white-box accessor: the backing array a view reads (undefined
-// for a plain array). The O(1) test discriminates append from copy by
-// asserting this reference is IDENTICAL across consecutive folds — the one
-// property a per-delta copy cannot fake (chunk strings are primitives, so
-// element-level Object.is survives a copy).
-export function chunkViewBackingForTests(chunks: string[]): string[] | undefined {
-  return chunkBrand(chunks)?.backing;
-}
-
-// Detached append: copies `chunks` (a plain array or a view) and appends.
-// O(length) — only ever reached when the item's chunk history has already
-// diverged from any shared backing, so the total work across a whole
-// divergent replay is still O(n) for n deltas (one copy per branch point,
-// not per delta).
-function copyChunkPrefix(chunks: string[], delta: string): string[] {
-  const backing = [...chunks, delta];
-  return chunkView(backing, backing.length);
 }
 
 // Thread.createdAt/updatedAt are the wire's only Unix-SECONDS stamps
@@ -329,6 +118,19 @@ function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. outputImagesToItemImages
+  // below reads the opposite way, because the wire itself means the opposite:
+  // OutputImages is omitzero, so nil (never had any) sends no key, while a
+  // non-nil empty list is the hub's only way to say "these are gone" — an
+  // explicit removal (appwire/output_images.go's nil/non-nil-empty/non-empty
+  // rule). Input images carry no removal signal at all (they're what the user
+  // sent), which is why they read every empty list the same as absent.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -697,7 +499,14 @@ function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): It
   });
 }
 
-function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+// Structural, not ItemModel-only: a wire ThreadItem carries the same
+// id/transcriptKey shape, so a caller matching a live wire item against
+// folded ItemModels (the mobile store's findFoldedItem) can call this
+// directly instead of re-implementing the rule.
+export function itemIdentityMatches(
+  left: { id: string; transcriptKey?: string },
+  right: { id: string; transcriptKey?: string },
+): boolean {
   if (left.transcriptKey && right.transcriptKey) {
     return left.transcriptKey === right.transcriptKey;
   }
@@ -1186,14 +995,224 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 // itself a non-blank string, or an object (and not an array) whose own
 // `message` is a non-blank string. Every other shape carries no message.
 function warningMessage(params: WarningParams): string {
-  if (typeof params.message === "string" && params.message.trim() !== "") return params.message;
+  if (typeof params.message === "string" && hasWarningText(params.message)) return params.message;
   const warning = params.warning;
-  if (typeof warning === "string" && warning.trim() !== "") return warning;
+  if (typeof warning === "string" && hasWarningText(warning)) return warning;
   if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
     const nested = (warning as { message?: unknown }).message;
-    if (typeof nested === "string" && nested.trim() !== "") return nested;
+    if (typeof nested === "string" && hasWarningText(nested)) return nested;
   }
   return "";
+}
+
+// True when value is a non-blank string — the same "is this actually content"
+// reading warningMessage above and WarningItem.tsx's renderer both take for
+// title/hint, so the raw-frame fallback below and the structured fields it
+// would otherwise duplicate never disagree about which one has something to
+// show. A type predicate so a caller narrows `unknown` in one step instead of
+// repeating the typeof/trim check to get the same narrowing. A regex test
+// scans for the first non-whitespace character without allocating a copy of
+// the candidate (unlike bounding-then-trimming, which also answered wrong
+// for a value with more than RAW_WARNING_FRAME_MAX_CHARS leading blank code
+// points followed by real content — the bound never reached it). Bounding
+// happens separately, only when a value is actually stored (boundedCodePoints
+// below, applied at each call site that assigns into the model).
+export function hasWarningText(value: unknown): value is string {
+  return typeof value === "string" && /\S/.test(value);
+}
+
+// A frame with no message anywhere is surfaced as the frame itself
+// (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
+// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
+// contract server-side). Bounded because params is unknown on the wire and
+// can carry anything; this is package-level code feeding both hosts, and
+// neither host's own display bound can be assumed to run before something
+// else reads item.text.
+const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+// Generous bounds for the pre-stringify prune below: comfortably above what
+// any real warning frame carries, but small enough that a transport-sized
+// (up to 128 MiB) malformed frame can never make JSON.stringify walk more
+// than a tiny fraction of it.
+const RAW_WARNING_FRAME_MAX_FIELD_CHARS = RAW_WARNING_FRAME_MAX_CHARS;
+const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
+const RAW_WARNING_FRAME_MAX_OBJECT_KEYS = 50;
+const RAW_WARNING_FRAME_MAX_DEPTH = 6;
+// Total object/array entries the prune will walk across the WHOLE frame,
+// regardless of how the size is spread across depth and breadth. The
+// per-level array/key caps alone leave a gap: many small objects, each
+// individually within the array/key/depth bounds, can still sum to a huge
+// tree for JSON.stringify to walk.
+const RAW_WARNING_FRAME_MAX_NODES = 500;
+
+// Prunes a value to a small bound before it ever reaches JSON.stringify:
+// every string truncated to RAW_WARNING_FRAME_MAX_FIELD_CHARS UTF-16 units,
+// every array/object to its first 50 items/keys, nesting cut off at 6
+// levels, and the whole walk cut off after RAW_WARNING_FRAME_MAX_NODES
+// entries regardless of shape. Without this, JSON.stringify(params) itself
+// walks the WHOLE frame — up to the transport's 128 MiB limit — before
+// rawWarningFrame gets a chance to slice anything; bounding the input, not
+// just the output, is what keeps that walk small regardless of how large
+// or how shaped the wire frame actually is.
+// Truncates a string to maxCodePoints code points, safely (a UTF-16 slice
+// can otherwise cut a surrogate pair in half). The one primitive every
+// string bound in this file goes through — prunedForStringify's per-field
+// and per-key truncation, and boundedCodePoints below — so a wire string
+// too big to reach ItemModel unbounded is always cut on a code-point
+// boundary, never mid-pair. A fast path for the common (short) case:
+// UTF-16 length is always >= code-point count, so no huge value means no
+// work.
+// `start` lets a caller bound a WINDOW rather than always the leading
+// prefix: the string from `start` onward is what's kept, sliced in one
+// already-bounded copy (at most maxCodePoints * 2 UTF-16 units), never the
+// whole `start`-to-end remainder — boundedContent below relies on this to
+// stay bounded even when `start` is itself deep into a multi-megabyte
+// string.
+function boundedPrefix(s: string, maxCodePoints: number, start = 0): string {
+  const remaining = s.length - start;
+  if (remaining <= maxCodePoints) return start === 0 ? s : s.slice(start);
+  // Bound the allocation before expanding to code points: a UTF-16 window
+  // twice the code-point limit always contains at least that many code
+  // points (every code point is at most two UTF-16 units), so slicing the
+  // string first — a cheap view, no per-character array — never drops real
+  // content.
+  let bounded = s.slice(start, start + maxCodePoints * 2);
+  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
+  // as the last unit of `bounded`. Array.from would treat that lone unit as
+  // its own broken "character" rather than dropping it; strip it before
+  // expanding so the final bounded frame never ends on one.
+  const lastUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  return Array.from(bounded).slice(0, maxCodePoints).join("");
+}
+
+function prunedForStringify(value: unknown, depth: number, budget: { remaining: number }): unknown {
+  if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
+  budget.remaining -= 1;
+  if (typeof value === "string") {
+    const bounded = boundedPrefix(value, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
+    return bounded === value ? value : `${bounded}…`;
+  }
+  if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
+    return typeof value === "object" && value !== null ? "…" : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
+  }
+  if (typeof value === "object" && value !== null) {
+    // A wire key literally named "__proto__" is a real, own, enumerable
+    // property on the parsed object (JSON.parse never invokes a setter) -
+    // assigning into a plain `{}` here would invoke Object.prototype's
+    // __proto__ setter instead of creating an own property, silently
+    // dropping that field from the pruned result. Object.create(null) has
+    // no such setter, so every assignment below is a genuine own property.
+    const pruned: Record<string, unknown> = Object.create(null);
+    // for...in still needs one full enumeration of value's own keys (so
+    // does Object.keys/Object.entries) — that step is O(keys), the same
+    // order as the JSON.parse that produced this object in the first
+    // place, so it adds no NEW asymptotic cost on top of what parsing the
+    // wire frame already paid. What for...in avoids is allocating a
+    // [key, value] PAIR per key and READING more values than survive the
+    // cap: Object.entries reads and copies every value up front, while this
+    // loop counts and breaks, reading (and copying) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS + 1 property values regardless of
+    // how many keys the object has.
+    let taken = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (taken >= RAW_WARNING_FRAME_MAX_OBJECT_KEYS || budget.remaining <= 0) break;
+      taken++;
+      // The key-count cap above bounds how many properties survive, but
+      // says nothing about how long any one property NAME is — an
+      // oversized key would otherwise ride through verbatim, the same
+      // vector the value-length bound above closes for string values.
+      const boundedKeyPrefix = boundedPrefix(key, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
+      const boundedKey = boundedKeyPrefix === key ? key : `${boundedKeyPrefix}…`;
+      pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
+    }
+    return pruned;
+  }
+  return value;
+}
+
+// Applied to every string a warning frame can put into the model — message,
+// title, hint, source, and the raw fallback — so a multi-megabyte value
+// anywhere in the frame can never reach ItemModel unbounded, not just via
+// the message-less fallback path.
+function boundedCodePoints(s: string): string {
+  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS);
+}
+
+// hasWarningText finds non-blank content anywhere in a string, but
+// boundedCodePoints alone always keeps the LEADING RAW_WARNING_FRAME_MAX_CHARS
+// code points — a message, title, hint, or source with more than that many
+// leading blank code points followed by real content would pass
+// hasWarningText yet be stored as nothing but the blank prefix, rendering
+// as nothing to every consumer. /\S/.exec finds the first non-whitespace
+// index without copying anything; boundedPrefix then takes its own single,
+// already-bounded slice starting there, so the window kept always contains
+// the actual content instead of the padding in front of it.
+function boundedContent(s: string): string {
+  const start = /\S/.exec(s)?.index ?? 0;
+  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS, start);
+}
+
+function rawWarningFrame(params: WarningParams): string {
+  const json = JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES }));
+  // prunedForStringify above already keeps `json` itself small; this bound
+  // is defense-in-depth for the code-point expansion specifically.
+  return boundedCodePoints(json);
+}
+
+// The one validated shape every warning row — live with a turn, live
+// without one, and (via the item this produces) a canonical reread — reads
+// title/hint/source from. params is unknown on the wire (WarningParams'
+// `warning` field, and title/hint despite their declared string type), so
+// this is the single place that turns it into string-or-absent fields; every
+// consumer reads the result, never params directly.
+export interface WarningFold {
+  text: string;
+  title?: string;
+  hint?: string;
+  source?: string;
+}
+
+export function foldWarningParams(params: WarningParams): WarningFold {
+  const text =
+    warningMessage(params) ||
+    (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params));
+  return {
+    // Bounded even though rawWarningFrame's own branch already is: a huge
+    // message (warningMessage's own return) is a separate, previously
+    // unbounded path into the model — one call here covers both. Stored
+    // warning strings are the bounded prefix of the CONTENT, never of the
+    // padding in front of it — boundedContent, not boundedCodePoints, keeps
+    // that true when a value has more leading blank code points than the
+    // bound itself.
+    text: boundedContent(text),
+    // Blank is absent too, not just "not a string" — hasWarningText's own
+    // reading, which every consumer must apply anyway. Normalizing it here
+    // means a future reader is never one missed hasWarningText call away
+    // from rendering blank content. Bounded for the same reason as text:
+    // an oversized title/hint/source reaching ItemModel.warning verbatim is
+    // the same class of vector rawWarningFrame closes for the fallback.
+    title: hasWarningText(params.title) ? boundedContent(params.title) : undefined,
+    hint: hasWarningText(params.hint) ? boundedContent(params.hint) : undefined,
+    source: hasWarningText(params.source) ? boundedContent(params.source) : undefined,
+  };
+}
+
+// Joins whichever WarningFold parts a caller has (title/text/hint, in
+// whatever order it passes them) into one display string, filtering out
+// blanks - the one composition rule every surface that renders a fold as a
+// single string shares, so mobile's canonical projector (title, text, hint)
+// and its live row (text, hint; title stays its own field there) never
+// drift into two different join implementations.
+export function joinWarningParts(parts: readonly (string | undefined)[]): string {
+  return parts.filter(hasWarningText).join(" — ");
 }
 
 // Folds one live wire notification into model. Most notifications carry
@@ -1667,6 +1686,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // it client-side; only the liveness signal survives.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
       const params = n.params;
+      const folded = foldWarningParams(params);
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
@@ -1678,9 +1698,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            text: folded.text,
             status: "completed",
-            warning: { source: params.source, title: params.title, hint: params.hint },
+            warning: { source: folded.source, title: folded.title, hint: folded.hint },
           };
           return { ...turn, items: [...turn.items, item] };
         }),

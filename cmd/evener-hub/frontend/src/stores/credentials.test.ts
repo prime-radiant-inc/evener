@@ -1208,7 +1208,7 @@ describe("mutations returning the updated instance list", () => {
     const fake = connectFakeClient();
     const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "" });
+      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "", originClientId: "test-tab" });
       return created;
     });
     await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
@@ -1218,7 +1218,7 @@ describe("mutations returning the updated instance list", () => {
   test("edit() calls evener/instance/edit and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://x", originClientId: "test-tab" });
       return LIST_RESPONSE;
     });
     await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
@@ -1309,7 +1309,7 @@ describe("mutations returning the updated instance list", () => {
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     await credentialsStore.getState().remove("work");
@@ -1319,7 +1319,7 @@ describe("mutations returning the updated instance list", () => {
   test("setDefault() calls evener/instance/setDefault and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/setDefault", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return LIST_RESPONSE;
     });
     await credentialsStore.getState().setDefault("work");
@@ -1780,7 +1780,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("remove() forwards the expected endpoint fingerprint when given one", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work" });
+      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     expect(await credentialsStore.getState().remove("work", "fp-work")).toBe(true);
@@ -1810,7 +1810,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("the destructive wrappers omit the fingerprint when none was captured", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     fake.on("evener/auth/apiKey/clear", (params) => {

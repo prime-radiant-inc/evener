@@ -1223,9 +1223,8 @@ describe("optimistic pending queue rows", () => {
     renderStrip(defaultProps());
 
     await act(async () => {
-      await submitWithPendingTracking(
-        { ref: "ref_a", method: "queue", text: "not yet confirmed", onFailure: () => {} },
-        () => threadsStore.getState().queue("ref_a", "not yet confirmed"),
+      await submitWithPendingTracking({ ref: "ref_a", text: "not yet confirmed", onFailure: () => {} }, () =>
+        threadsStore.getState().queue("ref_a", "not yet confirmed"),
       );
     });
 
@@ -1258,7 +1257,7 @@ describe("optimistic pending queue rows", () => {
 
     await act(async () => {
       await submitWithPendingTracking(
-        { ref: "ref_a", method: "queue", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
+        { ref: "ref_a", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
         () => threadsStore.getState().queue("ref_a", "", undefined, [" pkg:probe ", "pkg:probe"]),
       );
     });

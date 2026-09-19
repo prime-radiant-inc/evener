@@ -1374,29 +1374,25 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// intact in s.followups for the next drain cycle instead of being silently
 		// dropped by an awaiting rest that won't run it.
 		//
-		// Proof this capture is equivalent to askPendingCount() > 0, even though
-		// it reads raw state directly (unlike SetGoal/settleGoalOnIdle/Compact,
-		// which key on the pending-ask set): processOneInput unconditionally
-		// resets s.state to SessionProcessing and s.askPending to nil at entry
-		// (above, "s.setStateIfOpenLocked(SessionProcessing)" / "s.askPending =
-		// nil") for every accepted entry kind, so whatever this call's state was
-		// before this iteration's processOneInput call is wiped before it runs.
-		// The only path that can move it OUT of SessionProcessing before
-		// processOneInput returns on the clean-completion path is
-		// deliverIfCommunicated (session_tool_round.go), which writes
-		// SessionAwaiting via finishProcessingAtBoundary exactly when
-		// askedThisRound (this round grew askPending) — i.e. exactly when
-		// askPendingCount() > 0. The general non-ask idle→awaiting upgrade,
-		// armAwaitingAtSettle, is the only OTHER writer of SessionAwaiting
-		// reachable from this loop, but it runs strictly later, at the terminal
-		// settle (below, s.armAwaitingAtSettle), which is unconditionally
-		// followed by this call's own return — it never runs before this
-		// capture within the same ProcessInputKind call, and never more than
-		// once per call. So at this exact point, s.State() == SessionAwaiting
-		// holds if and only if askPendingCount() > 0 here; the two are
-		// interchangeable at this capture only, not as a general rule elsewhere
-		// in this file.
-		awaiting := s.State() == SessionAwaiting
+		// This used to read s.State() == SessionAwaiting alone, on the premise
+		// that askPendingCount() > 0 here implied THIS round's own delta grew it
+		// (askedThisRound, which deliverIfCommunicated maps straight to
+		// SessionAwaiting) — true only because processOneInput's entry used to
+		// clear askPending unconditionally, so nothing could reach this capture
+		// with a pending ask the round itself did not just post. A steering-carrier
+		// entry whose steer does not answer the ask (a human-note update,
+		// steeringCarrierClaimAnswersAsk) now skips that entry clear, so a round
+		// that merely acknowledges the note without posting anything new leaves
+		// askPending exactly as it was — nonzero, but with askedThisRound false —
+		// and deliverIfCommunicated settles it SessionIdle at this capture point
+		// (armAwaitingAtSettle's general upgrade runs later, at the outer loop's
+		// own terminal settle, not before this capture). Reading state alone would
+		// then pop and run a follow-up while ask1 sits unanswered
+		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
+		// pins this). askPendingCount() > 0 is checked directly alongside the
+		// state read so the gate holds regardless of which boundary state this
+		// round's own delta happened to settle on.
+		awaiting := s.State() == SessionAwaiting || s.askPendingCount() > 0
 		var fu string
 		if !awaiting {
 			// Follow-ups need no such guard: they live in memory for this
@@ -1788,6 +1784,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	// A steering-carrier entry (a queued human-note or answering steer with
+	// no turn of its own) only resolves the pending ask when the steer it is
+	// about to carry actually answers it: computed before the lock below
+	// since it reads the client-mutation journal, not session state.
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedClientMutationFromContext(ctx))
+
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -1801,7 +1803,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	s.askPending = nil
+	// Skipped when carrierAnswersAsk is false (a human-note carrier): the
+	// mid-round clear in clearAskPendingForResolvingSteer decides that case
+	// once acceptSteeringCarrierInput's drain actually runs.
+	if carrierAnswersAsk {
+		s.askPending = nil
+	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -2726,7 +2733,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
+	// Recorded for the duration of the drain so a skill-selection failure for
+	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
+	// can tag its TurnFailure as a resolution boundary too — this turn's mere
+	// acceptance already cleared askPending before the drain ever ran.
+	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
 	delivered := s.injectDrainedSteering()
+	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
@@ -2736,7 +2749,16 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		// Tagged only when the claimed steer itself answers the ask
+		// (steeringCarrierClaimAnswersAsk, the same journal-kind check the
+		// entry clear uses): a human-note carrier's entry clear already left
+		// askPending set, so its failure must not be a resolution boundary
+		// either, or restore would diverge from live.
+		if s.steeringCarrierClaimAnswersAsk(identity) {
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+		} else {
+			s.emitTurnFailure(errorDataFromError(err))
+		}
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was
