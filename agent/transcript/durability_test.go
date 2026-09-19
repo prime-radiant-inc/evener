@@ -289,3 +289,27 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
 	}
 }
+
+// TestAppendBatchSyncedFailsClosedOnAClosedWriter pins the exported batch
+// durability door's closed-writer contract: a closed writer recorded nothing,
+// so it can never be read as durable. A caller that treated the ordinary
+// doors' silent nil as durable would prune or advance state for a batch that
+// never landed.
+func TestAppendBatchSyncedFailsClosedOnAClosedWriter(t *testing.T) {
+	w, err := NewWriterWithFS(afero.NewMemMapFs(), "/closed-batch-synced.jsonl", Header{SessionID: "sess-closed-batch-synced"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.AppendBatchSynced([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("after close"))}); !errors.Is(err, ErrWriterClosed) {
+		t.Fatalf("AppendBatchSynced on a closed writer = %v, want ErrWriterClosed (a durability owner must not read a dropped batch as durable)", err)
+	}
+	// A writer that never existed stays a nil no-op, so a stateless session's
+	// fold does not error.
+	var nilWriter *Writer
+	if err := nilWriter.AppendBatchSynced([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))}); err != nil {
+		t.Fatalf("AppendBatchSynced on a nil writer = %v, want nil no-op", err)
+	}
+}

@@ -236,6 +236,104 @@ func TestSkillCompaction_CheckpointOnly(t *testing.T) {
 	}
 }
 
+// TestSkillCompaction_FailedBatchKeepsPendingOperation pins the durability
+// gate on the compaction finalize: a publication whose transcript batch landed
+// but could not be confirmed durable must NOT clear the pending operation or
+// consume its reload selection, because the durable receipt it depends on may
+// not survive a restart. The operation must stay pending so restart re-arms it
+// (or a surviving receipt reconciles it).
+func TestSkillCompaction_FailedBatchKeepsPendingOperation(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "failed-batch-lifecycle-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	id := s.Meta().ID
+	disableSessionNaming(s)
+	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{Description: "opaque-probe"}}
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		return "keep the token OPAQUE-77\n<skill-reload-selection>{\"reload_skills\":[\"scope:probe\"]}</skill-reload-selection>", nil
+	}
+	seedNumberedSessionHistory(t, s, 20)
+	// Every transcript fsync and rollback truncate fails: the fold's batch
+	// lands in the file but is never confirmed durable.
+	installFoldDegradedTranscriptWriter(t, s)
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): forces an actual fold
+
+	var rt events.RoundTimings
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &rt); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	op := s.pendingSkillCompactionSnapshot()
+	if op == nil || op.Phase != "pending" {
+		t.Fatalf("a publication whose batch is not confirmed durable must leave its operation pending, got %+v", op)
+	}
+	skills := loadSkillsSnapshot(t, stateDir, id)
+	if skills == nil || skills.PendingCompaction == nil || skills.PendingCompaction.Phase != "pending" {
+		t.Fatalf("the pending operation must survive on disk so restart can re-arm it, disk says %+v", skills)
+	}
+}
+
+// TestSkillCompaction_FailedBatchReArmsForcedTrigger pins the forced-trigger
+// re-arm that must accompany the claim revert: a forced compaction whose batch
+// is not confirmed durable returns to pending, but its round-tail dispatch
+// already consumed the transient trigger (applyPendingForceCompact cleared it),
+// so the revert must re-arm it or the operation waits for a restart that may
+// never come.
+func TestSkillCompaction_FailedBatchReArmsForcedTrigger(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "failed-batch-forced-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	disableSessionNaming(s)
+	seedNumberedSessionHistory(t, s, 20)
+	forced, err := s.requestSkillCompaction(context.Background(), "forced-note", "forced-instructions",
+		schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}})
+	if err != nil || forced == 0 {
+		t.Fatalf("requestSkillCompaction: gen=%d err=%v", forced, err)
+	}
+	// Every transcript fsync and rollback truncate fails: the forced fold's
+	// batch lands but is never confirmed durable.
+	installFoldDegradedTranscriptWriter(t, s)
+
+	s.applyPendingForceCompact(context.Background())
+
+	op := s.pendingSkillCompactionSnapshot()
+	if op == nil || op.Generation != forced || op.Phase != "pending" {
+		t.Fatalf("the forced operation must return to pending, got %+v", op)
+	}
+	if _, ok := s.takeForceRequest(); !ok {
+		t.Fatal("a pending forced operation whose batch was not confirmed durable must re-arm its round-tail trigger, or it is wedged until restart")
+	}
+}
+
+// TestSkillCompaction_NonDurableReminderWithdrawsHandoff pins the reminder arm
+// of the claim revert: a fold with no captured operation records a
+// generation-zero reminder handoff, and a batch that is not confirmed durable
+// must withdraw it — its marker rolled back (or never synced), so persisting the
+// receipt would make a later restart or request emit a post-compaction reminder
+// for a compaction the transcript never durably recorded.
+func TestSkillCompaction_NonDurableReminderWithdrawsHandoff(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "nondur-reminder-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	disableSessionNaming(s)
+	seedNumberedSessionHistory(t, s, 20)
+	// Every transcript fsync and rollback truncate fails: the manual fold's
+	// batch lands but is never confirmed durable.
+	installFoldDegradedTranscriptWriter(t, s)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("a fold whose batch is not confirmed durable must withdraw its recorded handoff, still holding %+v", handoffs)
+	}
+}
+
 // TestSkillCompaction_DeferredAutomatic pins the deferral semantics of an
 // automatic operation: an unchanged publication leaves it pending for a later
 // fold, the next ACTUAL compaction claims it, and an intent superseded while

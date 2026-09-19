@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -613,6 +614,286 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("the merged-back turn appears %d times in the resumed history, want exactly 1", count)
+	}
+}
+
+// TestFoldPublication_FailedTailCopyDoesNotCommitCompactionMarker pins the
+// failure half of the replay-tail rewrite: a copy whose durable write fails
+// must not leave behind the compaction marker that discards the original it
+// was meant to replace. The marker anchors a resume and drops every entry
+// before it, so a marker that survives a vanished copy loses the turn
+// recorded during the fold permanently.
+func TestFoldPublication_FailedTailCopyDoesNotCommitCompactionMarker(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "failed-tail-copy-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+	s.setPinnedNote("REMEMBER: the exact API signature")
+
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.appendFoldTailTurn = func(schema.Turn) error {
+			return errors.New("injected replay-tail durable write failure")
+		}
+	})
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background())
+	}()
+	<-entered // the fold is mid-flight; nothing is locked
+
+	const concurrentText = "turn recorded while the fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText))
+	s.recordTurn(turn, turn) // the pair lands fully, before the fold publishes
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
+		t.Fatal("test setup: the concurrently recorded turn is not in live history")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	count := 0
+	for _, rt := range resumed {
+		if rt.Message.Text() == concurrentText {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the merged-back turn appears %d times in the resumed history, want exactly 1 -- a compaction marker committed while its replay-tail copy's durable write failed discards the original on resume", count)
+	}
+	// The fold consumed the pinned note in memory; its handoff turn was part of
+	// the batch that rolled back, so it must be re-recorded or the note is gone
+	// from every later resume.
+	if n := countSteering(resumed, noteHandoffPrefix); n != 1 {
+		t.Fatalf("the pinned-note handoff appears %d times in the resumed history, want exactly 1 -- a rolled-back batch consumed the note without leaving its durable handoff", n)
+	}
+	if got := s.PinnedNote(); got != "" {
+		t.Fatalf("the pinned note %q was restored after its handoff was confirmed durable -- the note must be consumed once the handoff is durable", got)
+	}
+	// The replay-tail log must survive the rolled-back batch: a later
+	// publication must still be able to replay these turns past its own marker.
+	s.mu.Lock()
+	retainedLog := len(s.persistedAppendLog)
+	s.mu.Unlock()
+	if retainedLog == 0 {
+		t.Fatal("the persisted append log was pruned by a fold whose transcript batch rolled back; a later publication could anchor a marker without replaying these turns")
+	}
+}
+
+// foldDegradedFS fails every transcript fsync and every rollback truncate, so a
+// batch whose write reached the file lands whole but can be made durable by
+// neither its own fsync nor the barrier, and cannot be rolled back either: the
+// ambiguous retained-unsynced outcome AppendBatchSynced reports.
+type foldDegradedFS struct{ afero.Fs }
+
+func (fs foldDegradedFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return foldDegradedFile{File: file}, nil
+}
+
+func (fs foldDegradedFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return foldDegradedFile{File: file}, nil
+}
+
+type foldDegradedFile struct{ afero.File }
+
+func (foldDegradedFile) Sync() error { return errors.New("injected transcript sync failure") }
+
+func (foldDegradedFile) Truncate(int64) error {
+	return errors.New("injected transcript rollback failure")
+}
+
+func installFoldDegradedTranscriptWriter(t *testing.T, s *Session) {
+	t.Helper()
+	fs := foldDegradedFS{Fs: afero.NewOsFs()}
+	path := transcriptPath(s.stateDir, s.id)
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.mu.Lock()
+	old := s.transcript
+	s.mu.Unlock()
+	if old == nil {
+		t.Fatal("session has no transcript writer")
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close original transcript writer: %v", err)
+	}
+	replacement, entries, err := transcript.OpenWriterForSessionWithFS(fs, path, s.id)
+	if err != nil {
+		t.Fatalf("open degraded transcript writer: %v", err)
+	}
+	replacement.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	s.transcript = replacement
+	s.mu.Unlock()
+}
+
+// TestFoldPublication_UnsyncedBatchKeepsReplayTailLog pins the durability
+// gate on the replay-tail prune: a fold batch whose whole buffer landed but
+// could be made durable by neither its fsync nor the barrier is record-but-
+// unsynced, not durable. Pruning the log would be a durability claim it has
+// not earned, and a crash that lost the unsynced copies would then have no
+// persisted forms to replay.
+func TestFoldPublication_UnsyncedBatchKeepsReplayTailLog(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "unsynced-batch-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 12 { // recorded as append/write pairs: the fold's prune set
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i)))
+		s.recordTurn(turn, turn)
+	}
+	installFoldDegradedTranscriptWriter(t, s)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	s.mu.Lock()
+	retainedLog := len(s.persistedAppendLog)
+	s.mu.Unlock()
+	if retainedLog == 0 {
+		t.Fatal("a batch that landed but could not be synced was treated as durable and pruned the replay-tail log; a crash that lost the unsynced copies could then not replay them")
+	}
+	// The batch is still a record a returning reader finds, so resume sees the
+	// marker and its copies even though durability is unconfirmed.
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	if len(ResumeHistory(data.Entries)) == 0 {
+		t.Fatal("the retained-unsynced batch is not readable from the transcript")
+	}
+}
+
+// TestFoldPublication_UnsyncedBatchRestoresPinnedNote pins the note-lifecycle
+// half of the same durability gate: when the fold's transcript batch lands but
+// cannot be confirmed durable, the pinned note the fold consumed must be put
+// back, so a crash in the window re-emits it instead of losing it. The
+// durability gate and the note restore must not disagree about a batch they
+// both saw classified non-durable.
+func TestFoldPublication_UnsyncedBatchRestoresPinnedNote(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "unsynced-note-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i)))
+		s.recordTurn(turn, turn)
+	}
+	const note = "REMEMBER: the exact API signature"
+	s.setPinnedNote(note)
+	installFoldDegradedTranscriptWriter(t, s)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if got := s.PinnedNote(); got != note {
+		t.Fatalf("the pinned note after a batch that landed unsynced = %q, want it restored to %q -- the note claim consumed it and its handoff is not durable, so a crash would lose it", got, note)
+	}
+}
+
+// TestFoldPublication_FailedBatchUnconfirmedRecoveryRestoresNote pins the
+// recovery-failure arm of the note restore: the batch rolls back (a copy write
+// fails) AND the fail-closed recovery write for the note handoff cannot itself
+// be confirmed durable. The note claim already consumed the note, so it must be
+// put back; otherwise its only copy is gone and a crash loses it. This is the
+// only path where recordSteeringAfterFailedBatchLocked returns false.
+func TestFoldPublication_FailedBatchUnconfirmedRecoveryRestoresNote(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "unconfirmed-recovery-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i)))
+		s.recordTurn(turn, turn)
+	}
+	const note = "REMEMBER: the exact API signature"
+	s.setPinnedNote(note)
+	// A writer whose fsync and rollback truncate both fail: the batch aborts on
+	// the injected tail failure, and the recovery write can only land unsynced.
+	installFoldDegradedTranscriptWriter(t, s)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.appendFoldTailTurn = func(schema.Turn) error {
+			return errors.New("injected replay-tail durable write failure")
+		}
+	})
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background())
+	}()
+	<-entered
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("turn recorded while the fold was running"))
+	s.recordTurn(turn, turn)
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if got := s.PinnedNote(); got != note {
+		t.Fatalf("the pinned note after a rolled-back batch whose recovery could not be confirmed durable = %q, want it restored to %q -- the recovery-failure arm must not lose the note", got, note)
+	}
+}
+
+// TestFlushSteeringTurnRecordsNilHookStillWrites pins the failure-only seam
+// contract on the non-fold steering writer: a hook that returns nil injects no
+// failure, so the turn is written for real. The seam observes/aborts; it does
+// not replace the writer, matching the fold path.
+func TestFlushSteeringTurnRecordsNilHookStillWrites(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "steering-seam-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	var calls atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.appendCompactionTurn = func(schema.Turn) error {
+			calls.Add(1)
+			return nil
+		}
+	})
+	const text = "seam-observes-but-does-not-replace"
+	s.flushSteeringTurnRecords([]steeringTurnRecord{{
+		turn: schema.NewTurn(schema.TurnSteering, llm.User(text)),
+		text: text,
+		kind: events.SteeringKindPrecompactHook,
+	}})
+	if calls.Load() != 1 {
+		t.Fatalf("failure hook calls = %d, want 1", calls.Load())
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	if indexOfTurnText(ResumeHistory(data.Entries), text) < 0 {
+		t.Fatal("a nil-returning failure hook must not replace the writer; the steering turn was not written for real")
 	}
 }
 
@@ -1274,7 +1555,7 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		commit.publishedRevision = s.historyRevision
 		s.mu.Unlock()
 		s.attentionMu.Lock()
-		commit.commitTranscriptsLocked()
+		commit.commitTranscriptsLocked(nil) // no publication transaction: no replay-tail copies
 		s.attentionMu.Unlock()
 		commit.flush()
 	}

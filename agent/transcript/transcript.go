@@ -543,12 +543,44 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 // rollback to the batch's start offset leaves none of them and spends no
 // sequence number. It returns the sequence number the first turn took. A batch
 // whose whole buffer landed but did not sync is a retained record, per the
-// contract on Append. No caller until A2's fold; kept here as the exported
-// entry to the one write primitive. No-op returning (0, nil) for a nil or
-// closed writer, matching Append.
+// contract on Append. A caller that must know whether the batch is durable
+// uses AppendBatchSynced instead; the fold's transcript commit does, so it
+// never prunes its replay-tail log on an unconfirmed durability claim. No-op
+// returning (0, nil) for a nil or closed writer, matching Append.
 func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 	firstSeq, _, err := w.appendBatch(turns, true, true, false)
 	return firstSeq, err
+}
+
+// AppendBatchSynced records turns as one all-or-nothing durable batch and
+// reports whether that batch is durable, mirroring AppendSynced for a batch.
+// nil means the whole batch is recorded and synced; *RetainedUnsyncedError
+// (errors.Is ErrRetainedUnsynced) means it is recorded but its fsync and the
+// recovery barrier both failed; any other error means nothing was recorded.
+// The fold transaction uses this so it never prunes the replay-tail log for a
+// batch that landed unsynced. It passes failClosed=true, so a CLOSED writer
+// (which records nothing and can therefore be neither recorded nor durable)
+// reports ErrWriterClosed rather than the ordinary doors' silent nil no-op; a
+// writer that never existed stays a nil no-op, like AppendSynced.
+func (w *Writer) AppendBatchSynced(turns []schema.Turn) error {
+	if w == nil {
+		return nil // no writer to record into — see Append's nil no-op
+	}
+	firstSeq, retained, err := w.appendBatch(turns, true, false, true)
+	if err != nil {
+		return err
+	}
+	if retained == nil {
+		return nil
+	}
+	barrierErr := w.EstablishDurability()
+	if barrierErr == nil {
+		return nil
+	}
+	w.mu.Lock()
+	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
+	w.mu.Unlock()
+	return &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 }
 
 // appendBatch is the locked entry to the sole write primitive. append() is a
