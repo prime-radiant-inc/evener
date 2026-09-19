@@ -527,7 +527,7 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 	if len(settled.PendingExecutions) != 0 || settled.AcceptedTurns != 1 || len(settled.Journal) != 1 {
 		t.Fatalf("settlement did not retain one executed intent: %#v", settled)
 	}
-	if claim, snapshot, err := c.TryClaim(true); err != nil || claim == nil {
+	if claim, snapshot, err := retirementClaimAfterFirstTurn(root, c); err != nil || claim == nil {
 		t.Fatalf("terminal history blocked retirement: %v %+v", err, snapshot)
 	}
 }
