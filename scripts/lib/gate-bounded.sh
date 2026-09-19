@@ -34,7 +34,7 @@ process_descendants() {
 # and honouring the grace for every pid ever seen, then KILL all of them. The
 # parent is signalled last so its children stay discoverable while it lives.
 stop_process_tree() {
-	local pid="$1" p grace alive seen termed deadline
+	local pid="$1" p pass found grace alive seen termed deadline
 	seen=""
 	termed=""
 	grace=${EVENER_STOP_TREE_GRACE_SECONDS:-5}
@@ -65,7 +65,26 @@ stop_process_tree() {
 		[ "$alive" -eq 0 ] && break
 		sleep 0.1
 	done
-	for p in $(process_descendants "$pid") $seen; do
+	# Final phase, children before parents. Every tracked pid is rescanned, not
+	# just the root: a child forked by an intermediate parent while that parent
+	# is still alive is found here, before the parent's death can reparent it
+	# out of view. The passes are bounded, so a pid cannot sit around long
+	# enough to be reused under us.
+	for pass in 1 2 3 4 5; do
+		found=""
+		for p in $seen; do
+			found="$found $(process_descendants "$p")"
+		done
+		found=${found# }
+		[ -n "$found" ] || break
+		for p in $found; do
+			seen="$seen $p"
+			kill -KILL "$p" 2>/dev/null || :
+		done
+		sleep 0.05
+	done
+	for p in $seen; do
+		[ "$p" = "$pid" ] && continue
 		[ -n "$p" ] || continue
 		kill -KILL "$p" 2>/dev/null || :
 	done
@@ -75,21 +94,53 @@ stop_process_tree() {
 # stop_command <pid> — stop a bounded command and everything it forked. When the
 # command leads its own process group, one TERM then one KILL reach the whole
 # group; otherwise fall back to stop_process_tree. Never waits past the grace.
+#
+# The group path needs a real, non-initial process group: pid must be greater
+# than 1 and be its own group leader. `kill -TERM -1` would signal every process
+# the user may signal, so anything else takes the fallback.
 stop_command() {
 	local pid="$1" grace pgid deadline
 	grace=${EVENER_STOP_TREE_GRACE_SECONDS:-5}
-	pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-	if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
-		kill -TERM -"$pid" 2>/dev/null || :
-		deadline=$((SECONDS + grace))
-		while [ "$SECONDS" -lt "$deadline" ]; do
-			kill -0 -"$pid" 2>/dev/null || break
-			sleep 0.1
-		done
-		kill -KILL -"$pid" 2>/dev/null || :
-		return 0
+	if [ "$pid" -gt 1 ]; then
+		pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+		if [ -n "$pgid" ] && [ "$pgid" -gt 1 ] && [ "$pgid" = "$pid" ]; then
+			kill -TERM -"$pid" 2>/dev/null || :
+			deadline=$((SECONDS + grace))
+			while [ "$SECONDS" -lt "$deadline" ]; do
+				kill -0 -"$pid" 2>/dev/null || break
+				sleep 0.1
+			done
+			kill -KILL -"$pid" 2>/dev/null || :
+			return 0
+		fi
 	fi
 	stop_process_tree "$pid"
+}
+
+# enumeration_argv prints, one per line, the argv of the package enumeration:
+# `go list` with the selection flags the derivation produced (list_flags), then
+# ./... . The line-per-arg form lets the caller read it into an array without
+# splitting a value or pathname-expanding it, and keeping it a function lets a
+# test assert the selection flags actually reach the command.
+enumeration_argv() {
+	local flag
+	printf '%s\n' go list
+	for flag in ${list_flags[@]+"${list_flags[@]}"}; do
+		printf '%s\n' "$flag"
+	done
+	printf '%s\n' ./...
+}
+
+# run_enumeration <module> <out-file> runs the package enumeration with the
+# selection flags in list_flags. Keeping both the argv construction and this
+# call in the library lets a test assert the flags actually reach `go list`.
+run_enumeration() {
+	local module="$1" out_file="$2" enum_arg
+	local -a enum_argv=()
+	while IFS= read -r enum_arg; do
+		enum_argv+=("$enum_arg")
+	done < <(enumeration_argv)
+	run_bounded "${ROOT_PACKAGE_LIST_TIMEOUT:-30}" 'go list ./...' "$module" "$out_file" "${enum_argv[@]}"
 }
 
 # run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the

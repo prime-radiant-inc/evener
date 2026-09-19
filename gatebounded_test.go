@@ -170,6 +170,36 @@ rm -rf "$dir"
 	}
 }
 
+// TestEnumerationArgvCarriesTheSelectionFlags and
+// TestRunEnumerationHandsTheFlagsToGoList cover the wiring that feeds the
+// derived selection flags into the enumeration: a regression there would
+// silently reintroduce the missing-package bug with every helper test still
+// green.
+func TestEnumerationArgvCarriesTheSelectionFlags(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+list_flags=(-race -tags=integration)
+enumeration_argv
+`)
+	if want := "go\nlist\n-race\n-tags=integration\n./..."; got != want {
+		t.Fatalf("enumeration_argv = %q, want %q", got, want)
+	}
+}
+
+func TestRunEnumerationHandsTheFlagsToGoList(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+list_flags=(-race -tags=integration)
+run_bounded() { shift 4; printf 'argv:%s\n' "$*"; }
+run_enumeration . /tmp/unused
+`)
+	if want := "argv:go list -race -tags=integration ./..."; got != want {
+		t.Fatalf("run_enumeration argv = %q, want %q", got, want)
+	}
+}
+
 // TestStopCommandReapsALateFork is the reason run_bounded uses a process group:
 // a parent that forks a child after cleanup has begun puts that child behind any
 // PID snapshot, but the child is still inside the command's process group, so

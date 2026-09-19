@@ -2,6 +2,8 @@ package dev
 
 import (
 	"bytes"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -39,6 +41,33 @@ func TestCheckGateFlagsRefusesWhatTheGateCannotCarry(t *testing.T) {
 			got := checkGateFlags(args, &stdout, &stderr)
 			if got != tc.want {
 				t.Fatalf("checkGateFlags(goflags=%q, args=%q) = %d, want %d; stderr = %q", tc.goflags, tc.args, got, tc.want, stderr.String())
+			}
+		})
+	}
+}
+
+// TestRootTestFlagsRemovesOnlyTheRealShortFlag pins the value-aware short-mode
+// removal: the flag and its spellings go, a value that happens to spell -short
+// stays, and a value with a space stays on one line.
+func TestRootTestFlagsRemovesOnlyTheRealShortFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "removes short", args: []string{"-short", "-count=1"}, want: []string{"-count=1"}},
+		{name: "and its other spellings", args: []string{"-short=true", "--short", "-test.short", "-race"}, want: []string{"-race"}},
+		{name: "keeps a value that spells short", args: []string{"-run", "-short", "-count=1"}, want: []string{"-run", "-short", "-count=1"}},
+		{name: "keeps a value with a space", args: []string{"-tags", "a b", "-short"}, want: []string{"-tags", "a b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := rootTestFlags(append([]string{"--"}, tc.args...), &stdout, &stderr); code != 0 {
+				t.Fatalf("rootTestFlags = %d, stderr = %q", code, stderr.String())
+			}
+			got := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("rootTestFlags(%q) = %q, want %q", tc.args, got, tc.want)
 			}
 		})
 	}

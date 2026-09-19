@@ -19,6 +19,7 @@ var subcommands = map[string]func(args []string) int{
 	"covstmt":          covstmtMain,
 	"list-build-flags": listBuildFlagsMain,
 	"module-lint":      lintMain,
+	"root-test-flags":  rootTestFlagsMain,
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {

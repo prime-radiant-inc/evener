@@ -25,6 +25,46 @@ func checkGateFlagsMain(args []string) int {
 	return checkGateFlags(args, os.Stdout, os.Stderr)
 }
 
+// rootTestFlagsMain prints the caller's `go test` flags with short mode removed,
+// one per line, for the root module under ROOT_FULL. It is value-aware, so a
+// value that happens to spell -short (`-run -short`) is kept, and it normalises
+// spellings, so -short=true and -test.short are removed too.
+func rootTestFlagsMain(args []string) int {
+	return rootTestFlags(args, os.Stdout, os.Stderr)
+}
+
+func rootTestFlags(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("root-test-flags", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		_, _ = fmt.Fprint(stderr, "usage: evener-dev root-test-flags -- <go test flags...>\n\n"+
+			"Prints the flags with short mode (-short, -short=true, -test.short) removed,\n"+
+			"one per line, without mistaking a value that spells -short for the flag.\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	for i := 0; i < len(rest); i++ {
+		whole := goFlag(rest[i])
+		name := whole
+		inline := false
+		if j := strings.IndexByte(name, '='); j > 0 {
+			name = name[:j]
+			inline = true
+		}
+		if name == "-short" {
+			continue
+		}
+		_, _ = fmt.Fprintln(stdout, whole)
+		if takesValue(name) && !inline {
+			i++
+			_, _ = fmt.Fprintln(stdout, rest[i])
+		}
+	}
+	return 0
+}
+
 func checkGateFlags(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check-gate-flags", flag.ContinueOnError)
 	fs.SetOutput(stderr)

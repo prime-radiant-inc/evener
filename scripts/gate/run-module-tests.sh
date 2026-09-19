@@ -191,19 +191,18 @@ gate_args=("$@")
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 
 # module_test_flags_array sets the global test_flags array for module m: the
-# caller's argv, minus -short for the root module under ROOT_FULL. An array, not
-# a string, so a value with a space cannot be split when go test is invoked.
+# caller's argv, or, for the root module under ROOT_FULL, the argv with short
+# mode removed. Both are arrays, not strings, so a value with a space cannot be
+# split when go test is invoked. The short removal is done by evener-dev's
+# value-aware parser (root_test_flags, computed below), so a value that spells
+# -short is kept and -short=true/-test.short are removed.
 module_test_flags_array() {
-	local m="$1" flag
+	local m="$1"
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
 		test_flags=(${gate_args[@]+"${gate_args[@]}"})
 		return
 	fi
-	test_flags=()
-	for flag in ${gate_args[@]+"${gate_args[@]}"}; do
-		[ "$flag" = "-short" ] && continue
-		test_flags+=("$flag")
-	done
+	test_flags=(${root_test_flags[@]+"${root_test_flags[@]}"})
 }
 
 logdir=""
@@ -324,6 +323,12 @@ run_check_gate_flags() {
 	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev check-gate-flags --goflags "$goflags" -- ${gate_args[@]+"${gate_args[@]}"} )
 }
 
+# run_root_test_flags runs the value-aware short-mode stripper from the
+# repository root, for the root module under ROOT_FULL.
+run_root_test_flags() {
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev root-test-flags -- ${gate_args[@]+"${gate_args[@]}"} )
+}
+
 # derive_list_flags sets list_flags to the caller's flags that the `go list`
 # enumeration also needs, one per line from evener-dev in name=value form, so a
 # value with a space cannot be split and an empty value cannot vanish. It runs
@@ -357,7 +362,7 @@ run_module() {
 		local pkg package_list
 		package_list="$logdir/root.packages"
 		derive_list_flags "$m" || return $?
-		run_bounded "$ROOT_PACKAGE_LIST_TIMEOUT" 'go list ./...' "$m" "$package_list" go list ${list_flags[@]+"${list_flags[@]}"} ./... || return $?
+		run_enumeration "$m" "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
@@ -400,7 +405,7 @@ run_module() {
 		# Same bound and exit-status check as the root enumeration: a failed or
 		# hung go list must not pass as "no subpackages" over an already-green
 		# shard run.
-		run_bounded "$ROOT_PACKAGE_LIST_TIMEOUT" 'go list ./...' "$m" "$agent_list" go list ${list_flags[@]+"${list_flags[@]}"} ./... || return $?
+		run_enumeration "$m" "$agent_list" || return $?
 		while IFS= read -r pkg; do
 			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
@@ -461,6 +466,31 @@ finish_stream() {
 	fi
 }
 
+# Validate the caller's argv and the effective GOFLAGS before anything runs --
+# including the frontend stream below -- with evener-dev's shared Go parser
+# rather than a second one in shell. A rejected or timed-out validation must not
+# leave a started stream for cleanup to stop.
+effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev check-gate-flags' 'gate' "$logdir/gate-flags" run_check_gate_flags "$effective_goflags"; then
+	printf 'run-module-tests.sh: refusing to run: the caller flags or GOFLAGS are not usable by this gate\n' >&2
+	exit 2
+fi
+
+# ROOT_FULL drops short mode for the root module through the same value-aware
+# parser, computed once here: a value that spells -short survives, and every
+# short spelling (-short, -short=true, -test.short) is removed.
+root_test_flags=()
+if [ "$ROOT_FULL" -eq 1 ]; then
+	root_flags_log="$logdir/root-test-flags"
+	if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev root-test-flags' 'gate' "$root_flags_log" run_root_test_flags; then
+		printf 'run-module-tests.sh: could not derive the root module flags\n' >&2
+		exit 2
+	fi
+	while IFS= read -r root_flag; do
+		root_test_flags+=("$root_flag")
+	done <"$root_flags_log"
+fi
+
 # Start the frontend gate first so it runs across both Go waves. It is joined
 # after wave 2, so its cost is hidden unless it outlives the Go work.
 web_pid=""
@@ -469,14 +499,6 @@ if [ "$WEB" -ne 0 ]; then
 	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" XDG_CONFIG_HOME="$web_tmp/xdg-config" XDG_CACHE_HOME="$web_tmp/xdg-cache" XDG_STATE_HOME="$web_tmp/xdg-state" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
 	web_pid="$!"
 	active_pids+=("$web_pid")
-fi
-
-# Validate the caller's argv and the effective GOFLAGS before any module runs,
-# with evener-dev's shared Go parser rather than a second one in shell.
-effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
-if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev check-gate-flags' 'gate' "$logdir/gate-flags" run_check_gate_flags "$effective_goflags"; then
-	printf 'run-module-tests.sh: refusing to run: the caller flags or GOFLAGS are not usable by this gate\n' >&2
-	exit 2
 fi
 
 run_wave $WAVE1
