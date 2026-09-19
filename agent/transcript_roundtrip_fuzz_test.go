@@ -137,8 +137,8 @@ func assertTranscriptWriteReadRoundTrip(t *testing.T, dir string, data transcrip
 
 func assertResumeHistoryIdempotent(t *testing.T, entries []transcript.Entry) {
 	t.Helper()
-	h1 := ResumeHistory(entries)
-	h2 := ResumeHistory(entriesOf(h1))
+	h1 := mustResumeHistory(t, entries)
+	h2 := mustResumeHistory(t, entriesOf(h1))
 	if eq, a, b := jsonEqual(t, h1, h2); !eq {
 		t.Fatalf("ResumeHistory is not idempotent:\n once =%s\n twice=%s", a, b)
 	}

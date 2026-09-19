@@ -749,7 +749,7 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	var durableEnvironmentIDs []string
-	for _, turn := range ResumeHistory(data.Entries) {
+	for _, turn := range mustResumeHistory(t, data.Entries) {
 		if turn.Kind == schema.TurnEnvironment {
 			durableEnvironmentIDs = append(durableEnvironmentIDs, turn.StableTurnID)
 		}
@@ -876,7 +876,7 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 		t.Fatal(err)
 	}
 	got := 0
-	for _, turn := range ResumeHistory(data.Entries) {
+	for _, turn := range mustResumeHistory(t, data.Entries) {
 		if turn.Kind == schema.TurnEnvironment {
 			got++
 		}

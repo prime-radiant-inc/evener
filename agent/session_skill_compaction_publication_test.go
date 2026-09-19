@@ -742,7 +742,7 @@ func TestSkillCompaction_ConcurrentSteering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	if n := countSteering(ResumeHistory(data.Entries), steerText); n != 1 {
+	if n := countSteering(mustResumeHistory(t, data.Entries), steerText); n != 1 {
 		t.Fatalf("concurrently recorded steering appears %d time(s) in the resumed history, want exactly 1", n)
 	}
 }

@@ -182,6 +182,7 @@ func DecodeEntry(line []byte) (Entry, error) {
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
 	}
+	entry.Turn.EnsureOccurrence()
 	return entry, nil
 }
 
@@ -478,6 +479,30 @@ func (w *Writer) Append(turn schema.Turn) error {
 	return err
 }
 
+// AppendEntry returns the actual sequence and whether a whole record landed.
+// Absent and closed writers preserve Append's nil outcome but record nothing.
+func (w *Writer) AppendEntry(turn schema.Turn) (int, bool, error) {
+	return w.appendEntry(turn, false)
+}
+
+// AppendDurableEntry is the indexed recorded-state form of AppendDurable.
+func (w *Writer) AppendDurableEntry(turn schema.Turn) (int, bool, error) {
+	return w.appendEntry(turn, true)
+}
+
+func (w *Writer) appendEntry(turn schema.Turn, durable bool) (int, bool, error) {
+	if w == nil {
+		return 0, false, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return 0, false, nil
+	}
+	seq, _, err := w.appendBatchLocked([]schema.Turn{turn}, durable, true)
+	return seq, err == nil, err
+}
+
 // AppendDurable writes a turn and fsyncs it before returning; a whole line that
 // landed but could not be synced is recorded (returns nil) with the sync
 // failure queued for DrainWarnings. See the contract on Append. No-op if the
@@ -620,8 +645,12 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
 	for i, turn := range turns {
+		start := buf.Len()
 		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn}); encErr != nil {
 			return firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
+		}
+		if turn.Compaction != nil && buf.Len()-start-1 > DefaultMaxLineBytes {
+			return firstSeq, nil, fmt.Errorf("compaction record exceeds transcript line limit")
 		}
 	}
 	data := buf.Bytes()
@@ -923,6 +952,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	hasPartialTail := false
 	headerRead := false
 	var header Header
+	var manifests *CompactionValidator
 	for {
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
@@ -949,6 +979,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 				_ = f.Close()
 				return nil, nil, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
 			}
+			manifests = NewCompactionValidator(header.SessionID)
 			headerRead = true
 			continue
 		}
@@ -956,6 +987,10 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		if err != nil {
 			_ = f.Close()
 			return nil, nil, fmt.Errorf("parse transcript entry: %w", err)
+		}
+		if err := manifests.Observe(entry); err != nil {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("invalid compaction history: %w", err)
 		}
 		entries = append(entries, entry)
 		if entry.Seq > maxSeq {

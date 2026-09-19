@@ -118,7 +118,7 @@ func TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput(t *t
 		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("commit it"))},
 	}
 
-	history := ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 	if got, want := len(history), 5; got != want {
 		t.Fatalf("len(history) = %d, want %d; history=%s", got, want, turnKinds(history))
 	}

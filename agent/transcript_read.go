@@ -79,6 +79,7 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retain
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var data transcriptData
 	headerRead := false
+	var manifests *transcript.CompactionValidator
 	for {
 		line, complete, bytesRead, readErr := transcript.ReadLine(reader, maxLineBytes)
 		if readErr != nil {
@@ -103,6 +104,7 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retain
 				return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript header", err)
 			}
 			data.Header = header
+			manifests = transcript.NewCompactionValidator(header.SessionID)
 			headerRead = true
 			continue
 		}
@@ -116,6 +118,9 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retain
 				operation = "parsing transcript line"
 			}
 			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, operation, err)
+		}
+		if err := manifests.Observe(entry); err != nil {
+			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "invalid compaction history", err)
 		}
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)
@@ -154,43 +159,45 @@ func retainedFrom(entries []transcript.Entry) int {
 	return 0
 }
 
-// resumeHistoryIndexed is ResumeHistory, also reporting each synthetic repair
-// turn's insertion index in the returned turns (ascending, post-repair
-// coordinates), so a caller mapping a transcript position onto the resumed
-// history can shift it per insertion at or before that position, exactly as
-// history_repair.go shifts the in-flight boundary.
-func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
+// resumedHistory keeps per-occurrence raw provenance after projection/repair.
+type resumedHistory struct {
+	Turns   []schema.Turn
+	Sources map[*schema.TurnOccurrence]transcript.HistoryTurn
+}
+
+func resumeHistoryIndexed(entries []transcript.Entry) (resumedHistory, error) {
 	return resumeManagedHistoryIndexed(entries, nil)
 }
 
-func resumeManagedHistoryIndexed(entries []transcript.Entry, reserved func(schema.Turn, int) bool) ([]schema.Turn, []int) {
-	compactionIdx := retainedFrom(entries)
-
-	var turns []schema.Turn
-	if compactionIdx == 0 {
-		// No compaction: the whole transcript.
-		turns = make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-		}
-	} else {
-		// The compaction turn + everything after it.
-		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
-		for i := compactionIdx; i < len(entries); i++ {
-			turns = append(turns, entries[i].Turn)
+func resumeManagedHistoryIndexed(entries []transcript.Entry, reserved func(schema.Turn, int) bool) (resumedHistory, error) {
+	// File readers validate against the header before calling this projection.
+	// In-memory callers have no header; all manifests must agree on one owner.
+	owner := ""
+	for _, entry := range entries {
+		if entry.Turn.Compaction != nil {
+			owner = entry.Turn.Compaction.SessionID
+			break
 		}
 	}
-
-	repaired, _, insertedAt := repairOrphanedToolResultsReserved(turns, reserved)
-	return repaired, insertedAt
+	projected, err := transcript.ProjectHistory(owner, entries)
+	if err != nil {
+		return resumedHistory{}, err
+	}
+	result := resumedHistory{Sources: make(map[*schema.TurnOccurrence]transcript.HistoryTurn)}
+	for _, item := range projected {
+		result.Turns = append(result.Turns, item.Turn)
+		result.Sources[item.Turn.Occurrence()] = item
+	}
+	repaired, _, _ := repairOrphanedToolResultsReserved(result.Turns, reserved)
+	result.Turns = repaired
+	return result, nil
 }
 
-// ResumeHistory extracts the history needed for session resume from transcript entries.
-// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
-func ResumeHistory(entries []transcript.Entry) []schema.Turn {
-	turns, _ := resumeHistoryIndexed(entries)
-	return turns
+// ResumeHistory returns the complete committed model history. Invalid retained
+// manifests refuse the projection rather than returning a usable partial tail.
+func ResumeHistory(entries []transcript.Entry) ([]schema.Turn, error) {
+	result, err := resumeHistoryIndexed(entries)
+	return result.Turns, err
 }
 
 // reconcileSkillCompactionReceipts replays the typed compaction handoff

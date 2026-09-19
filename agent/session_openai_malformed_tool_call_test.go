@@ -165,7 +165,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if skipped != 0 {
 		t.Fatalf("readTranscript skipped %d records, want 0", skipped)
 	}
-	durableHistory := ResumeHistory(entries)
+	durableHistory := mustResumeHistory(t, entries)
 	durableCall, ok := findToolCallInHistory(durableHistory, "call_bad")
 	if !ok || string(durableCall.Arguments) != "{}" {
 		t.Fatalf("durable call_bad = %+v, want arguments {}", durableCall)

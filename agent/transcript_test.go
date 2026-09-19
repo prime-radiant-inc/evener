@@ -837,7 +837,7 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Thanks"))},
 	}
 
-	history := ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 
 	if len(history) != 5 {
 		t.Fatalf("expected 5 turns, got %d", len(history))
@@ -871,7 +871,7 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
-	history := ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 
 	// Should return: checkpoint (index 6), plus entries 7, 8, 9 = 4 turns total
 	if len(history) != 4 {
@@ -914,7 +914,7 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
-	history := ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 
 	// Should return: summary (index 6), plus entries 7, 8, 9 = 4 turns total
 	if len(history) != 4 {

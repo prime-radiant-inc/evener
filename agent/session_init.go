@@ -103,8 +103,12 @@ func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn in
 // a child mutation may reuse a parent's client mutation id -- so a child record
 // must never decide what an inherited turn was. The prefix is decided by its own
 // kinds and the write-path text shape alone.
-func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
-	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
+func escapeInheritedHistory(inherited []transcript.Entry) ([]schema.Turn, error) {
+	history, err := ResumeHistory(inherited)
+	if err != nil {
+		return nil, err
+	}
+	return escapeNotesHistoryTurns(history, nil), nil
 }
 
 // initEnvContext constructs the session's environment-context collector and
@@ -354,7 +358,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// escaped copy, exactly as the parent's own requests do. The child's own
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
-		s.history = escapeInheritedHistory(inheritedContext)
+		s.history, err = escapeInheritedHistory(inheritedContext)
+		if err != nil {
+			return nil, fmt.Errorf("inherited history: %w", err)
+		}
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -903,11 +910,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
-	var repairInsertions []int
+	var resumed resumedHistory
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions = resumeManagedHistoryIndexed(transcriptEntries, managedReservations(managedJournal.pending()))
+		resumed, err = resumeManagedHistoryIndexed(transcriptEntries, managedReservations(managedJournal.pending()))
+		if err != nil {
+			return nil, fmt.Errorf("restore retained history: %w", err)
+		}
+		resumeHistory = resumed.Turns
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -922,21 +933,23 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// escapeHistoryWithSessionProvenance). DivergenceTurn indexes the full
 	// transcript, and a compacted transcript resumes partway through it, so the
 	// bound shifts by where the retained history begins.
-	divergenceTurn := meta.DivergenceTurn
-	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
-		divergenceTurn -= retainedFrom(transcriptEntries)
-		// Repair splices a synthetic result wherever an orphaned tool call was,
-		// so every insertion at or before the boundary shifts it right by one:
-		// the synthetic completes the call it repairs, which sits inside the
-		// inherited prefix (history_repair.go shifts the in-flight boundary the
-		// same way).
-		for _, idx := range repairInsertions {
-			if idx <= divergenceTurn-1 {
-				divergenceTurn++
+	if restoreCfg.resumeHistory != nil {
+		resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, meta.DivergenceTurn, clientMutations.steeringOrigins())
+	} else {
+		var escaped []schema.Turn
+		inherited := false
+		for _, turn := range resumeHistory {
+			if source, ok := resumed.Sources[turn.Occurrence()]; ok {
+				inherited = meta.DivergenceTurn > 0 && source.Index < meta.DivergenceTurn-1
 			}
+			origins := clientMutations.steeringOrigins()
+			if inherited {
+				origins = nil
+			}
+			escaped = append(escaped, escapeNotesHistoryTurns([]schema.Turn{turn}, origins)...)
 		}
+		resumeHistory = escaped
 	}
-	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {

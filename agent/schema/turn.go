@@ -207,6 +207,8 @@ type ManagedResolutionInfo struct {
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
+	occurrence        *TurnOccurrence
+	Compaction        *CompactionManifest    `json:"compaction,omitempty"`
 	ManagedResolution *ManagedResolutionInfo `json:"managed_resolution,omitempty"`
 
 	Kind      TurnKind    `json:"kind"`      // category of this history item
@@ -269,5 +271,5 @@ type Turn struct {
 
 // NewTurn creates a Turn with the current UTC time.
 func NewTurn(kind TurnKind, msg llm.Message) Turn {
-	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()}
+	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC(), occurrence: &TurnOccurrence{}}
 }

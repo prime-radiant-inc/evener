@@ -486,7 +486,7 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	if aMarker > bMarker {
 		t.Fatalf("fold A's summary entry (index %d) landed after fold B's (index %d) despite A publishing first -- compaction markers out of publish order", aMarker, bMarker)
 	}
-	resumed := ResumeHistory(data.Entries)
+	resumed := mustResumeHistory(t, data.Entries)
 	if len(resumed) == 0 {
 		t.Fatal("resumed history is empty")
 	}
@@ -553,7 +553,7 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	if indexOfTurnText(ResumeHistory(data.Entries), concurrentText) < 0 {
+	if indexOfTurnText(mustResumeHistory(t, data.Entries), concurrentText) < 0 {
 		t.Fatal("a turn recorded after the fold published is missing from the resumed history -- its transcript entry was sequenced before the compaction marker")
 	}
 }
@@ -601,7 +601,7 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	resumed := ResumeHistory(data.Entries)
+	resumed := mustResumeHistory(t, data.Entries)
 	if indexOfTurnText(resumed, concurrentText) < 0 {
 		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented after the compaction marker")
 	}
@@ -833,7 +833,7 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 		}
 	}
 
-	resumed := ResumeHistory(data.Entries)
+	resumed := mustResumeHistory(t, data.Entries)
 	var resumedMatches []schema.Turn
 	for _, rt := range resumed {
 		for _, c := range toolResultContents([]schema.Turn{rt}) {
@@ -1960,7 +1960,7 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 	if !markerDurable {
 		t.Fatal("test setup: the compaction marker did not reach the durable transcript")
 	}
-	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
+	if indexOfTurnText(mustResumeHistory(t, data.Entries), durableText) < 0 {
 		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
 	}
 }

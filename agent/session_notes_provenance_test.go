@@ -353,7 +353,10 @@ func TestInheritedHistoryIsEscapedWithoutAJournalInReach(t *testing.T) {
 		{Turn: schema.Turn{Kind: schema.TurnSteering, ClientMutationID: id, Message: llm.User(ordinary)}},
 	}
 
-	out := escapeInheritedHistory(inherited)
+	out, err := escapeInheritedHistory(inherited)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out) != 2 {
 		t.Fatalf("inherited history = %d turns, want 2", len(out))
 	}

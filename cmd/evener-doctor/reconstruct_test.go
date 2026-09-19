@@ -108,7 +108,7 @@ func TestReconstructStagesNativeHistoryWithoutChangingSource(t *testing.T) {
 	if entries[0].Turn.Message.Text() != "task sentinel" || entries[0].Turn.StableTurnID != "turn_m1" {
 		t.Fatal("lost user input or stable identity")
 	}
-	history := agent.ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 	if len(history) != 4 || history[0].Kind != schema.TurnSummary {
 		t.Fatalf("resume compaction boundary: %+v", history)
 	}
@@ -317,7 +317,7 @@ func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := agent.ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 	if len(history) != 6 {
 		t.Fatalf("got %d resumed turns, want summary, two tool rounds and notice", len(history))
 	}
@@ -403,7 +403,7 @@ func TestReconstructPreservesMultipleCallsInOneRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := agent.ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 	if len(history) != 4 || len(history[1].Message.Content) != 2 || len(history[2].Message.Content) != 2 {
 		t.Fatal("lost a call or inserted a synthetic result")
 	}
@@ -439,7 +439,7 @@ func TestReconstructPreservesLiteralToolMarkerInAssistantText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := agent.ResumeHistory(entries)
+	history := mustResumeHistory(t, entries)
 	if history[1].Message.Text() != content {
 		t.Fatalf("changed ambiguous assistant content: %q", history[1].Message.Text())
 	}
@@ -524,7 +524,7 @@ func TestReconstructPreservesSuccessfulDelegateLifecycleResults(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				history := agent.ResumeHistory(entries)
+				history := mustResumeHistory(t, entries)
 				result := history[2].Message.Content[0].ToolResult
 				if result == nil || result.IsError || result.Content != source.Results[0].Content {
 					t.Fatalf("changed successful delegate lifecycle result: %+v", result)
@@ -862,7 +862,7 @@ func TestReconstructAttentionInsideToolRoundDoesNotInventAnotherResult(t *testin
 		entries = append(entries, entry)
 	}
 	var results int
-	for _, turn := range agent.ResumeHistory(entries) {
+	for _, turn := range mustResumeHistory(t, entries) {
 		for _, part := range turn.Message.Content {
 			if part.ToolResult != nil {
 				results++
@@ -1009,4 +1009,13 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustResumeHistory(t testing.TB, entries []transcript.Entry) []schema.Turn {
+	t.Helper()
+	history, err := agent.ResumeHistory(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return history
 }
