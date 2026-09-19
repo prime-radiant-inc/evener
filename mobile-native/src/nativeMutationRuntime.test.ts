@@ -358,6 +358,80 @@ test("a failed blocked-outcome write keeps retry gated until a later read", asyn
 	await runtime.stop();
 });
 
+test("a blocked outcome from a replaced client fences the replacement target", async () => {
+	const database = openDatabase();
+	const originalRunSync = database.runSync;
+	let failMarkUnknown = false;
+	database.runSync = (sql, ...params) => {
+		if (failMarkUnknown && sql.includes("UPDATE mutation_outbox SET state = ?") && params[0] === "blockedUnknown")
+			throw new Error("journal unavailable");
+		return originalRunSync(sql, ...params);
+	};
+	const intervals: Array<() => void> = [];
+	let releaseA!: (error: unknown) => void;
+	const pendingA = new Promise<never>((_resolve, reject) => {
+		releaseA = reject;
+	});
+	let callsA = 0;
+	let callsB = 0;
+	const runtime = new NativeMutationRuntime(database, {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: () => undefined,
+	});
+	const clientA = new FakeClient("ready");
+	clientA.on("turn/start", () => {
+		callsA += 1;
+		return pendingA as never;
+	});
+	const clientB = new FakeClient("ready");
+	clientB.on("turn/start", (params) => {
+		callsB += 1;
+		return appliedReceipt(params);
+	});
+	runtime.registerTarget("hub-1", "ref-1", clientA);
+	await runtime.start();
+	await runtime.submit(request("send"));
+	const initialLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", clientA);
+	await runtime.reconcileAuthoritativeRead(initialLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(callsA).toBe(1));
+
+	runtime.registerTarget("hub-1", "ref-1", clientB);
+	const preOutcomeLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", clientB);
+	await runtime.reconcileAuthoritativeRead(preOutcomeLease!, readResponse("ref-1"));
+	expect(callsB).toBe(0);
+
+	failMarkUnknown = true;
+	releaseA(
+		new WireError("journal unavailable", -32014, {
+			evenerErrorInfo: "mutationOutcomeUnknown",
+			clientMutationId: "mutation-1",
+			mutationOutcome: "unknown",
+			retryDisposition: "blocked",
+			cause: "persistenceUnavailable",
+		}),
+	);
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+			state: "submitting",
+			attempted: true,
+		});
+	});
+	intervals[0]?.();
+	await runtime.connectionReady();
+	expect(callsB).toBe(0);
+
+	const laterLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", clientB);
+	await runtime.reconcileAuthoritativeRead(laterLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(callsB).toBe(1));
+	expect(clientB.calls[0]?.params).toMatchObject({ clientMutationId: "mutation-1" });
+	expect(callsA).toBe(1);
+	await runtime.stop();
+});
+
 test("confirmed identities settle before absent blocked identities are restored", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {
