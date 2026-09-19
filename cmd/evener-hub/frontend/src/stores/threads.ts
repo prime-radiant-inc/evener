@@ -1445,17 +1445,56 @@ function composerMutationIntent(
 // store arms the obligation on that very hydration. An offered press in that
 // window could only mint durable intent that parks until the explicit Resume
 // action clears the fence. The predicate lives here - beside the obligation
-// state it reads, and where the store's own mutation admission can use it
-// without an import cycle - and liveControls re-exports it for the surfaces.
+// state it reads, and where the store's own mutation admission enforces it
+// (enqueueMutationIntent) without an import cycle - and liveControls
+// re-exports it for the surfaces.
 export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
   return ref.startsWith("local:") && restartObligated;
 }
+
+// The verbs the shared admission fences, each mapped to the refusal its own
+// surface already renders (Composer's Send/Steer sentences, QueueStrip's
+// queue-actions sentence, the typed /clear idiom): the hub's recovery
+// admission refuses exactly these methods for an obligation's whole window -
+// turn/start, turn/steer, turn/queue, turn/drainAsSteer,
+// turn/promoteQueuedAsSteer and turn/cancelQueued via
+// withDeletionTargetOwnership, thread/clear through clearThreadWithResume's
+// durable leg, notes/human/set through relayWithResume's - so an enqueue for
+// a fenced ref could only mint durable intent that parks until the explicit
+// Resume action clears the fence. turn/interrupt is the deliberate exemption:
+// Stop is how the fenced window ends, the Stop button never disables for the
+// fence, and the typed /interrupt agrees with the button
+// (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
+// still enqueues and settles after Resume rather than refusing here. Any
+// method absent from this table is therefore not fenced at admission - the
+// table is the whole policy.
+const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
+  "turn/start": "Send isn't available until this session is resumed",
+  "turn/steer": "Steer isn't available until this session is resumed",
+  "turn/queue": "Queue isn't available until this session is resumed",
+  "turn/drainAsSteer": "Drain isn't available until this session is resumed",
+  "turn/promoteQueuedAsSteer": "Queue actions aren't available until this session is resumed",
+  "turn/cancelQueued": "Queue actions aren't available until this session is resumed",
+  "thread/clear": "Clear isn't available until this session is resumed",
+  "notes/human/set": "Notes aren't available until this session is resumed",
+};
 
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
 ): Promise<MutationOutboxRecord> {
   const ref = intent.targetRef;
+  // The recovery fence, enforced at the one funnel every durable action
+  // passes through: a fenced local session's durable intent could only park
+  // (the hub refuses these methods for the obligation's whole window), so it
+  // is refused here - before any durable write, so every caller shape hears
+  // the same admission refusal.
+  const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
+  if (
+    fenceRefusal !== undefined &&
+    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))
+  )
+    throw new Error(fenceRefusal);
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
@@ -2971,16 +3010,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames) {
-    // The recovery fence, read live at admission: the surfaces that render
-    // their own refusal (Composer's availabilityFor, QueueStrip's press
-    // handlers) check this fence above the action, but the alternate send
-    // paths - the palette's slash fallthrough, the ask dock's batch send, a
-    // failed turn's Retry - call send directly. The hub's recovery admission
-    // refuses turn/start for the obligation's whole window, so an unfenced
-    // enqueue could only mint durable intent that parks until the explicit
-    // Resume action clears the fence; refusing here makes every caller agree.
-    if (isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref)))
-      throw new Error("Send isn't available until this session is resumed");
+    // The recovery fence is enforced at the shared admission every durable
+    // action funnels through (enqueueMutationIntent's central check), so the
+    // alternate send paths - the palette's slash fallthrough, the ask dock's
+    // batch send, a failed turn's Retry - hear the same refusal the surfaces
+    // render, with nothing parked behind it.
     await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 

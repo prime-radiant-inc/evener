@@ -9934,6 +9934,64 @@ test("a recovery-fenced local session's send refuses at admission for every call
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// RoboRev Medium (PR 1393 fresh review, 0708b9b): 91764c32d6 fenced only the
+// send action at its own admission, so every OTHER durable action still
+// funneled an obligation-blocked local session's intent straight into the
+// outbox: steer, queue, drainAsSteer, promoteQueuedAsSteer, cancelQueued,
+// clearThread and setHumanNote each parked a mutation the hub's recovery
+// admission refuses for the obligation's whole window (sessionActionRecoveryError
+// is reached by every one of those methods' handlers - withDeletionTargetOwnership
+// for the turn verbs and thread/clear, relayWithResume's durable leg for
+// notes/human/set), to deliver or fail only after an explicit Resume. The fence
+// must read the obligation at enqueueMutationIntent - the one funnel every
+// durable action passes through - and refuse exactly the verbs the hub refuses,
+// so no caller shape can park what the fence exists to keep unparked.
+// turn/interrupt is the deliberate exemption: Stop is how the fenced window
+// ends, the Stop button is never disabled by the fence, and the typed
+// /interrupt agrees with the button (commands.ts's own carve-out), so
+// interrupt still enqueues and settles after Resume.
+test("a recovery-fenced local session's non-send durable admissions refuse at the shared funnel", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "shared-fence" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:session";
+  await threadsStore.getState().ensureThread(ref);
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for (same seeding as the
+  // send-fence test above).
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+  await expect(threadsStore.getState().steer(ref, "steer text")).rejects.toThrow(
+    "Steer isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().queue(ref, "queued text")).rejects.toThrow(
+    "Queue isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().drainAsSteer(ref, "drain text")).rejects.toThrow(
+    "Drain isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().promoteQueuedAsSteer(ref, 0, "entry_1")).rejects.toThrow(
+    "Queue actions aren't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().cancelQueued(ref, 0, "entry_1")).rejects.toThrow(
+    "Queue actions aren't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().clearThread(ref)).rejects.toThrow(
+    "Clear isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().setHumanNote(ref, "note text")).rejects.toThrow(
+    "Notes aren't available until this session is resumed",
+  );
+  // turn/interrupt is the exemption: Stop stays pressable through the fence,
+  // so its admission still enqueues. The dispatcher keeps refusing the
+  // obligation, so nothing reaches the wire.
+  await threadsStore.getState().interrupt(ref);
+  const outbox = await storage.listOutbox(ref);
+  expect(outbox.map((record) => record.method)).toEqual(["turn/interrupt"]);
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+});
+
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
   const fake = new FakeClient();
   connectionStore.setState({ client: fake, state: "ready" });
