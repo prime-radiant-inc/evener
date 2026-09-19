@@ -695,7 +695,19 @@ export function InstanceSheet({
           // draft. The next Save then compares like against like instead of
           // refusing an instance that was never replaced.
           const landed = supersededSaveLanded(listedInstances, instance, params, authoritative);
-          if (landed !== undefined) seededIdentity.current = draftIdentity(landed);
+          if (landed !== undefined) {
+            seededIdentity.current = draftIdentity(landed);
+          } else {
+            // The save was superseded and its landing could not be confirmed.
+            // draftIdentity deliberately excludes the credential fields, so a
+            // same-endpoint replacement whose credentials differ would pass the
+            // next pre-write check and be overwritten. Mark the draft stale so
+            // that next Save refuses and re-seeds instead.
+            const changed = changedFields(params);
+            if (changed.has("apiKeyEnv") || changed.has("credentialHeader")) {
+              seededIdentity.current = null;
+            }
+          }
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);
         }

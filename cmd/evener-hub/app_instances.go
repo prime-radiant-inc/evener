@@ -78,6 +78,15 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		c.auth.credMu.RLock()
 		defer c.auth.credMu.RUnlock()
 	}
+	return c.listLocked(key, keyErr)
+}
+
+// listLocked builds the listing from state the caller has ALREADY locked, using
+// a fingerprint key resolved before that lock. A mutation that captured its
+// answer under its own write lock uses this so the answer is the state that
+// mutation produced, not a second read a concurrent edit can slip into (see
+// Edit).
+func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.InstanceListResponse {
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
 	userLayer := ""
@@ -904,6 +913,14 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // appwire.InvalidParams; the hub's own faults (the registry not loaded, a
 // read, write, or restore failure) stay plain errors.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
+	return c.edit(params, nil)
+}
+
+// edit applies an edit. When out is non-nil it receives the listing captured
+// while this edit's write lock is still held, so the answer describes the state
+// this edit produced rather than a later List() a concurrent write can slip
+// into; the RPC handler uses it that way for its response.
+func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -937,6 +954,15 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 	}
 
+	// The fingerprint key is resolved before the write lock, exactly as List
+	// resolves it before its read lock: resolving it can repair the file, and
+	// holding the write locks across that would stall every other writer. Only
+	// a caller that wants the captured listing (out != nil) needs it.
+	var key []byte
+	var keyErr error
+	if out != nil {
+		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Held for the rest of the call, so the providers.toml write and the
@@ -1099,6 +1125,11 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 			return writeApplied(err)
 		}
 		return moveErr
+	}
+	if out != nil {
+		// Still under this edit's write locks, so no concurrent edit can land
+		// between the write and this read.
+		*out = c.listLocked(key, keyErr)
 	}
 	return nil
 }

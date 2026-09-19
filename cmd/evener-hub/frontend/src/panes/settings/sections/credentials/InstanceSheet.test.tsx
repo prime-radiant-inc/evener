@@ -2527,4 +2527,40 @@ describe("the form", () => {
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
+
+  // draftIdentity excludes the credential fields, so a credential-only save
+  // whose superseding listing belongs to a same-endpoint replacement would pass
+  // the next pre-write check and overwrite that replacement's credentials. An
+  // unconfirmed credential supersede marks the draft stale instead.
+  test("a superseded credential-only save is not re-anchored onto a replacement's credentials", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("API key environment variable"));
+    await user.type(field("API key environment variable"), "NEW_KEY");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      apiKeyEnv: "NEW_KEY",
+      originClientId: "test-tab",
+    });
+
+    const ours = { ...before, apiKeyEnv: "NEW_KEY" };
+    const foreign = { ...before, apiKeyEnv: "FOREIGN_KEY" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    // The next Save refuses and re-seeds rather than overwriting the foreign key.
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
 });

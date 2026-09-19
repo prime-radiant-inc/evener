@@ -4124,3 +4124,35 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 		t.Fatalf("post-logout row = activeSource %q hasStoredFile %v, want the cleared generation", after.ActiveSource, after.HasStoredFile)
 	}
 }
+
+// TestInstances_EditAnswersFromTheWriteLockedListing: the listing an edit
+// returns is captured under that edit's own write lock, so it carries the row
+// this edit wrote. A response read with a later List() could instead carry a
+// foreign edit that landed in the gap between the write and the read; the
+// captured answer is pinned here to the state the second edit produced even
+// after a third edit has landed.
+func TestInstances_EditAnswersFromTheWriteLockedListing(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/first"}); err != nil {
+		t.Fatalf("Edit(first): %v", err)
+	}
+
+	var out appwire.InstanceListResponse
+	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/second"}, &out); err != nil {
+		t.Fatalf("edit(second): %v", err)
+	}
+
+	// A foreign edit lands after the captured answer was taken; a response read
+	// now would show it, but the captured answer must not.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/foreign"}); err != nil {
+		t.Fatalf("Edit(foreign): %v", err)
+	}
+
+	second := entry(t, out, "groq")
+	if !strings.Contains(second.BaseURL, "/second") {
+		t.Fatalf("captured answer shows base_url %q, want the second edit's own state", second.BaseURL)
+	}
+	if foreign := entry(t, f.ctl.List(), "groq"); !strings.Contains(foreign.BaseURL, "/foreign") {
+		t.Fatalf("later List shows base_url %q, want the foreign edit", foreign.BaseURL)
+	}
+}

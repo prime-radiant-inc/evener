@@ -1228,11 +1228,29 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 		return instancesController.List(), nil
 	}
+	// Edits answer with the listing captured under the edit's own write lock
+	// (see edit), so the row a client reconciles against is the state this
+	// write produced, not a second read a concurrent edit can slip into.
+	instanceWriteEdit := func(originClientId string, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		var list appwire.InstanceListResponse
+		err := instancesController.edit(params, &list)
+		if writeDidApply(err) {
+			if err != nil {
+				notifyInstanceUpdated(server, "")
+			} else {
+				notifyInstanceUpdated(server, originClientId)
+			}
+		}
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return list, nil
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Edit(params) })
+		return instanceWriteEdit(params.OriginClientId, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() error { return instancesController.Remove(params) })
