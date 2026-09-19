@@ -95,15 +95,29 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  * Returns undefined for any other rejection, or when the hub's own follow-up
  * read to build Data.applied failed too (Data.appliedUnavailable): there is
  * then nothing to reconcile from. */
-function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
+export type MarketplaceRemovalOutcome = { kind: "applied"; marketplaces: MarketplaceEntry[] } | { kind: "unavailable" };
+
+/** Classifies the hub's applied-with-litter rejection for UI consumers. The
+ * unregister already landed, so a valid applied list is authoritative even
+ * though the clone cleanup failed. When the hub could not re-read the list,
+ * callers must keep the current list and reconcile through their normal fetch
+ * path rather than treating the zero value as an empty list. */
+export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
   if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
     return undefined;
   if (!error.data || typeof error.data !== "object") return undefined;
   const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
-  if (data.appliedUnavailable) return undefined;
+  if (data.appliedUnavailable) return { kind: "unavailable" };
   if (!data.applied || typeof data.applied !== "object") return undefined;
   const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
-  return Array.isArray(marketplaces) ? (marketplaces as MarketplaceEntry[]) : undefined;
+  return Array.isArray(marketplaces)
+    ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
+    : undefined;
+}
+
+function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
+  const outcome = marketplaceRemovalOutcome(error);
+  return outcome?.kind === "applied" ? outcome.marketplaces : undefined;
 }
 
 export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {

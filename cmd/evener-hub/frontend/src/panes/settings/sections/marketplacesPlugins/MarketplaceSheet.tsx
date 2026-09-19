@@ -23,6 +23,7 @@
 
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
+import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
@@ -92,6 +93,7 @@ export function MarketplaceSheet({
   const [refreshing, setRefreshing] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
   const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeAppliedUnconfirmed, setRemoveAppliedUnconfirmed] = useState<Set<string>>(() => new Set());
   // Set for the span of a rename request: the old name vanishes from the
   // store when the response lands, and that vanish must not close the sheet.
   const pendingRename = useRef<string | null>(null);
@@ -119,6 +121,15 @@ export function MarketplaceSheet({
     setDraft(marketplaceDraftFor(current));
     setFormError(null);
   }
+
+  useEffect(() => {
+    if (marketplaces === null) return;
+    const currentNames = new Set(marketplaces.map((marketplace) => marketplace.name));
+    setRemoveAppliedUnconfirmed((blocked) => {
+      const next = new Set([...blocked].filter((blockedName) => currentNames.has(blockedName)));
+      return next.size === blocked.size ? blocked : next;
+    });
+  }, [marketplaces]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different marketplace opens; a refresh of the same one must not clobber in-progress edits
   useEffect(() => {
@@ -169,6 +180,7 @@ export function MarketplaceSheet({
   // changing that name refreshes a marketplace that no longer answers to it,
   // or races the rename for the store lock.
   const busy = saving || refreshing || removeBusy;
+  const removeDisabled = busy || (entry !== undefined && removeAppliedUnconfirmed.has(entry.name));
   const canSave = dirty && !busy && !(sourceTouched && incomplete);
 
   function update(patch: Partial<MarketplaceDraft>): void {
@@ -254,25 +266,36 @@ export function MarketplaceSheet({
 
   async function handleConfirmRemove(): Promise<void> {
     if (entry === undefined) return;
+    const removalName = entry.name;
     setRemoveBusy(true);
     try {
-      await extensionsStore.getState().removeMarketplace(entry.name);
+      await extensionsStore.getState().removeMarketplace(removalName);
       // Reported wherever the user has navigated to, like a save's: the
       // removal landed, and a sheet that moved on is no reason to leave it
       // unreported.
-      toasts.push("success", `Removed marketplace ${entry.name}`);
+      toasts.push("success", `Removed marketplace ${removalName}`);
       // The confirm this closes belongs to whatever marketplace the sheet
       // shows now, so on a sheet that moved on it would answer a question the
       // user has not answered yet.
-      if (liveName.current === entry.name) setPendingRemove(false);
+      if (liveName.current === removalName) setPendingRemove(false);
       // onClose fires via the entry-vanished effect once the store's updated
       // list lands - no explicit close here.
     } catch (err) {
-      // The failure is reported wherever the user has navigated to; only the
-      // flag is this sheet's to clear.
-      toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
+      const outcome = marketplaceRemovalOutcome(err);
+      if (outcome !== undefined) {
+        // The registry removal already landed. Close the completed confirm and
+        // keep this entry from issuing the same removal again while an
+        // unavailable applied list is reconciled through the normal fetch.
+        setRemoveAppliedUnconfirmed((blocked) => new Set(blocked).add(removalName));
+        if (liveName.current === removalName) setPendingRemove(false);
+        toasts.push("warning", "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.");
+        if (outcome.kind === "unavailable") void extensionsStore.getState().fetchMarketplaces();
+      } else {
+        // Ordinary failures keep the existing retryable error behavior.
+        toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
+      }
     } finally {
-      if (liveName.current === entry.name) setRemoveBusy(false);
+      if (liveName.current === removalName) setRemoveBusy(false);
     }
   }
 
@@ -387,7 +410,7 @@ export function MarketplaceSheet({
             </div>
             <hr className={CLASS.sheetDivider} />
             <div className={CLASS.sheetActions}>
-              <Button variant="danger" onClick={() => setPendingRemove(true)} disabled={busy}>
+              <Button variant="danger" onClick={() => setPendingRemove(true)} disabled={removeDisabled}>
                 Remove
               </Button>
             </div>
