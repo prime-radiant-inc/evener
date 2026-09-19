@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
+	draftUnreadableAfterDiscard,
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
 	matchesStoredBytes,
@@ -401,5 +402,16 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+});
+
+describe("draftUnreadableAfterDiscard", () => {
+	it("keeps the notice when the current record is still unreadable", () => {
+		expect(draftUnreadableAfterDiscard("unreadable")).toBe(true);
+	});
+
+	it("clears the notice when the current record is readable or absent", () => {
+		expect(draftUnreadableAfterDiscard("readable")).toBe(false);
+		expect(draftUnreadableAfterDiscard("absent")).toBe(false);
 	});
 });
