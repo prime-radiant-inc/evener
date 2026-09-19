@@ -2723,6 +2723,41 @@ test("mergeOlderItemPage retains a warning-only run after a collapsed anchor", (
   expect(result.turns[1]?.items).toMatchObject([{ id: "warning-b", type: "warning" }]);
 });
 
+test("mergeOlderItemPage places an unpositioned warning run with its next positioned turn", () => {
+  const model = testHydrate({
+    turns: [
+      positionedFragmentTurn("fresh-a", [["a", 1]]),
+      positionedFragmentTurn("fresh-d", [["d", 3]]),
+      positionedFragmentTurn("fresh-c", [["c", 4]]),
+    ],
+  });
+  const warning = {
+    id: "old-warning",
+    status: "completed" as const,
+    itemsView: "fragment" as const,
+    items: [
+      {
+        id: "warning-item",
+        turnId: "old-warning",
+        type: "warning" as const,
+        text: "retained warning",
+        status: "completed" as const,
+      },
+    ],
+  };
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      positionedFragmentTurn("old-a", [["a", 1]]),
+      warning,
+      positionedFragmentTurn("old-b", [["b", 2]]),
+      positionedFragmentTurn("old-c", [["c", 4]]),
+    ],
+  });
+
+  expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-warning", "old-b", "fresh-d", "fresh-c"]);
+});
+
 test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
   const thread = testThread({
     turns: [
