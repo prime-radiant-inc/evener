@@ -221,12 +221,15 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 	if ref == "" {
 		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
 	}
-	title := thread.Name
+	// Session names and previews are untrusted wire text rendered into the
+	// terminal (dashboard row, session header, window title); strip control
+	// characters before the derived title is used anywhere.
+	title := sanitizeDisplayName(thread.Name)
 	if title == "" {
-		title = thread.Preview
+		title = sanitizeDisplayName(thread.Preview)
 	}
 	if title == "" {
-		title = thread.SessionID
+		title = sanitizeDisplayName(thread.SessionID)
 	}
 	project := projectNameFromCWD(thread.CWD)
 	return hubTreeNode{

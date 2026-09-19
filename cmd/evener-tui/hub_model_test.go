@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1298,9 +1299,8 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 
 	m.session.setInputValue("/dashboard")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/dashboard should not need an async command")
-	}
+	// Leaving the session also clears the terminal title; no async work.
+	requireOnlyWindowTitle(t, cmd, "")
 	got := updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/dashboard mode=%v", got.mode)
@@ -1309,9 +1309,9 @@ func TestHubModelSlashDashboardAndProjectNavigate(t *testing.T) {
 	got.mode = hubModeSession
 	got.session.setInputValue("/project")
 	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("/project should not need an async command")
-	}
+	// Navigating to the project dashboard also clears the terminal title; no
+	// async work.
+	requireOnlyWindowTitle(t, cmd, "")
 	got = updated.(hubModel)
 	if got.mode != hubModeDashboard {
 		t.Fatalf("/project mode=%v, want dashboard", got.mode)
@@ -2103,9 +2103,9 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 
 	updated, cmd = model.Update(cmd())
-	if cmd != nil {
-		t.Fatal("session detail returned unexpected command")
-	}
+	// Entering the session now also titles the terminal; anything else would be
+	// an unexpected follow-up command.
+	requireOnlyWindowTitle(t, cmd, "spawned session")
 	model = updated.(hubModel)
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {
 		t.Fatalf("mode=%v detail=%+v", model.mode, model.detail)
@@ -4461,9 +4461,39 @@ func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 	if cmd == nil {
 		t.Fatal("expected quit command, got nil")
 	}
+	// Every quit route must clear the terminal window title, then quit, as one
+	// ordered sequence: a quit from a session view must not leave the session
+	// title on the terminal after the TUI exits. A bare tea.QuitMsg is a
+	// regression — it clears nothing — so it does not pass.
 	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	seq := reflect.ValueOf(msg)
+	if seq.Kind() != reflect.Slice {
+		t.Fatalf("quit route must clear the title then quit as an ordered sequence, got %T", msg)
+	}
+	var titles []string
+	quit := false
+	for i := 0; i < seq.Len(); i++ {
+		child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
+		if !ok {
+			t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
+		}
+		switch childMsg := child().(type) {
+		case tea.QuitMsg:
+			if len(titles) == 0 {
+				t.Fatal("quit ran before the window title was cleared")
+			}
+			quit = true
+		default:
+			if fmt.Sprintf("%T", childMsg) == "tea.setWindowTitleMsg" {
+				titles = append(titles, fmt.Sprint(childMsg))
+			}
+		}
+	}
+	if !quit {
+		t.Fatalf("quit sequence does not quit: %T", msg)
+	}
+	if len(titles) != 1 || titles[0] != "" {
+		t.Fatalf("quit must clear the window title first: titles=%q", titles)
 	}
 }
 
