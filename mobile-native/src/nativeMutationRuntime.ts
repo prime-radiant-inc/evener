@@ -17,7 +17,7 @@ import type {
 	ConversationMutationKind,
 	ConversationMutationRequest,
 	ConversationMutationSubmitter,
-} from "../../mobile/src/state/conversation";
+} from "../../mobile/src/state/conversationMutation";
 import {
 	MutationOutboxSQLite,
 	type MutationOutboxDatabase,
@@ -30,6 +30,12 @@ export interface NativeMutationRuntimeOptions {
 }
 
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef>;
+
+// Native storage scopes records by hub and conversation. The wire payload
+// keeps targetRef raw because the daemon knows only the conversation ref.
+export function nativeMutationTargetKey(hubId: string, targetRef: string): string {
+	return JSON.stringify([hubId, targetRef]);
+}
 
 function nativeRandomSource(): SecureRandomSource {
 	return { randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues };
@@ -55,7 +61,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 	if (method === "turn/drainAsSteer")
 		payload.expectedQueueRevision = request.expectedQueueRevision;
 	return {
-		targetRef: request.targetRef,
+		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
 		method,
 		payload,
@@ -67,15 +73,16 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 	};
 }
 
-export interface NativeMutationRequest extends ConversationMutationRequest {
-	readonly service: ConversationMutationRequest["service"];
-}
+export type NativeMutationRequest = ConversationMutationRequest;
 
 export class NativeMutationRuntime implements ConversationMutationSubmitter {
 	readonly storage: NativeStorage;
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
-	readonly #targets = new Map<string, { hubId: string; client: AppwireClientLike }>();
+	readonly #targets = new Map<
+		string,
+		{ client: AppwireClientLike; token: symbol; unsubscribe: () => void }
+	>();
 	#started = false;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
@@ -111,15 +118,28 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		await this.#outbox.stop();
 	}
 
-	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): void {
-		const current = this.#targets.get(targetRef);
-		if (client === null) {
-			if (current?.hubId === hubId) this.#targets.delete(targetRef);
-			return;
-		}
-		if (current && current.hubId !== hubId) return;
-		this.#targets.set(targetRef, { hubId, client });
+	registerTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike | null,
+	): () => void {
+		const key = nativeMutationTargetKey(hubId, targetRef);
+		const current = this.#targets.get(key);
+		// A null client is a state transition, not an owner identity. Only the
+		// closure returned to the registering screen may remove its binding.
+		if (client === null) return () => undefined;
+		current?.unsubscribe();
+		const token = Symbol();
+		const unsubscribe = client.onStateChange((state) => {
+			if (state === "ready" && this.#targets.get(key)?.token === token)
+				void this.connectionReady();
+		});
+		this.#targets.set(key, { client, token, unsubscribe });
 		if (client.state === "ready") void this.connectionReady();
+		return () => {
+			unsubscribe();
+			if (this.#targets.get(key)?.token === token) this.#targets.delete(key);
+		};
 	}
 
 	async connectionReady(): Promise<void> {
@@ -127,17 +147,21 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 	}
 
 	async submit(request: NativeMutationRequest): Promise<MutationReceipt | undefined> {
-		const current = this.#targets.get(request.targetRef);
-		if (current && current.hubId !== request.hubId)
-			throw new Error("native mutation target changed hubs");
 		await this.start();
 		await this.#outbox.enqueueIntent(intentFor(request));
 		return undefined;
 	}
 }
 
-export function createNativeMutationRuntime(): NativeMutationRuntime {
+function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
 	return new NativeMutationRuntime(database as unknown as MutationOutboxDatabase);
+}
+
+let sharedNativeMutationRuntime: NativeMutationRuntime | undefined;
+
+export function getNativeMutationRuntime(): NativeMutationRuntime {
+	sharedNativeMutationRuntime ??= createNativeMutationRuntime();
+	return sharedNativeMutationRuntime;
 }

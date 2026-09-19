@@ -967,9 +967,7 @@ export function ConversationScreen({
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
 	useEffect(() => {
-		mutationRuntime.registerTarget(route.params.hubId, route.params.ref, client);
-		return () =>
-			mutationRuntime.registerTarget(route.params.hubId, route.params.ref, null);
+		return mutationRuntime.registerTarget(route.params.hubId, route.params.ref, client);
 	}, [mutationRuntime, client, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a

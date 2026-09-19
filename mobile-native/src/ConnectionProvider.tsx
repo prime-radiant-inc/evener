@@ -22,7 +22,7 @@ import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
 import {
-	createNativeMutationRuntime,
+	getNativeMutationRuntime,
 	type NativeMutationRuntime,
 } from "./nativeMutationRuntime";
 import { locations } from "./nativeLocation";
@@ -50,7 +50,7 @@ interface Connection {
 const Context = createContext<Connection | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
-	const [mutationRuntime] = useState(() => createNativeMutationRuntime());
+	const [mutationRuntime] = useState(() => getNativeMutationRuntime());
 	const [initialLocation, setInitialLocation] = useState<SavedLocation | null>(
 		null,
 	);
