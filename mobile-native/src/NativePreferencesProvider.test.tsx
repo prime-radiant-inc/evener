@@ -339,7 +339,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		mounted.unmount();
 	});
 
-	it("preserves an unrelated hub error while clearing a retained draft", async () => {
+	it("preserves an unrelated hub error across a failed probe and readable or absent recovery", async () => {
 		writeDraft("hub-a", {
 			id: "draft-1",
 			baseRevision: 1,
@@ -360,8 +360,8 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			storageUnavailable: false,
 		});
 
-		harness.values.delete(draftKey("hub-a"));
 		const replacement = clientFixture({ failed: true });
+		harness.storage.throwOnGet = true;
 		harness.connection = {
 			activeProfile: { id: "hub-a" },
 			client: replacement.client,
@@ -369,6 +369,39 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		};
 		mounted.rerender();
 
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 1, rules: [] },
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: true,
+		});
+
+		harness.storage.throwOnGet = false;
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "ready",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			conflict: false,
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			conflict: false,
