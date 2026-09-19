@@ -174,6 +174,15 @@ func (c *retirementAckClock) assertNoArmWithin(t *testing.T, grace time.Duration
 	}
 }
 
+func (c *retirementAckClock) assertNoArm(t *testing.T) {
+	t.Helper()
+	select {
+	case d := <-c.arms:
+		t.Fatalf("unexpected timer arm %v", d)
+	default:
+	}
+}
+
 type retirementAckTimer struct {
 	clk      *retirementAckClock
 	c        chan time.Time
@@ -535,16 +544,31 @@ func TestRetirementTimerAdvanceAfterEvaluationSnapshot(t *testing.T) {
 	clk.awaitNow(t)
 	clk.Advance(30 * time.Minute)
 	clk.releaseNow()
-	if d := clk.awaitArm(t); d != time.Hour {
-		t.Fatalf("raced reset = %v, want the stale 1h duration", d)
-	}
+
+	// A third gated evaluation is the completion barrier for the raced one:
+	// Run cannot reach this Now call until it has finished computing and
+	// arming (or deliberately retaining) the previous deadline. A duplicate
+	// Reset is therefore observable before the barrier is released, while a
+	// correct unchanged-deadline path leaves no arm event behind.
+	clk.gateNextNow()
+	ctrl.Changed()
+	clk.awaitNow(t)
+	clk.assertNoArm(t)
+	clk.releaseNow()
+
+	// Let the barrier evaluation complete before checking the absolute
+	// deadline. This keeps the assertion independent of wall-clock scheduling.
+	clk.gateNextNow()
+	ctrl.Changed()
+	clk.awaitNow(t)
+	clk.assertNoArm(t)
+	clk.releaseNow()
 
 	// The eligibility deadline is t0+1h. A correct absolute-deadline
-	// implementation therefore fires after this second 30-minute advance;
-	// the current fake Reset instead schedules it at t0+90m.
+	// implementation therefore fires after this second 30-minute advance.
 	clk.Advance(30 * time.Minute)
 	if !clk.timerFired() {
-		t.Fatalf("timer did not fire at the absolute eligibility deadline; the raced Reset moved it past t0+1h")
+		t.Fatalf("timer did not fire at the absolute eligibility deadline")
 	}
 }
 
@@ -671,6 +695,7 @@ func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 	root.mu.Lock()
 	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
 	root.mu.Unlock()
+	clk.Advance(time.Minute)
 
 	claim, state, err := h.ctrl.TryClaim(true)
 	if err != nil {
