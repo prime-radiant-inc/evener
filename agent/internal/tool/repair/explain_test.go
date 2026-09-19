@@ -34,13 +34,17 @@ func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
 
 func TestExampleForField_NullableScalarType(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		typ  any
-		want string
+		name   string
+		typ    any
+		want   string
+		wantOK bool
 	}{
-		{name: "nullable integer", typ: []any{"integer", "null"}, want: `{"expand_turn": 0}`},
-		{name: "nullable string", typ: []any{"string", "null"}, want: `{"output_match": "..."}`},
-		{name: "ambiguous union falls back", typ: []any{"integer", "number"}, want: `{"value": "..."}`},
+		{name: "nullable integer", typ: []any{"integer", "null"}, want: `{"expand_turn": 0}`, wantOK: true},
+		{name: "nullable string", typ: []any{"string", "null"}, want: `{"output_match": "..."}`, wantOK: true},
+		// An ambiguous union does not admit the string placeholder; the example
+		// renders a type the declaration accepts instead of a value it rejects
+		// (issue #622 review).
+		{name: "ambiguous union renders an admitted type", typ: []any{"integer", "number"}, want: `{"value": 0}`, wantOK: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema := map[string]any{"type": "object", "properties": map[string]any{"expand_turn": map[string]any{"type": tc.typ}, "output_match": map[string]any{"type": tc.typ}, "value": map[string]any{"type": tc.typ}}}
@@ -48,11 +52,13 @@ func TestExampleForField_NullableScalarType(t *testing.T) {
 			if tc.name == "nullable string" {
 				field = "output_match"
 			}
-			if tc.name == "ambiguous union falls back" {
+			if tc.name == "ambiguous union renders an admitted type" {
 				field = "value"
 			}
-			if got := exampleForField(schema, field); got != tc.want {
-				t.Fatalf("exampleForField = %q, want %q", got, tc.want)
+			fieldSchema, _ := schemaProps(schema)[field].(map[string]any)
+			got, ok := exampleForField(field, fieldSchema)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("exampleForField = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
 			}
 		})
 	}
@@ -158,14 +164,13 @@ func TestExplainTruncatedCall(t *testing.T) {
 	}
 }
 
-// taskListParamsForExplain mirrors DefTaskList's updates-item schema (this
-// package must stay dependency-free of agent/internal/tool, so the fixture is
-// hand-built rather than calling the real Def* function).
 // taskListParamsForExplain is a SYNTHETIC action-enum schema shaped like the
 // pre-rework DefTaskList. It exercises the generic branch machinery
 // (actionTag/namedBranch) in isolation; it deliberately does not mirror the
 // current DefTaskList (presence-based add/update arrays, no action), which
-// has no selector for the branch machinery to key on.
+// has no selector for the branch machinery to key on. This package must stay
+// dependency-free of agent/internal/tool, so the fixture is hand-built rather
+// than calling the real Def* function.
 func taskListParamsForExplain() map[string]any {
 	return map[string]any{
 		"type":                 "object",
