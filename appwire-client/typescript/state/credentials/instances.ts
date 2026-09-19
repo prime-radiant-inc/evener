@@ -1038,9 +1038,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async create(params) {
       const client = requireWritableClient();
-      const applied = await applyMutation((origin) => client.request("evener/instance/create", { ...params, ...origin }), {
-        instance: params.name,
-      });
+      const applied = await applyMutation(
+        (origin) => client.request("evener/instance/create", { ...params, ...origin }),
+        {
+          instance: params.name,
+        },
+      );
       // Like setDefault: a superseded response lost the store's ordering race,
       // and a read may have snapshotted before this write landed, so that read
       // cannot reconcile the write. Schedule the store's own read to land the
@@ -1053,9 +1056,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async edit(params) {
       const client = requireWritableClient();
-      const applied = await applyMutation((origin) => client.request("evener/instance/edit", { ...params, ...origin }), {
-        instance: params.name,
-      });
+      const applied = await applyMutation(
+        (origin) => client.request("evener/instance/edit", { ...params, ...origin }),
+        {
+          instance: params.name,
+        },
+      );
       if (!applied) scheduleRefetch();
       return applied;
     },

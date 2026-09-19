@@ -141,9 +141,7 @@ describe("listing reads and writes", () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     const readAnswer = deferred<InstanceListResponse>();
-    fake.on("evener/instance/list", () =>
-      listReads(fake) === 1 ? LISTING : readAnswer.promise,
-    );
+    fake.on("evener/instance/list", () => (listReads(fake) === 1 ? LISTING : readAnswer.promise));
     const write = deferred<InstanceListResponse>();
     fake.on("evener/instance/remove", () => write.promise);
     store.connectionChanged(fake, "ready");
