@@ -1,15 +1,9 @@
-// The write-path tests below verify each write's effect against the raw
-// SQLite row directly (they predate the read methods this storage now also
-// has, landed as a separate PR); the read-path tests verify through the
-// port's own getOutbox/getOptimistic/listOptimistic/getRecovery/
-// nextDispatchable/listTargetRefs/restoreProvenAbsent instead.
+// Persistence assertions inspect raw SQLite rows where the stored encoding is
+// the contract; read assertions go through the storage port's public methods.
 //
-// Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
-// describe("MutationOutboxIndexedDB", ...) block - these assertions mirror
-// its per-method contracts against a real (non-mock) SQLite engine, the way
-// draftRepository.test.ts already runs the native draft storage against
-// node:sqlite's DatabaseSync rather than expo-sqlite (unavailable outside a
-// device/simulator).
+// The web IndexedDB adapter's conformance tests are the behavioral oracle;
+// this suite exercises the same contracts against node:sqlite's real engine,
+// since expo-sqlite is unavailable outside a device or simulator.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +12,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "@evener/appwire-client/state/mutation";
 import { MutationOutboxSQLite, type MutationOutboxDatabase, type Row } from "./mutationOutboxStorage";
 
-// The default id source (finding 4, round 2): expo-crypto's synchronous
-// randomUUID/getRandomValues, mocked the way nativeOrganization.test.ts mocks
-// the same module, so a test can prove the adapter never dereferences a bare
-// Web Crypto global React Native does not guarantee.
+// The default id source is expo-crypto's synchronous randomUUID/getRandomValues,
+// mocked so this suite proves the adapter never dereferences a bare Web Crypto
+// global that React Native does not guarantee.
 let expoCryptoCalls = 0;
 vi.mock("expo-crypto", () => ({
 	randomUUID: () => `expo-crypto-${++expoCryptoCalls}`,
@@ -142,16 +135,48 @@ test("instanceId round-trips through a reload and the recovery handoff", async (
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
 });
 
-test("enqueueIntent persists an absent optimistic display as JSON null so settlement can retire it", async () => {
+test("enqueueIntent persists an absent optimistic display as JSON null and reads it as undefined", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("without an optimistic display"),
 		optimisticDisplay: undefined,
 	});
 
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ optimistic_display: "null" });
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ optimisticDisplay: undefined });
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
+});
+
+test("enqueueIntent persists attachments, composer text, and the submitting client identity", async () => {
+	const identifiedStorage = new MutationOutboxSQLite(databaseAdapter(), {
+		createMutationId: () => "identified-mutation",
+		now: () => 1234,
+		getOwnClientId: () => "client-one",
+	});
+	const attachment = {
+		presentationId: "presentation-1",
+		marker: 1,
+		name: "photo.png",
+		mediaType: "image/png",
+	};
+
+	const record = await identifiedStorage.enqueueIntent({
+		...intent("with attachment"),
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+	});
+
+	expect(record).toMatchObject({
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+		originClientId: "client-one",
+	});
+	await expect(identifiedStorage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+		originClientId: "client-one",
+	});
 });
 
 test("enqueueIntent rejects an empty or whitespace targetRef before allocating a sequence", async () => {
@@ -207,13 +232,8 @@ test("intentSequence is gap-free and per target ref", async () => {
 	expect(other.intentSequence).toBe(1);
 });
 
-// Round 4 Medium (mutationOutboxStorage.ts:152-163): the original allocation
-// read last_sequence on its own statement, separate from the write that
-// persists the next value, so two enqueue operations could both compute the
-// same intentSequence. SQLite serializes actual writers on separate handles
-// (the direct two-handle attempt reports `database is locked` while the first
-// savepoint still owns its read), so this deterministic reentrant call forces
-// the same statement interleaving on one real SQLite connection.
+// This deterministic reentrant call exercises the statement interleaving that
+// could otherwise make two enqueue operations compute the same sequence.
 test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
 	let otherNext = 0;
 	const storageB = new MutationOutboxSQLite(
@@ -363,6 +383,21 @@ test("settleReceipt's accepted optimistic copy keeps the enqueue-time instance",
 	});
 });
 
+test("settleReceipt clears attempt evidence from the accepted optimistic record", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("attempted before receipt"),
+		optimisticDisplay: { input: [{ type: "text", text: "attempted before receipt" }] },
+	});
+	await storage.markAttempted(record.clientMutationId);
+
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ attempted: 0 });
+	const accepted = await storage.getOptimistic(record.clientMutationId);
+	expect(accepted).toMatchObject({ state: "accepted" });
+	expect(accepted).not.toHaveProperty("attempted");
+});
+
 // Oracle: "a pending receipt settles a receipt-only control without creating
 // optimistic display" (mutationOutbox.test.ts:280).
 test("settleReceipt drops a receipt-only control with no optimistic input to carry", async () => {
@@ -405,12 +440,9 @@ test("settleReceipt consults recovery when the outbox no longer holds the record
 	});
 });
 
-// insert() used to update only state/attempted on a primary-key conflict, so
-// a transition landing on a row that already occupies that id would keep the
-// old payload/display. Seeds a stale row directly (this table's id space
-// never legitimately repeats through the port's own methods today, since a
-// record's stored content is fixed at enqueueIntent) to prove the write this
-// call makes replaces every column, the way the oracle's `put` does.
+// A transition landing on an existing id must replace the complete row, so a
+// stale payload/display cannot survive a receipt handoff. Seed a stale row
+// directly because the port's own methods keep a record's id content fixed.
 test("settleReceipt's optimistic insert fully replaces a stale row rather than only refreshing state", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("fresh display"),
@@ -529,7 +561,7 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
 });
 
-// --- D25d-1b: the read path -------------------------------------------------
+// --- Read path --------------------------------------------------------------
 
 test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
 	await storage.enqueueIntent(intent("a", "local:a"));
@@ -597,19 +629,20 @@ test("nextDispatchable returns the lowest-sequence submitting record, blocked by
 	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: second.clientMutationId });
 });
 
-test("restoreProvenAbsent reopens a blockedUnknown record the authoritative snapshot omits, and leaves one it names alone", async () => {
+test("restoreProvenAbsent scopes reopening to the target and preserves authoritative records", async () => {
 	const omitted = await storage.enqueueIntent(intent("omitted"));
-	const named = await storage.enqueueIntent(intent("named", "local:thread-2"));
+	const named = await storage.enqueueIntent(intent("named"));
+	const unrelated = await storage.enqueueIntent(intent("unrelated", "local:thread-2"));
 	await storage.markUnknown(omitted.clientMutationId, "blockedUnknown");
 	await storage.markUnknown(named.clientMutationId, "blockedUnknown");
+	await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
 
 	await expect(storage.restoreProvenAbsent(TARGET, new Set([named.clientMutationId]))).resolves.toEqual([
 		omitted.clientMutationId,
 	]);
 	await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
-
-	await expect(storage.restoreProvenAbsent("local:thread-2", new Set([named.clientMutationId]))).resolves.toEqual([]);
 	await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+	await expect(storage.getOutbox(unrelated.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
 });
 
 // Falsifies restoreProvenAbsent's atomicity: a trigger fails the UPDATE for

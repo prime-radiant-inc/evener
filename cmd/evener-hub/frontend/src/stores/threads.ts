@@ -1614,6 +1614,24 @@ function composerMutationIntent(
   };
 }
 
+// The local recovery fence. A LOCAL session carrying a restart-blocking
+// obligation (a Stop in flight, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) admits no session action at all while the
+// obligation stands: the hub's recovery admission refuses turn/start,
+// turn/steer, turn/queue and every other fenced mutation for exactly that
+// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
+// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// a Stop drains - a live read relays the daemon's active status with
+// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
+// store arms the obligation on that very hydration. An offered press in that
+// window could only mint durable intent that parks until the explicit Resume
+// action clears the fence. The predicate lives here - beside the obligation
+// state it reads, and where the store's own mutation admission can use it
+// without an import cycle - and liveControls re-exports it for the surfaces.
+export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
+  return ref.startsWith("local:") && restartObligated;
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
@@ -2364,6 +2382,21 @@ async function retryWatchedHydration(client: AppwireClientLike, epoch: number, r
   await refreshWatchedThread(client, epoch, ref, true);
 }
 
+// Both of a fenced refreshThread's fence evaluations owe the ref they cancel
+// the same unwind: a Stop-canceled refresh must not leave standing what its
+// session banked on the way - the dispatch gate the enqueue path or an
+// earlier refresh opened, and the restart-blocking obligation a proven
+// snapshot cleared - or the outbox's own later discovery scan would dispatch
+// queued mutations on the strength of both despite the acknowledged Stop. The
+// ref leaves the dispatchable set, and the obligation re-arms (the forceStop
+// tail's own retention rule) until a fresh snapshot proves it can clear.
+function unwindStopCanceledRefresh(ref: string): void {
+  dispatchableMutationRefs.delete(ref);
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+}
+
 // refreshTrackedThread re-subscribes one real-pane/pinned ref and replaces its
 // model wholesale from the fresh snapshot (hydrateThread) — snapshot recovery
 // for notifications the old relay missed. A rejection keeps the last published
@@ -2388,7 +2421,20 @@ async function refreshTrackedThread(
     // Evaluated synchronously immediately before publication, with no await in
     // between: a canceled read never reaches putThreadModel, the
     // mutation-authority publication, or capture of the current Stop obligation.
-    beforePublish?.();
+    try {
+      beforePublish?.();
+    } catch (error) {
+      // A Stop that lands while the refreshed read is still in flight cancels
+      // HERE, before publication: the rejection propagates out of this
+      // refresh's await and back through refreshThread's, so it never reaches
+      // the tail recheck whose catch carried the unwind before. This
+      // evaluation must unwind the canceled refresh itself, or the state
+      // recovery banked before it - the open dispatch gate, the cleared
+      // restart-blocking obligation - stays standing for the outbox's own
+      // later discovery scan to dispatch against despite the acknowledged Stop.
+      unwindStopCanceledRefresh(ref);
+      throw error;
+    }
     return publishAndReconcileThreadHydration(ref, pending, result);
   });
   const completion = hydration.then(
@@ -3074,10 +3120,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // Stop canceled this refresh, so its earned dispatchability goes with
       // it: close the gate and re-arm recovery (the forceStop tail's own
       // retention rule) until a fresh snapshot proves it can clear.
-      dispatchableMutationRefs.delete(ref);
-      threadsStore.setState((state) => ({
-        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-      }));
+      unwindStopCanceledRefresh(ref);
       throw error;
     }
     const runtime = getMutationRuntime();
@@ -3141,6 +3184,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames) {
+    // The recovery fence, read live at admission: the surfaces that render
+    // their own refusal (Composer's availabilityFor, QueueStrip's press
+    // handlers) check this fence above the action, but the alternate send
+    // paths - the palette's slash fallthrough, the ask dock's batch send, a
+    // failed turn's Retry - call send directly. The hub's recovery admission
+    // refuses turn/start for the obligation's whole window, so an unfenced
+    // enqueue could only mint durable intent that parks until the explicit
+    // Resume action clears the fence; refusing here makes every caller agree.
+    if (isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref)))
+      throw new Error("Send isn't available until this session is resumed");
     await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 

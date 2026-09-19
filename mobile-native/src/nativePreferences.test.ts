@@ -327,6 +327,13 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	});
 	await model.refresh();
 	await expect(model.saveKeybindings([])).rejects.toThrow();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draftError: null,
+		hubError: "unreadable settings",
+		loadError: "unreadable settings",
+		error:
+			"The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
+	});
 	expect(client.requests.map((x) => x.method)).toEqual([
 		"evener/settings/keybindings/get",
 	]);
@@ -335,8 +342,43 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
+it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
+	const client = fakeClient();
+	client.handlers.set("evener/settings/keybindings/get", () => {
+		throw new Error("hub request failed");
+	});
+	const backend = fakeDraftBackend();
+	backend.store.set("evener.native.keybinding-draft.hub", "{not json");
+	const model = new NativePreferences(
+		client,
+		{ keybindingsSettings: true, transcriptDisplaySettings: false },
+		undefined,
+		nativeKeybindingDrafts("hub", backend),
+	);
+	await model.refresh();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draftError: expect.any(String),
+		hubError: "hub request failed",
+		loadError: null,
+		error: expect.any(String),
+	});
+
+	await model.discardKeybindingsDraft();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draft: null,
+		draftError: null,
+		hubError: "hub request failed",
+		loadError: null,
+		error: "The hub request could not be confirmed.",
+	});
+	model.dispose();
+});
+
 import { fakeDraftBackend } from "./draftBackend.testkit";
-import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+import {
+	nativeKeybindingDrafts,
+	nativeTranscriptDrafts,
+} from "./nativePreferenceDrafts";
 
 function draftStorage() {
 	const backend = fakeDraftBackend();
