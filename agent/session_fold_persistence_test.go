@@ -522,6 +522,7 @@ func TestFoldMarkerIOPreservesConcurrentMutationGenerations(t *testing.T) {
 	go func() { foldDone <- s.Compact(t.Context()) }()
 	select {
 	case <-fs.markerReady:
+	// TRIPWIRE: this local scripted fold reaches fsync in under a second; ten seconds detects a stuck barrier.
 	case <-time.After(10 * time.Second):
 		t.Fatal("did not reach final marker fsync")
 	}

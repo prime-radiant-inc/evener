@@ -361,6 +361,7 @@ func TestDelegateForkContext_ReopensMaterializedMultipleFolds(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
+	// TRIPWIRE: local scripted completion takes under a second; ten seconds detects a stuck signal.
 	case <-time.After(10 * time.Second):
 		t.Fatal("scripted child did not finish")
 	}
@@ -382,6 +383,7 @@ func TestDelegateForkContext_ReopensMaterializedMultipleFolds(t *testing.T) {
 		if !requestContainsText(req, "retained-parent-suffix") || !requestContainsText(req, "retained-inline-parent-note") || !requestContainsText(req, "child assignment") {
 			t.Fatal("cold child lost retained background")
 		}
+	// TRIPWIRE: local cold restore reaches the scripted provider in under a second; ten seconds detects a stuck signal.
 	case <-time.After(10 * time.Second):
 		t.Fatal("restored child did not reach provider")
 	}

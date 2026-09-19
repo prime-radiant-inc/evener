@@ -166,7 +166,7 @@ func TestSideCallsAttributeToSessionAPILog(t *testing.T) {
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	seedSessionHistory(t, s, 14)
+	seedNumberedSessionHistory(t, s, 14)
 
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)

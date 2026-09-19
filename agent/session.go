@@ -1501,9 +1501,17 @@ func (s *Session) SetModel(model string) error {
 		return err
 	}
 
+	// Coordinate the switch and its marker with final fold publication. Model
+	// resolution stays outside this door; a fold may become pending there.
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		return nil
 	}
 	s.profile = nextProfile
@@ -1549,7 +1557,6 @@ func (s *Session) SetModel(model string) error {
 		droppedFallbacks:  s.lastDroppedModelFallbacks,
 	})
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
@@ -1559,9 +1566,10 @@ func (s *Session) SetModel(model string) error {
 		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
-	if err := s.recordTurn(marker, marker); err != nil {
-		return err
-	}
+	writeErr := s.recordTurnLocked(marker, marker)
+	s.attentionMu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
+	s.surfaceRecordedTurnWarnings(writeErr)
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
@@ -2090,27 +2098,40 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) error {
-	live.EnsureOccurrence()
-	persisted = persisted.WithOccurrenceOf(live)
-	live.SkillState = live.SkillState.Clone()
-	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
 	if s.pendingFold != nil {
 		s.attentionMu.Unlock()
 		s.emitDiagnosticWarning(warningDataFromError("recording history refused", errFoldDurabilityPending))
 		return errFoldDurabilityPending
 	}
+	err := s.recordTurnLocked(live, persisted)
+	s.attentionMu.Unlock()
+	s.surfaceRecordedTurnWarnings(err)
+	return nil
+}
+
+// recordTurnLocked appends the live turn and its persisted counterpart. The
+// caller holds attentionMu and has checked pendingFold before any coupled
+// mutation. Write failures remain warnings under the ordinary record contract.
+func (s *Session) recordTurnLocked(live, persisted schema.Turn) error {
+	live.EnsureOccurrence()
+	persisted = persisted.WithOccurrenceOf(live)
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	markCanonicalFoldMessage(live, persisted)
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
-	s.attentionMu.Unlock()
+	return s.writeTranscriptLocked(persisted)
+}
+
+// surfaceRecordedTurnWarnings runs outside the publication door because
+// warning notification hooks may themselves append transcript records.
+func (s *Session) surfaceRecordedTurnWarnings(err error) {
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
-	return nil
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
