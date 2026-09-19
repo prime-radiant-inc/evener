@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
@@ -166,7 +167,7 @@ describe("native demonstration hub", () => {
 			(url) => new WebSocket(url) as unknown as WebSocketLike,
 		);
 		const service = createConversationService(client);
-		const store = createConversationStore();
+		const store = createTestConversationStore();
 		const sink = createActivityStore().getState();
 		const statusChanged = (status: string) =>
 			new Promise<void>((resolve) => {

@@ -818,6 +818,7 @@ export function ConversationScreen({
 	const {
 		activeProfile,
 		client,
+		mutationRuntime,
 		retry,
 		state: connectionState,
 	} = useConnection();
@@ -829,8 +830,12 @@ export function ConversationScreen({
 	const headerHeight = useHeaderHeight();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
-		() => createConversationStore(),
-		[route.params.hubId, route.params.ref],
+		() =>
+			createConversationStore({
+				mutationSubmitter: mutationRuntime,
+				targetHubId: route.params.hubId,
+			}),
+		[mutationRuntime, route.params.hubId, route.params.ref],
 	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
@@ -961,6 +966,11 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	useEffect(() => {
+		mutationRuntime.registerTarget(route.params.hubId, route.params.ref, client);
+		return () =>
+			mutationRuntime.registerTarget(route.params.hubId, route.params.ref, null);
+	}, [mutationRuntime, client, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
@@ -1676,11 +1686,10 @@ export function ConversationScreen({
 		try {
 			await document.submitText(text, async (input) => {
 				if (!questionBatches.begin(batch)) return false;
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState().send(service, [{ type: "text", text: input }]);
-				const accepted = store.getState().lastAcceptedMutation;
-				if (!accepted || accepted === previous || accepted.kind !== "send")
-					return false;
+				const accepted = await store
+					.getState()
+					.send(service, [{ type: "text", text: input }]);
+				if (!accepted) return false;
 				questionBatches.finish(batch.id, true);
 				setQuestionsOpen(false);
 				acceptedAnswers = true;
@@ -1725,14 +1734,9 @@ export function ConversationScreen({
 				).bind(document);
 				await submit(async (text, images) => {
 					store.getState().setDraft(text);
-					const previous = store.getState().lastAcceptedMutation;
 					const input = buildComposerInput(text, images);
-					if (kind === "steer") await steerComposer(store, service, input);
-					else await store.getState()[kind](service, input);
-					const accepted = store.getState().lastAcceptedMutation;
-					return (
-						accepted != null && accepted !== previous && accepted.kind === kind
-					);
+					if (kind === "steer") return steerComposer(store, service, input);
+					return store.getState()[kind](service, input);
 				});
 			} else await store.getState().interrupt(service);
 		} catch {

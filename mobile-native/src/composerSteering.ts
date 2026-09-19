@@ -9,14 +9,14 @@ export async function steerComposer(
   input: InputItem[],
 ) {
   const conversation = store.getState().conversation;
-  if (!conversation) return;
+  if (!conversation) return false;
   const route = decideSteerRoute({
     hasText: input.some((item) => item.type === "text" && !!item.text?.trim()),
     hasAttachments: input.some((item) => item.type === "image"),
     queueDepth: conversation.queue?.depth ?? 0,
   });
-  if (route === "none") return;
-  await store
+  if (route === "none") return false;
+  return store
     .getState()
     .steer(
       service,

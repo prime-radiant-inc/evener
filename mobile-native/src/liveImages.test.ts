@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { expect, it } from "vitest";
 import type {
   AnyNotification,
@@ -65,7 +66,7 @@ async function setup(initialItems: ThreadItem[] = []) {
     },
     onNotification: () => () => {},
   } as ConversationClientLike);
-  const store = createConversationStore();
+  const store = createTestConversationStore();
   const sink = createActivityStore().getState();
   await store.getState().openProjected(service, sink, "local:thread");
   return {

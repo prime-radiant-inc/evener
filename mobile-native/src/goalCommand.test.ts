@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import type {
@@ -187,7 +188,7 @@ it("preserves newer live work state across an older hydration and isolates sessi
 		status: "active",
 		iterations: 1,
 	};
-	const store = createConversationStore();
+	const store = createTestConversationStore();
 	thread.evener.tasks = { total: 2, done: 0 };
 	const activity = createActivityStore().getState();
 	try {
@@ -480,7 +481,7 @@ it.each(["advertised", "turn"])(
 			thread.turns = [
 				{ id: "first", status: "inProgress", itemsView: "full", items: [] },
 			];
-		const store = createConversationStore();
+		const store = createTestConversationStore();
 		const activity = createActivityStore().getState();
 		try {
 			await store.getState().openProjected(service, activity, "local:test");
@@ -655,7 +656,7 @@ it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
 // turn active, and the commit carries no active turn.
 it("does not resurrect a turn that completes during a read before its start was observed", async () => {
 	const { thread, io, service } = boundary();
-	const store = createConversationStore();
+	const store = createTestConversationStore();
 	const activity = createActivityStore().getState();
 	try {
 		await store.getState().openProjected(service, activity, "local:test");
@@ -893,7 +894,7 @@ it("installs a clear replacement without allowing an older read to restore its t
 			items: [{ id: "old-item", type: "agentMessage", text: "old transcript" }],
 		},
 	];
-	const store = createConversationStore();
+	const store = createTestConversationStore();
 	const sink = createActivityStore().getState();
 	let releaseClear!: () => void;
 	let releaseRead!: () => void;

@@ -316,6 +316,37 @@ export interface AcceptedConversationMutation {
   readonly receipt: MutationReceipt;
 }
 
+export type ConversationMutationKind = AcceptedConversationMutation["kind"];
+
+export interface ConversationMutationRequest {
+  readonly kind: ConversationMutationKind;
+  readonly hubId: string;
+  readonly targetRef: string;
+  readonly threadId: string;
+  readonly instanceId: string;
+  readonly service: ConversationService;
+  readonly input: InputItem[];
+  readonly expectedQueueRevision?: number;
+}
+
+export interface ConversationMutationSubmitter {
+  submit(request: ConversationMutationRequest): Promise<MutationReceipt | undefined>;
+}
+
+export interface ConversationStoreOptions {
+  readonly mutationSubmitter: ConversationMutationSubmitter;
+  readonly targetHubId: string;
+}
+
+function acceptedMutationState(
+  kind: ConversationMutationKind,
+  receipt: MutationReceipt | undefined,
+): Pick<ConversationState, "lastAcceptedMutation"> {
+  return {
+    lastAcceptedMutation: receipt ? { kind, receipt } : null,
+  };
+}
+
 export type LoadOlderResult =
   | { readonly status: "loaded"; readonly itemKeys: readonly string[] }
   | { readonly status: "failed" }
@@ -641,14 +672,14 @@ export interface ConversationState {
   open(service: ConversationService, ref: string): Promise<void>;
   loadOlder(service: ConversationService): Promise<LoadOlderResult>;
   setDraft(text: string): void;
-  send(service: ConversationService, input: InputItem[]): Promise<void>;
+  send(service: ConversationService, input: InputItem[]): Promise<boolean>;
   steer(
     service: ConversationService,
     input: InputItem[],
     expectedQueueRevision?: number,
-  ): Promise<void>;
-  queue(service: ConversationService, input: InputItem[]): Promise<void>;
-  interrupt(service: ConversationService): Promise<void>;
+  ): Promise<boolean>;
+  queue(service: ConversationService, input: InputItem[]): Promise<boolean>;
+  interrupt(service: ConversationService): Promise<boolean>;
   close(): void;
   applyNotification(n: AnyNotification): void;
   reset(): void;
@@ -843,7 +874,10 @@ function projectSingleItem(
   return null;
 }
 
-export function createConversationStore() {
+export function createConversationStore({
+  mutationSubmitter,
+  targetHubId,
+}: ConversationStoreOptions) {
   let conversationGen = 0;
   let mutationIdCounter = 0;
   // Draft revision: a monotonically increasing counter incremented on every
@@ -2123,12 +2157,12 @@ export function createConversationStore() {
 
       async send(service, input) {
         const state = get();
-        if (state.conversation === null) return;
+        if (state.conversation === null) return false;
         requireControl(state.conversation, "send", "send");
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), zero request/state change.
         const opBinding = captureOperationBinding(service);
-        if (opBinding === null) return;
+        if (opBinding === null) return false;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -2160,9 +2194,17 @@ export function createConversationStore() {
         // it.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.send(input);
+          const receipt = await mutationSubmitter.submit({
+            kind: "send",
+            hubId: targetHubId,
+            targetRef: opBinding.ref,
+            threadId: state.conversation.threadId,
+            instanceId: state.conversation.instanceId ?? state.conversation.threadId,
+            service,
+            input,
+          });
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           // F4: Check mutationId — out-of-order completion cannot clear a
           // newer mutation's state.
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -2174,22 +2216,24 @@ export function createConversationStore() {
               set({
                 pendingSend: null,
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "send", receipt },
+                ...acceptedMutationState("send", receipt),
                 error: null,
               });
             } else {
               set({
                 pendingSend: null,
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "send", receipt },
+                ...acceptedMutationState("send", receipt),
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
+            return true;
           }
+          return false;
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           handleMutationError(
             err,
             state.ref,
@@ -2207,16 +2251,17 @@ export function createConversationStore() {
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
           drainTrailingReread();
+          return false;
         }
       },
 
       async steer(service, input, expectedQueueRevision) {
         const state = get();
-        if (state.conversation === null) return;
+        if (state.conversation === null) return false;
         requireControl(state.conversation, "steer", "steer");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
-        if (opBinding === null) return;
+        if (opBinding === null) return false;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -2242,30 +2287,41 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.steer(input, expectedQueueRevision);
+          const receipt = await mutationSubmitter.submit({
+            kind: "steer",
+            hubId: targetHubId,
+            targetRef: opBinding.ref,
+            threadId: state.conversation.threadId,
+            instanceId: state.conversation.instanceId ?? state.conversation.threadId,
+            service,
+            input,
+            expectedQueueRevision,
+          });
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "steer", receipt },
+                ...acceptedMutationState("steer", receipt),
                 error: null,
               });
             } else {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "steer", receipt },
+                ...acceptedMutationState("steer", receipt),
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
+            return true;
           }
+          return false;
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           handleMutationError(
             err,
             state.ref,
@@ -2283,16 +2339,17 @@ export function createConversationStore() {
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
           drainTrailingReread();
+          return false;
         }
       },
 
       async queue(service, input) {
         const state = get();
-        if (state.conversation === null) return;
+        if (state.conversation === null) return false;
         requireControl(state.conversation, "queue", "queue");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
-        if (opBinding === null) return;
+        if (opBinding === null) return false;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -2317,30 +2374,40 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.queue(input);
+          const receipt = await mutationSubmitter.submit({
+            kind: "queue",
+            hubId: targetHubId,
+            targetRef: opBinding.ref,
+            threadId: state.conversation.threadId,
+            instanceId: state.conversation.instanceId ?? state.conversation.threadId,
+            service,
+            input,
+          });
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "queue", receipt },
+                ...acceptedMutationState("queue", receipt),
                 error: null,
               });
             } else {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "queue", receipt },
+                ...acceptedMutationState("queue", receipt),
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
+            return true;
           }
+          return false;
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           handleMutationError(
             err,
             state.ref,
@@ -2358,16 +2425,17 @@ export function createConversationStore() {
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
           drainTrailingReread();
+          return false;
         }
       },
 
       async interrupt(service) {
         const state = get();
-        if (state.conversation === null) return;
+        if (state.conversation === null) return false;
         requireControl(state.conversation, "stop", "interrupt");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
-        if (opBinding === null) return;
+        if (opBinding === null) return false;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
         const revisionAtSubmit = draftRevision;
@@ -2392,36 +2460,40 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.interrupt();
+          const receipt = await mutationSubmitter.submit({
+            kind: "interrupt",
+            hubId: targetHubId,
+            targetRef: opBinding.ref,
+            threadId: state.conversation.threadId,
+            instanceId: state.conversation.instanceId ?? state.conversation.threadId,
+            service,
+            input: [],
+          });
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: {
-                  kind: "interrupt",
-                  receipt,
-                },
+                ...acceptedMutationState("interrupt", receipt),
                 error: null,
               });
             } else {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: {
-                  kind: "interrupt",
-                  receipt,
-                },
+                ...acceptedMutationState("interrupt", receipt),
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
+            return true;
           }
+          return false;
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return false;
           handleMutationError(
             err,
             state.ref,
@@ -2439,6 +2511,7 @@ export function createConversationStore() {
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
           drainTrailingReread();
+          return false;
         }
       },
 

@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { describe, expect, it } from "vitest";
 import type {
   SandboxEscalationRequested,
@@ -68,7 +69,7 @@ function boundary() {
 describe("native approval projection", () => {
   it("hydrates pending harness approvals and applies only matching live resolutions", async () => {
     const { service } = boundary();
-    const store = createConversationStore();
+    const store = createTestConversationStore();
     await store.getState().open(service, "local:s");
     expect(store.getState().conversation?.pendingEscalations).toEqual([
       pending,
@@ -363,7 +364,7 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
     },
   } as unknown as ConversationClientLike;
   const service = createConversationService(client),
-    store = createConversationStore(),
+    store = createTestConversationStore(),
     sink = createActivityStore().getState();
   await store.getState().openProjected(service, sink, "local:s");
   const refresh = store.getState().rehydrate(service, sink);
@@ -410,7 +411,7 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
     },
   } as unknown as ConversationClientLike;
   const service = createConversationService(client),
-    store = createConversationStore(),
+    store = createTestConversationStore(),
     sink = createActivityStore().getState();
   const open = store.getState().openProjected(service, sink, "local:s");
   await began;
@@ -432,7 +433,7 @@ it("unsubscribes a failed initial read", async () => {
       unsubscribed++;
     },
   } as unknown as ConversationClientLike;
-  const store = createConversationStore();
+  const store = createTestConversationStore();
   await store
     .getState()
     .openProjected(

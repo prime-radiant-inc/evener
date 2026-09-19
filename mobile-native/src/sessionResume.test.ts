@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { describe, expect, it } from "vitest";
 import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -155,7 +156,7 @@ async function connectedFixture(
 	});
 	await client.connect();
 	const service = createConversationService(client);
-	const store = createConversationStore();
+	const store = createTestConversationStore();
 	await store.getState().openProjected(service, sink, "local:thread-1");
 	return { client, service, store, sockets, state };
 }

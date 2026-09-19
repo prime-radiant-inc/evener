@@ -21,12 +21,17 @@ import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
+import {
+	createNativeMutationRuntime,
+	type NativeMutationRuntime,
+} from "./nativeMutationRuntime";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
+	mutationRuntime: NativeMutationRuntime;
 	initialLocation: SavedLocation | null;
 	restorationError: string | null;
 	profiles: HubProfile[];
@@ -45,6 +50,7 @@ interface Connection {
 const Context = createContext<Connection | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
+	const [mutationRuntime] = useState(() => createNativeMutationRuntime());
 	const [initialLocation, setInitialLocation] = useState<SavedLocation | null>(
 		null,
 	);
@@ -81,6 +87,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		attempt,
 		setError,
 	);
+	useEffect(() => {
+		void mutationRuntime.start();
+		return () => {
+			void mutationRuntime.stop();
+		};
+	}, [mutationRuntime]);
 	useEffect(() => {
 		let cancelled = false;
 		selection
@@ -140,6 +152,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	);
 	const value = useMemo(
 		() => ({
+			mutationRuntime,
 			initialLocation,
 			restorationError,
 			profiles,
@@ -156,6 +169,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			retry,
 		}),
 		[
+			mutationRuntime,
 			initialLocation,
 			restorationError,
 			profiles,

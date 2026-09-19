@@ -1,3 +1,4 @@
+import { createTestConversationStore } from "../../mobile/src/state/conversationTestUtils";
 import { describe, expect, it } from "vitest";
 import type {
   InputItem,
@@ -111,7 +112,7 @@ describe("native composer steering wire routing", () => {
         onNotification: () => () => {},
       } as ConversationClientLike;
       const service = createConversationService(wire);
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       try {
         await store.getState().open(service, "local:test");
         store.getState().setDraft("direction");

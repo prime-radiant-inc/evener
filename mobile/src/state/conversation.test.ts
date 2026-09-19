@@ -34,9 +34,11 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity } from "./activity";
+import { createTestConversationStore } from "./conversationTestUtils";
 import { createActivityStore } from "./activity";
 import {
   createConversationStore,
+  type ConversationMutationSubmitter,
   type LiveActivitySink,
   MAX_ITEM_BYTES,
   TRUNCATION_MARKER,
@@ -315,7 +317,7 @@ async function beginHeldClusterRehydrate() {
     activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
     olderCursor: null,
   };
-  const store = createConversationStore();
+  const store = createTestConversationStore();
   const sink = createFakeSink();
   await store.getState().openProjected(service, sink, "ref-1");
   let release!: (value: ConversationReadProjection) => void;
@@ -328,7 +330,7 @@ describe("ConversationStore", () => {
   describe("open", () => {
     it("transitions idle -> opening -> open and stores conversation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       expect(store.getState().status).toBe("idle");
       const p = store.getState().open(service, "ref-1");
       expect(store.getState().status).toBe("opening");
@@ -342,7 +344,7 @@ describe("ConversationStore", () => {
 
     it("increments conversation generation on open", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const gen0 = store.getState().conversationGeneration;
       await store.getState().open(service, "ref-1");
       const gen1 = store.getState().conversationGeneration;
@@ -352,7 +354,7 @@ describe("ConversationStore", () => {
     it("stores olderCursor from conversation if available", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       expect(store.getState().olderCursor).toBeNull();
     });
@@ -365,7 +367,7 @@ describe("ConversationStore", () => {
         items: [{ kind: "user", id: "older-result", text: "older" }],
         nextCursor: "next",
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
@@ -381,7 +383,7 @@ describe("ConversationStore", () => {
     it("F8: does not request when olderCursor is null", async () => {
       const service = new FakeConversationService();
       service.olderItems = { items: [], nextCursor: "next" };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // olderCursor is null after open — loadOlder should not request.
       expect(store.getState().olderCursor).toBeNull();
@@ -394,17 +396,62 @@ describe("ConversationStore", () => {
 
   describe("setDraft", () => {
     it("sets draft text", () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       store.getState().setDraft("hello world");
       expect(store.getState().draft).toBe("hello world");
     });
   });
 
   describe("send", () => {
+    it("routes the mutation through the explicit host submitter", async () => {
+      const service = new FakeConversationService();
+      const submitter: ConversationMutationSubmitter = {
+        submit: vi.fn(async () => undefined),
+      };
+      const store = createConversationStore({
+        mutationSubmitter: submitter,
+        targetHubId: "hub-1",
+      });
+      await store.getState().open(service, "ref-1");
+
+      await expect(
+        store.getState().send(service, textInput("queued message")),
+      ).resolves.toBe(true);
+
+      expect(submitter.submit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "send",
+          hubId: "hub-1",
+          targetRef: "ref-1",
+          input: textInput("queued message"),
+        }),
+      );
+      expect(service.sendCallCount).toBe(0);
+      expect(store.getState().lastAcceptedMutation).toBeNull();
+    });
+
+    it("reports a failed durable enqueue as unaccepted", async () => {
+      const service = new FakeConversationService();
+      const submitter: ConversationMutationSubmitter = {
+        submit: vi.fn(async () => {
+          throw new Error("storage unavailable");
+        }),
+      };
+      const store = createConversationStore({
+        mutationSubmitter: submitter,
+        targetHubId: "hub-1",
+      });
+      await store.getState().open(service, "ref-1");
+
+      await expect(
+        store.getState().send(service, textInput("retry me")),
+      ).resolves.toBe(false);
+    });
+
     it("clears draft on success and sets pendingSend", async () => {
       const service = new FakeConversationService();
       service.receipt = makeReceipt({ clientMutationId: "cmid-99" });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my message");
       const p = store.getState().send(service, textInput("my message"));
@@ -418,7 +465,7 @@ describe("ConversationStore", () => {
     it("publishes a replayed Hub receipt as success without retry or failure", async () => {
       const service = new FakeConversationService();
       service.receipt = makeReceipt({ disposition: "replayed" });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("idempotent retry");
 
@@ -436,7 +483,7 @@ describe("ConversationStore", () => {
     it("restores draft on conflict and shows error", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("conflict");
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my message");
       await store.getState().send(service, textInput("my message"));
@@ -449,7 +496,7 @@ describe("ConversationStore", () => {
     it("does not auto-retry on failure", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("conflict");
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my message");
       await store.getState().send(service, textInput("my message"));
@@ -471,7 +518,7 @@ describe("ConversationStore", () => {
         store: ReturnType<typeof createConversationStore>,
         service: FakeConversationService,
         input: InputItem[],
-      ) => Promise<void>;
+      ) => Promise<boolean>;
       callCountField: keyof FakeConversationService;
     }[] = [
       {
@@ -506,7 +553,7 @@ describe("ConversationStore", () => {
     for (const { kind, call, callCountField } of mutationCases) {
       it(`${kind}: calls the service ${kind} method`, async () => {
         const service = serviceFor(kind);
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         if (kind === "interrupt") {
           await call(store, service, []);
@@ -535,7 +582,7 @@ describe("ConversationStore", () => {
           service.interrupt = async () => hangPromise;
         }
 
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         store.getState().setDraft("unsent draft");
 
@@ -574,7 +621,7 @@ describe("ConversationStore", () => {
           service.interrupt = async () => hangPromise;
         }
 
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         store.getState().setDraft("exact draft text");
         const p = call(store, service, textInput("test"));
@@ -591,7 +638,7 @@ describe("ConversationStore", () => {
 
       it(`${kind}: clears pending and error on success`, async () => {
         const service = serviceFor(kind);
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         await call(store, service, textInput("test"));
         expect(store.getState().pendingMutation).toBeNull();
@@ -611,7 +658,7 @@ describe("ConversationStore", () => {
           service.interrupt = async () => Promise.reject(rejectErr);
         }
 
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         store.getState().setDraft("draft to restore");
         await call(store, service, textInput("test"));
@@ -649,7 +696,7 @@ describe("ConversationStore", () => {
           service.interrupt = async () => hangPromise;
         }
 
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().open(service, "ref-1");
         const genBefore = store.getState().conversationGeneration;
         store.getState().setDraft("draft");
@@ -663,7 +710,7 @@ describe("ConversationStore", () => {
 
     it("send has an independent capability gate from steer", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Only send is disabled, in the state that offers it.
       service.openConv = makeConversation({
         capabilities: { ...ALL_TRUE_CAPS, send: false },
@@ -683,7 +730,7 @@ describe("ConversationStore", () => {
 
     it("queue has an independent capability gate from send", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Only queue is disabled, in the state that offers it.
       service.openConv = makeConversation({
         status: { type: "active" },
@@ -709,7 +756,7 @@ describe("ConversationStore", () => {
   describe("actionUnavailable surfaces the error and requests one coalesced reread", () => {
     it("surfaces the error and rereads once; the reread's capabilities are what the composer sees", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS }, queue: { revision: 0 } } }),
       );
@@ -740,7 +787,7 @@ describe("ConversationStore", () => {
     // surfaces the error and issues no read at all.
     it("plain open(): actionUnavailable surfaces the error and issues no read", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       const readsBefore = service.readProjectionCalls.length;
       service.sendShouldReject = refusal();
@@ -757,7 +804,7 @@ describe("ConversationStore", () => {
     it.each(["", "off", "provider/model"])(
       "updates the vision model %j for the matching session",
       async (visionModel) => {
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         const service = new FakeConversationService();
         await store.getState().open(service, "ref-1");
         store.getState().applyNotification({
@@ -772,7 +819,7 @@ describe("ConversationStore", () => {
     // carries one, else by threadId; a frame naming neither is not about this
     // thread.
     it("drops vision changes that name another session or thread", async () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const service = new FakeConversationService();
       await store.getState().open(service, "ref-1");
       const original = store.getState().conversation;
@@ -790,7 +837,7 @@ describe("ConversationStore", () => {
     });
 
     it("routes a vision change by its ref when it carries one", async () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const service = new FakeConversationService();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -801,7 +848,7 @@ describe("ConversationStore", () => {
     });
     it("drops notifications that don't match current ref", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       const originalConv = store.getState().conversation;
       store.getState().applyNotification({
@@ -817,7 +864,7 @@ describe("ConversationStore", () => {
 
     it("updates status on matching thread/status/changed", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "thread/status/changed",
@@ -832,7 +879,7 @@ describe("ConversationStore", () => {
 
     it("updates name on matching evener/thread/name/changed", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "evener/thread/name/changed",
@@ -847,7 +894,7 @@ describe("ConversationStore", () => {
 
     it("updates queue on matching thread/queueChanged", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "thread/queueChanged",
@@ -887,7 +934,7 @@ describe("ConversationStore", () => {
     it("marks running on turn/started", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "idle" } });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "turn/started",
@@ -906,7 +953,7 @@ describe("ConversationStore", () => {
     it("leaves the status to the status frame on turn/completed", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" } });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "turn/started",
@@ -943,7 +990,7 @@ describe("ConversationStore", () => {
     it("keeps steer and stop through an inline turn boundary", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       const frames: AnyNotification[] = [
         {
@@ -979,7 +1026,7 @@ describe("ConversationStore", () => {
     it("settles idle on the status frame when the active turn fails", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "turn/completed",
@@ -1020,7 +1067,7 @@ describe("ConversationStore", () => {
           texts: ["queued"],
         },
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
 
       // t1 fails; its queued message has not started yet.
@@ -1086,7 +1133,7 @@ describe("ConversationStore", () => {
     it("settles idle on a failed completion's status frame, not on a superseded turn", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: undefined });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "turn/completed",
@@ -1101,7 +1148,7 @@ describe("ConversationStore", () => {
 
       const other = new FakeConversationService();
       other.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t2" });
-      const store2 = createConversationStore();
+      const store2 = createTestConversationStore();
       await store2.getState().open(other, "ref-1");
       store2.getState().applyNotification({
         method: "turn/completed",
@@ -1116,7 +1163,7 @@ describe("ConversationStore", () => {
     // before the submit reached the store.
     it("refuses a steer submitted after the status flipped idle", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "thread/status/changed",
@@ -1133,7 +1180,7 @@ describe("ConversationStore", () => {
     it("refuses a send while a turn is running, with the control's reason", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" } });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       await expect(store.getState().send(service, textInput("x"))).rejects.toThrow(TURN_RUNNING);
       expect(service.sendCallCount).toBe(0);
@@ -1144,7 +1191,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({
         usage: { totalTokens: 500, inputTokens: 300 },
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Two turns complete, each carrying its own (much smaller) per-turn
       // usage. The cumulative conversation usage set by the projection must
@@ -1183,7 +1230,7 @@ describe("ConversationStore", () => {
   describe("close", () => {
     it("transitions to closed and clears conversation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().close();
       const s = store.getState();
@@ -1196,7 +1243,7 @@ describe("ConversationStore", () => {
   describe("reset", () => {
     it("returns to idle state", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("hello");
       store.getState().reset();
@@ -1212,7 +1259,7 @@ describe("ConversationStore", () => {
   describe("generation safety", () => {
     it("late open from older generation does not overwrite newer conversation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Open ref-1 (gen 1)
       await store.getState().open(service, "ref-1");
       // Reset (back to idle)
@@ -1245,7 +1292,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ status: { type: "idle" } }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const ctrl = makeControlledRead(service);
       const opening = store.getState().openProjected(service, createFakeSink(), "ref-1");
       await ctrl.started(1);
@@ -1265,7 +1312,7 @@ describe("ConversationStore", () => {
     it("uses readProjection to set conversation, cursor, and activity view", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 3 }],
         work: [],
@@ -1288,7 +1335,7 @@ describe("ConversationStore", () => {
 
     it("subscribes to notifications", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // The store should have subscribed for notifications
       expect(service.notificationHandler).not.toBeNull();
@@ -1296,7 +1343,7 @@ describe("ConversationStore", () => {
 
     it("preserves olderCursor across openProjected", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation(),
         activity: {
@@ -1313,7 +1360,7 @@ describe("ConversationStore", () => {
 
     it("resets draft from prior thread (I8)", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Set draft from a prior thread
       store.getState().setDraft("old thread draft");
       // Open a new projected conversation
@@ -1335,7 +1382,7 @@ describe("ConversationStore", () => {
     it("C3: routes notifications to both conversation and activity stores", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 3 }],
         work: [],
@@ -1366,7 +1413,7 @@ describe("ConversationStore", () => {
 
     it("suspends without clearing the displayed conversation and blocks mutations", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
       const before = store.getState().conversation;
@@ -1391,7 +1438,7 @@ describe("ConversationStore", () => {
 
     it("retains the display while resuming and installs a fresh subscribed read", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
       const before = store.getState().conversation;
@@ -1428,7 +1475,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const otherService = new FakeConversationService();
       otherService.openConv = makeConversation({ threadId: "thread-2" });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.getState().suspendProjected();
       await store
@@ -1440,7 +1487,7 @@ describe("ConversationStore", () => {
 
     it("retains the suspended display when the fresh subscribed read fails", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const before = store.getState().conversation;
       store.getState().suspendProjected();
@@ -1458,7 +1505,7 @@ describe("ConversationStore", () => {
 
     it("preserves completed older-page history across a resumed latest read", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       const latest = makeConversation({
         threadId: "thread-1",
@@ -1540,7 +1587,7 @@ describe("ConversationStore", () => {
 
     it("invalidates an open that is still awaiting its first projection", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       let release!: (value: ConversationReadProjection) => void;
       service.readProjectionBlock = new Promise((resolve) => {
         release = resolve;
@@ -1575,7 +1622,7 @@ describe("ConversationStore", () => {
         text: `msg ${i}`,
       }));
       service.olderItems = { items: manyItems, nextCursor: undefined };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
@@ -1603,7 +1650,7 @@ describe("ConversationStore", () => {
       }));
       service.openConv = makeConversation({ items: existingItems });
       service.olderItems = { items: olderItems, nextCursor: undefined };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
@@ -1624,7 +1671,7 @@ describe("ConversationStore", () => {
   describe("item/started inserts/replaces authoritative item", () => {
     it("inserts a new assistant item from item/started", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "item/started",
@@ -1648,7 +1695,7 @@ describe("ConversationStore", () => {
 
     it("replaces an existing item when item/started carries the same id", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -1688,7 +1735,7 @@ describe("ConversationStore", () => {
     // absent or empty input-images list is not a removal signal).
     it("replaces the same transcriptKey across wire IDs, images and all", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         turns: [
           {
@@ -1796,7 +1843,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "item/completed",
@@ -1878,7 +1925,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "item/started",
@@ -1971,7 +2018,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.openConv = stale;
       service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
       let release!: (value: ConversationReadProjection) => void;
@@ -2006,7 +2053,7 @@ describe("ConversationStore", () => {
       });
       service.openConv = stale;
       service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
       let release!: (value: ConversationReadProjection) => void;
@@ -2060,7 +2107,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "item/completed",
@@ -2105,7 +2152,7 @@ describe("ConversationStore", () => {
 
     it("marks an assistant item as not streaming on item/completed", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2140,7 +2187,7 @@ describe("ConversationStore", () => {
 
     it("marks an activity item as completed/failed on item/completed", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2179,7 +2226,7 @@ describe("ConversationStore", () => {
 
     it("marks an activity item as failed on item/completed with a nonzero exit code and no error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2219,7 +2266,7 @@ describe("ConversationStore", () => {
 
     it("marks an activity item as completed on item/completed with a zero exit code and no error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2259,7 +2306,7 @@ describe("ConversationStore", () => {
 
     it("marks an activity item as failed on item/completed with an error and no exit code", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2299,7 +2346,7 @@ describe("ConversationStore", () => {
 
     it("C6: upserts completed item even when start was missed", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Start with NO items — the item/started was missed.
       service.openConv = makeConversation({ items: [] });
       await store.getState().open(service, "ref-1");
@@ -2332,7 +2379,7 @@ describe("ConversationStore", () => {
     // preserves callId exactly; a reasoning item is family "reasoning".
     it("2A: notification-path commandExecution named 'Reasoning' is family 'tool' with exact callId", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({ items: [] });
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -2367,7 +2414,7 @@ describe("ConversationStore", () => {
 
     it("2A: notification-path reasoning item is family 'reasoning'", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({ items: [] });
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -2397,7 +2444,7 @@ describe("ConversationStore", () => {
       "preserves streamed reasoning text when sparse item/completed settles it as %s",
       async (status) => {
         const service = new FakeConversationService();
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         service.openConv = makeConversation({ items: [] });
         await store.getState().open(service, "ref-1");
         store.getState().applyNotification({
@@ -2459,7 +2506,7 @@ describe("ConversationStore", () => {
       "%s remains authoritative when reasoning item completes",
       async (_label, text, expectedOutput) => {
         const service = new FakeConversationService();
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         service.openConv = makeConversation({ items: [] });
         await store.getState().open(service, "ref-1");
         store.getState().applyNotification({
@@ -2504,7 +2551,7 @@ describe("ConversationStore", () => {
 
     it("retains truncation ownership when sparse completion preserves output", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({ items: [] });
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -2605,7 +2652,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "item/completed",
@@ -2637,7 +2684,7 @@ describe("ConversationStore", () => {
   describe("assistant delta appends to item", () => {
     it("appends delta text to assistant item markdown", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2668,7 +2715,7 @@ describe("ConversationStore", () => {
 
     it("appends reasoning summary delta to activity item", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2702,7 +2749,7 @@ describe("ConversationStore", () => {
 
     it("appends tool output delta to activity item", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2736,7 +2783,7 @@ describe("ConversationStore", () => {
 
     it("I4: delta targeting missing item triggers coalesced resync", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       service.openConv = makeConversation({ items: [] });
       // F2: openProjected binds the coalescer internally.
@@ -2765,7 +2812,7 @@ describe("ConversationStore", () => {
   describe("split Unicode remains valid", () => {
     it("does not corrupt surrogate pairs split across deltas", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -2813,7 +2860,7 @@ describe("ConversationStore", () => {
   describe("arguments/output stop at 64 KiB UTF-8 and end with truncation marker", () => {
     it("truncates assistant item markdown at 64 KiB UTF-8 with marker", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const largeText = "x".repeat(70_000);
       service.openConv = makeConversation({
         items: [
@@ -2840,7 +2887,7 @@ describe("ConversationStore", () => {
 
     it("truncates tool output at 64 KiB UTF-8 with marker exactly once", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const largeOutput = "y".repeat(70_000);
       service.openConv = makeConversation({
         items: [
@@ -2871,7 +2918,7 @@ describe("ConversationStore", () => {
 
     it("truncates multibyte text at 64 KiB UTF-8 boundary without splitting surrogates", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Each 'é' is 2 bytes in UTF-8. 35,000 é chars = 70,000 bytes > 64 KiB.
       const largeMultibyte = "é".repeat(35_000);
       service.openConv = makeConversation({
@@ -2902,7 +2949,7 @@ describe("ConversationStore", () => {
   describe("resync coalesces to one rehydrate via internal coalescer (F5)", () => {
     it("coalesces evener/thread/resync into one rehydrate call", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -2946,7 +2993,7 @@ describe("ConversationStore", () => {
 
     it("unsupported item transition triggers coalesced rehydrate", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -2982,7 +3029,7 @@ describe("ConversationStore", () => {
   describe("stale generation completion is ignored", () => {
     it("drops item/completed from an older generation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Reset to bump generation, then open a new conversation
       store.getState().reset();
@@ -3011,7 +3058,7 @@ describe("ConversationStore", () => {
   describe("rehydrate preserves draft and presentation state", () => {
     it("preserves draft text across rehydrate", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -3033,7 +3080,7 @@ describe("ConversationStore", () => {
       // C7: expandedToolKeys is removed from the production store — presentation
       // state lives in live-ui-store. Rehydrate only preserves draft.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -3055,7 +3102,7 @@ describe("ConversationStore", () => {
   describe("olderCursor survives open/rehydrate", () => {
     it("preserves olderCursor from openProjected through rehydrate", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -3088,7 +3135,7 @@ describe("ConversationStore", () => {
 
   describe("F3: LiveConversationState is a required interface", () => {
     it("createConversationStore returns state with required live methods", () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const s = store.getState();
       // These must be functions on the production store (not optional).
       expect(typeof s.openProjected).toBe("function");
@@ -3104,7 +3151,7 @@ describe("ConversationStore", () => {
   describe("F4: mutation object identity / private mutation ID", () => {
     it("out-of-order completion cannot clear a newer mutation (send)", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("first");
 
@@ -3145,7 +3192,7 @@ describe("ConversationStore", () => {
 
     it("out-of-order failure cannot overwrite a newer mutation's error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("first");
 
@@ -3174,7 +3221,7 @@ describe("ConversationStore", () => {
 
     it("draft restore only happens if user has not typed since submit", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("original draft");
       // Start a send that fails.
@@ -3190,7 +3237,7 @@ describe("ConversationStore", () => {
     it("interrupt snapshot is null and does not clear draft", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" } });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my draft text");
       let resolveFn: (() => void) | null = null as (() => void) | null;
@@ -3211,7 +3258,7 @@ describe("ConversationStore", () => {
   describe("F5: AuthoritativeRereadScheduler.request(key, effect)", () => {
     it("coalesces multiple signals to one readProjection", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -3260,7 +3307,7 @@ describe("ConversationStore", () => {
   describe("F6: LiveActivitySink accepted by openProjected/rehydrate", () => {
     it("openProjected accepts a LiveActivitySink and routes notifications to both", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityView: ActivityView = {
         tasks: [],
         work: [],
@@ -3325,7 +3372,7 @@ describe("ConversationStore", () => {
   describe("F7: ask_user started/completed projects question, deltas schedule reread", () => {
     it("item/started with ask_user type schedules reread, not generic activity", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ items: [] }),
         activity: {
@@ -3369,7 +3416,7 @@ describe("ConversationStore", () => {
 
     it("item/completed with ask_user schedules reread, not generic activity", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ items: [] }),
         activity: {
@@ -3411,7 +3458,7 @@ describe("ConversationStore", () => {
 
     it("missing assistant delta schedules reread via internal coalescer", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({ items: [] });
       service.readProjectionResult = {
         conversation: makeConversation({ items: [] }),
@@ -3445,7 +3492,7 @@ describe("ConversationStore", () => {
 
     it("wrong-kind delta (reasoning delta targeting activity of wrong kind) schedules reread", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // An assistant item that a reasoning delta targets — wrong kind.
       service.openConv = makeConversation({
         items: [
@@ -3488,7 +3535,7 @@ describe("ConversationStore", () => {
 
     it("unrelated notification does NOT schedule reread", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ items: [] }),
         activity: {
@@ -3518,7 +3565,7 @@ describe("ConversationStore", () => {
 
     it("warning insertion obeys item cap", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Start with 500 items (at cap).
       const items: MobileConversation["items"] = [];
       for (let i = 0; i < 500; i++) {
@@ -3540,7 +3587,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({
         items: [{ kind: "user", id: "user-1", text: "input" }],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
 
       const warning = {
@@ -3578,7 +3625,7 @@ describe("ConversationStore", () => {
 
     it("preserves a command description through live item projection", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
 
       store.getState().applyNotification({
@@ -3608,7 +3655,7 @@ describe("ConversationStore", () => {
 
     it("preserves a user transcript entry index through live item projection", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
 
       store.getState().applyNotification({
@@ -3640,7 +3687,7 @@ describe("ConversationStore", () => {
   describe("F8: UTF-8 byte cap, valid boundary, delta-after-marker", () => {
     it("delta cannot append after truncation marker", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Create text that is already at the cap with the marker.
       const largeText = "x".repeat(70_000);
       service.openConv = makeConversation({
@@ -3741,7 +3788,7 @@ describe("ConversationStore", () => {
 
     it("F12: genuine marker suffix in content does not freeze delta appends", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Content that genuinely ends with "… truncated" but is under the
       // byte limit — should NOT be treated as already truncated.
       const genuineContent = "Hello… truncated";
@@ -3779,7 +3826,7 @@ describe("ConversationStore", () => {
 
     it("F12: marker appears exactly once and delta after cap is blocked", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const largeText = "x".repeat(70_000);
       service.openConv = makeConversation({
         items: [
@@ -3829,7 +3876,7 @@ describe("ConversationStore", () => {
   describe("F9: stale safety — generation and operation identity", () => {
     it("close increments generation so stale completion cannot clear new error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       const gen = store.getState().conversationGeneration;
       store.getState().close();
@@ -3839,7 +3886,7 @@ describe("ConversationStore", () => {
 
     it("stale rehydrate catch does not set error on newer generation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -3893,7 +3940,7 @@ describe("ConversationStore", () => {
 
     it("loadOlder checks generation before applying results", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
@@ -3924,7 +3971,7 @@ describe("ConversationStore", () => {
   describe("F10: paging — only thread/turns/list receives cursor, dedupe by source identity", () => {
     it("loadOlder prepends older items and dedupes by item id", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Start with one existing item.
       service.openConv = makeConversation({
         items: [{ kind: "user", id: "item-1", text: "existing" }],
@@ -3958,7 +4005,7 @@ describe("ConversationStore", () => {
       // "wire-A". Its own identity lives only inside .members[], invisible
       // to a dedup set seeded from top-level timelineIdentity alone.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         items: [
           {
@@ -4026,7 +4073,7 @@ describe("ConversationStore", () => {
 
     it("loadOlder retains newest 500 and disables further paging at cap", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Start with 400 items.
       const items: MobileConversation["items"] = [];
       for (let i = 100; i < 500; i++) {
@@ -4054,7 +4101,7 @@ describe("ConversationStore", () => {
 
     it("stops offering earlier items once the cap nulls the cursor", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const items: MobileConversation["items"] = [];
       for (let i = 100; i < 500; i++) {
         items.push({ kind: "user", id: `item-${i}`, text: "" });
@@ -4088,7 +4135,7 @@ describe("ConversationStore", () => {
 
   describe("F11: no presentation disclosure state in conversation store", () => {
     it("conversation store does not carry expandedToolKeys or setExpandedToolKeys", () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const s = store.getState();
       // These presentation fields must NOT exist on the store.
       expect(s).not.toHaveProperty("expandedToolKeys");
@@ -4216,7 +4263,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
 
       // Open A (completes).
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
@@ -4264,7 +4311,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       // Trigger a rehydrate then immediately close.
       store.getState().applyNotification({
@@ -4291,7 +4338,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       store.getState().applyNotification({
         method: "evener/thread/resync",
@@ -4316,7 +4363,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       // Queue a rehydrate via resync.
       store.getState().applyNotification({
@@ -4349,7 +4396,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sink, "ref-1");
       // Queue a rehydrate for ref-1.
       store.getState().applyNotification({
@@ -4382,7 +4429,7 @@ describe("ConversationStore", () => {
   describe("a refused mutation and the reread scheduler", () => {
     it("surfaces the error while an earlier reread is still held; the refusal's reread runs after it", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const readsBefore = service.readProjectionCalls.length;
@@ -4409,7 +4456,7 @@ describe("ConversationStore", () => {
 
     it("a newer mutation's outcome is not disturbed by the older refusal's reread", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       service.sendShouldReject = refusal();
@@ -4434,7 +4481,7 @@ describe("ConversationStore", () => {
   describe("M1: setLiveView before conversation state commit (directly observed)", () => {
     it("directly observes setLiveView fires before the store state changes", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       const activityView: ActivityView = {
         tasks: [],
@@ -4473,7 +4520,7 @@ describe("ConversationStore", () => {
   describe("DrainScheduler: store-level invariants (M2 — tested through store)", () => {
     it("coalesces a synchronous pre-effect burst to one rehydrate", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -4512,7 +4559,7 @@ describe("ConversationStore", () => {
 
     it("retains a request during an in-flight rehydrate and drains it", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -4556,7 +4603,7 @@ describe("ConversationStore", () => {
 
     it("scheduler drains all trailing work recursively (no test-only flush)", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -4600,7 +4647,7 @@ describe("ConversationStore", () => {
 
     it("catches rehydrate errors without unhandled rejections and remains usable", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
@@ -4653,7 +4700,7 @@ describe("ConversationStore", () => {
   describe("Strict activity sink: setLiveView before commit, atomic rejection", () => {
     it("openProjected does NOT commit conversation projection when setLiveView returns false", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4674,7 +4721,7 @@ describe("ConversationStore", () => {
 
     it("rehydrate does NOT commit conversation projection when setLiveView returns false", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const openSink = createFakeSink();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4697,7 +4744,7 @@ describe("ConversationStore", () => {
 
     it("uses the same exact identity tuple for both stores", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4720,7 +4767,7 @@ describe("ConversationStore", () => {
 
     it("propagates rehydrate outcome from applyLiveNotification to the drain scheduler", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4747,7 +4794,7 @@ describe("ConversationStore", () => {
   describe("Real activity store integration", () => {
     it("openProjected with real createActivityStore installs the activity view", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityStore = createActivityStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 3 }],
@@ -4769,7 +4816,7 @@ describe("ConversationStore", () => {
 
     it("real activity store applyLiveNotification rehydrate triggers the drain scheduler", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityStore = createActivityStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4804,7 +4851,7 @@ describe("ConversationStore", () => {
 
     it("false setLiveView from real store (stale identity) rejects the conversation projection", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityStore = createActivityStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4858,7 +4905,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-1");
 
       // Queue a rehydrate for A via resync — scheduler captures binding
@@ -4900,7 +4947,7 @@ describe("ConversationStore", () => {
     it("RequestBinding is not exported from the module", () => {
       // RequestBinding is internal — it must not be importable.
       // We verify by checking that the store state does not expose it.
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const s = store.getState();
       expect(
         typeof (s as unknown as Record<string, unknown>).RequestBinding,
@@ -4914,7 +4961,7 @@ describe("ConversationStore", () => {
 
   describe("Residual 4: no test-only mutable API on the production store", () => {
     it("store state does not expose flushScheduler", () => {
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const s = store.getState();
       expect(
         typeof (s as unknown as Record<string, unknown>).flushScheduler,
@@ -4925,7 +4972,7 @@ describe("ConversationStore", () => {
       // Type-level check: the interface must not declare flushScheduler.
       // We verify at runtime that the method is absent (cast to unknown
       // record since TS correctly rejects the property access).
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       expect(
         (store.getState() as unknown as Record<string, unknown>).flushScheduler,
       ).toBeUndefined();
@@ -4980,7 +5027,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const readCtrl = makeControlledRead(service);
 
@@ -5142,7 +5189,7 @@ describe("ConversationStore", () => {
   describe("a reread that fails does not block the next reread", () => {
     it("the second resync rereads and commits after the first read threw", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const orig = service.readProjection.bind(service);
@@ -5288,7 +5335,7 @@ describe("ConversationStore", () => {
   async function openProjectedThread(thread: Thread) {
     const service = new FakeConversationService();
     service.readProjectionResult = makeReadProjectionResult(thread);
-    const store = createConversationStore();
+    const store = createTestConversationStore();
     await store.getState().openProjected(service, createFakeSink(), "ref-1");
     return store;
   }
@@ -5318,7 +5365,7 @@ describe("ConversationStore", () => {
       // must NOT replace the conversation (deleting L's items) or regress the
       // cursor — L's page ownership is newer.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
@@ -5370,7 +5417,7 @@ describe("ConversationStore", () => {
       // Rehydrate (R) is pending. A loadOlder (L) fails during the await,
       // setting a page error. When R succeeds, it must NOT clear that error.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -5404,7 +5451,7 @@ describe("ConversationStore", () => {
       // a mutation error. When R also fails, R's failure must NOT overwrite
       // the mutation's error.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           evener: {
@@ -5444,7 +5491,7 @@ describe("ConversationStore", () => {
     it("does not rehydrate a stale cursor through the replacement binding", async () => {
       const serviceA = new FakeConversationService();
       const serviceB = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       serviceA.readProjectionResult = makeReadProjectionResult(makeThread({ id: "thread-A" }));
       serviceB.readProjectionResult = makeReadProjectionResult(makeThread({ id: "thread-B" }));
       await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
@@ -5470,7 +5517,7 @@ describe("ConversationStore", () => {
 
     it("barrier: A pending, open/reset B, start B page, resolve A → subscriber sees zero stale writes", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ id: "thread-A" }),
       );
@@ -5540,7 +5587,7 @@ describe("ConversationStore", () => {
 
     it("stale loadOlder failure after reset performs ZERO set calls", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -5583,7 +5630,7 @@ describe("ConversationStore", () => {
   describe("I3: mutation starts atomically clear prior error", () => {
     it("send clears prior error atomically with new pending mutation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         capabilities: { ...ALL_TRUE_CAPS },
       });
@@ -5608,7 +5655,7 @@ describe("ConversationStore", () => {
 
     it("old failed mutation cannot republish error after newer mutation starts", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({
         capabilities: { ...ALL_TRUE_CAPS },
       });
@@ -5642,7 +5689,7 @@ describe("ConversationStore", () => {
     it("failure restores draft snapshot only if user has not edited since clear", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("send failed");
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("original draft");
       await store.getState().send(service, textInput("original draft"));
@@ -5651,7 +5698,7 @@ describe("ConversationStore", () => {
 
     it("type-then-delete after clear counts as edit — failure does NOT restore snapshot", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my draft text");
       let rejectSend: ((e: Error) => void) | null = null as
@@ -5674,7 +5721,7 @@ describe("ConversationStore", () => {
 
     it("out-of-order mutation failure cannot alter newer mutation draft", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("first");
       let rejectFirst: ((e: Error) => void) | null = null as
@@ -5702,7 +5749,7 @@ describe("ConversationStore", () => {
   describe("I4: raw Thread fixtures through projectConversation — question lifecycle", () => {
     it("completed parseable ask_user drives reread → question rows + askPending via projectConversation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial: no turns, no pending ask.
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -5760,7 +5807,7 @@ describe("ConversationStore", () => {
 
     it("later user-message answer triggers reread → settled/removal via projectConversation", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial: has a pending ask_user.
       const askThread = makeThread({
         evener: {
@@ -5827,7 +5874,7 @@ describe("ConversationStore", () => {
 
     it("malformed ask_user remains conservative — schedules reread, no question rows", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
@@ -5855,7 +5902,7 @@ describe("ConversationStore", () => {
 
     it("incomplete ask_user (inProgress) remains conservative — schedules reread only", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
@@ -5893,7 +5940,7 @@ describe("ConversationStore", () => {
       // cleared via set), mutation2 fails (error="boom" again). The
       // error-owner revision incremented on each transition.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Start a rehydrate (R) that hangs.
@@ -5930,7 +5977,7 @@ describe("ConversationStore", () => {
       // the same pendingMutation shape reappears). A stale rehydrate must
       // not publish a predating projection.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
@@ -5992,7 +6039,7 @@ describe("ConversationStore", () => {
       // read that rejects. If a newer error owner writes during the await,
       // R's failure must not overwrite it.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Start a rehydrate (R) that hangs — the read will reject.
@@ -6026,7 +6073,7 @@ describe("ConversationStore", () => {
       // no reentrant await). The trailing reread publishes the fresh
       // projection once the mutation has settled.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial projection has no items.
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -6087,7 +6134,7 @@ describe("ConversationStore", () => {
       // completes, the question must appear AND the page items/cursor must
       // be preserved (merged, not dropped).
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial: empty conversation.
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -6147,7 +6194,7 @@ describe("ConversationStore", () => {
 
     it("preserves page-owned history when wire id differs from transcript key", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [makeTurn({ items: [userMessageItem("base", "base")] })],
@@ -6201,7 +6248,7 @@ describe("ConversationStore", () => {
 
     it("dedupes page and reread items by transcript key when wire ids differ", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -6252,7 +6299,7 @@ describe("ConversationStore", () => {
 
     it("dedupes a live tail against a reread item by transcript key", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.getState().applyNotification({
@@ -6300,7 +6347,7 @@ describe("ConversationStore", () => {
 
     it("preserves a newer live version across a wire-id change during reread", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const ctrl = makeControlledRead(service);
@@ -6350,7 +6397,7 @@ describe("ConversationStore", () => {
       // projection contains an activity item. When R completes, the activity
       // must appear AND the page error must be preserved.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial: empty conversation.
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -6415,7 +6462,7 @@ describe("ConversationStore", () => {
       // malformed must produce conservative activity rows (not question
       // rows), askPending false, and exactly one bounded reread.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       // Initial: empty.
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -6470,7 +6517,7 @@ describe("ConversationStore", () => {
       // question rows or set askPending. The inProgress ask_user is
       // projected as a running activity row.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // The reread returns a Thread with an inProgress ask_user.
@@ -6538,7 +6585,7 @@ describe("ConversationStore", () => {
         makeThread({ id: "thread-A" }),
       );
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       // Start a rehydrate (R) on serviceA that hangs.
       const ctrl = makeControlledRead(serviceA);
@@ -6588,7 +6635,7 @@ describe("ConversationStore", () => {
     it("zero trailing reads while mutation pending, exactly one after settlement", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Start a rehydrate (R) that hangs.
       const ctrl = makeControlledRead(service);
@@ -6635,7 +6682,7 @@ describe("ConversationStore", () => {
     it("zero trailing reads while mutation pending (failed terminal), exactly one after", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Start a rehydrate (R) that hangs.
       const ctrl = makeControlledRead(service);
@@ -6683,7 +6730,7 @@ describe("ConversationStore", () => {
       serviceA.readProjectionResult = makeReadProjectionResult(
         makeThread({ id: "thread-A" }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
       // Start a rehydrate (R) on serviceA that hangs.
       const ctrlA = makeControlledRead(serviceA);
@@ -6743,7 +6790,7 @@ describe("ConversationStore", () => {
   ) {
     const service = new FakeConversationService();
     service.readProjectionResult = makeReadProjectionResult(initial);
-    const store = createConversationStore();
+    const store = createTestConversationStore();
     await store.getState().openProjected(service, createFakeSink(), "ref-1");
     service.readProjectionResult = makeReadProjectionResult(snapshot);
     const ctrl = makeControlledRead(service);
@@ -6910,7 +6957,7 @@ describe("ConversationStore", () => {
     it("applies a frame that arrives after the response on top of the snapshot", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ status: { type: "idle" }, name: "snapshot name" }),
@@ -7015,7 +7062,7 @@ describe("ConversationStore", () => {
     it("never commits a dead read's snapshot after the conversation closes", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ name: "old read's snapshot" }),
@@ -7263,7 +7310,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Set cursor so loadOlder can run.
       store.setState({ olderCursor: "cursor-1" });
@@ -7341,7 +7388,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Set cursor for loadOlder.
       store.setState({ olderCursor: "cursor-1" });
@@ -7412,7 +7459,7 @@ describe("ConversationStore", () => {
     it("M1 settles and queues; M2 starts before effect; release => zero reread; settle M2 => exactly one", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Start a rehydrate (R) that hangs.
       const ctrl = makeControlledRead(service);
@@ -7481,7 +7528,7 @@ describe("ConversationStore", () => {
       serviceA.readProjectionResult = makeReadProjectionResult(
         makeThread({ id: "thread-A" }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
       // Start a rehydrate (R) on serviceA that hangs.
       const ctrlA = makeControlledRead(serviceA);
@@ -7562,7 +7609,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Set cursor so loadOlder can run.
       store.setState({ olderCursor: "cursor-1" });
@@ -7660,7 +7707,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t0", items: initialThreadItems })],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       // Start a rehydrate (R) that hangs.
@@ -7770,7 +7817,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       // Start a rehydrate (R) that hangs.
@@ -8096,7 +8143,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // X should be truncated after openProjected.
       const xBefore = store
@@ -8340,7 +8387,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -8461,7 +8508,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -8595,7 +8642,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -8835,7 +8882,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
       const ctrl = makeControlledRead(service);
@@ -9759,7 +9806,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // The item should be truncated and frozen.
@@ -9822,7 +9869,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // Verify it's frozen.
@@ -9903,7 +9950,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // Frozen.
@@ -9983,7 +10030,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // Frozen.
@@ -10051,7 +10098,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -10091,7 +10138,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -10138,7 +10185,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "opaque-cursor" });
       service.olderItems = {
@@ -10176,7 +10223,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "stale" });
       service.olderItems = Promise.reject(
@@ -10226,7 +10273,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -10974,7 +11021,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -11568,7 +11615,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -11905,7 +11952,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -12021,7 +12068,7 @@ describe("ConversationStore", () => {
       ReturnType<typeof createConversationStore>
     > {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
         method: "turn/started",
@@ -12062,7 +12109,7 @@ describe("ConversationStore", () => {
 
     it("projects a status-less tool item as completed when no turn is active", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       startItem(store, {
         type: "commandExecution",
@@ -12149,7 +12196,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
       );
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
@@ -12524,7 +12571,7 @@ describe("ConversationStore", () => {
       older: MobileTimelineItem[],
     ): Promise<ReturnType<typeof createConversationStore>> {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.openConv = makeConversation({ items: current });
       await store.getState().open(service, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -12578,7 +12625,7 @@ describe("ConversationStore", () => {
   describe("C1: wrong service at entry => zero request/state change", () => {
     it("wrong-service loadOlder => zero service calls, zero state change", async () => {
       const serviceA = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(serviceA, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       const serviceB = new FakeConversationService();
@@ -12595,7 +12642,7 @@ describe("ConversationStore", () => {
     it("correct-service loadOlder still works after binding", async () => {
       const service = new FakeConversationService();
       service.olderItems = { items: [{ kind: "user", id: "old", text: "x" }] };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       await store.getState().loadOlder(service);
@@ -12621,7 +12668,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       const snapshot = store.getState().getTruncatedItemIds();
       expect(snapshot.has("big")).toBe(true);
@@ -12681,7 +12728,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // Oversized item is frozen.
@@ -12723,7 +12770,7 @@ describe("ConversationStore", () => {
           },
         ],
       });
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().open(service, "ref-1");
       expect(store.getState().getTruncatedItemIds().has("item-1")).toBe(false);
 
@@ -12779,7 +12826,7 @@ describe("ConversationStore", () => {
       it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
         const serviceA = new FakeConversationService();
         serviceA.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store
           .getState()
           .openProjected(serviceA, createFakeSink(), "ref-1");
@@ -12814,7 +12861,7 @@ describe("ConversationStore", () => {
     it("page failure after newer clear-to-null: page settles loading, preserves null (no write)", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -12854,7 +12901,7 @@ describe("ConversationStore", () => {
     it("rehydrate already-null during mutation: no spurious errorOwnerRev increment, send clears pending", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, sink, "ref-1");
 
       // Set an error via a failed send, then clear with a succeeding send.
@@ -12903,7 +12950,7 @@ describe("ConversationStore", () => {
       // settles.
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, sink, "ref-1");
 
       // Set a non-null error first so the page failure captures an old
@@ -12967,7 +13014,7 @@ describe("ConversationStore", () => {
     it("mutation failure after newer ABA-null: installs failed pending, preserves null", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, sink, "ref-1");
 
       // Set an error via a failed send, then clear with a succeeding send.
@@ -13011,7 +13058,7 @@ describe("ConversationStore", () => {
 
     it("held page failure after newer mutation error: page settles loading, preserves mutation error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -13040,7 +13087,7 @@ describe("ConversationStore", () => {
 
     it("held mutation failure after newer page error: installs failed pending, preserves page error", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
@@ -13104,7 +13151,7 @@ describe("ConversationStore", () => {
         olderCursor: "cursor-A",
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       store.setState({ olderCursor: "cursor-A" });
 
@@ -13164,7 +13211,7 @@ describe("ConversationStore", () => {
         olderCursor: "cursor-A",
       };
       const sinkA = createFakeSink();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       await store.getState().openProjected(serviceA, sinkA, "ref-A");
       store.setState({ olderCursor: "cursor-A" });
 
@@ -13218,7 +13265,7 @@ describe("ConversationStore", () => {
           olderCursor: null,
         };
         const sinkA = createFakeSink();
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().openProjected(serviceA, sinkA, "ref-A");
 
         // Start a mutation on A that hangs then fails.
@@ -13237,7 +13284,7 @@ describe("ConversationStore", () => {
           serviceA.interrupt = async () => hangFail;
         }
 
-        let mutationP: Promise<void>;
+        let mutationP: Promise<boolean>;
         if (kind === "send")
           mutationP = store.getState().send(serviceA, textInput("x"));
         else if (kind === "steer")
@@ -13298,7 +13345,7 @@ describe("ConversationStore", () => {
           olderCursor: null,
         };
         const sinkA = createFakeSink();
-        const store = createConversationStore();
+        const store = createTestConversationStore();
         await store.getState().openProjected(serviceA, sinkA, "ref-A");
 
         // Start a mutation on A that hangs then succeeds.
@@ -13317,7 +13364,7 @@ describe("ConversationStore", () => {
           serviceA.interrupt = async () => hangSuccess;
         }
 
-        let mutationP: Promise<void>;
+        let mutationP: Promise<boolean>;
         if (kind === "send")
           mutationP = store.getState().send(serviceA, textInput("x"));
         else if (kind === "steer")
@@ -13418,7 +13465,7 @@ describe("ConversationStore", () => {
   describe("I3: state loadOlder filters question rows (defense-in-depth)", () => {
     it("inject question row into page items => omitted, other items/order/cursor retained, askPending unchanged", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1", askPending: false }),
         activity: {
@@ -13471,7 +13518,7 @@ describe("ConversationStore", () => {
   describe("a refusal's reread carries the reread's capabilities into the activity view", () => {
     it("real activity store: the view's capabilities match the conversation's after the reread", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityStore = createActivityStore();
       const sink = activityStore.getState();
       const withCaps = (capabilities: ThreadCapabilities) =>
@@ -13500,7 +13547,7 @@ describe("ConversationStore", () => {
     it("separate activity reset + conversation reset, then openProjected; both views commit, late notification rejected", async () => {
       const activityStore = createActivityStore();
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 5 }],
         work: [],
@@ -13576,7 +13623,7 @@ describe("ConversationStore", () => {
       // the newer external error rather than clearing it — proving the
       // revision advanced through the wrapped set.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const ref = store.getState().ref;
@@ -13638,7 +13685,7 @@ describe("ConversationStore", () => {
 
     it("stale ref and stale generation make zero set, same reference, zero notifications", async () => {
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
@@ -13682,7 +13729,7 @@ describe("ConversationStore", () => {
       // After a reset (or open of a new conversation), a publishExternalError
       // call carrying the OLD ref+generation must make zero state changes.
       const service = new FakeConversationService();
-      const store = createConversationStore();
+      const store = createTestConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const oldRef = store.getState().ref;
