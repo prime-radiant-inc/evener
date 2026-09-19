@@ -188,13 +188,25 @@ export class MutationOutboxIndexedDB {
       await this.#discardSupersededNoteRecovery(transaction, source);
 
       const display = source.optimisticDisplay;
-      const retainsOptimisticDisplay =
+      // A "pending" receipt means accepted but not yet described by
+      // authoritative state. The daemon reports pending for exactly the
+      // mutations whose acceptance a read cannot yet prove - every
+      // input-bearing turn verb AND notes/human/set
+      // (acceptedClientMutationProjection) - and this store owes each of them
+      // a kept copy until reconcileIdentities settles it from a later read's
+      // authoritative ids. For the turn verbs the kept copy is the optimistic
+      // display itself (an input array renders the pending row); a note
+      // carries no display (production enqueues notes with null), but its kept
+      // copy is what tells humanNoteDrafts' post-retry lookup an accepted save
+      // is pending rather than settled-elsewhere. A receipt-only control (a
+      // Stop) settles terminal at acceptance and keeps no copy: its effect is
+      // already readable in the session's own state, so its pending receipts
+      // drop the row exactly as before.
+      const retainsAcceptedCopy =
         projectionState === "pending" &&
-        display !== null &&
-        typeof display === "object" &&
-        "input" in display &&
-        Array.isArray(display.input);
-      if (retainsOptimisticDisplay) {
+        ((display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input)) ||
+          source.method === "notes/human/set");
+      if (retainsAcceptedCopy) {
         const accepted: MutationOptimisticRecord = {
           version: source.version,
           clientMutationId: source.clientMutationId,

@@ -485,9 +485,14 @@ test("a background save whose blocked row is accepted elsewhere mid-retry stays 
   connectionStore.getState().connect(fake);
   await threadsStore.getState().ensureThread(ref);
   await threadsStore.getState().refreshThread(ref);
-  const original = await persisted("retained blocked note", {
-    input: [{ type: "text", text: "retained blocked note" }],
-  });
+  // The production shape: setHumanNote enqueues notes with optimisticDisplay
+  // null (nothing renders while a note waits on its canonical reflection), so
+  // the row the other dispatcher accepts carries NO input-array display. The
+  // {input: [...]} fixture this test was written with is a shape production
+  // never produces - which is exactly how the accepted path broke for notes:
+  // settleReceipt dropped the null-display row instead of keeping it, and the
+  // draft read that absence as settled-elsewhere-unsaved.
+  const original = await persisted("retained blocked note");
   await storage.markAttempted(original.clientMutationId);
   await storage.markUnknown(original.clientMutationId, "blockedUnknown");
   syncHumanNote(ref, "");
