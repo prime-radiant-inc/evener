@@ -516,9 +516,11 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 }
 
 // AppendSyncedEntry is the strict indexed durability door. Unlike AppendSynced,
-// it refuses an absent writer. Its sequence identifies a durable or retained
-// record; any other error means no record was appended. A retained record must
-// be adopted and synced, never appended again.
+// it refuses an absent writer. The returned sequence is valid only with nil or
+// ErrRetainedUnsynced: nil means the record is durable, while
+// ErrRetainedUnsynced means the whole record is retained and must be adopted.
+// Every other error returns sequence zero because no record was appended. A
+// retained record must be synced, never appended again.
 func (w *Writer) AppendSyncedEntry(turn schema.Turn) (int, error) {
 	if w == nil {
 		return 0, ErrWriterClosed
@@ -530,7 +532,7 @@ func (w *Writer) AppendSyncedEntry(turn schema.Turn) (int, error) {
 	// that never existed (w == nil, above).
 	firstSeq, retained, err := w.appendBatch([]schema.Turn{turn}, true, false, true)
 	if err != nil {
-		return firstSeq, err // not recorded (includes ErrWriterClosed)
+		return 0, err // not recorded (includes ErrWriterClosed)
 	}
 	if retained == nil {
 		return firstSeq, nil // recorded and its own fsync succeeded: durable
