@@ -18,11 +18,21 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+	type ConnectionState,
 	createHubOverviewStore,
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import {
+	isReady,
+	useConnectionDisplay,
+	useLiveReadiness,
+	useReconnectRecovery,
+	useRenderClient,
+	whenReady,
+} from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -31,12 +41,18 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
 export function HubSettingsScreen({ route, navigation }: Props) {
-	const { activeProfile, client, state, retry } = useConnection();
+	const { activeProfile, client, state, fatal, retry } = useConnection();
+	const display = useConnectionDisplay(route.params.hubId, state, fatal);
+	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
+	// See PluginsScreen.tsx's identical comment: a manual retry's not-yet-
+	// ready replacement client never displaces the previous one. Scoped to
+	// the hub: see useRenderClient's own doc.
+	const renderClient = useRenderClient(client, state, route.params.hubId);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 		);
-	if (!client || state !== "ready")
+	if (display === "wall" || !renderClient)
 		return (
 			<View style={{ padding: 20 }}>
 				<Copy>Connect to {activeProfile.name} to view hub settings.</Copy>
@@ -44,30 +60,35 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			</View>
 		);
 	return (
-		<HubSettings
-			client={client}
-			hubId={activeProfile.id}
-			hubName={activeProfile.name}
-			openTranscript={() =>
-				navigation.navigate("TranscriptPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openKeybindings={() =>
-				navigation.navigate("KeybindingPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openProviders={() =>
-				navigation.navigate("Providers", { hubId: activeProfile.id })
-			}
-			openLaunchSettings={() =>
-				navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
-			}
-			openPlugins={() =>
-				navigation.navigate("Plugins", { hubId: activeProfile.id })
-			}
-		/>
+		<>
+			{display === "banner" ? <ConnectionStatus /> : null}
+			<HubSettings
+				client={renderClient}
+				connectionState={state}
+				canUseConnection={canUseConnection}
+				hubId={activeProfile.id}
+				hubName={activeProfile.name}
+				openTranscript={() =>
+					navigation.navigate("TranscriptPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openKeybindings={() =>
+					navigation.navigate("KeybindingPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openProviders={() =>
+					navigation.navigate("Providers", { hubId: activeProfile.id })
+				}
+				openLaunchSettings={() =>
+					navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
+				}
+				openPlugins={() =>
+					navigation.navigate("Plugins", { hubId: activeProfile.id })
+				}
+			/>
+		</>
 	);
 }
 
@@ -107,6 +128,8 @@ const HUB_OVERVIEW_REFRESH_FAILED =
 
 function HubSettings({
 	client,
+	connectionState,
+	canUseConnection,
 	hubId,
 	hubName,
 	openTranscript,
@@ -116,6 +139,8 @@ function HubSettings({
 	openLaunchSettings,
 }: {
 	client: ConversationClientLike;
+	connectionState: ConnectionState;
+	canUseConnection: () => boolean;
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
@@ -125,6 +150,7 @@ function HubSettings({
 	openLaunchSettings(): void;
 }) {
 	const colors = useColors();
+	const ready = isReady(connectionState);
 	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
@@ -145,10 +171,21 @@ function HubSettings({
 	useEffect(() => () => model.dispose(), [model]);
 	useFocusEffect(
 		useCallback(() => {
+			if (!canUseConnection()) return;
 			void model.getState().refresh();
 			void upgrade.reconcileAfterReconnect();
-		}, [model, upgrade]),
+		}, [canUseConnection, model, upgrade]),
 	);
+	// createHubOverviewStore has no connectionChanged of its own (no push
+	// notification exists to tell it a flap happened - hubOverview.ts's
+	// module doc), so a passive flap needs its own recovery: refresh both it
+	// and the upgrade controller on every transition back to "ready", the way
+	// useFocusEffect above already does once on focus.
+	const recoverAfterReconnect = useCallback(() => {
+		void model.getState().refresh();
+		void upgrade.reconcileAfterReconnect();
+	}, [model, upgrade]);
+	useReconnectRecovery(connectionState, recoverAfterReconnect);
 	const data = state.data;
 	const hub = data?.hub;
 	return (
@@ -162,7 +199,7 @@ function HubSettings({
 					<RefreshControl
 						refreshing={state.loading && !!data}
 						onRefresh={() => {
-							void state.refresh();
+							if (canUseConnection()) void state.refresh();
 						}}
 					/>
 				}
@@ -180,13 +217,14 @@ function HubSettings({
 						state={upgradeState}
 						hubName={hubName}
 						runningIdentity={hub}
-						onStart={() => {
+						disabled={!ready}
+						onStart={whenReady(canUseConnection, () => {
 							void upgrade.start();
-						}}
+						})}
 						onRefresh={() => {
-							void upgrade.reconcileAfterReconnect();
+							if (canUseConnection()) void upgrade.reconcileAfterReconnect();
 						}}
-						onReviewAnother={() => {
+						onReviewAnother={whenReady(canUseConnection, () => {
 							void upgrade.reviewAnotherUpdate().then((reviewed) => {
 								if (!reviewed) return;
 								Alert.alert(
@@ -196,12 +234,14 @@ function HubSettings({
 										{ text: "Cancel", style: "cancel" },
 										{
 											text: "Continue",
-											onPress: () => upgrade.rearm(reviewed),
+											onPress: () => {
+												if (canUseConnection()) upgrade.rearm(reviewed);
+											},
 										},
 									],
 								);
 							});
-						}}
+						})}
 					/>
 				</Section>
 				{state.loading && !data && (
@@ -212,10 +252,10 @@ function HubSettings({
 				/>
 				{state.error && (
 					<Action
-						disabled={state.loading}
-						onPress={() => {
+						disabled={state.loading || !ready}
+						onPress={whenReady(canUseConnection, () => {
 							void state.refresh();
-						}}
+						})}
 					>
 						Retry hub information
 					</Action>
