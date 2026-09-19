@@ -1616,6 +1616,36 @@ func TestEditMarketplace_RenameRefusesAnIncomingSourceUnderTheOldCache(t *testin
 	}
 }
 
+// A combined rename and re-source replaces the edited record's own source, so
+// that source must not block the cache move: only other records' sources, and
+// the incoming source, are data to protect.
+func TestEditMarketplace_RenameAndResourceReplacesASourceUnderTheOldCache(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldSource := filepath.Join(m.cacheDir(), "acme", "source")
+	if err := os.MkdirAll(oldSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: oldSource},
+		InstallLocation: oldSource,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+
+	ref, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: dir})
+	if err != nil {
+		t.Fatalf("a re-source replacing its own old cache source was refused: %v", err)
+	}
+	if ref.InstallLocation != dir || ref.Source.Path != dir {
+		t.Fatalf("ref = %+v, want the incoming source %q", ref, dir)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

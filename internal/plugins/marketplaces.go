@@ -715,7 +715,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, registryKeyOwners(reg, mk))
+		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, registryKeyOwners(reg, mk), resourcing)
 		if err != nil {
 			return fail(err)
 		}
@@ -819,7 +819,7 @@ func runUndo(undo []func() error) error {
 // ref and registry as they are to be recorded, and the steps that put the
 // directories back should a later step fail; a failure puts back what it had
 // moved itself and reports what it could not.
-func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk Marketplaces, reg Registry, owners map[string]string) (MarketplaceRef, Registry, []func() error, error) {
+func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk Marketplaces, reg Registry, owners map[string]string, resourcing bool) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
 		if undoErr := runUndo(undo); undoErr != nil {
@@ -828,6 +828,16 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		return MarketplaceRef{}, Registry{}, nil, err
 	}
 	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
+	// When the edit replaces the record's own source, that source is no longer
+	// data to protect — the re-source is what removes it. Every other record's
+	// directory source always is, and a pure rename keeps the edited record's
+	// too, because the rename would move its directory out from under it.
+	registeredSources := func() []string {
+		if resourcing {
+			return marketplaceProtectionPaths(mk, name)
+		}
+		return marketplaceProtectionPaths(mk)
+	}
 	if ref.Source.Kind != SourceDirectory {
 		// The clone move follows a final symlink: pathPresent stats through it,
 		// so the move refuses rather than blindly renaming an entry it cannot
@@ -876,7 +886,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// live source. Presence is the entry's own, not a stat through a final
 		// symlink: sweeping is what removes it either way, so an unreadable
 		// link must still be cleared rather than block a directory rename.
-		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
+		present, protect := m.sweepDestroysSource(registeredSources(), oldDir)
 		if present && !protect {
 			if err := marketplaceRemoveAll(oldDir); err != nil {
 				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
@@ -893,7 +903,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// install location recorded inside it — a hand-seeded store can arrange
 		// it, refuseSourceInStore only guards new operations — would be moved
 		// out from under its record, so refuse rather than break it.
-		if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldCache); protect {
+		if _, protect := m.sweepDestroysSource(registeredSources(), oldCache); protect {
 			return fail(fmt.Errorf("renaming plugin cache %s would move a path a marketplace records", oldCache))
 		}
 		if err := marketplaceRename(oldCache, newCache); err != nil {
