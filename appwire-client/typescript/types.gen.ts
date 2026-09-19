@@ -1288,6 +1288,9 @@ export interface JobActivityJob {
   transcriptRef?: string;
   type: string;
   status: string;
+  authority?: string;
+  incomplete?: boolean;
+  integrityReasons?: string[];
   outcome?: string;
   terminal: boolean;
   background: boolean;

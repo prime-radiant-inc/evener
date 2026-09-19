@@ -71,14 +71,20 @@ func TestActivityOwnedRecords(t *testing.T) {
 		{JobID: "a", OwnerSessionID: "root"},
 		{JobID: "b", OwnerSessionID: "other"},
 		{JobID: "c", OwnerSessionID: ""}, // empty owner = owned by all
-		nil,                              // nil record is skipped
+		// A forwarded fallback whose recorded owner is a dead descendant still
+		// belongs to the loading session: it is the only copy that survives.
+		{JobID: "d", OwnerSessionID: "other", Authority: jobstore.AuthorityForwardedFallback},
+		{JobID: "e", OwnerSessionID: "other", Authority: jobstore.AuthorityLegacyUnknown},
+		// An owner-authoritative record for another owner is filtered out.
+		{JobID: "f", OwnerSessionID: "other", Authority: jobstore.AuthorityOwner},
+		nil, // nil record is skipped
 	}
 	got := activityOwnedRecords("root", recs)
-	if len(got) != 2 {
-		t.Fatalf("got %d records, want 2 (root-owned + empty-owner), ids=%v", len(got), activityRecordIDs(got))
+	if len(got) != 4 {
+		t.Fatalf("got %d records, want 4 (root-owned + empty-owner + forwarded fallbacks), ids=%v", len(got), activityRecordIDs(got))
 	}
-	if got[0].JobID != "a" || got[1].JobID != "c" {
-		t.Fatalf("ids = %v, want [a c]", activityRecordIDs(got))
+	if got[0].JobID != "a" || got[1].JobID != "c" || got[2].JobID != "d" || got[3].JobID != "e" {
+		t.Fatalf("ids = %v, want [a c d e]", activityRecordIDs(got))
 	}
 }
 
