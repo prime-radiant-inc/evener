@@ -732,6 +732,25 @@ func (r *ResumeLocks) ResolvedSessionID(sessionID string) string {
 	return ""
 }
 
+// RecoveryEnded reports whether sessionID has durably ended: a committed
+// recovery obligation is recorded for it and it awaits an explicit resume
+// (ResumeRequired, set by PersistForceStop and Finish(true)). A completed
+// recovery redirect (RecordResolvedSession) names the session a resume settled
+// on, and is written once and never cleared; once that named session has ended
+// the redirect stops being a live route, so a consumer that would branch it
+// falls back to the alias rather than resolving into the ended session's
+// recovery fence — which nothing would ever clear short of a hub restart.
+//
+// A temporary Stopping fence is deliberately NOT evidence of ending: a force
+// stop that is refused gives it back with Finish(false) and leaves the session
+// running, so the redirect is still the right route. While merely stopping, the
+// target stays in the fork's fence set and the fork is refused through it.
+func (r *ResumeLocks) RecoveryEnded(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recovery[sessionID].ResumeRequired
+}
+
 // RecoverySequence is captured once when a transport is established. A
 // request read later cannot turn unread pre-recovery input into fresh intent.
 func (r *ResumeLocks) RecoverySequence() uint64 {
