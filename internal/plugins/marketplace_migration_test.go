@@ -2788,6 +2788,42 @@ func TestMarketplaceNameMigration_ARecoveryOfAnAlreadyMovedRenameKeepsTheMarker(
 	mustExist(t, entry.InstallPath)
 }
 
+func TestMarketplaceNameMigration_ARecoveryMoveFailureNamesNoPath(t *testing.T) {
+	const recorded = "a/b"
+	m := NewManager(t.TempDir())
+	var stderr bytes.Buffer
+	m.Stderr = &stderr
+	plantLegacyMarketplace(t, m, recorded, "widget")
+	plantRenameMarker(t, m, recorded, "a-b")
+
+	oldDir, newDir := m.marketplaceDir(recorded), m.marketplaceDir("a-b")
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	marketplaceRename = func(from, to string) error {
+		if from == oldDir && to == newDir {
+			return &fs.PathError{Op: "rename", Path: oldDir, Err: errors.New("permission denied")}
+		}
+		return orig(from, to)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("expected the recovery move to fail")
+	}
+	mustExist(t, renameMarkerFile(m))
+	if !strings.Contains(err.Error(), renameMarkerFileName) {
+		t.Fatalf("recovery error = %v, want it to name %s", err, renameMarkerFileName)
+	}
+	for _, path := range []string{m.Root, oldDir, newDir} {
+		if strings.Contains(err.Error(), path) {
+			t.Fatalf("recovery error = %v, want no absolute path %q", err, path)
+		}
+	}
+	if !strings.Contains(stderr.String(), oldDir) {
+		t.Fatalf("recovery log = %q, want the raw failing path %q", stderr.String(), oldDir)
+	}
+}
+
 // A save that fails and cannot put the registry back leaves the old record
 // beside the new keys, which is the store between the two names and exactly
 // what the marker is for: the rollback reached neither state, so the marker

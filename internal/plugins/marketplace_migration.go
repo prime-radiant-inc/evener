@@ -269,7 +269,7 @@ func (m *Manager) recoverMarkedRename() error {
 		// Install parse a partial clone instead of clearing and re-cloning.
 		recordedLocation := ref.InstallLocation
 		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg, owners); err != nil {
-			return fail(err)
+			return m.recoveryStepFailed(*marker, "moving its directories", err)
 		}
 		if ref.Source.Kind != SourceDirectory && recordedLocation != "" {
 			// The rename's own rule, asked of the clone at the name the
@@ -280,7 +280,7 @@ func (m *Manager) recoverMarkedRename() error {
 			clone := m.marketplaceDir(marker.To)
 			haveClone, err := pathPresent(clone)
 			if err != nil {
-				return fail(err)
+				return m.recoveryStepFailed(*marker, "checking its renamed clone", err)
 			}
 			ref.InstallLocation = ""
 			if haveClone {
@@ -301,7 +301,7 @@ func (m *Manager) recoverMarkedRename() error {
 		if owner == "" {
 			reg = rekeyRegistry(reg, owners, marker.From, marker.To, "", "")
 		} else if reg, undo, err = m.movePluginCachesToNewName(reg, marker.From, marker.To, owners); err != nil {
-			return fail(err)
+			return m.recoveryStepFailed(*marker, "moving its plugin caches", err)
 		}
 	}
 	if err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
@@ -335,6 +335,18 @@ func (m *Manager) recoverMarkedRename() error {
 	m.removeRenameMarker()
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being renamed to %q when an earlier run stopped; finished the rename\n", marker.From, marker.To)
 	return nil
+}
+
+// recoveryStepFailed logs the raw filesystem failure and returns only the
+// marker's safe basename to the caller. The marker stays because recovery has
+// not established either store state, so the next lock holder must retry it.
+func (m *Manager) recoveryStepFailed(marker renameMarker, step string, err error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: recovering marketplace %q to %q: %s failed: %v\n", marker.From, marker.To, step, err)
+	scrubbed := fmt.Errorf("recovering marketplace %q to %q: %s failed; see the hub's log for detail", marker.From, marker.To, step)
+	if errors.Is(err, errRenameRollbackIncomplete) {
+		scrubbed = fmt.Errorf("%w: %w", scrubbed, errRenameRollbackIncomplete)
+	}
+	return errors.Join(scrubbed, m.markerLeftForRecovery("rename"))
 }
 
 // finishMarkedMerge finishes the merge a marker names: whatever keys are
