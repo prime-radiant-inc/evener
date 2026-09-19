@@ -1,0 +1,3299 @@
+diff --git a/agent/fuzz_lf_drain_test.go b/agent/fuzz_lf_drain_test.go
+index c0f187866..35955f781 100644
+--- a/agent/fuzz_lf_drain_test.go
++++ b/agent/fuzz_lf_drain_test.go
+@@ -13,7 +13,7 @@ import (
+ // (armGoalContinuation), and a notification peek; the extracted core takes only
+ // the RESULTS of those side effects so the priority ladder can be fuzzed directly.
+ //
+-// Oracles: determinism; the action is always one of the six valid values;
++// Oracles: determinism; the action is always one of the seven valid values;
+ // skipGoalGate matches its definition; the priority ladder is honored; and the
+ // goal accounting invariants hold — the gate never re-arms and a notification is
+ // never selected right after a notification turn.
+@@ -22,7 +22,7 @@ import (
+ 
+ func lf_drainActionValid(a drainAction) bool {
+ 	switch a {
+-	case runFollowUp, runQueued, armGoalGate, runNotification, runDeferredContInline, goIdle:
++	case runFollowUp, runQueued, runSteeringCarrier, armGoalGate, runNotification, runDeferredContInline, goIdle:
+ 		return true
+ 	}
+ 	return false
+@@ -30,25 +30,28 @@ func lf_drainActionValid(a drainAction) bool {
+ 
+ func FuzzLfSelectDrainNextAction(f *testing.F) {
+ 	// Seeds hitting distinct ladder rungs.
+-	f.Add(uint8(0), false, "follow", "queued", 0, true) // follow-up wins
+-	f.Add(uint8(0), false, "", "queued", 0, true)       // queued wins
+-	f.Add(uint8(1), false, "", "", 2, true)             // queued via images
+-	f.Add(uint8(1), false, "", "", 0, true)             // notification (ranKind != notif)
+-	f.Add(uint8(1), false, "", "", 0, false)            // gate eligible => armGoalGate
+-	f.Add(uint8(1), true, "", "", 0, false)             // already deferred => runDeferredContInline
+-	f.Add(uint8(2), false, "", "", 0, true)             // ranKind==notif, pending ignored => goIdle
+-	f.Add(uint8(2), true, "", "", 0, false)             // ranKind==notif, deferred => runDeferredContInline
++	f.Add(uint8(0), false, "follow", "queued", 0, true, "")   // follow-up wins
++	f.Add(uint8(0), false, "", "queued", 0, true, "")         // queued wins
++	f.Add(uint8(1), false, "", "", 2, true, "")               // queued via images
++	f.Add(uint8(1), false, "", "", 0, true, "")               // notification (ranKind != notif)
++	f.Add(uint8(1), false, "", "", 0, false, "")              // gate eligible => armGoalGate
++	f.Add(uint8(1), true, "", "", 0, false, "")               // already deferred => runDeferredContInline
++	f.Add(uint8(2), false, "", "", 0, true, "")               // ranKind==notif, pending ignored => goIdle
++	f.Add(uint8(2), true, "", "", 0, false, "")               // ranKind==notif, deferred => runDeferredContInline
++	f.Add(uint8(1), false, "", "", 0, true, "turn_m9")        // carrier claimed outranks the notification
++	f.Add(uint8(0), false, "", "queued", 0, false, "turn_m9") // queued outranks the carrier
+ 
+ 	f.Fuzz(func(t *testing.T, kindSel uint8, haveDeferredCont bool,
+-		followUp, queuedText string, queuedImages int, notificationsPending bool) {
++		followUp, queuedText string, queuedImages int, notificationsPending bool, carrierTurnID string) {
+ 
+ 		in := drainInputs{
+-			RanKind:              lf_entryKinds[int(kindSel)%len(lf_entryKinds)],
+-			HaveDeferredCont:     haveDeferredCont,
+-			FollowUp:             followUp,
+-			QueuedText:           queuedText,
+-			QueuedImages:         queuedImages,
+-			NotificationsPending: notificationsPending,
++			RanKind:               lf_entryKinds[int(kindSel)%len(lf_entryKinds)],
++			HaveDeferredCont:      haveDeferredCont,
++			FollowUp:              followUp,
++			QueuedText:            queuedText,
++			QueuedImages:          queuedImages,
++			NotificationsPending:  notificationsPending,
++			SteeringCarrierTurnID: carrierTurnID,
+ 		}
+ 
+ 		action, skip := selectDrainNextAction(in)
+@@ -72,7 +75,7 @@ func FuzzLfSelectDrainNextAction(f *testing.F) {
+ 		hasQueued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0
+ 
+ 		// Priority ladder for the TURN that runs next: follow-up > queued >
+-		// notification > deferred-inline > idle. The goal-gate FOLD is a separate
++		// steering carrier > notification > deferred-inline > idle. The goal-gate FOLD is a separate
+ 		// side effect the wrapper performs whenever !skipGoalGate (before running the
+ 		// notification turn), so "goal-gate > notification" holds at the fold level;
+ 		// armGoalGate is returned only when the gate is eligible and no notification
+@@ -85,6 +88,8 @@ func FuzzLfSelectDrainNextAction(f *testing.F) {
+ 			want = runFollowUp
+ 		case hasQueued:
+ 			want = runQueued
++		case in.SteeringCarrierTurnID != "":
++			want = runSteeringCarrier
+ 		case in.RanKind != EntryNotification && in.NotificationsPending:
+ 			want = runNotification
+ 		case !wantSkip:
+@@ -108,6 +113,10 @@ func FuzzLfSelectDrainNextAction(f *testing.F) {
+ 			if hasFollowUp || !hasQueued {
+ 				t.Fatalf("runQueued but hasFollowUp=%v hasQueued=%v", hasFollowUp, hasQueued)
+ 			}
++		case runSteeringCarrier:
++			if hasFollowUp || hasQueued || in.SteeringCarrierTurnID == "" {
++				t.Fatalf("runSteeringCarrier but hasFollowUp=%v hasQueued=%v carrier=%q", hasFollowUp, hasQueued, in.SteeringCarrierTurnID)
++			}
+ 		case runNotification:
+ 			// A notification is never selected right after a notification turn, and
+ 			// only when one is actually pending.
+diff --git a/agent/session.go b/agent/session.go
+index 1c1695404..20cd3b13a 100644
+--- a/agent/session.go
++++ b/agent/session.go
+@@ -847,7 +847,21 @@ type Session struct {
+ 	// runningTurnReleaseRetry paces re-attempts of a release write the client
+ 	// mutation store refused. See scheduleRunningTurnReleaseRetry
+ 	// (session_active_turn.go).
+-	runningTurnReleaseRetry   runningTurnReleaseRetryState
++	runningTurnReleaseRetry runningTurnReleaseRetryState
++	// steeringRetryMu guards steeringCarrierRetry alone.
++	steeringRetryMu sync.Mutex
++	// steeringCarrierRetry paces the re-armed wakes for a steer a carrier turn
++	// could not record (scheduleSteeringCarrierRetry).
++	steeringCarrierRetry runningTurnReleaseRetryState
++	// steeringDrainRefused latches, for the input being processed, that a
++	// steering append failed: every later injection point of the same input
++	// (tool rounds, the drain ladder's carrier claim) stands down, and the
++	// carrier retry owns the next attempt. Cleared when an input starts.
++	steeringDrainRefused bool
++	// steeringClaimants maps a claimed steer to the active turn popSteeringHead
++	// claimed it under, so the steering table can tell the running turn's own
++	// append from a stale claim an earlier turn left (row 5 vs 5').
++	steeringClaimants         map[string]string
+ 	delegateAttentionArmIDs   map[string]struct{}
+ 	delegateAttentionArmRetry notificationRetry
+ 	stableAttentionRetry      notificationRetry
+@@ -933,6 +947,15 @@ const (
+ 	// write error, short enough not to sit on a state dir that will never be
+ 	// writable (kata fbmy).
+ 	runningTurnReleaseRetryLimit = 8
++	// steeringCarrierRetryLimit bounds the wakes re-armed for a steer a carrier
++	// turn could not record. Each attempt is a carrier turn that fails before
++	// its model call, so the cost is a failed turn in the transcript, not
++	// tokens -- but an unbounded loop of those on a state dir that will never
++	// be writable is noise with no end. The same eight attempts against the
++	// jobNotificationRetryMaxDelay ceiling as the release retry: enough to ride
++	// out a transient write error, after which the steer stays queued for the
++	// user's next run and a warning says so.
++	steeringCarrierRetryLimit = 8
+ )
+ 
+ func (s *Session) enqueueJobNotification(n jobNotification) {
+@@ -1104,8 +1127,7 @@ func (s *Session) SetNotifyFunc(f func()) {
+ 	// the user, not work in progress, and waking for it at attach would restart
+ 	// the session and deliver the steer the user just stopped -- the open
+ 	// steering rail issue #174 closes (issue #146, Option C — park in place).
+-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+-	if pending || (!steeringHeld && s.hasPendingUserSteering()) || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
++	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+ 		f()
+ 	}
+ }
+diff --git a/agent/session_active_turn.go b/agent/session_active_turn.go
+index f688c5a46..de0a33a17 100644
+--- a/agent/session_active_turn.go
++++ b/agent/session_active_turn.go
+@@ -345,7 +345,11 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
+ 		// The name is free again, and nothing else will notice: whatever stood
+ 		// down for it is waiting out a backoff of its own -- as long as
+ 		// turnNameStoreRetryMaxDelay -- with no way to learn that the answer
+-		// changed early.
++		// changed early. The steering table read the stale name as a turn in
++		// flight and left every steer alone (turnInFlight); now that it is
++		// gone, the table runs again and the wake carries what it held back.
++		s.reconcileClientSteering(steeringReconcileInputs{inFlight: s.turnInFlight()})
++		s.wakeForPendingSteering()
+ 		s.notify()
+ 	})
+ }
+diff --git a/agent/session_client_mutation.go b/agent/session_client_mutation.go
+index 00e37c28f..1f32c3ff2 100644
+--- a/agent/session_client_mutation.go
++++ b/agent/session_client_mutation.go
+@@ -8,6 +8,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"maps"
++	"slices"
+ 	"strings"
+ 	"sync"
+ 
+@@ -639,8 +640,12 @@ func (s *Session) InterruptClientMutation(
+ 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
+ 		return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
+ 	}
++	// Sampled before the update, never inside it: the transcript question
++	// takes s.mu, which the store serializer must not wait on. cancelAndWait
++	// has returned, so no turn of this session is in flight.
++	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
+ 	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+-		if err := finalizeClientMutationInterrupt(snapshot, s.ID()); err != nil {
++		if err := finalizeClientMutationInterrupt(snapshot, s.ID(), steering); err != nil {
+ 			return err
+ 		}
+ 		terminal, ok := snapshot.Journal[record.ClientMutationID]
+@@ -658,6 +663,9 @@ func (s *Session) InterruptClientMutation(
+ 		return appwire.TurnInterruptResponse{}, err
+ 	}
+ 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
++	// The finalization may have returned a steer to the queue (the table's
++	// rows 7 and 8, parked); the runtime queue mirrors the store.
++	s.reflectDurableClientSteering()
+ 	// No queued-input wake here, deliberately: the hold above parks the queue
+ 	// until the user asks for something to run, so a kick would find nothing
+ 	// claimable. The steering wake stays; a Stop with pending steering still
+@@ -682,7 +690,17 @@ func interruptResponseFromRecord(
+ 	return response, nil
+ }
+ 
+-func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string) error {
++// finalizeClientMutationInterrupt settles the fence a Stop left: every user
++// turn naming the cancelled turn is retired as interrupted, and the client
++// steering is reconciled first through the one table that decides its fate
++// (reconcileClientSteering, with stopping set): a steer the cancelled turn
++// never recorded -- a carrier claim it landed on before the carrier took it,
++// or an append that failed under it -- goes back to the queue parked, the way
++// a queued message a Stop returns is (wms7), and a steer whose append landed
++// but whose incorporation write did not is incorporated. Steering entries are
++// therefore never retired here; steering carries the fence's inputs sampled
++// by the caller.
++func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, steering steeringReconcileInputs) error {
+ 	fence := snapshot.InterruptFence
+ 	if fence == nil {
+ 		return nil
+@@ -691,10 +709,15 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID
+ 	if !ok {
+ 		return fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
+ 	}
++	steering.stopping = true
++	reconcileClientSteering(snapshot, steering)
+ 	for id, pending := range snapshot.PendingExecutions {
+ 		if pending.TurnID != fence.ExpectedTurnID {
+ 			continue
+ 		}
++		if slices.Contains(snapshot.SteeringOrder, id) {
++			continue
++		}
+ 		target, ok := snapshot.Journal[id]
+ 		if !ok {
+ 			return fmt.Errorf("interrupt target %q has no journal record", id)
+@@ -746,9 +769,12 @@ func (s *Session) recoverClientMutationInterrupt() error {
+ 	if s.clientMutations.snapshot().InterruptFence == nil {
+ 		return nil
+ 	}
+-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+-		return finalizeClientMutationInterrupt(snapshot, s.ID())
++	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
++	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
++		return finalizeClientMutationInterrupt(snapshot, s.ID(), steering)
+ 	})
++	s.reflectDurableClientSteering()
++	return err
+ }
+ 
+ func (s *Session) returnClaimedClientMutationStart(clientMutationID string) error {
+@@ -799,8 +825,7 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
+ 	// A steer parked by a Stop (SteeringHeld) is not work to resume: waking for
+ 	// it at attach would restart the session and deliver the steer the user
+ 	// just stopped (issue #174, #146 Option C — park in place).
+-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+-	if wake != nil && (s.QueueDepth() > 0 || (!steeringHeld && s.hasPendingUserSteering())) {
++	if wake != nil && (s.QueueDepth() > 0 || s.hasRunnableUserSteering()) {
+ 		wake()
+ 	}
+ }
+diff --git a/agent/session_client_mutation_persist.go b/agent/session_client_mutation_persist.go
+index 2fc7b324c..02cccaf1a 100644
+--- a/agent/session_client_mutation_persist.go
++++ b/agent/session_client_mutation_persist.go
+@@ -106,6 +106,10 @@ func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]st
+ // reclaimed and re-run by restore, and it needs its compare-and-commit
+ // target intact. NextTurnSequence is deliberately untouched: ids stay
+ // monotonic across restarts.
++//
++// An id a pending STEER names is not this sweep's to keep or drop: that is a
++// steering-carrier claim the process died under, and reconcileClientSteering
++// (run by restoreDurableClientMutationQueues) releases it (#1342).
+ func forgetRunningTurnNoOneOwns(snapshot *clientMutationSnapshot) {
+ 	if snapshot.ActiveTurnID == "" {
+ 		return
+diff --git a/agent/session_client_mutation_queue.go b/agent/session_client_mutation_queue.go
+index cd09008fd..a9bf8f98e 100644
+--- a/agent/session_client_mutation_queue.go
++++ b/agent/session_client_mutation_queue.go
+@@ -327,7 +327,11 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+ 		}
+ 		return nil
+ 	}); err != nil {
+-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v", err)})
++		// Not a stand-down: the wake that asked is spent, and a refused write
++		// is the failure class the carrier retry exists for. A closed rail or
++		// an occupied slot returns nil above and arms nothing.
++		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering retry claims again", err)})
++		s.scheduleSteeringCarrierRetry()
+ 		return "", false
+ 	}
+ 	return turnID, turnID != ""
+@@ -361,6 +365,46 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
+ 	return ""
+ }
+ 
++// steeringCarrierUndelivered is the carrier's own question after it drained
++// its steer: accepted means the append failed and the claim came back;
++// claimed means either the append landed and only the incorporation write
++// failed (delivered: the transcript holds it, the model reads it, restore
++// reconciles the record) or the append failed and the claim's return failed
++// too (undelivered, and invisible to every reflect). The transcript is what
++// tells those apart.
++func (s *Session) steeringCarrierUndelivered(turnID string) bool {
++	if turnID == "" || s.clientMutations == nil {
++		return false
++	}
++	snapshot := s.clientMutations.snapshot()
++	for _, id := range snapshot.SteeringOrder {
++		pending, ok := snapshot.PendingExecutions[id]
++		if !ok || pending.TurnID != turnID {
++			continue
++		}
++		switch pending.ExecutionState {
++		case "accepted":
++			return true
++		case "claimed":
++			return !s.steeringRecorded(id)
++		}
++	}
++	return false
++}
++
++// steeringRecorded reports whether the transcript (as history holds it) has
++// the steering turn for this client mutation.
++func (s *Session) steeringRecorded(clientMutationID string) bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	for _, turn := range slices.Backward(s.history) {
++		if turn.Kind == schema.TurnSteering && turn.ClientMutationID == clientMutationID {
++			return true
++		}
++	}
++	return false
++}
++
+ // steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
+ // carrier turn: the rail is open and a steer is ready to use it. Like
+ // queueHeadClaimable it is the whole of that decision, so a caller asking
+@@ -616,21 +660,75 @@ func (s *Session) wakeForPendingSteering() {
+ 	// The steer stays parked in PendingExecutions/SteeringOrder until a
+ 	// user-initiated run trigger clears the gate, so its causal provenance is
+ 	// never at risk (issue #146, Option C — park in place).
+-	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
+-		return
+-	}
++	//
+ 	// Only the user's own steering provokes a turn. Daemon-authored steering --
+ 	// the current-task reminder, hook context, a transcript pointer -- is
+ 	// context for whatever turn runs next, and the round loop drains it into
+ 	// that turn. Waking for it would start a turn before the user has said
+ 	// anything, which is both a turn nobody asked for and a turn that can hold
+ 	// the session's turn identity when the opening turn/start arrives.
+-	if !s.hasPendingUserSteering() {
++	if !s.hasRunnableUserSteering() {
+ 		return
+ 	}
+ 	s.wakePendingUserInput()
+ }
+ 
++// scheduleSteeringCarrierRetry re-arms the pending-input wake for a steer a
++// carrier turn took and could not record (consumeSteeringMessage returned it
++// to accepted). The wake that accepted the steer is consumed by the input that
++// just failed, so without this an idle session leaves the steer queued until
++// an unrelated client action. Paced like the release retry: the delay doubles
++// from jobNotificationRetryInitialDelay to jobNotificationRetryMaxDelay, and
++// the loop is finite (steeringCarrierRetryLimit) because every attempt is a
++// failed carrier turn. The wake it arms is wakeForPendingSteering, which
++// stands down for a steer a Stop has parked or a turn has since carried.
++func (s *Session) scheduleSteeringCarrierRetry() {
++	s.steeringRetryMu.Lock()
++	if s.steeringCarrierRetry.attempts >= steeringCarrierRetryLimit {
++		s.steeringRetryMu.Unlock()
++		// Reset the budget for whatever fails next; this steer's episode is
++		// over and it waits for the user.
++		s.clearSteeringCarrierRetry()
++		s.emit(events.EventWarning, events.WarningData{
++			Message: fmt.Sprintf("steering could not be recorded after %d attempts; it stays queued until your next message", steeringCarrierRetryLimit),
++		})
++		return
++	}
++	delay := s.steeringCarrierRetry.delay
++	if delay <= 0 {
++		delay = jobNotificationRetryInitialDelay
++	}
++	s.steeringCarrierRetry.attempts++
++	s.steeringCarrierRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
++	s.steeringCarrierRetry.generation++
++	generation := s.steeringCarrierRetry.generation
++	s.steeringRetryMu.Unlock()
++
++	s.sclock().AfterFunc(delay, func() {
++		s.steeringRetryMu.Lock()
++		superseded := s.steeringCarrierRetry.generation != generation
++		s.steeringRetryMu.Unlock()
++		if superseded {
++			return
++		}
++		// The table first (a claimed steer the transcript lacks comes back to
++		// the queue; one it holds is incorporated; a running turn's own steer
++		// is left alone), then the wake for whatever is runnable.
++		s.reconcileClientSteering(steeringReconcileInputs{inFlight: s.turnInFlight()})
++		s.wakeForPendingSteering()
++	})
++}
++
++// clearSteeringCarrierRetry drops the backoff once a carrier recorded its
++// steer, and strands any timer still in flight.
++func (s *Session) clearSteeringCarrierRetry() {
++	s.steeringRetryMu.Lock()
++	s.steeringCarrierRetry = runningTurnReleaseRetryState{
++		generation: s.steeringCarrierRetry.generation + 1,
++	}
++	s.steeringRetryMu.Unlock()
++}
++
+ // wakeForPendingQueuedInput is wakeForPendingSteering's counterpart for
+ // turn/queue. Control is session-scoped, so a queue is accepted with no turn
+ // running -- and an idle session is parked awaiting input, so nothing runs what
+@@ -1192,21 +1290,17 @@ func (s *Session) restoreDurableClientMutationQueues() {
+ 			if pending.ExecutionState == "failureRecording" {
+ 				continue
+ 			}
++			if pending.Method != clientMutationMethodQueue && pending.Method != clientMutationMethodStart {
++				// Client steering: the table below, not this loop.
++				continue
++			}
+ 			if stableTurnID, ok := incorporated[id]; ok && stableTurnID == pending.TurnID {
+ 				record.ExecutionState = "incorporated"
+ 				record.ProjectionState = appwire.MutationProjectionReflected
+-				if pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart {
+-					pending.ExecutionState = "incorporated"
+-					pending.ProjectionState = appwire.MutationProjectionReflected
+-					snapshot.PendingExecutions[id] = pending
+-					snapshot.Journal[id] = record
+-				} else {
+-					record.OperationState = clientMutationOperationTerminal
+-					record.Payload = nil
+-					snapshot.Journal[id] = record
+-					delete(snapshot.PendingExecutions, id)
+-					removeClientMutationSteeringOrder(snapshot, id)
+-				}
++				pending.ExecutionState = "incorporated"
++				pending.ProjectionState = appwire.MutationProjectionReflected
++				snapshot.PendingExecutions[id] = pending
++				snapshot.Journal[id] = record
+ 				continue
+ 			}
+ 			if pending.ExecutionState != "claimed" {
+@@ -1219,32 +1313,30 @@ func (s *Session) restoreDurableClientMutationQueues() {
+ 			} else {
+ 				pending.ExecutionState = "accepted"
+ 				snapshot.PendingExecutions[id] = pending
+-				if pending.Method == clientMutationMethodStart {
+-					if snapshot.AcceptedTurns > 0 {
+-						snapshot.AcceptedTurns--
+-					}
+-					snapshot.BudgetReservations[id] = clientMutationBudgetReservation{
+-						TurnID: pending.TurnID,
+-						Slots:  1,
+-					}
++				if snapshot.AcceptedTurns > 0 {
++					snapshot.AcceptedTurns--
++				}
++				snapshot.BudgetReservations[id] = clientMutationBudgetReservation{
++					TurnID: pending.TurnID,
++					Slots:  1,
+ 				}
+ 			}
+ 			record.ExecutionState = "accepted"
+ 			snapshot.Journal[id] = record
+ 		}
+-		// Release a steering hold the loop above left naming nothing. A
+-		// snapshot written before #710 could park steering unconditionally at
+-		// Stop, so a restored hold can name no pending steer at all -- and a
+-		// hold naming nothing swallows every steer the resumed session accepts
+-		// afterwards. This runs after the claimed-steering returns above, so a
+-		// claim that never landed still counts as parked.
+-		//
+-		// Release only, never arm: restore is not a Stop, and a session that
+-		// was never stopped must keep waking for the steering it is holding
++		// Client steering, through the one table: a claimed steer the
++		// transcript holds is incorporated, one it does not is returned to
++		// the queue (parked only if it already was), and a carrier claim the
++		// process died under releases the active-turn slot. No turn is in
++		// flight at restore; the transcript question is the history loaded
++		// above.
++		reconcileClientSteering(snapshot, steeringReconcileInputs{
++			recorded: func(id string) bool { _, ok := incorporated[id]; return ok },
++		})
++		// A hold naming nothing (a snapshot written before #710 could park
++		// steering unconditionally at Stop) is released by the table's rule H
++		// above; release only, never arm, since restore is not a Stop
+ 		// (TestRestoredSteeringWakesWhenTheDaemonAttaches).
+-		if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
+-			snapshot.SteeringHeld = false
+-		}
+ 		snapshot.QueueRevision++
+ 		return nil
+ 	}); err != nil {
+@@ -1485,6 +1577,8 @@ func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string)
+ // the drain loop asks, the fence this call just finalized is already gone.
+ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) (stopFinalized bool, err error) {
+ 	returned := false
++	// For the fence this completion may finalize; sampled outside the mutate.
++	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
+ 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+ 		pending, ok := snapshot.PendingExecutions[clientMutationID]
+ 		if !ok {
+@@ -1539,13 +1633,18 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
+ 		}
+ 		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+ 			stopFinalized = true
+-			return finalizeClientMutationInterrupt(snapshot, s.ID())
++			return finalizeClientMutationInterrupt(snapshot, s.ID(), steering)
+ 		}
+ 		return nil
+ 	})
+ 	if err != nil {
+ 		return false, err
+ 	}
++	if stopFinalized {
++		// The fence's finalization ran the steering table; the runtime queue
++		// mirrors what it returned.
++		s.reflectDurableClientSteering()
++	}
+ 	if returned {
+ 		// The durable queue grew a message back. QueueDepth, QueuePreview,
+ 		// WireState and the queued-input wake all read the process-local copy,
+diff --git a/agent/session_communicate_test.go b/agent/session_communicate_test.go
+index 70531525e..6960e1125 100644
+--- a/agent/session_communicate_test.go
++++ b/agent/session_communicate_test.go
+@@ -745,12 +745,15 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
+ 		t.Fatalf("first ProcessInput: %v", err)
+ 	}
+ 
+-	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+-		t.Fatalf("second ProcessInput: %v", err)
+-	}
++	// The input that accepted the steer carries it before it ends: the
++	// carrier turn runs inside ProcessInput, after the terminal result, so
++	// the next request the model sees is already the steered one (#1308).
+ 	if requestErr != nil {
+ 		t.Fatal(requestErr)
+ 	}
++	if got := len(adapter.Requests()); got != 2 {
++		t.Fatalf("provider requests = %d, want the terminal turn plus the carrier the same input ran", got)
++	}
+ }
+ 
+ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing.T) {
+@@ -821,6 +824,18 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
+ 		t.Fatal("terminal communicate race checkpoint was not reached")
+ 	}
+ 
++	// The terminal result does not consume the steer, and the input does not
++	// end without it either: the drain ladder runs the carrier turn inside
++	// the same ProcessInput, after the terminal result, so no client ever
++	// reads the session idle with the steer undispatched (#1308).
++	if requestErr != nil {
++		t.Fatal(requestErr)
++	}
++	if got := len(adapter.Requests()); got != 2 {
++		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
++	}
++
++	// The acceptance-time wake still fires; it finds nothing left to carry.
+ 	select {
+ 	case <-wake:
+ 		// The scripted in-process adapter and channel wake should complete well
+@@ -832,14 +847,8 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
+ 	}
+ 	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+ 		t.Fatalf("ProcessPendingUserInput: %v", err)
+-	} else if !ran {
+-		t.Fatal("terminal communicate consumed accepted steering; no carrier turn ran")
+-	}
+-	if requestErr != nil {
+-		t.Fatal(requestErr)
+-	}
+-	if got := len(adapter.Requests()); got != 2 {
+-		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
++	} else if ran {
++		t.Fatal("the wake ran a second carrier for steering the input already carried")
+ 	}
+ 
+ 	snapshot := sess.clientMutations.snapshot()
+diff --git a/agent/session_config.go b/agent/session_config.go
+index 14d973d37..fa386ffb7 100644
+--- a/agent/session_config.go
++++ b/agent/session_config.go
+@@ -291,6 +291,10 @@ type testConfig struct {
+ 	// afterCommunicateBoundary observes the state transition at a completed
+ 	// communicate boundary. Nil in production.
+ 	afterCommunicateBoundary func(*Session)
++	// steeringCarrierClaimed observes the drain ladder claiming a steering
++	// carrier turn, before that turn is accepted -- the window a Stop or a
++	// write fault can land in. Nil in production.
++	steeringCarrierClaimed func(turnID string)
+ 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
+ 	// was deferred to the enclosing ProcessInput drain. Nil in production.
+ 	delegateDeliveryClassified func(*Session, bool)
+diff --git a/agent/session_drain_as_steer_turn_boundary_test.go b/agent/session_drain_as_steer_turn_boundary_test.go
+new file mode 100644
+index 000000000..af2b27734
+--- /dev/null
++++ b/agent/session_drain_as_steer_turn_boundary_test.go
+@@ -0,0 +1,1643 @@
++package agent
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"os"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/spf13/afero"
++
++	"primeradiant.com/evener/agent/events"
++	"primeradiant.com/evener/agent/execenv"
++	"primeradiant.com/evener/agent/internal/agenttest"
++	"primeradiant.com/evener/agent/schema"
++	"primeradiant.com/evener/agent/transcript"
++	"primeradiant.com/evener/appwire"
++	"primeradiant.com/evener/llm"
++)
++
++// heldLegAdapter parks the FIRST model call until the test releases it and
++// answers every call with a terminal communicate. It is the skill guard's
++// provider "hold" in miniature: a turn whose in-flight leg the test can drain
++// a queue into before the leg returns.
++type heldLegAdapter struct {
++	entered chan struct{} // closed when the first call arrives
++	release chan struct{} // closed by the test to let the first call return
++
++	mu       sync.Mutex
++	requests []llm.Request
++}
++
++func newHeldLegAdapter() *heldLegAdapter {
++	return &heldLegAdapter{entered: make(chan struct{}), release: make(chan struct{})}
++}
++
++func (a *heldLegAdapter) Name() string { return "openai" }
++
++func (a *heldLegAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
++	a.mu.Lock()
++	a.requests = append(a.requests, req)
++	n := len(a.requests)
++	a.mu.Unlock()
++	if n == 1 {
++		close(a.entered)
++		<-a.release
++	}
++	resp := finalResponse(fmt.Sprintf("leg %d done", n))
++	resp.Provider = a.Name()
++	resp.Model = req.Model
++	return resp, nil
++}
++
++func (a *heldLegAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
++	return nil, llm.ErrStreamUnsupported
++}
++
++func (a *heldLegAdapter) Requests() []llm.Request {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	return append([]llm.Request{}, a.requests...)
++}
++
++// boundaryTransitions renders the events that tell a client where the session
++// stands -- turn openings and session ends with the state they carry -- in
++// stream order, so a failure names what a client would have seen.
++func boundaryTransitions(seen []events.SessionEvent) []string {
++	var out []string
++	for _, ev := range seen {
++		switch ev.Kind {
++		case events.EventTurnStarted:
++			out = append(out, "turn_started:"+ev.Data.(events.TurnStartedData).TurnID)
++		case events.EventUserInput:
++			out = append(out, "user_input:"+ev.Data.(events.UserInputData).StableTurnID)
++		case events.EventSessionEnd:
++			data := ev.Data.(events.SessionEndData)
++			out = append(out, "session_end:"+data.Reason+":"+data.State)
++		}
++	}
++	return out
++}
++
++// TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns is the measured
++// failure from issue #1308 (CI run 34900212155): the queue was drained as
++// steering while the turn's model call was in flight, that call came back a
++// terminal communicate, and the turn settled idle -- EventSessionEnd with
++// state idle, the wire's "offer a fresh turn" -- while the drained text was
++// still undispatched. A wake opened the carrier turn ~0.9s later. Any client
++// reading the status offered a fresh turn on a session that still owed the
++// user a leg.
++//
++// The contract this pins: the input that drained the queue is not over until
++// the steering it produced has run. The steering leg runs inside the same
++// ProcessInput call, and the only EventSessionEnd of that call comes after the
++// carrier turn opened.
++func TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	s := newTestSessionForEnvctx(t, withAdapter(adapter))
++
++	var mu sync.Mutex
++	var seen []events.SessionEvent
++	drained := make(chan struct{})
++	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
++		mu.Lock()
++		seen = append(seen, ev)
++		mu.Unlock()
++	}, func() { close(drained) })
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	done := make(chan error, 1)
++	go func() {
++		_, err := s.ProcessInput(context.Background(), "open a long turn for the queue", nil)
++		done <- err
++	}()
++	select {
++	case <-adapter.entered:
++	// TRIPWIRE: scripted in-process adapter, no real I/O; only a genuine hang gets here.
++	case <-time.After(10 * time.Second):
++		t.Fatal("the first model call never arrived")
++	}
++
++	queueOneMutation(t, s, "cm-queued-second-pass", "second pass")
++	revision := s.clientMutations.snapshot().QueueRevision
++	drain, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
++		ClientMutationID:      "cm-drain-mid-leg",
++		ExpectedQueueRevision: revision,
++	})
++	if err != nil {
++		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
++	}
++	if drain.Receipt.TurnID == "" {
++		t.Fatalf("drain receipt carries no turn id: %+v", drain.Receipt)
++	}
++	close(adapter.release)
++
++	select {
++	case err := <-done:
++		if err != nil {
++			t.Fatalf("ProcessInput: %v", err)
++		}
++	// TRIPWIRE: both legs answer from the scripted adapter; only a genuine hang gets here.
++	case <-time.After(10 * time.Second):
++		t.Fatal("ProcessInput never returned")
++	}
++
++	// Join the event stream before reading it: ProcessInput returns before the
++	// consumer necessarily saw its last events.
++	s.Close()
++	<-drained
++	mu.Lock()
++	transitions := boundaryTransitions(seen)
++	mu.Unlock()
++
++	requests := adapter.Requests()
++	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("ProcessInput returned after %d model call(s) with the drained steering leg undispatched; the session settled idle mid-turn (transitions: %s)",
++			len(requests), strings.Join(transitions, " "))
++	}
++
++	carrierOpened := -1
++	var sessionEnds []int
++	for i, tr := range transitions {
++		switch {
++		case tr == "turn_started:"+drain.Receipt.TurnID:
++			carrierOpened = i
++		case strings.HasPrefix(tr, "session_end:"):
++			sessionEnds = append(sessionEnds, i)
++		}
++	}
++	if carrierOpened < 0 {
++		t.Fatalf("the drain's turn %s never opened (transitions: %s)", drain.Receipt.TurnID, strings.Join(transitions, " "))
++	}
++	if len(sessionEnds) != 1 || sessionEnds[0] < carrierOpened {
++		t.Fatalf("the input ended before its drained steering leg ran; want exactly one session end after %s opened (transitions: %s)",
++			drain.Receipt.TurnID, strings.Join(transitions, " "))
++	}
++	// idle or awaiting is settleTerminalState's call; what matters here is that
++	// the one session end is the clean completion of BOTH legs.
++	if got := transitions[sessionEnds[0]]; !strings.HasPrefix(got, "session_end:input_complete:") {
++		t.Fatalf("session end = %s, want input_complete once both legs ran", got)
++	}
++}
++
++// drainMidHeldLeg runs one input whose first model call is held, drains a
++// queued entry as steering while that call is in flight, and returns the
++// drain's reserved turn id (the carrier's) plus the channel ProcessInput's
++// result lands on. release is left to the caller.
++func drainMidHeldLeg(ctx context.Context, t *testing.T, s *Session, adapter *heldLegAdapter) (carrierTurnID string, done <-chan error) {
++	t.Helper()
++	result := make(chan error, 1)
++	go func() {
++		_, err := s.ProcessInput(ctx, "open a long turn for the queue", nil)
++		result <- err
++	}()
++	select {
++	case <-adapter.entered:
++	// TRIPWIRE: scripted in-process adapter, no real I/O; only a genuine hang gets here.
++	case <-time.After(10 * time.Second):
++		t.Fatal("the first model call never arrived")
++	}
++	queueOneMutation(t, s, "cm-queued-second-pass", "second pass")
++	revision := s.clientMutations.snapshot().QueueRevision
++	drain, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
++		ClientMutationID:      "cm-drain-mid-leg",
++		ExpectedQueueRevision: revision,
++	})
++	if err != nil {
++		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
++	}
++	return drain.Receipt.TurnID, result
++}
++
++func awaitInput(t *testing.T, done <-chan error) error {
++	t.Helper()
++	select {
++	case err := <-done:
++		return err
++	// TRIPWIRE: scripted adapter, no real I/O; only a genuine hang gets here.
++	case <-time.After(10 * time.Second):
++		t.Fatal("ProcessInput never returned")
++		return nil
++	}
++}
++
++// TestStopInTheCarrierClaimWindowParksTheSteerForTheNextUserRun is review
++// round 1's first finding on #1329. The drain ladder claims the carrier
++// (ActiveTurnID = the steer's reserved id) and only then opens the turn that
++// takes the steer. A Stop landing between those two names the carrier, and
++// the interrupt's finalization then swept every pending execution naming
++// that turn -- the untaken steer included -- out of the durable store while
++// its order entry, its in-memory copy and the hold the Stop armed for it all
++// stayed: a steer nothing could deliver and nothing could clear.
++//
++// The contract: a steer the cancelled carrier never took is a message the
++// user still owes a run, exactly like a queued message a Stop returns to the
++// queue (wms7). It stays accepted, parked behind the steering hold, and the
++// user's next run carries it.
++func TestStopInTheCarrierClaimWindowParksTheSteerForTheNextUserRun(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	processDone := make(chan struct{})
++	interruptDone := make(chan error, 1)
++	cancelled := make(chan struct{})
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(SessionConfig{
++		MaxSubagentDepth: 1,
++		StateDir:         t.TempDir(),
++		testOnly: testConfig{
++			skipGitSnapshot:     true,
++			minimalSystemPrompt: true,
++			noSyncJobStore:      true,
++			steeringCarrierClaimed: func(string) {
++				// The daemon's Stop: cancel the running input, wait for the
++				// runner to unwind, then finalize (cmd/evener/serve.go's
++				// cancelAndWait). The ladder resumes once the cancel landed.
++				go func() {
++					_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
++						ClientMutationID: "stop-in-the-claim-window",
++					}, func() {
++						cancel()
++						close(cancelled)
++						<-processDone
++					})
++					interruptDone <- err
++				}()
++				<-cancelled
++			},
++		},
++	}))
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	carrier, done := drainMidHeldLeg(ctx, t, s, adapter)
++	close(adapter.release)
++	err := awaitInput(t, done)
++	close(processDone)
++	if err == nil {
++		t.Fatal("ProcessInput returned nil after the Stop; this test is not in the window it means to be")
++	}
++	if err := <-interruptDone; err != nil {
++		t.Fatalf("InterruptClientMutation: %v", err)
++	}
++
++	snapshot := s.clientMutations.snapshot()
++	pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]
++	if !ok || pending.ExecutionState != "accepted" {
++		t.Fatalf("the steer the cancelled carrier never took is pending=%v state=%q, want accepted (back in the queue)", ok, pending.ExecutionState)
++	}
++	if !snapshot.SteeringHeld {
++		t.Fatal("the Stop parked nothing: the returned steer would be delivered by the next wake, the very run the user just stopped")
++	}
++	if snapshot.ActiveTurnID != "" || snapshot.InterruptFence != nil {
++		t.Fatalf("ActiveTurnID=%q fence=%v after the Stop settled, want both clear", snapshot.ActiveTurnID, snapshot.InterruptFence)
++	}
++	if !s.hasPendingUserSteering() {
++		t.Fatal("the durable steer has no in-memory copy: nothing will ever pop it")
++	}
++	if id, ok := s.claimSteeringCarrierTurn(); ok {
++		t.Fatalf("claimSteeringCarrierTurn claimed %q while the steer is parked", id)
++	}
++
++	// The user's next run releases the hold and carries the steer.
++	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
++		ClientMutationID: "cm-start-after-stop",
++		Input:            []appwire.InputItem{{Type: "text", Text: "carry on"}},
++	}); err != nil {
++		t.Fatalf("AcceptClientMutationStart: %v", err)
++	}
++	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil {
++		t.Fatalf("ProcessClientMutationStart: %v", err)
++	}
++	requests := adapter.Requests()
++	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("the user's next run made %d request(s) and did not carry the parked steer (want the second request to carry %q)", len(requests), "second pass")
++	}
++	if _, still := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; still || s.clientMutations.steeringHeld() {
++		t.Fatalf("after the run: steer still pending=%v held=%v, want delivered and released", still, s.clientMutations.steeringHeld())
++	}
++	_ = carrier
++}
++
++// TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer is review round
++// 1's second finding on #1329. When the carrier's durable steering append
++// fails without poisoning the writer (a zero-byte write the rollback cleans
++// up), consumeSteeringMessage returns the claim to accepted and the carrier
++// used to carry on as if it had delivered: a model request carrying nothing,
++// a clean completion, and a drain ladder that saw an accepted steer and
++// claimed it again -- a loop of model turns bounded only by the writer
++// eventually poisoning.
++//
++// The contract: the carrier reports that it delivered nothing (its announced
++// turn fails, no model request is made), the input settles idle with the
++// steer back in the queue, and the next wake -- not this input -- retries.
++func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	var fs *environmentSyncFailureFS
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(SessionConfig{
++		MaxSubagentDepth: 1,
++		StateDir:         t.TempDir(),
++		testOnly: testConfig{
++			skipGitSnapshot:     true,
++			minimalSystemPrompt: true,
++			noSyncJobStore:      true,
++			steeringCarrierClaimed: func(string) {
++				// The next durable append is the carrier's steering entry:
++				// fail it before a byte lands, so the rollback succeeds and
++				// the writer stays usable.
++				fs.mu.Lock()
++				fs.writeFailure = errors.New("injected: no space left on device")
++				fs.transferBeforeWriteFailure = 0
++				fs.mu.Unlock()
++			},
++		},
++	}))
++	fs = attachEnvironmentFailureFS(t, s)
++
++	var mu sync.Mutex
++	var seen []events.SessionEvent
++	drained := make(chan struct{})
++	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
++		mu.Lock()
++		seen = append(seen, ev)
++		mu.Unlock()
++	}, func() { close(drained) })
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++
++	if got := len(adapter.Requests()); got != 1 {
++		t.Fatalf("provider requests = %d, want 1: a carrier whose steer was not recorded must not make a model request, let alone keep making them", got)
++	}
++	if s.attachedTranscript().Poisoned() {
++		t.Fatal("the writer is poisoned; this test is not the non-poisoning failure it means to be")
++	}
++	snapshot := s.clientMutations.snapshot()
++	pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]
++	if !ok || pending.ExecutionState != "accepted" {
++		t.Fatalf("the undelivered steer is pending=%v state=%q, want accepted (back in the queue)", ok, pending.ExecutionState)
++	}
++	if snapshot.ActiveTurnID != "" {
++		t.Fatalf("ActiveTurnID = %q after the input, want released", snapshot.ActiveTurnID)
++	}
++	if got := s.State(); got != SessionIdle {
++		t.Fatalf("session state = %q after the input, want idle: the steer is runnable work the wake will carry, not the user's turn", got)
++	}
++	// The retry is the next wake's, and it delivers.
++	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
++		t.Fatalf("the wake after the failed carrier: ran=%v err=%v, want it to carry the returned steer", ran, err)
++	}
++	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("the wake made %d request(s) in total and did not carry %q", len(requests), "second pass")
++	}
++	if _, still := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; still {
++		t.Fatal("the steer is still pending after the wake delivered it")
++	}
++
++	s.Close()
++	<-drained
++	mu.Lock()
++	transitions := boundaryTransitions(seen)
++	// The input's own events end at its session end; what follows is the
++	// wake's retry above.
++	carrierOpenings, turnFailures := 0, 0
++	inputEnd := ""
++	for _, ev := range seen {
++		if ev.Kind == events.EventSessionEnd {
++			data := ev.Data.(events.SessionEndData)
++			inputEnd = data.Reason + ":" + data.State
++			break
++		}
++		switch ev.Kind {
++		case events.EventTurnStarted:
++			if ev.Data.(events.TurnStartedData).TurnID == carrier {
++				carrierOpenings++
++			}
++		case events.EventError:
++			turnFailures++
++		}
++	}
++	mu.Unlock()
++	if carrierOpenings != 1 || turnFailures != 1 || inputEnd != "input_complete:idle" {
++		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier turn, failed once, ending idle (transitions: %s)",
++			carrierOpenings, turnFailures, inputEnd, strings.Join(transitions, " "))
++	}
++}
++
++// steerRefusingFS refuses, forever and before a byte lands, every transcript
++// write that carries the marker -- a disk that has room for everything but
++// the steer. The rollback of such a write succeeds, so the writer stays
++// usable and every other entry keeps landing.
++type steerRefusingFS struct {
++	afero.Fs
++	marker []byte
++	// onRefuse, when set, runs on the refusing write before it fails -- the
++	// moment the steer is claimed and its append is about to fail.
++	onRefuse func()
++}
++
++type steerRefusingFile struct {
++	afero.File
++	fs *steerRefusingFS
++}
++
++func (fs *steerRefusingFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
++	file, err := fs.Fs.OpenFile(name, flag, mode)
++	if err != nil {
++		return nil, err
++	}
++	return &steerRefusingFile{File: file, fs: fs}, nil
++}
++
++func (file *steerRefusingFile) Write(p []byte) (int, error) {
++	if bytes.Contains(p, file.fs.marker) {
++		if file.fs.onRefuse != nil {
++			file.fs.onRefuse()
++		}
++		return 0, errors.New("injected: no space left on device")
++	}
++	return file.File.Write(p)
++}
++
++func attachSteerRefusingFS(t *testing.T, s *Session, marker string) *steerRefusingFS {
++	t.Helper()
++	if err := s.closeAttachedTranscript(); err != nil {
++		t.Fatal(err)
++	}
++	fs := &steerRefusingFS{Fs: afero.NewOsFs(), marker: []byte(marker)}
++	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
++	if err != nil {
++		t.Fatal(err)
++	}
++	s.attachTranscript(writer)
++	return fs
++}
++
++// countingUserInputWake installs the daemon's pending-input wake seam and
++// returns a channel that receives one value per wake.
++func countingUserInputWake(s *Session) <-chan struct{} {
++	wakes := make(chan struct{}, 64)
++	s.SetPendingUserInputWakeFunc(func() {
++		select {
++		case wakes <- struct{}{}:
++		default:
++		}
++	})
++	return wakes
++}
++
++func drainWakes(wakes <-chan struct{}) int {
++	n := 0
++	for {
++		select {
++		case <-wakes:
++			n++
++		default:
++			return n
++		}
++	}
++}
++
++// inputBoundary summarizes the events of one ProcessInput call: the carrier
++// openings and turn failures before its session end, and that end.
++func inputBoundary(seen []events.SessionEvent, carrier string) (carrierOpenings, turnFailures int, end string) {
++	for _, ev := range seen {
++		switch ev.Kind {
++		case events.EventSessionEnd:
++			data := ev.Data.(events.SessionEndData)
++			return carrierOpenings, turnFailures, data.Reason + ":" + data.State
++		case events.EventTurnStarted:
++			if ev.Data.(events.TurnStartedData).TurnID == carrier {
++				carrierOpenings++
++			}
++		case events.EventError:
++			turnFailures++
++		}
++	}
++	return carrierOpenings, turnFailures, ""
++}
++
++func carrierTestConfig(dir string, claimed func(string)) SessionConfig {
++	return SessionConfig{
++		MaxSubagentDepth: 1,
++		StateDir:         dir,
++		testOnly: testConfig{
++			skipGitSnapshot:        true,
++			minimalSystemPrompt:    true,
++			noSyncJobStore:         true,
++			steeringCarrierClaimed: claimed,
++		},
++	}
++}
++
++// TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput is review
++// round 2's first finding on #1329: the no-reclaim guard was recomputed per
++// iteration, so a queued message (or a notification, or a goal turn) running
++// after the failed carrier reset it, and the iteration after that claimed the
++// same steer again -- one more failed carrier per intervening turn. The
++// failure is latched for the whole input; the retry stays the next wake's.
++//
++// The disk here refuses the steer's bytes for good, so the queued turn that
++// runs after the failed carrier cannot carry it either (a queued turn drains
++// steering at its start): the steer is still pending when that turn ends,
++// which is exactly the state that provoked the second claim.
++func TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// A message queued while the carrier is claimed runs as the next
++		// turn of this same input.
++		queueOneMutation(t, s, "cm-queued-third", "third message")
++	})))
++	attachSteerRefusingFS(t, s, "second pass")
++
++	var mu sync.Mutex
++	var seen []events.SessionEvent
++	drained := make(chan struct{})
++	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
++		mu.Lock()
++		seen = append(seen, ev)
++		mu.Unlock()
++	}, func() { close(drained) })
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++
++	requests := adapter.Requests()
++	if len(requests) != 2 || !requestContainsText(requests[1], "third message") {
++		t.Fatalf("provider requests = %d, want 2: the held leg and the queued message's turn, and no carrier's", len(requests))
++	}
++	if pending, ok := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "accepted" {
++		t.Fatalf("the refused steer is pending=%v state=%q, want accepted (still queued for the next wake)", ok, pending.ExecutionState)
++	}
++	s.Close()
++	<-drained
++	mu.Lock()
++	openings, failures, end := inputBoundary(seen, carrier)
++	transitions := boundaryTransitions(seen)
++	mu.Unlock()
++	if openings != 1 || failures != 1 || end != "input_complete:idle" {
++		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want the carrier claimed once for the whole input (transitions: %s)",
++			openings, failures, end, strings.Join(transitions, " "))
++	}
++}
++
++// TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite is review
++// round 2's second finding on #1329. consumeSteeringMessage appends the steer
++// to the transcript and then writes its incorporation to the mutation store;
++// when that second write fails the entry stays claimed, and a carrier that
++// read "still pending" as "undelivered" failed its turn over a steer the
++// model was about to read. Only a steer back to accepted is undelivered.
++func TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// After the claim, the carrier's store writes are popSteeringHead's
++		// claimed-mark and then finalizeIncorporatedSteering's; fail the
++		// second, after the transcript append that precedes it succeeded.
++		writes := 0
++		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++			writes++
++			if writes == 2 {
++				return errors.New("injected: incorporation write failed")
++			}
++			return nil
++		}
++	})))
++
++	var mu sync.Mutex
++	var seen []events.SessionEvent
++	drained := make(chan struct{})
++	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
++		mu.Lock()
++		seen = append(seen, ev)
++		mu.Unlock()
++	}, func() { close(drained) })
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++
++	// Round 7: a failed incorporation write is reconciled through the table
++	// at once (row 6: recorded, so finalize again), and the fault is
++	// one-shot, so the steer is incorporated before the input ends rather
++	// than left durably claimed with nothing to retry it.
++	if pending, still := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; still {
++		t.Fatalf("the steer reads %q after the input, want incorporated: a failed incorporation write left it claimed, absent from the queue, with no retry", pending.ExecutionState)
++	}
++	requests := adapter.Requests()
++	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("provider requests = %d carrying the steer=%v, want the carrier to run its model call over the recorded steer", len(requests), len(requests) == 2 && requestContainsText(requests[1], "second pass"))
++	}
++	s.Close()
++	<-drained
++	mu.Lock()
++	openings, failures, end := inputBoundary(seen, carrier)
++	transitions := boundaryTransitions(seen)
++	mu.Unlock()
++	if openings != 1 || failures != 0 || !strings.HasPrefix(end, "input_complete:") {
++		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier, no failure, a clean completion (transitions: %s)",
++			openings, failures, end, strings.Join(transitions, " "))
++	}
++}
++
++// TestSteeringCarrierAppendFailureReArmsTheWake is review round 3's first
++// finding on #1329. A carrier whose steer could not be recorded returns it to
++// the queue and ends the input idle; the retry was "the next wake's", but
++// nothing armed one. The daemon's acceptance-time wake is consumed by the
++// input that just failed (or by the one retry it parks behind it), so a
++// steer refused twice sat queued until an unrelated client action. The
++// failure now arms its own wake, with the backoff the wake path already
++// uses, so the session retries on its own.
++func TestSteeringCarrierAppendFailureReArmsTheWake(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	var fs *environmentSyncFailureFS
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		fs.mu.Lock()
++		fs.writeFailure = errors.New("injected: no space left on device")
++		fs.transferBeforeWriteFailure = 0
++		fs.mu.Unlock()
++	})))
++	fs = attachEnvironmentFailureFS(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	wakes := countingUserInputWake(s)
++
++	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	drainWakes(wakes) // the acceptance-time wake, consumed by the input that failed
++
++	select {
++	case <-wakes:
++	// TRIPWIRE: the first backoff is jobNotificationRetryInitialDelay (250ms); only a wake never armed gets here.
++	case <-time.After(5 * time.Second):
++		t.Fatal("no wake was armed for the returned steer: an idle session leaves it queued until an unrelated client action")
++	}
++	// The wake's retry delivers (the fault was one-shot).
++	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
++		t.Fatalf("the re-armed wake's retry: ran=%v err=%v", ran, err)
++	}
++	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("the retry made %d request(s) in total and did not carry the steer", len(requests))
++	}
++}
++
++// TestStopWhileTheCarrierIsAppendingParksTheReturnedSteer is review round 3's
++// second finding on #1329. popSteeringHead marks the steer claimed before
++// its append; a Stop landing there names the carrier and, seeing a claimed
++// steer whose id is the turn it is cancelling, arms no hold (that steer is
++// the turn, and would be gone once its append finalizes). When the append
++// then fails, the steer comes back to accepted and round 1's finalization
++// preserved it -- unparked, so the wake at the end of the Stop delivered
++// the very steer the user had just stopped. Preserving it now parks it.
++func TestStopWhileTheCarrierIsAppendingParksTheReturnedSteer(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	processDone := make(chan struct{})
++	interruptDone := make(chan error, 1)
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), nil)))
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	fs := attachSteerRefusingFS(t, s, "second pass")
++	var stopOnce sync.Once
++	fs.onRefuse = func() {
++		// The Stop lands while the steer is claimed and its append is in
++		// flight: serve.go's cancel, wait for the runner, then finalize.
++		stopOnce.Do(func() {
++			cancelled := make(chan struct{})
++			go func() {
++				_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
++					ClientMutationID: "stop-while-appending",
++				}, func() {
++					cancel()
++					close(cancelled)
++					<-processDone
++				})
++				interruptDone <- err
++			}()
++			<-cancelled
++		})
++	}
++	wakes := countingUserInputWake(s)
++
++	_, done := drainMidHeldLeg(ctx, t, s, adapter)
++	close(adapter.release)
++	awaitInput(t, done)
++	close(processDone)
++	if err := <-interruptDone; err != nil {
++		t.Fatalf("InterruptClientMutation: %v", err)
++	}
++	drainWakes(wakes)
++
++	snapshot := s.clientMutations.snapshot()
++	if pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "accepted" {
++		t.Fatalf("the returned steer is pending=%v state=%q, want accepted", ok, pending.ExecutionState)
++	}
++	if !snapshot.SteeringHeld {
++		t.Fatal("the Stop's finalization preserved the returned steer unparked: the wake will deliver what the user just stopped")
++	}
++	select {
++	case <-wakes:
++		t.Fatal("a wake fired for the steer the Stop parked")
++	// TRIPWIRE: the backoff re-arm is 250ms; a second is far past it and only bounds the wait.
++	case <-time.After(time.Second):
++	}
++	if id, ok := s.claimSteeringCarrierTurn(); ok {
++		t.Fatalf("claimSteeringCarrierTurn claimed %q while the steer is parked", id)
++	}
++
++	// The user's next run releases the hold and carries it (the disk has
++	// room again).
++	fs.marker = []byte("<<nothing carries this marker>>")
++	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
++		ClientMutationID: "cm-start-after-stop",
++		Input:            []appwire.InputItem{{Type: "text", Text: "carry on"}},
++	}); err != nil {
++		t.Fatalf("AcceptClientMutationStart: %v", err)
++	}
++	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil {
++		t.Fatalf("ProcessClientMutationStart: %v", err)
++	}
++	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("the user's next run made %d request(s) and did not carry the parked steer", len(requests))
++	}
++}
++
++// TestRestoreReleasesACarrierClaimThatNeverRan is #1342, folded in by review
++// round 4 of #1329. claimSteeringCarrierTurn publishes ActiveTurnID = the
++// steer's reserved id durably, before the carrier turn opens and takes the
++// steer. A process death in that window leaves the slot named by a steer
++// that is still accepted; forgetRunningTurnNoOneOwns kept it because a
++// pending execution names it, and every later carrier claim and turn/start
++// was refused for the life of the session. A steering mutation's id in the
++// slot at load is a carrier that never ran to incorporation: the slot is
++// released and the steer, still pending, is carried by the next run.
++func TestRestoreReleasesACarrierClaimThatNeverRan(t *testing.T) {
++	dir := t.TempDir()
++	crashed := newQueuePersistTestSession(t, dir)
++	id := crashed.ID()
++	serveSession(t, crashed)
++	if err := crashed.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "cm-carrier-crash",
++		Input:            []appwire.InputItem{{Type: "text", Text: "carried after the restart"}},
++	}); err != nil {
++		t.Fatalf("AcceptClientMutationSteer: %v", err)
++	}
++	carrier, ok := crashed.claimSteeringCarrierTurn()
++	if !ok {
++		t.Fatal("the steer could not claim a carrier turn; this test is not in the state it means to be")
++	}
++	// The process dies here: the claim is durable, the carrier never opened.
++	crashed.Close()
++
++	// The resume path `evener serve --resume` takes, with a scripted model so
++	// the run below can complete.
++	meta, err := schema.LoadSessionMeta(dir, id)
++	if err != nil {
++		t.Fatalf("LoadSessionMeta: %v", err)
++	}
++	client := llm.NewClient()
++	// Enough scripted rounds for the session namer and the turn: this restore
++	// has no dedicated namer adapter.
++	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "carried")})
++	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
++	if err != nil {
++		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
++	}
++	defer restored.Close()
++	serveSession(t, restored)
++	if got := restored.clientMutations.snapshot().ActiveTurnID; got != "" {
++		t.Fatalf("ActiveTurnID = %q after restore, want released: a carrier claim that never ran holds the slot against every later turn/start (#1342)", got)
++	}
++	if !restored.hasPendingUserSteering() {
++		t.Fatal("the steer is no longer pending after restore; the release must not lose it")
++	}
++	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
++		ClientMutationID: "cm-start-after-restart",
++		Input:            []appwire.InputItem{{Type: "text", Text: "hello again"}},
++	}); err != nil {
++		t.Fatalf("turn/start after the restart: %v", err)
++	}
++	if _, _, err := restored.ProcessClientMutationStart(context.Background(), nil); err != nil {
++		t.Fatalf("ProcessClientMutationStart: %v", err)
++	}
++	if _, still := restored.clientMutations.snapshot().PendingExecutions["cm-carrier-crash"]; still {
++		t.Fatalf("the steer that owned carrier %s is still pending after the user's run; want it carried", carrier)
++	}
++}
++
++// TestSteeringCarrierKeepsTheSteerReachableWhenTheClaimReturnFailsToo is
++// review round 4's Medium on #1329. The append fails, and returning the
++// claim fails as well: the steer sits claimed in the store, which no wake
++// materializes, and a carrier that read "claimed" as recorded went on to
++// its model request without it. The carrier now confirms the steer is in
++// the transcript before treating a claimed entry as delivered, and the
++// retry recovers a claimed steer the transcript does not hold.
++func TestSteeringCarrierKeepsTheSteerReachableWhenTheClaimReturnFailsToo(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// After the claim: popSteeringHead's claimed-mark lands, the append
++		// is refused below, and the claim's return is the second store
++		// write -- refused too.
++		writes := 0
++		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++			writes++
++			if writes == 2 {
++				return errors.New("injected: claim return refused")
++			}
++			return nil
++		}
++	})))
++	fs := attachSteerRefusingFS(t, s, "second pass")
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	wakes := countingUserInputWake(s)
++
++	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	if got := len(adapter.Requests()); got != 1 {
++		t.Fatalf("provider requests = %d, want 1: the carrier made a model request without the steer it exists to carry", got)
++	}
++	// The double failure left the steer claimed and invisible inside the
++	// input; the input's settle runs the table with no turn in flight (rule
++	// B), which returns it to the queue and re-arms the retry.
++	if state := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"].ExecutionState; state != "accepted" {
++		t.Fatalf("the steer reads %q after the input, want accepted (returned at the settle)", state)
++	}
++	if !s.hasPendingUserSteering() {
++		t.Fatal("the returned steer has no in-memory copy")
++	}
++	drainWakes(wakes)
++
++	// Storage recovers (the store fault above fires on its second write
++	// only); the retry must still be able to reach the steer.
++	fs.marker = []byte("<<nothing carries this marker>>")
++	select {
++	case <-wakes:
++	// TRIPWIRE: the first backoff is 250ms; only a retry never armed, or one that cannot see the steer, gets here.
++	case <-time.After(5 * time.Second):
++		t.Fatal("no wake reached the claimed steer: it is invisible to the retry")
++	}
++	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
++		t.Fatalf("the retry: ran=%v err=%v, want it to carry the recovered steer", ran, err)
++	}
++	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
++		t.Fatalf("the retry made %d request(s) in total and did not carry the steer", len(requests))
++	}
++}
++
++// TestAnyRecordedSteerResetsTheCarrierRetryBudget is review round 4's Low on
++// #1329: the backoff was cleared only when a carrier turn recorded its
++// steer. A user turn draining the same steer left the spent attempt on the
++// books for the next, unrelated carrier episode. (Round 7's rule L keeps a
++// later turn of the SAME input from draining it, so the user's next input
++// is the turn that carries it here.)
++func TestAnyRecordedSteerResetsTheCarrierRetryBudget(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	var fs *environmentSyncFailureFS
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// One refused append for the carrier.
++		fs.mu.Lock()
++		fs.writeFailure = errors.New("injected: no space left on device")
++		fs.transferBeforeWriteFailure = 0
++		fs.mu.Unlock()
++	})))
++	fs = attachEnvironmentFailureFS(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++
++	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	if got := carrierRetryAttempts(s); got != 1 {
++		t.Fatalf("carrier retry attempts = %d after the failed carrier, want 1; this test is not in the state it means to be", got)
++	}
++	// The user's next input drains the returned steer at its start.
++	if _, err := s.ProcessInput(context.Background(), "third message", nil); err != nil {
++		t.Fatalf("second ProcessInput: %v", err)
++	}
++	requests := adapter.Requests()
++	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") || !requestContainsText(requests[1], "third message") {
++		t.Fatalf("provider requests = %d; want the next input to have carried the steer (this test is not in the state it means to be otherwise)", len(requests))
++	}
++	if got := carrierRetryAttempts(s); got != 0 {
++		t.Fatalf("carrier retry attempts = %d after the steer was recorded by the user's turn, want 0: the next carrier episode would inherit a spent budget", got)
++	}
++}
++
++// ---- review round 5: the undelivered-steer table ----
++
++// TestStopWithFailedAppendAndFailedReturnParksTheSteer is round 5's High: a
++// Stop crossing a carrier whose append fails AND whose claim return fails
++// found the steer claimed under the cancelled turn's id, and the retirement
++// path discarded it -- gone from the store, the queue and the transcript.
++func TestStopWithFailedAppendAndFailedReturnParksTheSteer(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	processDone := make(chan struct{})
++	interruptDone := make(chan error, 1)
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// popSteeringHead's claimed-mark is the first store write after the
++		// claim; the claim's return after the refused append is the second.
++		writes := 0
++		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++			writes++
++			if writes == 2 {
++				return errors.New("injected: claim return refused")
++			}
++			return nil
++		}
++	})))
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	fs := attachSteerRefusingFS(t, s, "second pass")
++	var stopOnce sync.Once
++	fs.onRefuse = func() {
++		stopOnce.Do(func() {
++			cancelled := make(chan struct{})
++			go func() {
++				_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
++					ClientMutationID: "stop-over-double-failure",
++				}, func() {
++					cancel()
++					close(cancelled)
++					<-processDone
++				})
++				interruptDone <- err
++			}()
++			<-cancelled
++		})
++	}
++
++	_, done := drainMidHeldLeg(ctx, t, s, adapter)
++	close(adapter.release)
++	awaitInput(t, done)
++	close(processDone)
++	if err := <-interruptDone; err != nil {
++		t.Fatalf("InterruptClientMutation: %v", err)
++	}
++
++	snapshot := s.clientMutations.snapshot()
++	pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]
++	if !ok {
++		t.Fatalf("the steer was discarded by the Stop's finalization (journal=%+v); the user's Applied message is gone from store, queue and transcript", snapshot.Journal["cm-drain-mid-leg"].ExecutionState)
++	}
++	if pending.ExecutionState != "accepted" || !snapshot.SteeringHeld {
++		t.Fatalf("the steer reads %q held=%v, want accepted and parked", pending.ExecutionState, snapshot.SteeringHeld)
++	}
++	if !s.hasPendingUserSteering() {
++		t.Fatal("the parked steer has no in-memory copy")
++	}
++}
++
++// TestRetryLeavesAnInFlightAppendAlone is round 5's first Medium: the retry
++// timer firing while a turn has claimed a steer and is appending it returned
++// that steer to accepted and re-materialized it, so the turn's own finalize
++// then left a stale head in the in-memory queue that popSteeringHead could
++// never pop ("not pending"), blocking every steer behind it.
++func TestRetryLeavesAnInFlightAppendAlone(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	runningStartTurn(t, s, "running-turn", "do the thing")
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-in-flight",
++		Input:            []appwire.InputItem{{Type: "text", Text: "mid-append"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	// The turn is running and has popped the steer: claimed, append in flight.
++	s.mu.Lock()
++	s.state = SessionProcessing
++	s.mu.Unlock()
++	if _, ok := s.popSteeringHead(); !ok {
++		t.Fatal("popSteeringHead claimed nothing; this test is not in the window it means to be")
++	}
++
++	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
++	s.clock = clk
++	s.scheduleSteeringCarrierRetry()
++	// The retry fires on virtual time; Drain returns once its callback --
++	// the reconciliation -- has run to completion.
++	clk.Advance(jobNotificationRetryInitialDelay)
++	clk.Drain()
++
++	if state := s.clientMutations.snapshot().PendingExecutions["steer-in-flight"].ExecutionState; state != "claimed" {
++		t.Fatalf("the retry returned an in-flight steer to %q; the turn appending it will finalize a record the queue no longer agrees with", state)
++	}
++	if s.hasPendingUserSteering() {
++		t.Fatal("the retry re-materialized an in-flight steer into the queue: a stale head the turn's finalize leaves behind")
++	}
++}
++
++// TestFailedRecoveryReArmsTheRetry is round 5's second Medium: recovering a
++// claimed steer whose store write fails was warned about and forgotten; the
++// steer stayed claimed and invisible until a restart.
++func TestFailedRecoveryReArmsTheRetry(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-unrecoverable",
++		Input:            []appwire.InputItem{{Type: "text", Text: "recover me"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	// Claimed, never appended, no turn running: the recovery case.
++	if _, ok := s.popSteeringHead(); !ok {
++		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
++	}
++	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++		return errors.New("injected: store refuses every write")
++	}
++
++	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
++	s.clock = clk
++	s.scheduleSteeringCarrierRetry()
++	// The retry fires on virtual time; Drain returns once its callback -- the
++	// reconciliation whose write fails -- has run to completion.
++	clk.Advance(jobNotificationRetryInitialDelay)
++	clk.Drain()
++
++	s.steeringRetryMu.Lock()
++	attempts := s.steeringCarrierRetry.attempts
++	s.steeringRetryMu.Unlock()
++	if attempts < 2 {
++		t.Fatalf("carrier retry attempts = %d after a recovery whose write failed, want it re-armed (>= 2): the steer stays claimed and invisible otherwise", attempts)
++	}
++}
++
++// TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot is round 5's third
++// Medium: a claim refused by the store on a retry wake stood down like a
++// benign race, and the already-consumed wake left the steer stranded. A held
++// rail is the benign case and must stay a no-op.
++func TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot(t *testing.T) {
++	attemptsOf := func(s *Session) int {
++		s.steeringRetryMu.Lock()
++		defer s.steeringRetryMu.Unlock()
++		return s.steeringCarrierRetry.attempts
++	}
++	t.Run("store refuses the claim", func(t *testing.T) {
++		s := newQueuePersistTestSession(t, t.TempDir())
++		defer s.Close()
++		serveSession(t, s)
++		if err := s.ensureClientMutationStore(); err != nil {
++			t.Fatalf("ensureClientMutationStore: %v", err)
++		}
++		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++			ClientMutationID: "steer-claim-refused",
++			Input:            []appwire.InputItem{{Type: "text", Text: "claim me"}},
++		}); err != nil {
++			t.Fatalf("steer: %v", err)
++		}
++		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++			return errors.New("injected: store refuses the claim")
++		}
++		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
++			t.Fatalf("wake with a refused claim: ran=%v err=%v, want a stand-down", ran, err)
++		}
++		if got := attemptsOf(s); got != 1 {
++			t.Fatalf("carrier retry attempts = %d after the store refused the claim, want 1: the consumed wake leaves the steer stranded otherwise", got)
++		}
++	})
++	t.Run("held rail", func(t *testing.T) {
++		s := newQueuePersistTestSession(t, t.TempDir())
++		defer s.Close()
++		serveSession(t, s)
++		if err := s.ensureClientMutationStore(); err != nil {
++			t.Fatalf("ensureClientMutationStore: %v", err)
++		}
++		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++			ClientMutationID: "steer-parked",
++			Input:            []appwire.InputItem{{Type: "text", Text: "parked"}},
++		}); err != nil {
++			t.Fatalf("steer: %v", err)
++		}
++		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
++			snapshot.SteeringHeld = true
++			return nil
++		}); err != nil {
++			t.Fatalf("park: %v", err)
++		}
++		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
++			t.Fatalf("wake against a held rail: ran=%v err=%v, want a stand-down", ran, err)
++		}
++		if got := attemptsOf(s); got != 0 {
++			t.Fatalf("carrier retry attempts = %d for a held rail, want 0: a parked steer waits for the user, not a timer", got)
++		}
++	})
++}
++
++// ---- review round 6: rows the table was missing ----
++
++// recordSteerWithFailedIncorporation takes the steer at the head of the queue
++// through popSteeringHead and consumeSteeringMessage with the store refusing
++// the incorporation write: the transcript holds the steer, the store still
++// reads claimed. The fault is one-shot.
++func recordSteerWithFailedIncorporation(t *testing.T, s *Session, clientMutationID string) {
++	t.Helper()
++	msg, ok := s.popSteeringHead()
++	if !ok || msg.ClientMutationID != clientMutationID {
++		t.Fatalf("popSteeringHead claimed %q (ok=%v), want %q", msg.ClientMutationID, ok, clientMutationID)
++	}
++	// The store refuses every write until consumeSteeringMessage returns: the
++	// incorporation write, and the table's immediate row-6 re-run of it. The
++	// steer is recorded, and durably still claimed.
++	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++		return errors.New("injected: incorporation write refused")
++	}
++	recorded := s.consumeSteeringMessage(msg)
++	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
++	if !recorded {
++		t.Fatal("consumeSteeringMessage reported the append failed; this test wants it recorded")
++	}
++	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "claimed" {
++		t.Fatalf("the recorded steer reads %q, want claimed (the fault did not land on the incorporation write)", state)
++	}
++	if !s.steeringRecorded(clientMutationID) {
++		t.Fatal("the transcript does not hold the steer; this test is not in the state it means to be")
++	}
++}
++
++// TestRestoreReleasesTheSlotOfACarrierWhoseSteerItFinalizes is round 6's
++// High: the carrier recorded its steer, the process died before the
++// incorporation write, and restore's row 6 finalized the steer -- removing
++// it from the order -- before the slot rule asked whether the order named
++// the active turn. It no longer did, so the carrier's claim outlived the
++// steer and every later turn/start was refused.
++func TestRestoreReleasesTheSlotOfACarrierWhoseSteerItFinalizes(t *testing.T) {
++	dir := t.TempDir()
++	crashed := newQueuePersistTestSession(t, dir)
++	id := crashed.ID()
++	serveSession(t, crashed)
++	if err := crashed.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "cm-recorded-carrier",
++		Input:            []appwire.InputItem{{Type: "text", Text: "recorded before the crash"}},
++	}); err != nil {
++		t.Fatalf("AcceptClientMutationSteer: %v", err)
++	}
++	carrier, ok := crashed.claimSteeringCarrierTurn()
++	if !ok {
++		t.Fatal("the steer could not claim a carrier turn; this test is not in the state it means to be")
++	}
++	recordSteerWithFailedIncorporation(t, crashed, "cm-recorded-carrier")
++	if got := crashed.clientMutations.snapshot().ActiveTurnID; got != carrier {
++		t.Fatalf("ActiveTurnID = %q before the crash, want the carrier %q", got, carrier)
++	}
++	crashed.Close()
++
++	restored := restoreQueuePersistTestSession(t, dir, id)
++	defer restored.Close()
++	serveSession(t, restored)
++	if _, still := restored.clientMutations.snapshot().PendingExecutions["cm-recorded-carrier"]; still {
++		t.Fatal("restore did not finalize the recorded steer; this test is not in the state it means to be")
++	}
++	if got := restored.clientMutations.snapshot().ActiveTurnID; got != "" {
++		t.Fatalf("ActiveTurnID = %q after restore finalized the carrier's steer, want released: every later turn/start is refused", got)
++	}
++	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
++		ClientMutationID: "cm-start-after-restart",
++		Input:            []appwire.InputItem{{Type: "text", Text: "hello again"}},
++	}); err != nil {
++		t.Fatalf("turn/start after the restart: %v", err)
++	}
++}
++
++// TestStopReleasesAHoldTheLastSteerLeavesBehind is round 6's second Medium:
++// the Stop armed a hold for a claimed passenger steer, finalization's row 6
++// then incorporated that steer (recorded, incorporation write failed), and
++// the hold stayed armed naming nothing -- the #710 shape: the next steer is
++// accepted and silently parked.
++func TestStopReleasesAHoldTheLastSteerLeavesBehind(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	runningStartTurn(t, s, "running-turn", "do the thing")
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-recorded-inline",
++		Input:            []appwire.InputItem{{Type: "text", Text: "recorded inline"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	recordSteerWithFailedIncorporation(t, s, "steer-recorded-inline")
++
++	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
++		ClientMutationID: "stop-over-recorded-steer",
++	}, func() {}); err != nil {
++		t.Fatalf("stop: %v", err)
++	}
++	snapshot := s.clientMutations.snapshot()
++	if _, still := snapshot.PendingExecutions["steer-recorded-inline"]; still {
++		t.Fatal("finalization did not incorporate the recorded steer; this test is not in the state it means to be")
++	}
++	if snapshot.SteeringHeld {
++		t.Fatal("the hold outlived the last steer: the next steer is accepted and silently parked (#710)")
++	}
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-after-stop",
++		Input:            []appwire.InputItem{{Type: "text", Text: "runs"}},
++	}); err != nil {
++		t.Fatalf("steer after the Stop: %v", err)
++	}
++	if _, ok := s.claimSteeringCarrierTurn(); !ok {
++		t.Fatal("the next steer cannot claim a carrier: it is parked behind a hold that names nothing")
++	}
++}
++
++// TestReleaseRetryReRunsTheTableAndWakes is round 6's third Medium: a slot
++// left behind by a release write the store refused reads as a turn in
++// flight to the carrier retry, which leaves the steer alone and arms
++// nothing; the release retry then lands and told nobody, so the steer sat
++// until an unrelated client action. The release retry now re-runs the table
++// and wakes.
++func TestReleaseRetryReRunsTheTableAndWakes(t *testing.T) {
++	// A scripted model, so the carrier the wake runs can complete.
++	dir := t.TempDir()
++	client := llm.NewClient()
++	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "carried")})
++	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
++	if err != nil {
++		t.Fatalf("NewSession: %v", err)
++	}
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
++	s.clock = clk
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-behind-stale-slot",
++		Input:            []appwire.InputItem{{Type: "text", Text: "deliver me"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	carrier, ok := s.claimSteeringCarrierTurn()
++	if !ok {
++		t.Fatal("the steer could not claim a carrier turn; this test is not in the state it means to be")
++	}
++	// The carrier's release write is refused: the slot is stale, the release
++	// retry is armed.
++	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++		return errors.New("injected: release write refused")
++	}
++	if got := s.releaseRunningTurnID(carrier); got != turnNameReleaseStoreFailed {
++		t.Fatalf("releaseRunningTurnID = %v, want the store failure that arms the release retry", got)
++	}
++	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
++	wakes := countingUserInputWake(s)
++	drainWakes(wakes)
++
++	// The release retry lands.
++	clk.Advance(jobNotificationRetryInitialDelay)
++	clk.Drain()
++	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
++		t.Fatalf("ActiveTurnID = %q after the release retry, want released; this test is not in the state it means to be", got)
++	}
++	select {
++	case <-wakes:
++	default:
++		t.Fatal("the release retry landed and woke nobody: the steer behind the stale slot waits for an unrelated client action")
++	}
++	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
++		t.Fatalf("the wake's run: ran=%v err=%v, want the steer carried", ran, err)
++	}
++}
++
++// TestInjectDrainedSteeringStopsAtTheFirstFailedAppend is round 6's fourth
++// Medium: the drain loop ignored consumeSteeringMessage's false, and since
++// the table had just put the failed steer back at the head of the queue,
++// the next iteration popped the same steer again -- one retry attempt per
++// peeked message, inside one turn, without the backoff.
++func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	attachSteerRefusingFS(t, s, "first steer")
++	for _, steer := range []struct{ id, text string }{{"steer-first", "first steer"}, {"steer-second", "second steer"}} {
++		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++			ClientMutationID: steer.id,
++			Input:            []appwire.InputItem{{Type: "text", Text: steer.text}},
++		}); err != nil {
++			t.Fatalf("steer %s: %v", steer.id, err)
++		}
++	}
++	// The turn's acceptance drains the steering queue once: injectDrainedSteering
++	// runs inside acceptUserInput.
++	runningStartTurn(t, s, "running-turn", "do the thing")
++
++	s.steeringRetryMu.Lock()
++	attempts := s.steeringCarrierRetry.attempts
++	s.steeringRetryMu.Unlock()
++	if attempts != 1 {
++		t.Fatalf("carrier retry attempts = %d after one drain, want 1: the loop re-popped the failed steer", attempts)
++	}
++	snapshot := s.clientMutations.snapshot()
++	for _, id := range []string{"steer-first", "steer-second"} {
++		if state := snapshot.PendingExecutions[id].ExecutionState; state != "accepted" {
++			t.Fatalf("%s reads %q after the drain, want accepted (first returned, second untouched)", id, state)
++		}
++	}
++	s.mu.Lock()
++	queued := len(s.steeringQueue)
++	s.mu.Unlock()
++	if queued != 2 {
++		t.Fatalf("steering queue holds %d after the drain, want both steers still queued", queued)
++	}
++}
++
++// ---- review round 7: paths still deciding outside the table ----
++
++// newScriptedSteeringSession is newQueuePersistTestSession with a model that
++// answers, for scenarios that run a real turn.
++func newScriptedSteeringSession(t *testing.T, dir string) *Session {
++	t.Helper()
++	client := llm.NewClient()
++	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(6, "ok")})
++	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
++	if err != nil {
++		t.Fatalf("NewSession: %v", err)
++	}
++	t.Cleanup(s.Close)
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	return s
++}
++
++func carrierRetryAttempts(s *Session) int {
++	s.steeringRetryMu.Lock()
++	defer s.steeringRetryMu.Unlock()
++	return s.steeringCarrierRetry.attempts
++}
++
++// TestUnrelatedTurnEndsWithAClaimedSteerReconciled is round 7's High: a steer
++// left claimed and invisible by a carrier whose append and claim return both
++// failed was preserved by row 5 as long as ANY turn was running, and nothing
++// after that turn ran the table again, so it never came back. The input's
++// settle now runs the table with no turn in flight.
++func TestUnrelatedTurnEndsWithAClaimedSteerReconciled(t *testing.T) {
++	s := newScriptedSteeringSession(t, t.TempDir())
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-left-claimed",
++		Input:            []appwire.InputItem{{Type: "text", Text: "left claimed"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	// The carrier's double failure, in its end state: claimed in the store,
++	// gone from the queue, the carrier's claim handed back.
++	carrier, ok := s.claimSteeringCarrierTurn()
++	if !ok {
++		t.Fatal("the steer could not claim a carrier turn; this test is not in the state it means to be")
++	}
++	if _, ok := s.popSteeringHead(); !ok {
++		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
++	}
++	s.releaseRunningTurnID(carrier)
++	if s.hasPendingUserSteering() {
++		t.Fatal("the claimed steer is still in the queue; this test is not in the state it means to be")
++	}
++
++	if _, err := s.ProcessInput(context.Background(), "an unrelated message", nil); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++
++	if state := s.clientMutations.snapshot().PendingExecutions["steer-left-claimed"].ExecutionState; state != "accepted" {
++		t.Fatalf("the steer reads %q after the unrelated turn, want accepted: row 5 preserved it for a turn that was not its own, and nothing ran the table afterwards", state)
++	}
++	if !s.hasPendingUserSteering() {
++		t.Fatal("the returned steer has no in-memory copy")
++	}
++	if got := carrierRetryAttempts(s); got != 1 {
++		t.Fatalf("carrier retry attempts = %d after the unrelated turn, want 1: the returned steer needs the retry to run it", got)
++	}
++}
++
++// TestRefusedPopClaimArmsTheRetry is round 7's second Medium: popSteeringHead
++// restored the entry and warned when the store refused its claimed-mark; the
++// carrier then failed its turn with the steer accepted and nothing armed.
++func TestRefusedPopClaimArmsTheRetry(t *testing.T) {
++	adapter := newHeldLegAdapter()
++	var s *Session
++	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
++		// The first store write after the claim is popSteeringHead's
++		// claimed-mark.
++		writes := 0
++		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++			writes++
++			if writes == 1 {
++				return errors.New("injected: claim write refused")
++			}
++			return nil
++		}
++	})))
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
++	close(adapter.release)
++	if err := awaitInput(t, done); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	if got := len(adapter.Requests()); got != 1 {
++		t.Fatalf("provider requests = %d, want 1: the carrier must not run its model call without the steer", got)
++	}
++	if state := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"].ExecutionState; state != "accepted" {
++		t.Fatalf("the steer reads %q, want accepted", state)
++	}
++	if got := carrierRetryAttempts(s); got != 1 {
++		t.Fatalf("carrier retry attempts = %d after the store refused the pop's claim, want 1: the carrier exited with the steer accepted and no wake", got)
++	}
++}
++
++// TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput is round 7's
++// Low: the drain loop's break is per invocation, and a later tool round in
++// the same input drains again -- a second attempt before the backoff.
++func TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput(t *testing.T) {
++	dir := t.TempDir()
++	client := llm.NewClient()
++	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
++		func(llm.Request) llm.Response { return communicateResponse(false, "working") },
++		func(llm.Request) llm.Response { return finalResponse("done") },
++	}})
++	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
++	if err != nil {
++		t.Fatalf("NewSession: %v", err)
++	}
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	attachSteerRefusingFS(t, s, "refused steer")
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-refused-twice",
++		Input:            []appwire.InputItem{{Type: "text", Text: "refused steer"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++
++	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	if got := carrierRetryAttempts(s); got != 1 {
++		t.Fatalf("carrier retry attempts = %d after one input with a tool round, want 1: the tool round drained the refused steer again before the backoff", got)
++	}
++}
++
++// TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim is round 7's High, at the
++// moment the reviewer named: the retry fires while an unrelated turn runs, and
++// a steer an earlier carrier left claimed (its append and its claim return
++// both refused) is not that turn's to append. Row 5 preserved it for any turn
++// in flight; the table now preserves only the running turn's own claims.
++func TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-left-claimed",
++		Input:            []appwire.InputItem{{Type: "text", Text: "left claimed"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	// The stale claim, in its end state: claimed in the store, gone from the
++	// queue, no turn running when it was left.
++	if _, ok := s.popSteeringHead(); !ok {
++		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
++	}
++	// An unrelated turn is now the one in flight.
++	runningStartTurn(t, s, "running-turn", "do the thing")
++	s.mu.Lock()
++	s.state = SessionProcessing
++	s.mu.Unlock()
++
++	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
++	s.clock = clk
++	s.scheduleSteeringCarrierRetry()
++	clk.Advance(jobNotificationRetryInitialDelay)
++	clk.Drain()
++
++	if state := s.clientMutations.snapshot().PendingExecutions["steer-left-claimed"].ExecutionState; state != "accepted" {
++		t.Fatalf("the steer reads %q while an unrelated turn runs, want accepted: row 5 preserved a claim that was not the running turn's", state)
++	}
++	if !s.hasPendingUserSteering() {
++		t.Fatal("the returned steer has no in-memory copy: the running turn's next drain cannot carry it")
++	}
++	if got := carrierRetryAttempts(s); got != 2 {
++		t.Fatalf("carrier retry attempts = %d, want 2: the returned steer re-armed the retry", got)
++	}
++}
++
++// TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething: rule B runs
++// the table at every input's settle, so a table that changed nothing must
++// cost no durable write.
++func TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething(t *testing.T) {
++	s := newQueuePersistTestSession(t, t.TempDir())
++	defer s.Close()
++	serveSession(t, s)
++	if err := s.ensureClientMutationStore(); err != nil {
++		t.Fatalf("ensureClientMutationStore: %v", err)
++	}
++	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
++		ClientMutationID: "steer-accepted",
++		Input:            []appwire.InputItem{{Type: "text", Text: "runnable"}},
++	}); err != nil {
++		t.Fatalf("steer: %v", err)
++	}
++	writes := 0
++	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++		writes++
++		return nil
++	}
++	s.reconcileClientSteering(steeringReconcileInputs{})
++	if writes != 0 {
++		t.Fatalf("store writes = %d for a table that changed nothing (row 4), want 0", writes)
++	}
++	// A stale claim with no turn in flight is row 8: one write returns it.
++	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
++	if _, ok := s.popSteeringHead(); !ok {
++		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
++	}
++	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
++		writes++
++		return nil
++	}
++	s.reconcileClientSteering(steeringReconcileInputs{})
++	if writes != 1 {
++		t.Fatalf("store writes = %d for a table that returned a steer (row 8), want 1", writes)
++	}
++	if state := s.clientMutations.snapshot().PendingExecutions["steer-accepted"].ExecutionState; state != "accepted" {
++		t.Fatalf("the steer reads %q, want accepted", state)
++	}
++}
+diff --git a/agent/session_envelope_sampling_test.go b/agent/session_envelope_sampling_test.go
+index 45591c6c0..64c0bcd19 100644
+--- a/agent/session_envelope_sampling_test.go
++++ b/agent/session_envelope_sampling_test.go
+@@ -115,6 +115,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
+ 		s.releaseRetryMu.Lock()
+ 		return s.releaseRetryMu.Unlock
+ 	}},
++	{owner: "Session", field: "steeringRetryMu", hold: func(s *Session) func() {
++		s.steeringRetryMu.Lock()
++		return s.steeringRetryMu.Unlock
++	}},
+ 	{owner: "Session", field: "drainAbandonedMu", hold: func(s *Session) func() {
+ 		s.drainAbandonedMu.Lock()
+ 		return s.drainAbandonedMu.Unlock
+diff --git a/agent/session_lifecycle.go b/agent/session_lifecycle.go
+index 20165c5ea..048c33e24 100644
+--- a/agent/session_lifecycle.go
++++ b/agent/session_lifecycle.go
+@@ -864,6 +864,11 @@ type drainInputs struct {
+ 	QueuedSkills         int
+ 	NotificationsPending bool
+ 	Awaiting             bool
++	// SteeringCarrierTurnID is the turn claimSteeringCarrierTurn reserved for
++	// user steering the turn that just ran left undelivered -- a queue
++	// drained as steering after the turn's last model call was already in
++	// flight. Empty when nothing was claimed.
++	SteeringCarrierTurnID string
+ }
+ 
+ // drainAction is the next action the drain loop takes after a completed turn.
+@@ -874,6 +879,10 @@ const (
+ 	runFollowUp drainAction = iota
+ 	// runQueued runs the popped queued user message as the next turn.
+ 	runQueued
++	// runSteeringCarrier runs the claimed steering carrier as the next turn:
++	// the user's steering has no turn of its own to land in, and the input
++	// that accepted it is not over until it has run.
++	runSteeringCarrier
+ 	// armGoalGate marks that the goal-continuation gate folds this turn and, with no
+ 	// notification pending, the resulting turn is the deferred continuation (if the
+ 	// fold arms one) or idle.
+@@ -900,8 +909,16 @@ const (
+ // unanswered questions — and only the queued-input rung stays live, because a
+ // message the user queued mid-turn IS the reply (they are demonstrably present).
+ //
+-// Otherwise, priority: a pending follow-up, then a queued user message, then a
+-// pending notification, then the goal gate's deferred continuation, then idle.
++// A claimed steering carrier runs right behind queued input, awaiting or not:
++// it is the user speaking too, and a queued message would have carried the
++// steering itself (acceptUserInput drains it before the first model call), so
++// the carrier is only ever claimed when nothing is queued. Ending the input
++// instead would report the session idle while the user's drained text is
++// still undispatched (issue #1308).
++//
++// Otherwise, priority: a pending follow-up, then a queued user message, then
++// the steering carrier, then a pending notification, then the goal gate's
++// deferred continuation, then idle.
+ // The goal gate always folds BEFORE the notification turn runs: the wrapper arms
+ // on !skipGoalGate before acting on runNotification, so the fold stays ahead of
+ // the notification interleave even though the notification is the turn that runs
+@@ -914,6 +931,9 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
+ 		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 {
+ 			return runQueued, skipGoalGate
+ 		}
++		if in.SteeringCarrierTurnID != "" {
++			return runSteeringCarrier, skipGoalGate
++		}
+ 		return goIdle, skipGoalGate
+ 	}
+ 	switch {
+@@ -921,6 +941,8 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
+ 		return runFollowUp, skipGoalGate
+ 	case strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0:
+ 		return runQueued, skipGoalGate
++	case in.SteeringCarrierTurnID != "":
++		return runSteeringCarrier, skipGoalGate
+ 	case in.RanKind != EntryNotification && in.NotificationsPending:
+ 		return runNotification, skipGoalGate
+ 	case !skipGoalGate:
+@@ -1025,6 +1047,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 	// current objective, so a clear/retarget during the interleaved notification turn
+ 	// cannot run a stale continuation.
+ 	var haveDeferredCont bool
++	// A new input opens a new first attempt at recording steering (rule L of
++	// reconcileClientSteering's contract).
++	s.clearSteeringDrainRefused()
+ 	for {
+ 		// Fail closed on a transcript that has stopped accepting records, before
+ 		// every turn rather than once at admission. A turn from here would run
+@@ -1039,6 +1064,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 		// cleared, so a stale read costs one turn that then meets the writer's
+ 		// own refusal.
+ 		if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
++			// A carrier claimed at the tail below owns the active-turn slot
++			// until something hands it back; a refusal here is before
++			// processOneInput's own release, exactly the stranded claim
++			// ProcessPendingUserInput's deferred release guards against.
++			s.releaseRunningTurnID(steeringCarrierTurnIDFromContext(processCtx))
+ 			return strings.Join(outputs, "\n"), err
+ 		}
+ 		// Capture the kind actually being processed this iteration before the
+@@ -1048,7 +1078,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 		// does not — /par #4).
+ 		ranKind := nextKind
+ 		ranClientMutation := queuedClientMutationFromContext(processCtx)
++		ranSteeringCarrier := steeringCarrierTurnIDFromContext(processCtx)
+ 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
++		// Hand a carrier's claim back on every exit, the way
++		// ProcessPendingUserInput does: processOneInput refuses a closed session
++		// and checks cancellation before registering its own release. A no-op
++		// on the ordinary path, where that release already ran.
++		s.releaseRunningTurnID(ranSteeringCarrier)
++		processCtx = withSteeringCarrierTurn(processCtx, "")
+ 		// True when the completion below finalized an interrupt fence naming
+ 		// this turn: a Stop is what ended it, and the drain branch further down
+ 		// must leave the queue head parked (wms7's ruling) rather than run the
+@@ -1245,6 +1282,25 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 		}
+ 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
+ 			!inputHasContent(queued.Text, queued.Images, queued.SkillNames)
++		// User steering the turn that just ran left behind -- a queue drained
++		// as steering after its last model call was in flight -- has no turn
++		// of its own, and the input is not over until it has run. Claim its
++		// carrier here, so it runs inline rather than after this call has
++		// reported the session idle and a wake reopens it (issue #1308). Only
++		// when nothing is queued: a queued message drains the steering itself.
++		// The claim refuses a held rail (a Stop parked the steer) and an
++		// occupied slot, the same gate the wake's claim uses.
++		// Rule L: an input whose steering append already failed does not
++		// claim a carrier again -- the retry belongs to the backoff timer,
++		// not to a loop here that would burn a model turn per attempt,
++		// whatever turn (queued, notification) ran in between.
++		var carrierTurnID string
++		if noFollowUpOrQueued && !s.steeringDrainRefusedThisInput() && s.hasPendingUserSteering() {
++			carrierTurnID, _ = s.claimSteeringCarrierTurn()
++			if carrierTurnID != "" && s.cfg.testOnly.steeringCarrierClaimed != nil {
++				s.cfg.testOnly.steeringCarrierClaimed(carrierTurnID)
++			}
++		}
+ 		notificationsPending := false
+ 		// After a terminal communicate, notification work is left to the one-shot
+ 		// drain rather than run here: a completion the model was never shown is
+@@ -1257,14 +1313,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
+ 		}
+ 		action, skipGoalGate := selectDrainNextAction(drainInputs{
+-			RanKind:              ranKind,
+-			HaveDeferredCont:     haveDeferredCont,
+-			FollowUp:             fu,
+-			QueuedText:           queued.Text,
+-			QueuedImages:         len(queued.Images),
+-			QueuedSkills:         len(queued.SkillNames),
+-			NotificationsPending: notificationsPending,
+-			Awaiting:             awaiting,
++			RanKind:               ranKind,
++			HaveDeferredCont:      haveDeferredCont,
++			FollowUp:              fu,
++			QueuedText:            queued.Text,
++			QueuedImages:          len(queued.Images),
++			QueuedSkills:          len(queued.SkillNames),
++			NotificationsPending:  notificationsPending,
++			Awaiting:              awaiting,
++			SteeringCarrierTurnID: carrierTurnID,
+ 		})
+ 
+ 		switch action {
+@@ -1282,6 +1339,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 			s.sessionEndEmitted = false
+ 			s.mu.Unlock()
+ 			continue
++		case runSteeringCarrier:
++			next = ""
++			nextKind = EntrySteeringCarrier
++			processCtx = withSteeringCarrierTurn(processCtx, carrierTurnID)
++			s.mu.Lock()
++			s.sessionEndEmitted = false
++			s.mu.Unlock()
++			continue
+ 		}
+ 
+ 		// Goal continuation gate (priority 4, strictly below user input): runs in
+@@ -1370,6 +1435,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
+ 			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
+ 		}
+ 		goalKicked := s.settleGoalOnIdle()
++		// Rule B: the input is over and no turn is in flight, so a claimed
++		// steer that was not this input's to touch -- a carrier's double
++		// failure left it -- comes back through the table now (row 8 returns
++		// it and re-arms the retry). Before armAwaitingAtSettle, so a
++		// returned steer counts as runnable work.
++		s.reconcileClientSteering(steeringReconcileInputs{})
+ 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
+ 		s.mu.Lock()
+ 		if !s.sessionEndEmitted {
+@@ -2508,6 +2579,20 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
+ 	// full current notes beside it.
+ 	s.maybeAppendNotesContext()
+ 	s.injectDrainedSteering()
++	if s.steeringCarrierUndelivered(turnID) {
++		// The steer this turn exists to carry is still pending: its durable
++		// append failed and consumeSteeringMessage returned the claim (the
++		// writer is still usable, so the entry went back to accepted). A
++		// model request now would carry nothing, and a clean completion
++		// would let the drain ladder claim the same steer again, and again.
++		// Fail the turn already announced above and stand down; the steer
++		// is back in the queue, and the table that put it there
++		// (reconcileClientSteering, from consumeSteeringMessage's failure
++		// path) armed the retry or parked it.
++		s.emitTurnFailure(errorDataFromError(fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)))
++		s.finishProcessingAtBoundary(ctx, SessionIdle)
++		return false
++	}
+ 	return true
+ }
+ 
+diff --git a/agent/session_lifecycle_tail_coverage_fuzz_test.go b/agent/session_lifecycle_tail_coverage_fuzz_test.go
+index 0ab5cbbbb..7285c5c6b 100644
+--- a/agent/session_lifecycle_tail_coverage_fuzz_test.go
++++ b/agent/session_lifecycle_tail_coverage_fuzz_test.go
+@@ -351,9 +351,12 @@ func FuzzSessionLifecyclePureTailCoverage(f *testing.F) {
+ 			skip bool
+ 		}{
+ 			{drainInputs{Awaiting: true, QueuedText: "reply"}, runQueued, true},
++			{drainInputs{Awaiting: true, SteeringCarrierTurnID: "turn_m9"}, runSteeringCarrier, true},
+ 			{drainInputs{Awaiting: true}, goIdle, true},
+ 			{drainInputs{FollowUp: "follow"}, runFollowUp, false},
+ 			{drainInputs{QueuedImages: 1}, runQueued, false},
++			{drainInputs{QueuedImages: 1, SteeringCarrierTurnID: "turn_m9"}, runQueued, false},
++			{drainInputs{NotificationsPending: true, SteeringCarrierTurnID: "turn_m9"}, runSteeringCarrier, false},
+ 			{drainInputs{NotificationsPending: true}, runNotification, false},
+ 			{drainInputs{}, armGoalGate, false},
+ 			{drainInputs{RanKind: EntryNotification, HaveDeferredCont: true}, runDeferredContInline, true},
+diff --git a/agent/session_queue.go b/agent/session_queue.go
+index 6043f7a4f..87372d514 100644
+--- a/agent/session_queue.go
++++ b/agent/session_queue.go
+@@ -934,6 +934,7 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
+ 	s.steeringQueue = s.steeringQueue[1:]
+ 	s.mu.Unlock()
+ 	if entry.ClientMutationID != "" {
++		var claimant string
+ 		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+ 			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
+ 			if !ok {
+@@ -944,14 +945,22 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
+ 			record := snapshot.Journal[entry.ClientMutationID]
+ 			record.ExecutionState = "claimed"
+ 			snapshot.Journal[entry.ClientMutationID] = record
++			// The turn this claim belongs to, for the steering table's row 5.
++			claimant = snapshot.ActiveTurnID
+ 			return nil
+ 		}); err != nil {
+ 			s.mu.Lock()
+ 			s.steeringQueue = append([]steeringMessage{entry}, s.steeringQueue...)
+ 			s.mu.Unlock()
+-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v", err)})
++			// A refused store write, not a benign race: the steer is back in
++			// the queue accepted and this turn will not take it again (rule L),
++			// so the carrier retry owns the next attempt.
++			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v; the steering retry claims again", err)})
++			s.latchSteeringDrainRefused()
++			s.scheduleSteeringCarrierRetry()
+ 			return steeringMessage{}, false
+ 		}
++		s.recordSteeringClaimant(entry.ClientMutationID, claimant)
+ 		return entry, true
+ 	}
+ 	s.persistQueuesSnapshot()
+@@ -984,12 +993,24 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
+ // TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
+ // behavior.
+ func (s *Session) injectDrainedSteering() {
++	if s.steeringDrainRefusedThisInput() {
++		// Rule L: this input already spent its attempt; the carrier retry
++		// owns the next one, after the backoff.
++		return
++	}
+ 	for range s.peekSteeringForTurn() {
+ 		msg, ok := s.popSteeringHead()
+ 		if !ok {
+ 			break
+ 		}
+-		s.consumeSteeringMessage(msg)
++		if !s.consumeSteeringMessage(msg) {
++			// The table put the failed steer back at the head of the queue;
++			// popping again would take the same steer and spend another
++			// retry attempt inside this turn, without the backoff. The retry
++			// the table armed owns the next attempt, for this steer and for
++			// everything queued behind it.
++			break
++		}
+ 	}
+ }
+ 
+@@ -1040,14 +1061,29 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
+ 			func() error { return s.appendClientMutationTranscriptLocked(t) },
+ 			func() { s.history = append(s.history, t) },
+ 		); err != nil {
+-			_ = s.returnClaimedSteering(msg.ClientMutationID)
+-			s.reflectDurableClientSteering()
++			// The steer this turn claimed did not land. The table decides what
++			// happens to it (reconcileClientSteering rows 7 and 8: back to the
++			// queue, parked if a Stop or hold owns the next run, else the
++			// carrier retry is re-armed); a refused store write re-arms the
++			// same retry. This turn is the caller, not a turn in flight.
+ 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
++			s.latchSteeringDrainRefused()
++			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
+ 			return false
+ 		}
+ 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
+-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
+-			return true
++			// Recorded but not incorporated: the steer would sit claimed,
++			// absent from the queue, with nothing to retry it. Row 6 finalizes
++			// a recorded steer; run the table now (this turn is the caller),
++			// and a store still refusing re-arms the retry from there.
++			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; reconciling", err)})
++			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
++		} else {
++			// Incorporated: whatever carried it, the steer is in the transcript
++			// and the store agrees, so a carrier retry episode that may have
++			// been running for it is over.
++			s.forgetSteeringClaimant(msg.ClientMutationID)
++			s.clearSteeringCarrierRetry()
+ 		}
+ 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+ 		s.admitPreparedSkillSelection(selectionBatch)
+@@ -1120,21 +1156,6 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
+ 	}
+ }
+ 
+-func (s *Session) returnClaimedSteering(clientMutationID string) error {
+-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+-		pending, ok := snapshot.PendingExecutions[clientMutationID]
+-		if !ok {
+-			return nil
+-		}
+-		pending.ExecutionState = "accepted"
+-		snapshot.PendingExecutions[clientMutationID] = pending
+-		record := snapshot.Journal[clientMutationID]
+-		record.ExecutionState = "accepted"
+-		snapshot.Journal[clientMutationID] = record
+-		return nil
+-	})
+-}
+-
+ // appendSteeringTurn records a daemon steering turn and announces it,
+ // keeping the persisted turn's kind and the emitted event's kind in step: a
+ // reader reloading the session sees the same label the live transcript
+@@ -1193,6 +1214,18 @@ func (s *Session) hasPendingSteering() bool {
+ 	return len(s.steeringQueue) > 0
+ }
+ 
++// hasRunnableUserSteering reports whether user steering is pending that the
++// daemon will run on its own: a wake carries it, or the next turn drains it.
++// A steer parked by a Stop (SteeringHeld) is not that -- it waits on the user
++// (issue #174) -- so it counts neither as work to wake for nor as autonomy
++// that keeps the session from resting awaiting.
++func (s *Session) hasRunnableUserSteering() bool {
++	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
++		return false
++	}
++	return s.hasPendingUserSteering()
++}
++
+ // hasPendingUserSteering reports whether any queued steering came from the
+ // human rather than the daemon. Only that kind justifies starting a turn to
+ // carry it: daemon-authored steering -- the current-task reminder, hook
+diff --git a/agent/session_state.go b/agent/session_state.go
+index 7c65b3d54..b4e614f84 100644
+--- a/agent/session_state.go
++++ b/agent/session_state.go
+@@ -382,8 +382,11 @@ func (s *Session) recomputeRestoredState() {
+ // SessionIdle, so interrupt/failure paths (which never reach the settle) and
+ // closed sessions are untouched.
+ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
++	// Runnable user steering is queued input for this purpose: a carrier that
++	// returned its steer undelivered leaves it for the next wake, and a
++	// session that will move on its own is not waiting on the user.
+ 	target := settleTerminalState(hadOutput, goalKicked,
+-		s.peekNotifications() > 0, s.QueueDepth() > 0, len(s.liveSubagentSessions()) > 0)
++		s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+ 	if target != SessionAwaiting {
+ 		return
+ 	}
+diff --git a/agent/session_steering_held_test.go b/agent/session_steering_held_test.go
+index 08061b056..db9e24c5d 100644
+--- a/agent/session_steering_held_test.go
++++ b/agent/session_steering_held_test.go
+@@ -761,7 +761,18 @@ func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
+ 	if response.Receipt.TurnID != carrier {
+ 		t.Fatalf("the Stop cancelled turn %q, want the carrier turn %q; the exclusion this test names would not apply", response.Receipt.TurnID, carrier)
+ 	}
+-	if sess.clientMutations.steeringHeld() {
+-		t.Fatal("the Stop armed a hold for the very steer whose carrier turn it cancelled: that record vanishes when its append finalizes, leaving a hold naming nothing that swallows the user's next steer")
++	// No append ever landed here, so at finalization the claimed steer is one
++	// the cancelled carrier never recorded: the table returns it to the queue
++	// and parks it (reconcileClientSteering row 7). The hold names that
++	// returned steer -- it is not the hold naming nothing that #710 forbids.
++	snapshot := sess.clientMutations.snapshot()
++	if state := snapshot.PendingExecutions["steer-with-no-turn"].ExecutionState; state != "accepted" {
++		t.Fatalf("the carrier's steer reads %q after the Stop, want accepted (back in the queue)", state)
++	}
++	if !snapshot.SteeringHeld {
++		t.Fatal("the Stop finalized without parking the steer it returned to the queue: the next wake would deliver what the user just stopped")
++	}
++	if !snapshotHasPendingUserSteering(&snapshot, "") {
++		t.Fatal("the hold names nothing: exactly the hold #710 forbids")
+ 	}
+ }
+diff --git a/agent/session_steering_reconcile.go b/agent/session_steering_reconcile.go
+new file mode 100644
+index 000000000..6eec1c03a
+--- /dev/null
++++ b/agent/session_steering_reconcile.go
+@@ -0,0 +1,376 @@
++package agent
++
++import (
++	"errors"
++	"fmt"
++	"slices"
++
++	"primeradiant.com/evener/agent/events"
++	"primeradiant.com/evener/agent/schema"
++	"primeradiant.com/evener/appwire"
++)
++
++// steeringReconcileInputs are the facts reconcileClientSteering decides on.
++// They are sampled by the caller BEFORE the store mutate that runs the table:
++// the transcript question takes s.mu, and the store serializer must never wait
++// on that lock (see InterruptClientMutation's sample of sessionRunning).
++type steeringReconcileInputs struct {
++	// inFlight reports that a turn is running in this process. popSteeringHead
++	// runs only inside a turn, so a claimed steer the running turn claimed is
++	// one it is appending right now, and the table leaves it alone (row 5);
++	// claimant is what says whose claim it is. The wake-time and restore-time
++	// callers answer inFlight from the session state and the active-turn slot
++	// (turnInFlight); the caller that IS the turn passes false and names
++	// itself in callerTurn -- it is handing a steer back, not racing one.
++	inFlight bool
++	// claimant names the turn a claimed steer was popped under -- the active
++	// turn at popSteeringHead's claimed-mark, recorded in memory -- or "" for
++	// a claim this process did not make. The store cannot answer this: a
++	// pending steer's TurnID is the id it reserved at acceptance, which names
++	// its carrier but not the passenger turn that drains it, so from the
++	// store alone a passenger mid-append and a stale claim look the same. Nil
++	// means no claimant is known for any steer; the session wrapper fills it.
++	claimant func(clientMutationID string) string
++	// callerTurn is the id of the turn calling from inside its own run
++	// (consumeSteeringMessage's failure path), or empty. The slot rule never
++	// releases the caller's own name.
++	callerTurn string
++	// recorded reports whether the transcript holds the steering turn for a
++	// client mutation id. Nil means "nothing is recorded" and is only right
++	// for a caller that knows so.
++	recorded func(clientMutationID string) bool
++	// stopping reports that a Stop is finalizing: every steer the table
++	// returns to the queue is parked, and every accepted steer stays parked.
++	stopping bool
++}
++
++// steeringReconcileOutcome is what the table did, so the caller can act on it
++// without deciding anything of its own.
++type steeringReconcileOutcome struct {
++	// returned lists the steers put back to accepted.
++	returned []string
++	// finalized lists the steers incorporated (recorded, incorporation write
++	// caught up).
++	finalized []string
++	// dropped lists stale order entries removed.
++	dropped []string
++	// rearm reports that a steer went back to accepted unparked: nothing
++	// else will run it, so the caller re-arms the carrier retry.
++	rearm bool
++	// released reports that the active-turn slot was released from a carrier
++	// claim that never ran.
++	released bool
++	// holdReleased reports that a steering hold naming no pending user steer
++	// was released.
++	holdReleased bool
++}
++
++func (in steeringReconcileInputs) isRecorded(id string) bool {
++	return in.recorded != nil && in.recorded(id)
++}
++
++func (in steeringReconcileInputs) claimedBy(id string) string {
++	if in.claimant == nil {
++		return ""
++	}
++	return in.claimant(id)
++}
++
++// changed reports whether the table left the snapshot different from how it
++// found it. heldBefore is the hold as the table found it: the Stop's
++// re-assert on rows 2-4 is the one change the lists do not carry.
++func (out steeringReconcileOutcome) changed(heldBefore, heldAfter bool) bool {
++	return len(out.returned) > 0 || len(out.finalized) > 0 || len(out.dropped) > 0 ||
++		out.released || out.holdReleased || heldBefore != heldAfter
++}
++
++// errSteeringReconcileNoop is how the session wrapper tells the store that the
++// table changed nothing, so the store commits no snapshot for it.
++var errSteeringReconcileNoop = errors.New("steering reconciliation changed nothing")
++
++// reconcileClientSteering is the ONE place that decides what happens to a
++// client steer no turn is delivering. Every path that used to decide on its
++// own -- the interrupt's finalization, the carrier retry's timer, restore, the
++// carrier's own failure exit -- calls this and acts on the outcome. The claim
++// (claimSteeringCarrierTurn) is the only other durable act on a steer, and a
++// claim the store refuses re-arms the same retry.
++//
++// The table. ExecutionState is the durable state of the steer's pending
++// execution; "in flight" is steeringReconcileInputs.inFlight; "recorded" is
++// whether the transcript holds the steering turn; "parked" is
++// snapshot.SteeringHeld || stopping.
++//
++//	#  ExecutionState  in flight  recorded  parked  action
++//	1  absent          any        any       any     drop the order entry (see below)
++//	2  accepted        yes        any       any     leave: the running turn drains it at its next boundary, or it is the running carrier's own claim window
++//	3  accepted        no         any       yes     leave parked; a Stop re-asserts SteeringHeld
++//	4  accepted        no         any       no      leave: runnable, the wake path owns it
++//	5  claimed         own        any       any     leave: the turn that popped it is appending it
++//	5' claimed         other      -         -       a stale claim: the turn that popped it is gone, having recorded neither the steer nor its return; rows 6-8 decide it as if no turn were in flight
++//	6  claimed         no         yes       any     finalize: the append landed, only the incorporation write failed
++//	7  claimed         no         no        yes     return to accepted and park: the append never landed, a Stop or hold owns the next run
++//	8  claimed         no         no        no      return to accepted and re-arm the retry: the append never landed and nothing else will run it
++//
++// "own" and "other" split "in flight = yes" by steeringReconcileInputs.claimant:
++// own when the claimant is the active turn (the carrier appending the steer
++// it reserved, or a passenger turn appending a steer it drained), other when
++// it is any other name -- an earlier turn's, or none (a claim from before a
++// restart). A stale claim returned to accepted while a turn runs is
++// materialized into the queue (reflectDurableClientSteering) and the running
++// turn's next drain carries it, the same as any accepted steer.
++//
++// Two rules follow the rows, over the whole store rather than one steer:
++//
++//	S  the active-turn slot: when no turn is in flight and the slot names a
++//	   steer's reserved id, that is a carrier claim that never ran to
++//	   incorporation (claimSteeringCarrierTurn publishes the id before the
++//	   carrier opens; a process death or a cancelled input leaves it), and it
++//	   is released so the next claim and the next turn/start are not refused.
++//	   Whether the slot names a steer is read BEFORE the rows run: row 6 (or
++//	   row 1) removes the steer from the order, and a carrier that recorded
++//	   its steer and died before the incorporation write is exactly the claim
++//	   this rule exists to release. The caller's own name is never released.
++//	H  the hold: after the rows, a SteeringHeld that names no pending user
++//	   steer is released. A Stop arms the hold for whatever was pending at
++//	   its acceptance, and rows 1 and 6 can retire the last of that; a hold
++//	   naming nothing swallows the next steer the user sends (#710). This is
++//	   a release only, never an arm: restore is not a Stop.
++//
++// Two more rules are the callers', not the rows', and are listed here so the
++// whole contract reads in one place:
++//
++//	B  the input boundary: every input runs the table with no turn in flight
++//	   as it settles (processInputKindWithProvenance's idle tail). Row 5'
++//	   returns a stale claim while a turn runs only when the retry timer
++//	   fires during that turn; a claim left with the retry budget spent, or
++//	   under a turn shorter than the backoff, comes back through row 8 here.
++//	   The settle costs no durable write when the table changed nothing.
++//	L  the per-input latch: a steering append that fails inside an input
++//	   (consumeSteeringMessage) latches steeringDrainRefused for that input;
++//	   every later injection point of the same input -- the next tool round,
++//	   the drain ladder's carrier claim -- stands down, so one input spends
++//	   one attempt and the carrier retry owns the next. Cleared when the
++//	   next input starts. A refused pop claim (popSteeringHead) and a refused
++//	   incorporation write (row 6 re-run from consumeSteeringMessage) re-arm
++//	   the same retry; the retry budget clears only once incorporation lands.
++//
++// A stale slot: a release write the store refused leaves the slot named until
++// the release retry lands (scheduleRunningTurnReleaseRetry). Until then a
++// caller outside any turn reads the slot as in flight (turnInFlight) and rows
++// 2 and 5 leave the steer; the release retry, when it lands, runs this table
++// again and wakes, which is what delivers the steer the stale slot held back.
++//
++// Row 1: an order entry with no pending execution is a remnant of a
++// finalization that retired the steer -- every retiring path nils the journal
++// payload, so there is no input left to rebuild a pending execution from. The
++// entry would sit at the head of the order and refuse popSteeringHead ("not
++// pending") for everything behind it, so it is dropped; the journal keeps the
++// outcome it recorded.
++//
++// Failures: this function never fails on its own; the store write that
++// carries its result can. The session-level wrapper re-arms the carrier retry
++// on that failure, so the table is re-run from the timer rather than warned
++// about and forgotten.
++func reconcileClientSteering(snapshot *clientMutationSnapshot, in steeringReconcileInputs) steeringReconcileOutcome {
++	var out steeringReconcileOutcome
++	parked := snapshot.SteeringHeld || in.stopping
++	// Rule S's fact, taken before the rows can remove the steer that names it.
++	carrierClaim := !in.inFlight && snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != in.callerTurn &&
++		steeringOrderNamesTurn(snapshot, snapshot.ActiveTurnID)
++	for _, id := range slices.Clone(snapshot.SteeringOrder) {
++		pending, ok := snapshot.PendingExecutions[id]
++		if !ok {
++			// Row 1.
++			removeClientMutationSteeringOrder(snapshot, id)
++			out.dropped = append(out.dropped, id)
++			continue
++		}
++		switch pending.ExecutionState {
++		case "accepted":
++			// Rows 2-4: an accepted steer is where it belongs; a Stop only
++			// re-asserts the hold that keeps it there.
++			if !in.inFlight && in.stopping {
++				snapshot.SteeringHeld = true
++			}
++		case "claimed":
++			if in.inFlight && in.claimedBy(id) == snapshot.ActiveTurnID {
++				// Row 5. (Row 5' falls through: another turn's claim is a
++				// stale one, decided by rows 6-8.)
++				continue
++			}
++			record := snapshot.Journal[id]
++			if in.isRecorded(id) {
++				// Row 6.
++				record.OperationState = clientMutationOperationTerminal
++				record.ExecutionState = "incorporated"
++				record.ProjectionState = appwire.MutationProjectionReflected
++				record.Payload = nil
++				snapshot.Journal[id] = record
++				delete(snapshot.PendingExecutions, id)
++				removeClientMutationSteeringOrder(snapshot, id)
++				out.finalized = append(out.finalized, id)
++				continue
++			}
++			// Rows 7 and 8.
++			pending.ExecutionState = "accepted"
++			snapshot.PendingExecutions[id] = pending
++			record.ExecutionState = "accepted"
++			snapshot.Journal[id] = record
++			out.returned = append(out.returned, id)
++			if parked {
++				snapshot.SteeringHeld = true
++			} else {
++				out.rearm = true
++			}
++		}
++	}
++	// Rule S.
++	if carrierClaim {
++		snapshot.ActiveTurnID = ""
++		out.released = true
++	}
++	// Rule H.
++	if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
++		snapshot.SteeringHeld = false
++		out.holdReleased = true
++	}
++	return out
++}
++
++// steeringOrderNamesTurn reports whether a pending steer in the order reserved
++// turnID -- the id a steering carrier runs under.
++func steeringOrderNamesTurn(snapshot *clientMutationSnapshot, turnID string) bool {
++	if turnID == "" {
++		return false
++	}
++	for _, id := range snapshot.SteeringOrder {
++		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
++			return true
++		}
++	}
++	return false
++}
++
++// reconcileClientSteering runs the table against the store and acts on the
++// outcome: the queue is re-read from the store, a steer returned unparked
++// re-arms the carrier retry (row 8), and a store write that refused the result
++// re-arms it too, so the table runs again from the timer. The transcript
++// question and the claimants are sampled here, before the mutate, unless the
++// caller supplied them. A table that changed nothing commits no snapshot.
++func (s *Session) reconcileClientSteering(in steeringReconcileInputs) steeringReconcileOutcome {
++	if s.clientMutations == nil {
++		return steeringReconcileOutcome{}
++	}
++	if in.recorded == nil {
++		in.recorded = s.recordedClientSteering()
++	}
++	if in.claimant == nil {
++		in.claimant = s.steeringClaimant
++	}
++	var out steeringReconcileOutcome
++	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
++		heldBefore := snapshot.SteeringHeld
++		out = reconcileClientSteering(snapshot, in)
++		if !out.changed(heldBefore, snapshot.SteeringHeld) {
++			return errSteeringReconcileNoop
++		}
++		return nil
++	})
++	if errors.Is(err, errSteeringReconcileNoop) {
++		return out
++	}
++	s.reflectDurableClientSteering()
++	if err != nil {
++		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("reconciling client steering failed: %v; the steering retry runs it again", err)})
++		s.scheduleSteeringCarrierRetry()
++		return steeringReconcileOutcome{}
++	}
++	for _, id := range out.returned {
++		s.forgetSteeringClaimant(id)
++	}
++	for _, id := range out.finalized {
++		s.forgetSteeringClaimant(id)
++	}
++	if out.rearm {
++		s.scheduleSteeringCarrierRetry()
++	}
++	return out
++}
++
++// recordSteeringClaimant remembers which turn popSteeringHead claimed a steer
++// under (steeringReconcileInputs.claimant).
++func (s *Session) recordSteeringClaimant(clientMutationID, turnID string) {
++	s.steeringRetryMu.Lock()
++	if s.steeringClaimants == nil {
++		s.steeringClaimants = map[string]string{}
++	}
++	s.steeringClaimants[clientMutationID] = turnID
++	s.steeringRetryMu.Unlock()
++}
++
++// forgetSteeringClaimant drops the record once the steer is no longer claimed
++// (incorporated, or returned to accepted).
++func (s *Session) forgetSteeringClaimant(clientMutationID string) {
++	s.steeringRetryMu.Lock()
++	delete(s.steeringClaimants, clientMutationID)
++	s.steeringRetryMu.Unlock()
++}
++
++// steeringClaimant answers steeringReconcileInputs.claimant from the record.
++func (s *Session) steeringClaimant(clientMutationID string) string {
++	s.steeringRetryMu.Lock()
++	defer s.steeringRetryMu.Unlock()
++	return s.steeringClaimants[clientMutationID]
++}
++
++// latchSteeringDrainRefused records, for the input being processed, that a
++// steering append failed (rule L).
++func (s *Session) latchSteeringDrainRefused() {
++	s.steeringRetryMu.Lock()
++	s.steeringDrainRefused = true
++	s.steeringRetryMu.Unlock()
++}
++
++// steeringDrainRefusedThisInput reports rule L's latch.
++func (s *Session) steeringDrainRefusedThisInput() bool {
++	s.steeringRetryMu.Lock()
++	defer s.steeringRetryMu.Unlock()
++	return s.steeringDrainRefused
++}
++
++// clearSteeringDrainRefused opens the next input's first attempt (rule L).
++func (s *Session) clearSteeringDrainRefused() {
++	s.steeringRetryMu.Lock()
++	s.steeringDrainRefused = false
++	s.steeringRetryMu.Unlock()
++}
++
++// recordedClientSteering samples, under s.mu, which client mutations the
++// transcript (as history holds it) has a steering turn for, and returns the
++// question over that sample. Taken before a store mutate, never inside one.
++func (s *Session) recordedClientSteering() func(string) bool {
++	recorded := map[string]bool{}
++	s.mu.Lock()
++	for _, turn := range s.history {
++		if turn.Kind == schema.TurnSteering && turn.ClientMutationID != "" {
++			recorded[turn.ClientMutationID] = true
++		}
++	}
++	s.mu.Unlock()
++	return func(id string) bool { return recorded[id] }
++}
++
++// turnInFlight answers steeringReconcileInputs.inFlight for a caller outside
++// any turn: the session is processing, or the active-turn slot is taken --
++// in this process, a taken slot is a running turn, a carrier claim about to
++// open one, or a stale name a refused release write left behind. The last
++// reads as in flight too, deliberately: the release retry that clears it runs
++// the table again and wakes (scheduleRunningTurnReleaseRetry), so nothing is
++// lost by leaving the steer until then, and nothing is written into a slot
++// the retry is about to clear.
++func (s *Session) turnInFlight() bool {
++	if s.State() == SessionProcessing {
++		return true
++	}
++	return s.clientMutations != nil && s.clientMutations.snapshot().ActiveTurnID != ""
++}
+diff --git a/agent/session_steering_reconcile_test.go b/agent/session_steering_reconcile_test.go
+new file mode 100644
+index 000000000..f79b9badf
+--- /dev/null
++++ b/agent/session_steering_reconcile_test.go
+@@ -0,0 +1,207 @@
++package agent
++
++import (
++	"testing"
++
++	"primeradiant.com/evener/appwire"
++)
++
++// TestReconcileClientSteeringTable walks every row of reconcileClientSteering's
++// table (see its doc comment) plus the active-turn slot rule, on a snapshot
++// built for the row, and checks the one action the row promises.
++func TestReconcileClientSteeringTable(t *testing.T) {
++	const id, turn = "cm-steer", "turn_m7"
++	build := func(state string, held bool, active string) clientMutationSnapshot {
++		s := newEmptyClientMutationSnapshot("s1")
++		s.SteeringOrder = []string{id}
++		s.SteeringHeld = held
++		s.ActiveTurnID = active
++		if state != "" {
++			s.PendingExecutions[id] = appwire.PendingMutation{
++				ClientMutationID: id,
++				Method:           clientMutationMethodSteer,
++				TurnID:           turn,
++				ExecutionState:   state,
++				ProjectionState:  appwire.MutationProjectionPending,
++			}
++			s.Journal[id] = clientMutationRecord{ClientMutationID: id, Method: clientMutationMethodSteer, StableTurnID: turn, OperationState: clientMutationOperationApplied, ExecutionState: state}
++		}
++		return s
++	}
++	recorded := func(string) bool { return true }
++	unrecorded := func(string) bool { return false }
++	type want struct {
++		state   string // "" = gone from PendingExecutions
++		inOrder bool
++		held    bool
++		rearm   bool
++	}
++	cases := []struct {
++		row   string
++		state string
++		held  bool
++		in    steeringReconcileInputs
++		want  want
++	}{
++		{"1 absent: stale order entry dropped", "", false, steeringReconcileInputs{recorded: unrecorded}, want{state: "", inOrder: false}},
++		{"2 accepted, in flight: left", "accepted", false, steeringReconcileInputs{inFlight: true, recorded: unrecorded}, want{state: "accepted", inOrder: true}},
++		{"3 accepted, parked: left parked", "accepted", true, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true, held: true}},
++		{"3 accepted, Stop: hold re-asserted", "accepted", false, steeringReconcileInputs{recorded: unrecorded, stopping: true}, want{state: "accepted", inOrder: true, held: true}},
++		{"4 accepted, runnable: left, no re-arm", "accepted", false, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true}},
++		{"5 claimed, in flight under no active id, no claimant known: left", "claimed", false, steeringReconcileInputs{inFlight: true, recorded: unrecorded}, want{state: "claimed", inOrder: true}},
++		{"5 claimed, in flight under no active id, recorded: still left", "claimed", false, steeringReconcileInputs{inFlight: true, recorded: recorded}, want{state: "claimed", inOrder: true}},
++		{"6 claimed, recorded: finalized", "claimed", false, steeringReconcileInputs{recorded: recorded}, want{state: "", inOrder: false}},
++		{"6 claimed, recorded, parked, last steer: finalized, hold released (rule H)", "claimed", true, steeringReconcileInputs{recorded: recorded}, want{state: "", inOrder: false, held: false}},
++		{"7 claimed, unrecorded, held: returned and parked", "claimed", true, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true, held: true}},
++		{"7 claimed, unrecorded, Stop: returned and parked", "claimed", false, steeringReconcileInputs{recorded: unrecorded, stopping: true}, want{state: "accepted", inOrder: true, held: true}},
++		{"8 claimed, unrecorded, runnable: returned, retry re-armed", "claimed", false, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true, rearm: true}},
++	}
++	for _, tc := range cases {
++		t.Run(tc.row, func(t *testing.T) {
++			snapshot := build(tc.state, tc.held, "")
++			out := reconcileClientSteering(&snapshot, tc.in)
++			pending, ok := snapshot.PendingExecutions[id]
++			gotState := ""
++			if ok {
++				gotState = pending.ExecutionState
++			}
++			inOrder := false
++			for _, o := range snapshot.SteeringOrder {
++				inOrder = inOrder || o == id
++			}
++			if gotState != tc.want.state || inOrder != tc.want.inOrder || snapshot.SteeringHeld != tc.want.held || out.rearm != tc.want.rearm {
++				t.Fatalf("state=%q inOrder=%v held=%v rearm=%v, want state=%q inOrder=%v held=%v rearm=%v",
++					gotState, inOrder, snapshot.SteeringHeld, out.rearm, tc.want.state, tc.want.inOrder, tc.want.held, tc.want.rearm)
++			}
++			if tc.want.state == "" && tc.state != "" {
++				if snapshot.Journal[id].ExecutionState != "incorporated" || snapshot.Journal[id].OperationState != clientMutationOperationTerminal {
++					t.Fatalf("finalized steer's journal = %q/%q, want terminal/incorporated", snapshot.Journal[id].OperationState, snapshot.Journal[id].ExecutionState)
++				}
++			}
++			if tc.want.state == "accepted" && tc.state == "claimed" && snapshot.Journal[id].ExecutionState != "accepted" {
++				t.Fatalf("returned steer's journal reads %q, want accepted", snapshot.Journal[id].ExecutionState)
++			}
++		})
++	}
++
++	// Rows 5 and 5': a turn is in flight, and the claimant says whether it is
++	// the one that popped the steer.
++	const running = "turn_running"
++	ownClaim := func(string) string { return running }
++	staleClaim := func(string) string { return "turn_gone" }
++	t.Run("5 claimed, in flight, the running turn's own claim: left", func(t *testing.T) {
++		snapshot := build("claimed", false, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: unrecorded, claimant: ownClaim})
++		if snapshot.PendingExecutions[id].ExecutionState != "claimed" || out.rearm || len(out.returned) != 0 {
++			t.Fatalf("state=%q rearm=%v returned=%v, want the running turn's own claim left alone", snapshot.PendingExecutions[id].ExecutionState, out.rearm, out.returned)
++		}
++	})
++	t.Run("5 claimed, in flight, own claim, recorded: still left", func(t *testing.T) {
++		snapshot := build("claimed", false, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: recorded, claimant: ownClaim})
++		if _, still := snapshot.PendingExecutions[id]; !still || len(out.finalized) != 0 {
++			t.Fatalf("still=%v finalized=%v, want the running turn's own recorded claim left for its incorporation write", still, out.finalized)
++		}
++	})
++	t.Run("5' claimed, in flight, another turn's claim, unrecorded: returned, re-armed (row 8)", func(t *testing.T) {
++		snapshot := build("claimed", false, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: unrecorded, claimant: staleClaim})
++		if snapshot.PendingExecutions[id].ExecutionState != "accepted" || !out.rearm {
++			t.Fatalf("state=%q rearm=%v, want a stale claim returned and re-armed", snapshot.PendingExecutions[id].ExecutionState, out.rearm)
++		}
++		if snapshot.ActiveTurnID != running {
++			t.Fatalf("ActiveTurnID=%q, want the running turn's name kept", snapshot.ActiveTurnID)
++		}
++	})
++	t.Run("5' claimed, in flight, another turn's claim, recorded: finalized (row 6)", func(t *testing.T) {
++		snapshot := build("claimed", false, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: recorded, claimant: staleClaim})
++		if _, still := snapshot.PendingExecutions[id]; still || len(out.finalized) != 1 {
++			t.Fatalf("still=%v finalized=%v, want a recorded stale claim finalized", still, out.finalized)
++		}
++	})
++	t.Run("5' claimed, in flight, another turn's claim, held: returned and parked (row 7)", func(t *testing.T) {
++		snapshot := build("claimed", true, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: unrecorded, claimant: staleClaim})
++		if snapshot.PendingExecutions[id].ExecutionState != "accepted" || out.rearm || !snapshot.SteeringHeld {
++			t.Fatalf("state=%q rearm=%v held=%v, want a stale claim returned and parked", snapshot.PendingExecutions[id].ExecutionState, out.rearm, snapshot.SteeringHeld)
++		}
++	})
++	t.Run("5' claimed, in flight, no claimant known (a claim from before a restart): returned", func(t *testing.T) {
++		snapshot := build("claimed", false, running)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: unrecorded})
++		if snapshot.PendingExecutions[id].ExecutionState != "accepted" || !out.rearm {
++			t.Fatalf("state=%q rearm=%v, want a claim no turn of this process made returned and re-armed", snapshot.PendingExecutions[id].ExecutionState, out.rearm)
++		}
++	})
++
++	t.Run("slot: a carrier claim with no turn in flight is released", func(t *testing.T) {
++		snapshot := build("accepted", false, turn)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
++		if snapshot.ActiveTurnID != "" || !out.released {
++			t.Fatalf("ActiveTurnID=%q released=%v, want the carrier claim released", snapshot.ActiveTurnID, out.released)
++		}
++	})
++	t.Run("slot: kept while a turn is in flight", func(t *testing.T) {
++		snapshot := build("claimed", false, turn)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{inFlight: true, recorded: unrecorded})
++		if snapshot.ActiveTurnID != turn || out.released {
++			t.Fatalf("ActiveTurnID=%q released=%v, want the running carrier's name kept", snapshot.ActiveTurnID, out.released)
++		}
++	})
++	t.Run("slot: the caller's own name is never released", func(t *testing.T) {
++		snapshot := build("claimed", false, turn)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{callerTurn: turn, recorded: unrecorded})
++		if snapshot.ActiveTurnID != turn || out.released {
++			t.Fatalf("ActiveTurnID=%q released=%v, want the calling turn's name kept", snapshot.ActiveTurnID, out.released)
++		}
++		if snapshot.PendingExecutions[id].ExecutionState != "accepted" || !out.rearm {
++			t.Fatalf("the caller's failed steer reads %q rearm=%v, want returned and re-armed (row 8)", snapshot.PendingExecutions[id].ExecutionState, out.rearm)
++		}
++	})
++	t.Run("slot: released even when row 6 finalizes the steer that named it", func(t *testing.T) {
++		snapshot := build("claimed", false, turn)
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: recorded})
++		if _, still := snapshot.PendingExecutions[id]; still || len(out.finalized) != 1 {
++			t.Fatalf("recorded steer finalized=%v still pending=%v, want finalized", out.finalized, still)
++		}
++		if snapshot.ActiveTurnID != "" || !out.released {
++			t.Fatalf("ActiveTurnID=%q released=%v after finalizing the carrier's own steer, want the claim released", snapshot.ActiveTurnID, out.released)
++		}
++	})
++	t.Run("hold: released once row 6 retires the last steer", func(t *testing.T) {
++		snapshot := build("claimed", true, "")
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: recorded, stopping: true})
++		if snapshot.SteeringHeld || !out.holdReleased {
++			t.Fatalf("held=%v holdReleased=%v after the last steer was finalized, want the hold released (#710)", snapshot.SteeringHeld, out.holdReleased)
++		}
++	})
++	t.Run("hold: released once row 1 drops the last stale entry", func(t *testing.T) {
++		snapshot := build("", true, "")
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
++		if snapshot.SteeringHeld || !out.holdReleased {
++			t.Fatalf("held=%v holdReleased=%v after the stale entry was dropped, want the hold released", snapshot.SteeringHeld, out.holdReleased)
++		}
++	})
++	t.Run("hold: kept while a pending steer names it", func(t *testing.T) {
++		snapshot := build("claimed", true, "")
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
++		if !snapshot.SteeringHeld || out.holdReleased {
++			t.Fatalf("held=%v holdReleased=%v with the returned steer parked behind it, want the hold kept (row 7)", snapshot.SteeringHeld, out.holdReleased)
++		}
++	})
++	t.Run("hold: an accepted steer keeps it", func(t *testing.T) {
++		snapshot := build("accepted", true, "")
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
++		if !snapshot.SteeringHeld || out.holdReleased {
++			t.Fatalf("held=%v holdReleased=%v with an accepted steer parked, want the hold kept (row 3)", snapshot.SteeringHeld, out.holdReleased)
++		}
++	})
++	t.Run("slot: a user turn's name is not a carrier claim", func(t *testing.T) {
++		snapshot := build("accepted", false, "turn_m9")
++		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
++		if snapshot.ActiveTurnID != "turn_m9" || out.released {
++			t.Fatalf("ActiveTurnID=%q released=%v, want a name no steer reserved left alone", snapshot.ActiveTurnID, out.released)
++		}
++	})
++}
+diff --git a/agent/session_tool_round.go b/agent/session_tool_round.go
+index 4cdb8b881..717a9ec5e 100644
+--- a/agent/session_tool_round.go
++++ b/agent/session_tool_round.go
+@@ -440,9 +440,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
+ 
+ 	// Inject any queued steering messages before the next model call. A terminal
+ 	// communicate result owns this input's boundary, so leave client-authored
+-	// steering durable pending work for wakeForPendingSteering and
+-	// EntrySteeringCarrier. Consuming it here would mark it incorporated in a
+-	// result that ends the turn without a model request that can act on it.
++	// steering durable pending work for the EntrySteeringCarrier turn the drain
++	// ladder runs next (or, failing that, wakeForPendingSteering). Consuming it
++	// here would mark it incorporated in a result that ends the turn without a
++	// model request that can act on it.
+ 	if abortErr := s.withResponseSideEffects(ctx, func() {
+ 		if !s.Communicated() {
+ 			if s.hasPendingSteering() {
+diff --git a/server/appwire_steering_owner_replay_test.go b/server/appwire_steering_owner_replay_test.go
+index b67171c2d..3a1f9bb02 100644
+--- a/server/appwire_steering_owner_replay_test.go
++++ b/server/appwire_steering_owner_replay_test.go
+@@ -91,10 +91,13 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
+ 			}
+ 			<-turnDone
+ 			if delayed {
+-				if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+-					t.Fatalf("delayed carrier: ran=%v err=%v", ran, err)
++				// The steer landed after the terminal leg was in flight, so it
++				// runs as a carrier turn -- inside the input that accepted it
++				// (the drain ladder runs the carrier before the input ends,
++				// #1308). The acceptance-time wake then finds nothing to carry.
++				if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
++					t.Fatalf("delayed carrier after the input: ran=%v err=%v, want nothing left to carry", ran, err)
+ 				}
+-				<-turnDone
+ 			}
+ 
+ 			if adapter.steerStableID == "" {

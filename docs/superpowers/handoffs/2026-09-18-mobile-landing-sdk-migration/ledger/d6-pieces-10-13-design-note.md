@@ -1,0 +1,7 @@
+# D6 pieces 10-13 design note (lane 3, 2026-09-17 ~22:05 PDT) + coordinator ruling
+Piece 8 (#1841 settingsHubGeneration.ts: createSettingsHubGeneration, retireSettingsHubPayload, settleUnsettleableWrite) and piece 9 (#1844 checkpointedDraftEditor.ts: assertDraftDiscardable, persistCheckpointedDraft, discardCheckpointedDraft) delivered the whole reusable core as explicit function args (no Payload type parameter; staleDraft's signature already differs per store: revision vs hub[layout].revision).
+Piece 10 (transcriptDisplayStore hub defaults + direct write): adopt piece 8's primitives directly (settleUnsettleableWrite takes stillClaimed as a boolean, so the per-layout token map needs no plumbing); setSupport and applyHubDefault stay store-owned (explicit authoritative flag, per-layout hub map, no appliedSerial/conflict). ~280-320 lines.
+Piece 11 (web transcriptDisplay.ts adapter): unchanged, ~484 (adapts to the public API).
+Piece 12 (transcript checkpointed editor): adopt piece 9's three primitives; editDraft/saveDraft/rebaseDraft stay store-owned (per-layout draft identity; oracle predates the post-simplify settleWrite). ~90-110.
+Piece 13 (native transcriptMobile projection): unchanged, ~10.
+RULING (coordinator): keep 10-13 as planned and split (10 and 12 separate review surfaces: read path vs write/draft path); briefs say 'adopt primitives from #1841/#1844, never re-derive retirePayload/assertDraftDiscardable'. Lane 3 builds piece 10 stacked on #1844, then retires with a state note; a fresh lane takes 11-13.
