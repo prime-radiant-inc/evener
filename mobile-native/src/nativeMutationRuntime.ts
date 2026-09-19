@@ -123,6 +123,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		});
 		this.#dispatcher = new MutationDispatcher(this.storage, {
 			getClient: (targetRef) => this.#getClient(targetRef),
+			onBlockedMutation: (targetRef, client) => this.#blockAfterUnknownOutcome(targetRef, client),
 		});
 		const outboxOptions: MutationOutboxOptions = {
 			getClient: (targetRef) => this.#getClient(targetRef),
@@ -255,6 +256,13 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 			target.readToken === lease.readToken &&
 			lease.client.state === "ready"
 		);
+	}
+
+	#blockAfterUnknownOutcome(targetKey: string, client: AppwireClientLike): void {
+		const target = this.#targets.get(targetKey);
+		if (target?.client !== client) return;
+		target.readToken = undefined;
+		this.#blockedTargets.add(targetKey);
 	}
 
 	async connectionReady(): Promise<void> {

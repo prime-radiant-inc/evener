@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, test, vi } from "vitest";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { MutationOutboxSQLite, type MutationOutboxDatabase } from "./mutationOutboxStorage";
@@ -241,6 +242,119 @@ test("a reconnect re-gates a target until its next authoritative read", async ()
 	const secondLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(secondLease!, readResponse("ref-1"));
 	await vi.waitFor(() => expect(client.calls).toHaveLength(2));
+	await runtime.stop();
+});
+
+test("a blocked outcome invalidates an older pending read lease", async () => {
+	let releaseResponse!: (error: unknown) => void;
+	let requestStarted!: () => void;
+	const pendingResponse = new Promise<never>((_resolve, reject) => {
+		releaseResponse = reject;
+	});
+	const started = new Promise<void>((resolve) => {
+		requestStarted = resolve;
+	});
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", (params) => {
+		requestStarted();
+		return pendingResponse as never;
+	});
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const initialLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(initialLease!, readResponse("ref-1"));
+	await started;
+
+	const olderLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	releaseResponse(
+		new WireError("journal unavailable", -32014, {
+			evenerErrorInfo: "mutationOutcomeUnknown",
+			clientMutationId: "mutation-1",
+			mutationOutcome: "unknown",
+			retryDisposition: "blocked",
+			cause: "persistenceUnavailable",
+		}),
+	);
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	});
+
+	expect(await runtime.reconcileAuthoritativeRead(olderLease!, readResponse("ref-1"))).toBe("stale");
+	await runtime.connectionReady();
+	expect(client.calls).toHaveLength(1);
+	await runtime.stop();
+});
+
+test("a failed blocked-outcome write keeps retry gated until a later read", async () => {
+	const database = openDatabase();
+	const originalRunSync = database.runSync;
+	let failMarkUnknown = false;
+	database.runSync = (sql, ...params) => {
+		if (failMarkUnknown && sql.includes("UPDATE mutation_outbox SET state = ?") && params[0] === "blockedUnknown")
+			throw new Error("journal unavailable");
+		return originalRunSync(sql, ...params);
+	};
+	const intervals: Array<() => void> = [];
+	let releaseResponse!: (error: unknown) => void;
+	let requestStarted!: () => void;
+	const pendingResponse = new Promise<never>((_resolve, reject) => {
+		releaseResponse = reject;
+	});
+	const started = new Promise<void>((resolve) => {
+		requestStarted = resolve;
+	});
+	let calls = 0;
+	const runtime = new NativeMutationRuntime(database, {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: () => undefined,
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", (params) => {
+		calls += 1;
+		if (calls === 1) {
+			requestStarted();
+			return pendingResponse as never;
+		}
+		return appliedReceipt(params);
+	});
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const initialLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(initialLease!, readResponse("ref-1"));
+	await started;
+
+	failMarkUnknown = true;
+	releaseResponse(
+		new WireError("journal unavailable", -32014, {
+			evenerErrorInfo: "mutationOutcomeUnknown",
+			clientMutationId: "mutation-1",
+			mutationOutcome: "unknown",
+			retryDisposition: "blocked",
+			cause: "persistenceUnavailable",
+		}),
+	);
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+			state: "submitting",
+			attempted: true,
+		});
+	});
+
+	intervals[0]?.();
+	await runtime.connectionReady();
+	expect(calls).toBe(1);
+
+	const retryLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(retryLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(calls).toBe(2));
+	expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
 	await runtime.stop();
 });
 
@@ -566,10 +680,21 @@ test("submit resolves at the durable enqueue boundary", async () => {
 		createMutationId: () => "mutation-1",
 	});
 	const client = new FakeClient("ready");
-	client.on("turn/start", () => pendingResponse as never);
+	let requestStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		requestStarted = resolve;
+	});
+	client.on("turn/start", () => {
+		requestStarted();
+		return pendingResponse as never;
+	});
 	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
 
 	const submission = runtime.submit(request("send"));
+	await started;
 	const boundary = await Promise.race([
 		submission.then(() => "enqueued" as const),
 		new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 100)),
