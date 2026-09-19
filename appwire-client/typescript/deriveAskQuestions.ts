@@ -64,6 +64,20 @@ function isAckedAskUserItem(item: ItemModel): boolean {
   );
 }
 
+// isUserAuthoredSteer answers one wire-level question: is this steering item
+// the human speaking, as opposed to the daemon injecting one on its own
+// (SteeringSourceUser) or a human-note update recorded through the same
+// source (session_notes_rpc.go's steeringOrigin machinery stamps a note
+// SteeringKindHumanNote even though a human wrote it - writing a note is not
+// the human speaking through the transcript). Shared with web layoutRoles.ts,
+// which asks the same wire question for its own, unrelated reason (routing
+// the item to a divider instead of a user bubble); callers add their own
+// `item.type === "steering"` gate first, since this only reads the fields a
+// non-steering item never sets.
+export function isUserAuthoredSteer(item: ItemModel): boolean {
+  return item.source === "user" && item.steeringKind !== "human-note";
+}
+
 // An item resolves the whole pending ask set at once (spec §6.1): a plain
 // user message (type "userMessage" - the wire's literal string for both a
 // plain composer send and an ask-dock's own composed [answers] reply), or a
@@ -74,20 +88,14 @@ function isAckedAskUserItem(item: ItemModel): boolean {
 // steering turn carrying SteeringKindInterrupted as the transcript's marker
 // of that boundary - "the user is demonstrably present") and an accepted
 // user steer (which enters the drain loop as EntryUserInput, the same
-// accepted-turn path that clears askPending for a plain user message; its
-// item carries source "user", the wire's SteeringSourceUser). A human-note
-// update ALSO carries source "user" (a human wrote the note - session_notes_
-// rpc.go's steeringOrigin machinery stamps it SteeringKindHumanNote), but
-// writing a note is not answering the question, so it is excluded from the
-// user-steer half of this OR - the same exclusion web layoutRoles.ts already
-// makes for its own, unrelated reason (routing the item to a divider instead
-// of a user bubble). A daemon-originated steer with neither marker, and a
-// human-note steer, are not the user speaking and resolve nothing.
+// accepted-turn path that clears askPending for a plain user message -
+// isUserAuthoredSteer above). A daemon-originated steer with neither marker,
+// and a human-note steer, are not the user speaking and resolve nothing.
 function isResolutionItem(item: ItemModel): boolean {
   if (item.type === "userMessage") return true;
   if (item.type !== "steering") return false;
   if (item.steeringKind === "interrupted") return true;
-  return item.source === "user" && item.steeringKind !== "human-note";
+  return isUserAuthoredSteer(item);
 }
 
 // lastResolutionIndex finds the position of the most recent resolution
@@ -111,8 +119,8 @@ export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
   const items = model.turns.flatMap((turn) => turn.items);
   const boundary = lastResolutionIndex(items);
   const refs: AskQuestionRef[] = [];
-  items.slice(boundary + 1).forEach((item) => {
-    if (!isAckedAskUserItem(item)) return;
+  items.forEach((item, index) => {
+    if (index <= boundary || !isAckedAskUserItem(item)) return;
     const questions = parseAskUserQuestions(item);
     if (!questions) return;
     // callId should always be present for a real ask_user call (set at
