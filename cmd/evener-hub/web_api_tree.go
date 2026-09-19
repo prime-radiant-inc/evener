@@ -53,10 +53,18 @@ type favoriteRemoteOwnership struct {
 }
 
 type remoteThreadFetch struct {
-	threads    []appwire.Thread
-	complete   bool
-	sources    map[string]hubcore.RemoteSourceSnapshot
-	generation uint64
+	threads  []appwire.Thread
+	complete bool
+	sources  map[string]hubcore.RemoteSourceSnapshot
+	// sourceGenerations is the per-source identity generation the walk
+	// captured immediately before it read each source — the read-time
+	// capture the background refresher hands to StoreWalkSnapshot, so a
+	// remove or remove/re-add between a source's read and the publish
+	// moves the live generation and the read's rows drop (the round-10
+	// finding). A source absent from the map was unregistered when the
+	// walk read it; the publish drops its rows as unowned.
+	sourceGenerations map[string]uint64
+	generation        uint64
 }
 
 // pokeMutationAttention nudges the attention watcher (if configured). It exists for
@@ -496,15 +504,39 @@ func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 
 func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
 	if s.sources == nil {
-		return remoteThreadFetch{complete: true, sources: map[string]hubcore.RemoteSourceSnapshot{}}
+		return remoteThreadFetch{
+			complete:          true,
+			sources:           map[string]hubcore.RemoteSourceSnapshot{},
+			sourceGenerations: map[string]uint64{},
+		}
 	}
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
+	// readGenerations is the walk's read-time capture: one entry per source,
+	// taken immediately before the walk reads it.
+	readGenerations := make(map[string]uint64)
 	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
 			continue
+		}
+		// Row ownership follows the generation at READ time, not at walk
+		// start (the round-10 finding): a host that registers mid-walk is
+		// captured here, under the registration that owns the rows about to
+		// be read, so it still publishes on this tick — while a remove or
+		// remove/re-add that lands between this capture and the publish moves
+		// the live generation, and the publish drops these rows instead of
+		// letting the old registration's rows outlive it or publish under a
+		// re-added identity. A source with no generation here was already
+		// removed when the walk reached it (the registry snapshot lags the
+		// removal); it stays uncaptured, and the publish drops its rows as
+		// unowned. Unattached sources are captured too — the last-known-good
+		// rows below publish like a live read's.
+		if s.cfg.RemoteThreadCache != nil {
+			if generation, ok := s.cfg.RemoteThreadCache.SourceGeneration(source.ID()); ok {
+				readGenerations[source.ID()] = generation
+			}
 		}
 		// The background walk must not force attachment: an unattached remote host
 		// is skipped without a call, so the 30s ticker cannot dial every configured
@@ -577,7 +609,7 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			IncompleteIDs: invalid,
 		}
 	}
-	return remoteThreadFetch{threads: threads, complete: complete, sources: sources}
+	return remoteThreadFetch{threads: threads, complete: complete, sources: sources, sourceGenerations: readGenerations}
 }
 
 // sourceThreadLister is the minimal slice of appsource.Source that

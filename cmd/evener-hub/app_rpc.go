@@ -62,10 +62,11 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				// The identity generation is assigned before the source
 				// becomes registry-visible, the same discipline the host
 				// manager's runtime add follows: a refresh walk may enumerate
-				// the source the moment it is added, and the publish treats a
-				// source absent from both its capture and the live generations
-				// as removed (round-9 M2) — so every enumerable source must
-				// carry a generation from the instant it is enumerable.
+				// the source the moment it is added, and the walk captures
+				// the source's generation immediately before it reads it
+				// (round 10) — so every enumerable source must carry a
+				// generation from the instant it is enumerable, or the
+				// publish drops its rows as unowned.
 				// Configured hosts never pass through the manager, so theirs
 				// is assigned here; the local source needs none — the walk
 				// skips it, so it can never own walk-published rows.

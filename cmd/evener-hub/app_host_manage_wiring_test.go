@@ -863,12 +863,18 @@ func TestHostManageRemoveBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 	}
 }
 
-// TestHostManageStillLiveHostAddedAfterCapturePublishes guards the
-// legitimate half of the round-9 M2 fix end to end: a host added after the
-// walk's capture and still live at the publish owns the rows the walk read,
-// and they must render — the filter may not read "not captured" as
-// "not live".
-func TestHostManageStillLiveHostAddedAfterCapturePublishes(t *testing.T) {
+// TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish pins the
+// round-10 finding end to end over the real server construction path: a host
+// added after the walk's start is read by the walk, and the round-9 rule let
+// its rows publish while its registration stayed live — but "live" cannot
+// tell the first registration's rows from a re-added registration's. When
+// the host is removed and re-added before the walk publishes, the rows the
+// walk read belong to the removed registration, and publishing them would
+// render the old machine's sessions as the re-added host's until the next
+// refresh tick (the round-7 M1 harm through the uncaptured path). The
+// publish now drops an uncaptured source's rows unconditionally: no
+// read-time capture claims them, so no registration is known to own them.
+func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
@@ -887,8 +893,30 @@ func TestHostManageStillLiveHostAddedAfterCapturePublishes(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	// The walk captures before the host registers, then reads its row.
+
+	rowsFor := func() (metas, live int) {
+		t.Helper()
+		metasList, liveList, _ := web.navigationTreeInputs(context.Background())
+		for _, meta := range metasList {
+			if meta.ProfileID == "web-side" {
+				metas++
+			}
+		}
+		for _, entry := range liveList {
+			if entry.SourceID == "web-side" {
+				live++
+			}
+		}
+		return metas, live
+	}
+
+	// The refresh walk starts on a hub whose registry holds no remote source:
+	// its capture holds nothing for the host about to be added — the
+	// walk-start state the pre-round-10 refresher captured once, before it
+	// read anything.
 	walkGenerations := cache.SourceGenerations()
+	// The host is added mid-walk and the walk reads its one session row under
+	// that registration.
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
@@ -899,7 +927,78 @@ func TestHostManageStillLiveHostAddedAfterCapturePublishes(t *testing.T) {
 			"web-side": {Threads: []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, Complete: true},
 		},
 	}
+	// The churn completes while the walk is still in flight: the remove drops
+	// the registration the walk read, and the re-add registers the name under
+	// a new generation — live again, but not the registration that owned the
+	// rows the walk holds.
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+		t.Fatalf("evener/host/remove: %v", err)
+	}
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+		t.Fatalf("evener/host/add (re-add): %v", err)
+	}
+
+	// The walk finishes and publishes what it read. Nothing may come back
+	// under the re-added identity: not the tree rows, not the cache's rows,
+	// not the per-source entry.
 	cache.StoreWalkSnapshot(walk, walkGenerations)
+	for _, thread := range cache.Snapshot().Threads {
+		if thread.Source == "web-side" {
+			t.Fatalf("late walk published thread %q under the re-added identity", thread.ID)
+		}
+	}
+	if _, ok := cache.Snapshot().Sources["web-side"]; ok {
+		t.Fatal("late walk published the re-added name's per-source snapshot from the removed registration's rows")
+	}
+	if metas, live := rowsFor(); metas != 0 || live != 0 {
+		t.Fatalf("tree rows after the late publish = %d metas, %d live; want none under the re-added identity", metas, live)
+	}
+}
+
+// TestHostManageStillLiveHostAddedMidWalkPublishes guards the immediacy the
+// round-10 read-time capture preserves, end to end: a host added while the
+// walk is already running is captured when the walk reads it — under the
+// registration that owns the rows — and its rows render on that tick. Round
+// 9 served this case through the "uncaptured but live" rule, which the
+// add → read → remove → re-add sequence broke; the read-time capture keeps
+// the same visible behavior without the unsound rule.
+func TestHostManageStillLiveHostAddedMidWalkPublishes(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cfg := hubcore.WebConfig{
+		Past:                 hubcore.NewPastIndex(""),
+		RemoteHostConfigPath: configPath,
+		RemoteThreadCache:    cache,
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// The host registers mid-walk; the walk enumerates it and captures its
+	// generation immediately before reading its row — the read-time capture
+	// the background walk has performed since round 10.
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	readGeneration, ok := cache.SourceGeneration("web-side")
+	if !ok {
+		t.Fatal("added host registered no cache generation for the walk's read-time capture")
+	}
+	walk := hubcore.RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}},
+		Complete: true,
+		Sources: map[string]hubcore.RemoteSourceSnapshot{
+			"web-side": {Threads: []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, Complete: true},
+		},
+	}
+	cache.StoreWalkSnapshot(walk, map[string]uint64{"web-side": readGeneration})
 	metasList, liveList, _ := web.navigationTreeInputs(context.Background())
 	var metas, live int
 	for _, meta := range metasList {

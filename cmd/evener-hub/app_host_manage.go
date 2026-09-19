@@ -724,10 +724,11 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	// generation and publish normally.
 	//
 	// The generation is assigned BEFORE the source becomes registry-visible:
-	// a refresh walk may enumerate the source the moment it is added, and
-	// the publish treats a source absent from both its capture and the live
-	// generations as removed (round-9 M2) — so a source the walk can read
-	// must already carry a generation, and the remove path alone deletes it.
+	// a refresh walk may enumerate the source the moment it is added, and the
+	// walk captures the source's generation immediately before it reads it
+	// (round 10) — so a source the walk can read must already carry a
+	// generation for that read-time capture, and the remove path alone
+	// deletes it.
 	if m.cfg.remoteCache != nil {
 		m.cfg.remoteCache.RegisterSource(entry.Name)
 	}

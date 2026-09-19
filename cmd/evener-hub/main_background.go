@@ -98,7 +98,12 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	}
 }
 
-func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *hubcore.RemoteThreadCache, web *WebServer) {
+// refreshHubRemoteThreads refreshes the web server's remote-thread cache on a
+// ~30s ticker + poke. Capture and publish both go through web's own
+// RemoteThreadCache — the walk reads its per-source generations at read time
+// and the publish compares them under the publish lock — so the two can never
+// disagree about which cache owns a registration.
+func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -107,19 +112,21 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *h
 	refresh := func() {
 		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		// The identity generations must be captured before the walk reads
-		// anything: a source registered after this point was never walked
-		// (its rows publish unfiltered), and a source removed after this
-		// point — or removed and re-added — must not come back through this
-		// walk's rows (StoreWalkSnapshot compares the capture under the
-		// publish lock).
-		captured := cache.SourceGenerations()
+		// The walk captures each source's identity generation immediately
+		// before it reads the source (refreshRemoteThreadSnapshot) and hands
+		// the read-time capture to the publish, which compares it under the
+		// publish lock: a source removed after its read — or removed and
+		// re-added, which registers a strictly newer generation (the round-10
+		// finding: the first registration's rows must not publish under the
+		// re-added identity) — mismatches, while a host added mid-walk is
+		// captured under the registration that owns its rows and still
+		// appears on this tick.
 		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
-		cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+		web.cfg.RemoteThreadCache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
 			Threads:  snapshot.threads,
 			Complete: snapshot.complete,
 			Sources:  snapshot.sources,
-		}, captured)
+		}, snapshot.sourceGenerations)
 	}
 	refresh()
 	for {

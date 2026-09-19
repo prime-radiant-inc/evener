@@ -391,15 +391,25 @@ func TestRemoteThreadCacheWalkDropsSourceRemovedAfterCapture(t *testing.T) {
 	}
 }
 
-// TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture guards the
-// legitimate half of the round-9 M2 fix: a source that registered after the
-// capture and is still live at the publish owns the rows the walk read from
-// it, and they must publish — the filter may not read "not captured" as
-// "not live".
-func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture(t *testing.T) {
+// TestRemoteThreadCacheWalkDropsSourceRemovedAndReAddedAfterCapture pins
+// the round-10 finding: round 9 admitted an uncaptured-but-live source on
+// the premise that a source the walk did not capture registered after the
+// capture, so its rows belonged to the current registration — but the walk
+// reads the rows under the registration live at the READ, and a remove and
+// re-add can replace that registration before the publish. The first
+// registration's rows must not publish under the re-added identity (the
+// round-7 M1 harm through the uncaptured path), so an uncaptured source is
+// now stale unconditionally: no read-time capture claims its rows, so no
+// registration is known to own them.
+func TestRemoteThreadCacheWalkDropsSourceRemovedAndReAddedAfterCapture(t *testing.T) {
 	c := &RemoteThreadCache{}
+	// host-a is live before the walk starts, so the walk's capture is
+	// non-empty and the publish filters.
 	c.RegisterSource("host-a")
 	captured := c.SourceGenerations()
+	// host-late registers mid-walk — after the capture, the way a runtime add
+	// lands between the walk's start and its enumeration — and the walk reads
+	// its row under that registration.
 	c.RegisterSource("host-late")
 	walk := RemoteThreadSnapshot{
 		Threads: []appwire.Thread{
@@ -412,7 +422,75 @@ func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture(t *testing.T
 			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
 		},
 	}
+	// The churn completes before the walk publishes: the remove drops the
+	// registration the walk read, and the re-add registers the name under a
+	// strictly newer generation.
+	c.RemoveSource("host-late")
+	c.RegisterSource("host-late")
+
+	// The walk finishes and publishes what it read under the removed
+	// registration. Nothing of host-late's may come back under the re-added
+	// identity.
 	c.StoreWalkSnapshot(walk, captured)
+
+	got := c.Snapshot()
+	for _, thread := range got.Threads {
+		if thread.Source == "host-late" {
+			t.Fatalf("late walk published thread %q under the re-added identity", thread.ID)
+		}
+	}
+	if _, ok := got.Sources["host-late"]; ok {
+		t.Fatal("late walk published the re-added name's per-source snapshot from the removed registration's rows")
+	}
+	if len(got.Threads) != 1 || got.Threads[0].ID != "a1" {
+		t.Fatalf("threads after the late publish = %+v, want host-a's row alone", got.Threads)
+	}
+	if _, ok := got.Sources["host-a"]; !ok {
+		t.Fatal("late publish dropped the captured still-live source's per-source snapshot")
+	}
+}
+
+// TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedMidWalk guards the
+// immediacy the read-time capture preserves (round 10's fix (b)): a source
+// that registers while the walk is already running is captured when the walk
+// reads it — under the registration that owns the rows it is about to read —
+// and that capture admits the rows at the publish, so a host added mid-walk
+// still appears on that tick. Round 9 served this case through the
+// "uncaptured but live" rule instead; the add → read → remove → re-add
+// sequence broke that rule, and the read-time capture keeps the same visible
+// behavior without it.
+func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedMidWalk(t *testing.T) {
+	c := &RemoteThreadCache{}
+	c.RegisterSource("host-a")
+	// The walk starts and reads host-a first, capturing its generation at
+	// read time the way the background walk does.
+	readGenerations := map[string]uint64{}
+	generation, ok := c.SourceGeneration("host-a")
+	if !ok {
+		t.Fatal("registered source carries no generation at read time")
+	}
+	readGenerations["host-a"] = generation
+	// host-late registers mid-walk, before the walk reaches it.
+	c.RegisterSource("host-late")
+	// The walk reaches host-late and captures the registration that owns the
+	// rows it is about to read.
+	generation, ok = c.SourceGeneration("host-late")
+	if !ok {
+		t.Fatal("mid-walk-registered source carries no generation at read time")
+	}
+	readGenerations["host-late"] = generation
+	walk := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a1", Source: "host-a"},
+			{ID: "l1", Source: "host-late"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a":    {Threads: []appwire.Thread{{ID: "a1", Source: "host-a"}}, Complete: true},
+			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
+		},
+	}
+	c.StoreWalkSnapshot(walk, readGenerations)
 	got := c.Snapshot()
 	var late int
 	for _, thread := range got.Threads {
@@ -421,7 +499,7 @@ func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedAfterCapture(t *testing.T
 		}
 	}
 	if late != 1 || len(got.Threads) != 2 {
-		t.Fatalf("threads after the publish = %+v, want both sources' rows: the still-live source added after the capture must publish", got.Threads)
+		t.Fatalf("threads after the publish = %+v, want both sources' rows: the still-live source added mid-walk must publish", got.Threads)
 	}
 	if _, ok := got.Sources["host-late"]; !ok {
 		t.Fatal("publish dropped the still-live source's per-source snapshot")

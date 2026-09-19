@@ -675,7 +675,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
+	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the
 	// held registry once at startup and every livePrefetchInterval after,
 	// so the Providers sheet reads cached inventory instead of fetching on

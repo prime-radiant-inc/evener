@@ -39,13 +39,14 @@ type RemoteThreadCache struct {
 	// current registration carries, assigned from nextGeneration — the same
 	// shape hostreg's round-4 fix chose for the registry: one cache-wide
 	// monotonic counter, per-name state only for live names. A refresh walk
-	// captures a source's generation before it starts reading and
-	// StoreWalkSnapshot rejects the source's rows when the generation moved
-	// underneath the walk, so neither a remove — the entry drops, and an
-	// absent source mismatches every capture — nor a remove/re-add — the
-	// re-registration assigns a strictly newer generation — can publish the
-	// old registration's rows under the re-added name (the round-7 M1
-	// finding). Entries exist only for registered sources: removal deletes
+	// captures a source's generation immediately before it reads that source
+	// (round 10) and StoreWalkSnapshot rejects the source's rows when the
+	// generation moved underneath the read, so neither a remove — the entry
+	// drops, and an absent source mismatches every capture — nor a
+	// remove/re-add — the re-registration assigns a strictly newer
+	// generation — can publish the old registration's rows under the
+	// re-added name (the round-7 M1 finding). Entries exist only for
+	// registered sources: removal deletes
 	// rather than tombstones, so churn over distinct names cannot grow the
 	// map or the publish-time scan (the round-7 M2 finding).
 	generations    map[string]uint64
@@ -88,19 +89,29 @@ func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 
 // StoreWalkSnapshot publishes one refresh walk's result the way the background
 // refresher does: sourceGenerations is the per-source identity map the walk
-// captured before it started reading (SourceGenerations). Under the publish
-// lock, every row and per-source entry the walk attributed to a source whose
-// current generation differs from the captured one — or whose registration is
-// gone altogether, removal being what makes a source absent — is dropped: a
-// walk that started before a remove cannot republish the removed host's rows
-// when it finishes (the round-6 M2 finding), and a walk that started before a
-// remove/re-add cannot publish the old registration's rows under the re-added
-// name (the round-7 M1 finding). A source the walk captured under its current
-// generation publishes normally, and so does a source the walk never captured
-// while its registration is still live: it registered after the capture, so
-// its rows belong to the registration the publish sees — but a source that
-// was removed again before the publish is stale, the registration that owned
-// its rows being gone (the round-9 M2 finding).
+// captured at READ time — each source's generation taken immediately before
+// the walk read it (SourceGeneration). Under the publish lock, every row and
+// per-source entry the walk attributed to a source whose current generation
+// differs from the one it was read under is dropped: a walk that read a source
+// before a remove cannot republish the removed host's rows when it finishes
+// (the round-6 M2 finding), and a walk that read before a remove/re-add
+// cannot publish the old registration's rows under the re-added name (the
+// round-7 M1 finding).
+//
+// A source the walk did not capture is dropped unconditionally. The
+// production walk captures every source it reads, so an uncaptured row owner
+// means no registration is known to own the rows: the source was already
+// removed when the walk read it (its registry snapshot lagged the removal),
+// or the publish names a source the walk never read. Round 9 admitted the
+// uncaptured-but-live case on the premise that a source the walk did not
+// capture registered after the capture, so its rows belonged to the current
+// registration — but that premise fails for add → read → remove → re-add
+// inside one walk: the rows the walk read belong to the first registration,
+// which the churn replaced before the publish, so "live" cannot prove the
+// rows belong to the live registration (the round-10 finding). The immediacy
+// that rule served is carried by the read-time capture instead: a source
+// that registers mid-walk is captured when the walk reads it, under the
+// registration that owns the rows, and still publishes on that tick.
 func (c *RemoteThreadCache) StoreWalkSnapshot(snapshot RemoteThreadSnapshot, sourceGenerations map[string]uint64) {
 	c.publish(snapshot, sourceGenerations)
 }
@@ -138,9 +149,9 @@ func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[
 // and a stale walk's rows must not slide in through it. Callers pair it
 // with the registration's visibility: the generation is assigned before the
 // source becomes enumerable, so a walk that reads a source always finds a
-// generation for it at publish — an uncaptured source absent from the
-// generations is one whose registration is gone (the round-9 M2 rule), never
-// one still mid-registration. An empty ID does nothing.
+// generation to capture at read time — an uncaptured source was already gone
+// when the walk read it, so the publish drops its rows as unowned (the
+// round-10 rule). An empty ID does nothing.
 func (c *RemoteThreadCache) RegisterSource(sourceID string) {
 	if sourceID == "" {
 		return
@@ -154,17 +165,34 @@ func (c *RemoteThreadCache) RegisterSource(sourceID string) {
 	c.mu.Unlock()
 }
 
-// SourceGenerations returns a copy of the per-source identity generations, the
-// snapshot a refresh walk captures before it starts reading. The walk hands
-// the copy back to StoreWalkSnapshot, which compares it against the cache's
-// current generations under the publish lock; walk-free publishers
-// (StoreSnapshotData) never need it.
+// SourceGenerations returns a copy of the per-source identity generations.
+// The background walk captures each source's generation at read time via
+// SourceGeneration instead (round 10: a copy taken before the walk started
+// reading could not tell a mid-walk remove/re-add from a fresh registration);
+// this whole-map view serves callers that need every registration at once.
 func (c *RemoteThreadCache) SourceGenerations() map[string]uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	generations := make(map[string]uint64, len(c.generations))
 	maps.Copy(generations, c.generations)
 	return generations
+}
+
+// SourceGeneration returns sourceID's current identity generation and whether
+// the source is registered. The background walk captures a source's generation
+// with this immediately before it reads the source, so the publish compares
+// the registration that owned the read against the one live at the publish: a
+// remove or remove/re-add between the read and the publish moves the
+// generation, and the read's rows drop instead of publishing under a
+// registration that no longer owns them (the round-10 finding). A source
+// absent here was removed — or never registered — so a walk that reads one
+// anyway must leave it uncaptured and let the publish drop its rows as
+// unowned.
+func (c *RemoteThreadCache) SourceGeneration(sourceID string) (uint64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	generation, ok := c.generations[sourceID]
+	return generation, ok
 }
 
 // RemoveSource drops every cached row the snapshot walk attributed to
@@ -234,20 +262,20 @@ func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 // uses RemoveSource's own ownership rule, so what a prune drops cannot come
 // back in through a publish.
 //
-// A source the walk did not capture is stale too when the cache holds no
-// current registration for it. Such a source registered after the capture —
-// the only way a walk's row owner can be uncaptured — so a missing
-// registration means it was removed again before the publish, and a
-// registration that no longer exists cannot own live rows (the round-9 M2
-// finding: a host added and removed inside one refresh walk used to
-// republish its sessions until the next tick rewrote the cache). The
-// still-live half of that case publishes: the rows a walk read from a source
-// registered after its capture belong to that registration, which is the one
-// the publish sees. Every source a walk can enumerate carries a generation —
-// the hub assigns each source's generation before the source becomes
-// registry-visible, and only removal deletes it — so "uncaptured and
-// unregistered" can only mean removed, never mid-registration. Callers hold
-// mu.
+// A source the walk did not capture is stale unconditionally. The
+// production walk captures every source it reads (immediately before the
+// read), so an uncaptured row owner means no registration is known to own
+// the rows: the source was already removed when the walk read it — its
+// registry snapshot lagged the removal — or the publish names a source the
+// walk never read. Round 9 kept the uncaptured-but-live case publishing on
+// the premise that an uncaptured source registered after the capture, so its
+// rows belonged to the current registration; the round-10 finding broke that
+// premise: a source can register after the walk's registry enumeration, be
+// read by the walk, and be removed and re-added before the publish, and the
+// first registration's rows must not publish under the re-added identity.
+// The immediacy that rule served moves to the read-time capture: a source
+// that registers mid-walk is captured when the walk reads it and still
+// publishes on that tick. Callers hold mu.
 func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, captured map[string]uint64) RemoteThreadSnapshot {
 	if captured == nil {
 		// The walk-free publish (StoreSnapshotData) carries no capture at
@@ -260,11 +288,13 @@ func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, c
 	sourceStale := func(sourceID string) bool {
 		generation, walked := captured[sourceID]
 		if !walked {
-			// The source registered after the walk's capture. Its rows belong
-			// to the current registration; one that no longer exists was
-			// removed before the publish, so its rows cannot publish.
-			_, live := c.generations[sourceID]
-			return !live
+			// No read-time capture claims the source's rows: the walk read it
+			// after its registration was already gone, or the publish names a
+			// source the walk never read. Either way no registration is known
+			// to own the rows — and "currently live" is not ownership, as the
+			// add → read → remove → re-add sequence showed (the round-10
+			// finding) — so they cannot publish.
+			return true
 		}
 		return c.generations[sourceID] != generation
 	}
