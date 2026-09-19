@@ -10768,6 +10768,76 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
   });
 
+  // RoboRev PR #1873 medium, the fresh review's instance identity mismatch,
+  // the Retry half: the press-time instance check compared the row's
+  // threadId with the press model's threadId, so a replacement that rotated
+  // the instance while retaining the thread id passed it — and Retry
+  // released and sent a mutation whose expectedInstanceId names an instance
+  // the daemon already fenced away. The press must compare the same fused
+  // identity the fence uses: the row's enqueue-time instance against the
+  // press model's.
+  test("Retry refuses a row whose instance a replacement rotated under the same thread id", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      // The design's own best-effort boundary, staged at the commit seam:
+      // the publication-driven discard of the rotated-away instance's rows
+      // fails, so the canceled row stays durable past the replacement — and
+      // the press itself must refuse what the discard could not remove.
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") throw new Error("discard commit failed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const canceled = await storage.enqueueIntent({
+      ...queueIntent("canceled before the replacement"),
+      instanceId: "thr_ref_a",
+    });
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // The replacement publishes: same thread id, rotated instance.
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", { evener: { instanceId: "cleared-instance" } }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.instanceId).toBe("cleared-instance");
+
+    // The press: the discard could not remove the row, and it belongs to the
+    // rotated-away instance, so Retry must refuse — the daemon would fence
+    // the stale send anyway.
+    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(false);
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // The same finding's persistence half: cleanup and Retry can only compare
+  // the identity the durable row carries, so every store-enqueued intent
+  // must persist its enqueue-time instance next to the thread id it already
+  // carried — the raw model instance, fused with the threadId at comparison
+  // time exactly the way expectedInstanceId is.
+  test("a store-enqueued intent persists its enqueue-time instance identity", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // A send the daemon never answers keeps the row durable to be read.
+    fake.on("turn/queue", () => new Promise(() => {}));
+
+    await threadsStore.getState().queue("ref_a", "sent under thr_ref_a");
+
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued).toMatchObject({ threadId: "thr_ref_a", instanceId: "thr_ref_a" });
+    storage.close();
+  });
+
   // RoboRev PR #1873 medium, the ordering half: the cleared model must not
   // publish while the ref's canceled rows are still durable. Publish first and
   // every reader of the published state - a Retry press, a discovery scan -
@@ -10870,6 +10940,75 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     tabA.close();
   });
 
+  // RoboRev PR #1873 medium, the fresh review's instance identity mismatch,
+  // the cross-tab-removal half: §6's removal detected the replaced instance
+  // by comparing threadId, but the fencing identity is `instanceId ??
+  // threadId` (the expectedInstanceId every payload carries), so a
+  // replacement that rotated the instance while retaining the thread id was
+  // invisible to it — the superseded instance's canceled rows stayed
+  // attached, still offering Retry, until the thread went away. The
+  // detection and the row matching must both compare the fused identity.
+  test("an instance rotated under the same thread id still removes the superseded instance's canceled rows", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = `cross-tab-instance-${crypto.randomUUID()}`;
+    const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(tabB);
+    const clientB = connectMutationClient();
+    await ensureActiveMutationTarget(clientB, "ref_a");
+
+    // The Stop residue: a canceled row carrying the enqueue-time instance
+    // identity this tab's model presented (the fixture's instanceId equals
+    // its thread id).
+    const canceled = await tabB.enqueueIntent({ ...queueIntent("canceled before the clear"), instanceId: "thr_ref_a" });
+    clientB.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // Another tab settles a thread/clear that rotates the instance while
+    // RETAINING the thread id — the exact shape threadId-only detection
+    // cannot see.
+    const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const clientA = new FakeClient("ready");
+    clientA.on("thread/clear", (params) =>
+      clearResponse(params, testThread("ref_a", { turns: [], evener: { instanceId: "cleared-instance" } })),
+    );
+    const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await tabA.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "thread/clear",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "thread/clear" },
+    });
+    await dispatcherA.dispatchTargets(["ref_a"]);
+
+    // This tab observes the replacement the way every subscribed tab does:
+    // the resync push lands, this tab re-reads, and the rotated instance
+    // publishes over the one the canceled row belonged to — same thread id.
+    clientB.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", { evener: { instanceId: "cleared-instance" } }),
+    );
+    act(() => {
+      clientB.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+    });
+    await flushUntilArrived(
+      "the rotated instance to publish",
+      () => threadsStore.getState().threads.get("ref_a")?.instanceId === "cleared-instance",
+    );
+
+    // The observation drove the removal on the fused identity: the
+    // rotated-away instance's canceled row left with it, in this tab.
+    await flushUntilArrived(
+      "the observing tab to discard the rotated-away instance's canceled row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    tabA.close();
+  });
+
   // RoboRev PR #1873 medium, examined and REFUTED: "during initial hydration
   // putThreadModels runs before the runtime exists, so a replacement-instance
   // transition leaves stale canceled rows permanently." No publication can run
@@ -10913,15 +11052,18 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The page opens tracking the OLD instance, seeded the way a list row
     // hydrates from hub state. Nothing has minted a runtime yet: no mutation
     // was sent and no hydration has completed.
+    // The old instance seeds with its full identity (the fixture's id override
+    // rotates threadId and instanceId together — the shape a real replacement
+    // carries, and the only shape the fused detection can observe).
     threadsStore.setState({
-      threads: new Map([["ref_a", hydrateThread(readResponseWithId("ref_a", "thr_old"), "ref_a", 1000)]]),
+      threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
     });
 
     // The client connects - ready - and the ready flow mints the runtime
     // BEFORE any publication can complete. The first hydration then publishes
     // the REPLACEMENT instance (another tab cleared the thread).
     const fake = connectMutationClient();
-    fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+    fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
     await threadsStore.getState().ensureThread("ref_a");
 
     // The transition's cleanup ran at that earliest publication: the
@@ -10960,10 +11102,10 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       });
       await storage.cancelUnattempted("ref_a");
       threadsStore.setState({
-        threads: new Map([["ref_a", hydrateThread(readResponseWithId("ref_a", "thr_old"), "ref_a", 1000)]]),
+        threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
       });
       const fake = connectMutationClient();
-      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_old"));
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
       await threadsStore.getState().ensureThread("ref_a");
 
       // Hold the cleanup's durable write at the seam: the discard is issued by
@@ -10981,7 +11123,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       // lands: the replacement instance publishes, the cleanup fires (held at
       // the seam), and the hydration's own pin refresh reads the still-durable
       // row - the raced order that leaves the pin stale without this fix.
-      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
       await threadsStore.getState().refreshThread("ref_a");
       await discardReached.promise;
       // The refresh drive also schedules a dispatch whose tail re-reads pins;
@@ -11017,7 +11159,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
-    fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_old"));
+    fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
     await threadsStore.getState().ensureThread("ref_a");
 
     let notified = false;
@@ -11027,7 +11169,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     try {
       // The superseded instance holds no canceled rows: the cleanup succeeds
       // with zero, and the notify is the whole observable.
-      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
       await threadsStore.getState().refreshThread("ref_a");
       await flushUntilArrived("the zero-row cross-tab cleanup to notify persistence", () => notified);
     } finally {

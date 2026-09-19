@@ -184,6 +184,12 @@ barrier compares against — so the scan and the fence commit as one durable fac
   is completed by whichever tab observes the transition, scoped to the instance
   the transition provably replaced (the BroadcastChannel wakeup is a timing
   hint, never the authority).
+  "The instance the transition provably replaced" is the fencing identity
+  itself — `instanceId ?? threadId`, the same `expectedInstanceId` every
+  payload carries — never the thread id alone: a replacement can rotate the
+  instance while retaining the thread id, and every durable row carries its
+  enqueue-time instance so the cleanup (and Retry's press-time refusal, §6's
+  release fence) compares the identity the daemon would actually fence with.
 - **Note rows are the exception with a third exit.** QueueStrip deliberately
   leaves `notes/human/set` rows to the note editor, whose only retry branch is
   gated on `blockedUnknown` - a canceled note row would otherwise sit pinned

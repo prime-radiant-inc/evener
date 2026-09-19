@@ -257,14 +257,20 @@ export class MutationOutboxIndexedDB {
   // canceled rows leave in whichever tab observes the transition. Rows of any
   // other instance - including the current one, whose explicit Retry is still
   // the user's to make - are never touched.
-  async discardCanceledOfInstance(targetRef: string, instanceThreadId: string): Promise<string[]> {
+  async discardCanceledOfInstance(targetRef: string, supersededInstanceId: string): Promise<string[]> {
     return this.#write(OUTBOX_STORE, "discardCanceled", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
       const discarded: string[] = [];
       for (const record of records) {
         if (record.targetRef !== targetRef || record.state !== "canceled") continue;
-        if (record.threadId !== instanceThreadId) continue;
+        // The fused identity the fence uses (instanceId ?? threadId), never
+        // threadId alone: a replacement can rotate the instance while
+        // retaining the thread id, and the rows such a replacement obsoletes
+        // carry the enqueue-time instance this must compare. Rows written
+        // before the field existed fall back to their threadId — exactly
+        // what a model with no instanceId presents.
+        if ((record.instanceId ?? record.threadId) !== supersededInstanceId) continue;
         await requestResult(store.delete(record.clientMutationId));
         discarded.push(record.clientMutationId);
       }

@@ -538,10 +538,24 @@ function putThreadModels(
   // replaced: the current instance's canceled rows keep their explicit-Retry
   // contract.
   const supersededInstances = new Set<string>();
-  if (threadModel && previousThread && previousThread.threadId !== threadModel.threadId)
-    supersededInstances.add(previousThread.threadId);
-  if (watchedModel && previousWatched && previousWatched.threadId !== watchedModel.threadId)
-    supersededInstances.add(previousWatched.threadId);
+  // The comparison is the fused identity the fence uses (instanceId ??
+  // threadId), never threadId alone: a replacement can rotate the instance
+  // while retaining the thread id, and RoboRev's fresh review caught exactly
+  // that rotation passing a threadId-only check.
+  const supersededThreadInstance = threadInstanceID(previousThread);
+  const supersededWatchedInstance = threadInstanceID(previousWatched);
+  if (
+    threadModel &&
+    supersededThreadInstance !== undefined &&
+    supersededThreadInstance !== threadInstanceID(threadModel)
+  )
+    supersededInstances.add(supersededThreadInstance);
+  if (
+    watchedModel &&
+    supersededWatchedInstance !== undefined &&
+    supersededWatchedInstance !== threadInstanceID(watchedModel)
+  )
+    supersededInstances.add(supersededWatchedInstance);
   for (const instanceThreadId of supersededInstances) discardSupersededInstanceCanceled(ref, instanceThreadId);
 }
 
@@ -1089,9 +1103,12 @@ export async function retryBlockedMutation(
   // daemon would fence as stale anyway.
   if (state.deletedRefs.has(record.targetRef)) return false;
   const pressModel = state.threads.get(record.targetRef) ?? state.watchedThreads.get(record.targetRef);
-  if (record.threadId !== undefined && pressModel !== undefined && pressModel.threadId !== record.threadId) {
-    return false;
-  }
+  // The same fused identity check replacement detection uses (instanceId ??
+  // threadId): the row's enqueue-time instance against the press model's.
+  // A replacement that rotated the instance while retaining the thread id
+  // must refuse here too — the daemon would fence the stale send anyway.
+  const rowInstance = record.instanceId ?? record.threadId;
+  if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
   if (
     retryBlockedBySnapshot(
       state.threads.get(record.targetRef)?.status.type,
@@ -1520,6 +1537,10 @@ function composerMutationIntent(
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
+    // The enqueue-time instance identity, persisted beside the thread id so
+    // cleanup and Retry can compare the fused identity (instanceId ??
+    // threadId) the fence uses — see discardCanceledOfInstance.
+    instanceId: model?.instanceId,
     attachments: durableAttachments(attachments),
     composerText: text,
   };
@@ -1612,6 +1633,7 @@ async function enqueueMutation(
     {
       targetRef: ref,
       threadId: threadsStore.getState().threads.get(ref)?.threadId,
+      instanceId: threadsStore.getState().threads.get(ref)?.instanceId,
       method,
       payload,
       attachments: durableAttachments(attachments),
@@ -1647,6 +1669,7 @@ function clearMutationIntent(ref: string): MutationIntent {
   return {
     targetRef: ref,
     threadId: model.threadId,
+    instanceId: model.instanceId,
     method: "thread/clear",
     payload: { ref, expectedInstanceId },
     attachments: [],
@@ -3189,6 +3212,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       {
         targetRef: ref,
         threadId: model?.threadId,
+        instanceId: model?.instanceId,
         method: "notes/human/set",
         payload: { ref, expectedInstanceId: expectedInstanceId ?? instanceId, note },
         attachments: [],

@@ -43,6 +43,15 @@ export type MutationRecoveryKind = "rejected" | "orphaned";
 export interface MutationIntent<A extends MutationAttachmentRef = MutationAttachmentRef> {
   targetRef: string;
   threadId?: string;
+  // The instance the target carried when this intent was made — the SAME
+  // identity `expectedInstanceId` fences with (the model's instanceId, with
+  // the thread id as its pre-instance fallback). Cleanup and Retry compare
+  // this against the fused identity the current model presents, so a
+  // replacement that rotates the instance while retaining the thread id is
+  // still detected as a replacement. Optional because records written before
+  // the field existed carry none, and such a row's identity falls back to its
+  // threadId — exactly what a model with no instanceId presents.
+  instanceId?: string;
   method: string;
   payload: Record<string, unknown>;
   attachments: A[];

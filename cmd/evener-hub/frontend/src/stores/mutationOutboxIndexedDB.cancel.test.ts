@@ -370,6 +370,38 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  // RoboRev PR #1873 medium, the fresh review's instance identity mismatch:
+  // the fencing identity is `instanceId ?? threadId` (the expectedInstanceId
+  // every payload carries), but the cross-tab cleanup matched the row's
+  // threadId alone. A replacement that rotates the instance while retaining
+  // the thread id left the superseded instance's canceled rows attached, so
+  // the cleanup must match the same fused identity the fence uses — the
+  // row's enqueue-time instance, with its threadId as the pre-instance
+  // fallback older rows carry.
+  test("discardCanceledOfInstance matches the fused instance identity, not the thread id", async () => {
+    const storage = store();
+    const deadRow = await storage.enqueueIntent({
+      ...intent("superseded instance's row"),
+      threadId: "thr-same",
+      instanceId: "instance-old",
+    });
+    const liveRow = await storage.enqueueIntent({
+      ...intent("current instance's row"),
+      threadId: "thr-same",
+      instanceId: "instance-new",
+    });
+    await storage.cancelUnattempted(TARGET);
+
+    const discarded = await storage.discardCanceledOfInstance(TARGET, "instance-old");
+
+    expect(discarded).toEqual([deadRow.clientMutationId]);
+    expect(await storage.getOutbox(deadRow.clientMutationId)).toBeUndefined();
+    // The current instance's canceled row keeps its explicit-Retry contract:
+    // it is the user's to release, not this cleanup's to remove.
+    expect((await storage.getOutbox(liveRow.clientMutationId))?.state).toBe("canceled");
+    storage.close();
+  });
+
   test("the version-3 upgrade is additive: an existing version-2 database opens with its rows intact", async () => {
     // Seed the database exactly as the version-2 code left it: the same four
     // stores and indexes, one durable row, no version-3 knowledge anywhere.
