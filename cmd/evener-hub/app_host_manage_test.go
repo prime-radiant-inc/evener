@@ -1514,3 +1514,95 @@ func TestHostManageRemoveRollsSidecarBackWhenLiveTeardownFails(t *testing.T) {
 		t.Fatalf("row = %+v, want the sidecar origin and no removed marker", resp.Host)
 	}
 }
+
+// TestHostManageListStatusReleaseLockDuringRowReads pins the round-7 M4 fix:
+// List, Status, and Add used to hold the mutation mutex across hostRow, whose
+// facts read runs on the network — one slow or hung host facts read blocked
+// every concurrent Add and Remove commit and serialized concurrent lists. The
+// mutex now covers only the snapshot (registry rows plus sidecar origins), so
+// a reader parked mid-row no longer holds it: the concurrent Add below must
+// commit while the reader is parked. The snapshot keeps the round-2 guarantee
+// the parked-reader test used to pin — the reader never observes a
+// half-committed host — because the snapshot and the commit serialize on the
+// same mutex; the reader sees the pre-commit state, all of it or none.
+func TestHostManageListStatusReleaseLockDuringRowReads(t *testing.T) {
+	// gate blocks the first online-seam call and lets every later one through
+	// immediately — a sync.Once would park later callers (the Add's own row
+	// render) behind the gate too, and the Add below must run freely.
+	newGate := func() (online func(string) bool, wait func(), release func()) {
+		entered := make(chan struct{})
+		releaseCh := make(chan struct{})
+		var first atomic.Bool
+		online = func(string) bool {
+			if !first.Load() && first.CompareAndSwap(false, true) {
+				close(entered)
+				<-releaseCh
+			}
+			return false
+		}
+		return online, func() { <-entered }, func() { close(releaseCh) }
+	}
+	for _, read := range []struct {
+		name string
+		call func(m *hubHostManager) ([]appwire.HostRow, error)
+	}{
+		{"List", func(m *hubHostManager) ([]appwire.HostRow, error) {
+			list, err := m.List(context.Background(), appwire.EmptyParams{})
+			return list.Hosts, err
+		}},
+		{"Status", func(m *hubHostManager) ([]appwire.HostRow, error) {
+			resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "m4"})
+			return []appwire.HostRow{resp.Host}, err
+		}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+			if err != nil {
+				t.Fatalf("hostreg.New: %v", err)
+			}
+			online, wait, release := newGate()
+			m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{RemoteHostOnline: online}, "", hosts, nil)
+			rowsCh := make(chan []appwire.HostRow, 1)
+			errCh := make(chan error, 1)
+			go func() {
+				rows, err := read.call(m)
+				errCh <- err
+				rowsCh <- rows
+			}()
+			wait() // the reader is parked mid-row, inside its row reads.
+			// The Add must commit while the reader is parked: row reads hold no
+			// mutation mutex, so a slow facts read cannot block a commit.
+			addDone := make(chan error, 1)
+			go func() {
+				_, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"})
+				addDone <- err
+			}()
+			select {
+			case err := <-addDone:
+				if err != nil {
+					t.Fatalf("Add while the reader was parked mid-row: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Add never committed while a reader was parked mid-row: List/Status still hold the mutation mutex across their row reads")
+			}
+			release()
+			if err := <-errCh; err != nil {
+				t.Fatalf("reader = %v", err)
+			}
+			// The reader snapshotted before the Add committed, so its rows are
+			// the pre-commit state: the added host is absent, not half-committed.
+			for _, row := range <-rowsCh {
+				if row.Name == "side" {
+					t.Fatalf("reader observed the added host %q as a half-committed row: %+v", row.Name, row)
+				}
+			}
+			list, err := m.List(context.Background(), appwire.EmptyParams{})
+			if err != nil {
+				t.Fatalf("final List: %v", err)
+			}
+			if len(list.Hosts) != 2 {
+				t.Fatalf("final list = %d rows, want both hosts after the commit", len(list.Hosts))
+			}
+		})
+	}
+}

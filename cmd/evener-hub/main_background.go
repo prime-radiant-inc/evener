@@ -107,12 +107,19 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *h
 	refresh := func() {
 		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
+		// The identity generations must be captured before the walk reads
+		// anything: a source registered after this point was never walked
+		// (its rows publish unfiltered), and a source removed after this
+		// point — or removed and re-added — must not come back through this
+		// walk's rows (StoreWalkSnapshot compares the capture under the
+		// publish lock).
+		captured := cache.SourceGenerations()
 		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
-		cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
 			Threads:  snapshot.threads,
 			Complete: snapshot.complete,
 			Sources:  snapshot.sources,
-		})
+		}, captured)
 	}
 	refresh()
 	for {

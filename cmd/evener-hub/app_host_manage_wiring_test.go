@@ -578,9 +578,13 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 // pruned only the cache's current snapshot, so a remote-thread refresh that
 // started before the remove could finish afterwards and republish the removed
 // host's rows — its sessions rendered live again until the refresher's next
-// tick. The removal now marks the source as removed, the late publish filters
-// it, and a remove/re-add — the churn Remove exists for — lifts the hold so
-// the re-added host's next refresh publishes normally.
+// tick. The removal now drops the source's registration generation, so the
+// late publish — which carries the generations the walk captured before the
+// remove, the way the background refresher's does — is rejected. A remove/
+// re-add — the churn Remove exists for — registers the name under a new
+// generation: the re-added host's own refreshes publish normally, while the
+// walk captured under the old registration stays rejected (round-7 M1: the
+// old host's sessions must not publish under the re-added identity).
 func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
@@ -618,13 +622,16 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 		return metas, live
 	}
 
-	// A UI-added host, then the snapshot a refresh that started before the
-	// remove captured for it: one live session row it owns.
+	// A UI-added host, then what a refresh that started before the remove
+	// captured for it: the identity generations first — exactly where the
+	// background refresher captures them, before it reads anything — then one
+	// live session row the host owns.
 	var added appwire.HostRow
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
+	walkGenerations := cache.SourceGenerations()
 	inFlight := cache.Snapshot()
 	if metas, live := rowsFor(); metas != 1 || live != 1 {
 		t.Fatalf("tree rows before Remove = %d metas, %d live; want the seeded session rendered live (fixture sanity)", metas, live)
@@ -642,9 +649,10 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 		t.Fatalf("tree rows after Remove = %d metas, %d live; want none", metas, live)
 	}
 
-	// The refresh finishes and publishes its pre-remove walk. Nothing may come
-	// back: not the tree rows, not the cache's rows, not the per-source entry.
-	cache.StoreSnapshotData(inFlight)
+	// The refresh finishes and publishes its pre-remove walk, generations
+	// included. Nothing may come back: not the tree rows, not the cache's
+	// rows, not the per-source entry.
+	cache.StoreWalkSnapshot(inFlight, walkGenerations)
 	for _, thread := range cache.Snapshot().Threads {
 		if thread.Source == "web-side" {
 			t.Fatalf("in-flight refresh resurrected thread %q for the removed host", thread.ID)
@@ -657,14 +665,23 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 		t.Fatalf("tree rows after the late publish = %d metas, %d live; want none", metas, live)
 	}
 
-	// The churn completes with a re-add: the name registers again, so its
-	// next refresh must publish normally — the hold cannot outlive the name.
+	// The churn completes with a re-add: the name registers again under a new
+	// identity generation, so the re-added host's own refreshes publish
+	// normally — the hold cannot outlive the registration it guards. The walk
+	// captured before the remove belongs to the OLD registration, so it stays
+	// rejected instead of putting the old host's sessions under the re-added
+	// identity (round-7 M1).
 	var readded appwire.HostRow
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &readded); err != nil {
 		t.Fatalf("evener/host/add (re-add): %v", err)
 	}
-	cache.StoreSnapshotData(inFlight)
+	cache.StoreWalkSnapshot(inFlight, walkGenerations)
+	if metas, live := rowsFor(); metas != 0 || live != 0 {
+		t.Fatalf("tree rows after the re-add's stale publish = %d metas, %d live; want none: the old registration's walk must not publish under the re-added name", metas, live)
+	}
+	freshGenerations := cache.SourceGenerations()
+	cache.StoreWalkSnapshot(inFlight, freshGenerations)
 	if metas, live := rowsFor(); metas != 1 || live != 1 {
-		t.Fatalf("tree rows after the re-add = %d metas, %d live; want the re-added host's rows published again", metas, live)
+		t.Fatalf("tree rows after the re-add's fresh walk = %d metas, %d live; want the re-added host's rows published again", metas, live)
 	}
 }

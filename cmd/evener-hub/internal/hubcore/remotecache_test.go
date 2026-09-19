@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -149,6 +150,10 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 	c := &RemoteThreadCache{}
 	var calls atomic.Int32
 	c.SetOnChange(func() { calls.Add(1) })
+	// The sources register the way the hub's host manager registers them, so
+	// the cache tracks the identity generations a refresh walk captures.
+	c.RegisterSource("host-a")
+	c.RegisterSource("host-b")
 	seed := RemoteThreadSnapshot{
 		Threads: []appwire.Thread{
 			{ID: "a1", Source: "host-a"},
@@ -165,8 +170,10 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 	if calls.Load() != 1 {
 		t.Fatalf("onChange fired %d times after the seed, want 1", calls.Load())
 	}
-	// The refresh that started before the remove: it captured the full
-	// pre-remove walk, host-a's rows included.
+	// The refresh that started before the remove: it captured the walk's
+	// identity generations first, then the full pre-remove walk, host-a's
+	// rows included.
+	captured := c.SourceGenerations()
 	inFlight := c.Snapshot()
 
 	// The remove commits while that refresh is still walking.
@@ -176,9 +183,11 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 		t.Fatalf("threads after prune = %+v, want only host-b's row", afterPrune.Threads)
 	}
 
-	// The refresh finishes and publishes its pre-remove walk. The publish
-	// must not resurrect the removed source's rows or per-source snapshot.
-	c.StoreSnapshotData(inFlight)
+	// The refresh finishes and publishes its pre-remove walk, generations
+	// included. The publish must not resurrect the removed source's rows or
+	// per-source snapshot: host-a's captured generation mismatches its absent
+	// registration.
+	c.StoreWalkSnapshot(inFlight, captured)
 
 	got := c.Snapshot()
 	for _, thread := range got.Threads {
@@ -205,13 +214,19 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 	}
 }
 
-// TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord pins the other half
-// of the round-6 M2 fix: the removal record RestoreSource clears is a hold,
-// not a permanent ban. A remove/re-add churn re-registers the source, so the
-// re-added name's next refresh must publish its rows again — the hold cannot
-// outlive the registration it guards.
-func TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord(t *testing.T) {
+// TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk pins the round-7
+// M1 finding, which narrowed the round-6 hold: a remove/re-add churn
+// re-registers the source, and the re-added name's next refresh must publish
+// its rows again — the hold cannot outlive the registration it guards — but
+// only the walks captured under the NEW registration may. A refresh that
+// started before the remove captured the OLD registration's generation, and
+// publishing it after the re-add would put the old host's sessions under the
+// re-added host's identity, so the generation comparison must keep rejecting
+// it while admitting a walk that captured the re-add.
+func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 	c := &RemoteThreadCache{}
+	c.RegisterSource("host-a")
+	c.RegisterSource("host-b")
 	seed := RemoteThreadSnapshot{
 		Threads: []appwire.Thread{
 			{ID: "a1", Source: "host-a"},
@@ -224,21 +239,46 @@ func TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord(t *testing.T) {
 		},
 	}
 	c.StoreSnapshotData(seed)
+	// The walk starts before the remove and captures the old identity.
+	staleCapture := c.SourceGenerations()
 	inFlight := c.Snapshot()
 	c.RemoveSource("host-a")
-
-	// The hold is active: the same publish carries nothing for host-a.
-	c.StoreSnapshotData(inFlight)
-	for _, thread := range c.Snapshot().Threads {
-		if remoteThreadOwnedBySource(thread, "host-a") {
-			t.Fatalf("held publish resurrected thread %q for the removed source", thread.ID)
-		}
+	if len(c.Snapshot().Threads) != 1 {
+		t.Fatalf("threads after prune = %+v, want only host-b's row", c.Snapshot().Threads)
 	}
 
-	// The churn re-registers the source: the record lifts, and the next
-	// publish — the same walk again — carries the re-added host's rows.
-	c.RestoreSource("host-a")
-	c.StoreSnapshotData(inFlight)
+	// The churn completes: the name registers again, under a new generation.
+	c.RegisterSource("host-a")
+
+	// The in-flight walk finishes and publishes its pre-remove capture. The
+	// old registration's rows must not publish under the re-added identity.
+	c.StoreWalkSnapshot(inFlight, staleCapture)
+	for _, thread := range c.Snapshot().Threads {
+		if remoteThreadOwnedBySource(thread, "host-a") {
+			t.Fatalf("stale walk's thread %q published under the re-added identity", thread.ID)
+		}
+	}
+	if _, ok := c.Snapshot().Sources["host-a"]; ok {
+		t.Fatal("stale walk re-admitted host-a's per-source snapshot under the re-added identity")
+	}
+
+	// The re-added host's own walk captures the new generation and publishes.
+	freshCapture := c.SourceGenerations()
+	if freshCapture["host-a"] == staleCapture["host-a"] {
+		t.Fatal("re-add kept the removed registration's generation; the churn must assign a new one")
+	}
+	fresh := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a2", Source: "host-a"},
+			{ID: "b1", Source: "host-b"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a": {Threads: []appwire.Thread{{ID: "a2", Source: "host-a"}}, Complete: true},
+			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
+		},
+	}
+	c.StoreWalkSnapshot(fresh, freshCapture)
 	got := c.Snapshot()
 	var hostA int
 	for _, thread := range got.Threads {
@@ -247,15 +287,51 @@ func TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord(t *testing.T) {
 		}
 	}
 	if hostA != 1 || len(got.Threads) != 2 {
-		t.Fatalf("threads after restore = %+v, want host-a's row published beside host-b's", got.Threads)
+		t.Fatalf("threads after the fresh walk = %+v, want the re-added host's row published beside host-b's", got.Threads)
 	}
 	if _, ok := got.Sources["host-a"]; !ok {
-		t.Fatal("restore did not re-admit host-a's per-source snapshot")
+		t.Fatal("fresh walk did not re-admit host-a's per-source snapshot")
 	}
 
-	// A restore for a name that was never removed is a no-op.
-	c.RestoreSource("host-b")
-	if same := c.Snapshot(); same.Generation != got.Generation {
-		t.Fatalf("no-op restore changed the snapshot: generation %d, want %d", same.Generation, got.Generation)
+}
+
+// TestRemoteThreadCacheRemovalLeavesNoPerNameState pins the round-7 M2
+// finding: the round-6 fix recorded every removal as a tombstone that lived as
+// long as the cache, so a hub churning distinct host names grew the removal set
+// — and every publish's filter scan — without bound. Removal now deletes the
+// source's registration generation instead of recording the name, so the
+// cache's per-name bookkeeping is bounded by the live source set: a remove
+// that is never re-added leaves nothing behind, and the late-walk rejection
+// the round-6 semantics demand still holds, because an absent source mismatches
+// every generation a walk can capture.
+func TestRemoteThreadCacheRemovalLeavesNoPerNameState(t *testing.T) {
+	c := &RemoteThreadCache{}
+	const names = 32
+	for i := 0; i < names; i++ {
+		id := fmt.Sprintf("host-%02d", i)
+		c.RegisterSource(id)
+		c.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: id}}, true)
+		c.RemoveSource(id)
+	}
+	if got := len(c.generations); got != 0 {
+		t.Fatalf("cache retains %d generation entries after %d removed sources; removal must leave no per-name state", got, names)
+	}
+	if got := len(c.Snapshot().Threads); got != 0 {
+		t.Fatalf("threads after the churn = %d, want none", got)
+	}
+	// The bounded state still rejects a late walk for a removed source.
+	c.RegisterSource("late")
+	c.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "late"}}, true)
+	captured := c.SourceGenerations()
+	inFlight := c.Snapshot()
+	c.RemoveSource("late")
+	c.StoreWalkSnapshot(inFlight, captured)
+	for _, thread := range c.Snapshot().Threads {
+		if thread.Source == "late" {
+			t.Fatalf("late walk resurrected thread %q for the removed source", thread.ID)
+		}
+	}
+	if got := len(c.generations); got != 0 {
+		t.Fatalf("cache retains %d generation entries after the late removal, want none", got)
 	}
 }
