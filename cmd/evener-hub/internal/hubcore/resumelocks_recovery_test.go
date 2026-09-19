@@ -49,16 +49,20 @@ func TestResolvedSessionMappingRequiresCompletedCurrentEpoch(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	epoch := locks.RecoveryState("stable").Epoch
-	locks.RecordResolvedSession("stable", "wrong", epoch)
+	fenceEpoch := locks.RecoveryState("stable").Epoch
+	locks.RecordResolvedSession("stable", "wrong", fenceEpoch)
 	if locks.ResolvedSessionID("stable") != "" {
 		t.Fatal("stopping action recorded a target")
 	}
 	finish.Finish(true)
-	locks.RecordResolvedSession("stable", "wrong", epoch)
+	// The stop's Finish minted its epoch advance, so the fence-era snapshot is
+	// stale now; a resume is admitted only after the stop finishes and
+	// snapshots the post-fence epoch.
+	locks.RecordResolvedSession("stable", "wrong", fenceEpoch)
 	if locks.ResolvedSessionID("stable") != "" {
 		t.Fatal("pending recovery recorded a completed target")
 	}
+	epoch := locks.RecoveryState("stable").Epoch
 	if err := locks.ExplicitResumeCompleted("stable", epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -234,39 +238,83 @@ func TestForceStopRejectKeepsConfirmedStoppedInvalidation(t *testing.T) {
 	}
 }
 
-// TestForceStopRejectEpochAncestryKeepsInvalidationAdvanced pins the epoch
-// side of the same conditional rollback: a newer held fence records the epoch
-// it began from as its restore target, which an older fence's write — or a
-// confirmed-stopped no-op's invalidation — may have advanced. Rejecting the
-// older fence must retire its written epoch wherever a newer held fence still
-// saves it as a restore target, so the newer fence's own refusal rolls back
-// to the true pre-fence value, and an invalidation published between the two
-// fences is never erased by either refusal.
+// TestForceStopRejectEpochAncestryKeepsInvalidationAdvanced pins the
+// invalidation-survival invariant under the monotonic-epoch mechanics: fences
+// publish no admission epoch at begin, so a refusal has nothing to roll back
+// and can never erase an invalidation published between two fences — the
+// confirmed-stopped no-op's advance is the only one the alias ever records,
+// and it stands whichever order the overlapping refusals complete in.
 func TestForceStopRejectEpochAncestryKeepsInvalidationAdvanced(t *testing.T) {
 	locks := NewResumeLocks()
-	// The older fence advances A: Epoch 0→1.
+	// The older fence holds its admission fence but publishes no epoch.
 	fenceOlder := locks.BeginForceStop([]string{"A"})
 	// A confirmed-stopped no-op publishes its decision between the fences:
-	// Epoch 1→2 with no fence of its own.
+	// Epoch 0→1 with no fence of its own.
 	locks.InvalidateResumeAdmission([]string{"A"})
-	// The newer fence advances A past the invalidation: Epoch 2→3.
+	// The newer fence overlaps the invalidation's publication.
 	fenceNewer := locks.BeginForceStop([]string{"A"})
-	// The older refusal cannot touch the epoch its write is buried under.
+	// The older refusal cancels nothing and publishes nothing: the
+	// invalidation's advance is untouched.
 	fenceOlder.Reject()
 	fenceOlder.Finish(false)
-	if got := locks.RecoveryState("A").Epoch; got != 3 {
-		t.Fatalf("older fence's refusal rolled back an epoch a newer actor advanced: got %d, want 3", got)
+	if got := locks.RecoveryState("A").Epoch; got != 1 {
+		t.Fatalf("older fence's refusal changed the epoch the invalidation published: got %d, want 1", got)
 	}
-	// The newer refusal rolls back only its own write: the invalidation
-	// published between the fences must survive both refusals.
+	// The newer refusal is equally neutral: the invalidation published
+	// between the fences survives both refusals.
 	fenceNewer.Reject()
 	fenceNewer.Finish(false)
 	state := locks.RecoveryState("A")
-	if state.Epoch != 2 {
-		t.Fatalf("refused fences erased the invalidation published between them: epoch %d, want 2", state.Epoch)
+	if state.Epoch != 1 {
+		t.Fatalf("refused fences erased the invalidation published between them: epoch %d, want 1", state.Epoch)
 	}
 	if state.Stopping != 0 {
 		t.Fatalf("refused fences left the alias fenced: %+v", state)
+	}
+}
+
+// TestForceStopFinishMintsEpochOnce is the Medium RoboRev reported as the
+// admission-epoch ABA: under the begin-advance/reject-rollback pair a waiter
+// could snapshot the epoch a fence wrote, watch that fence reject back to the
+// prior value, and then match again when a later fence re-advanced to the
+// same value and changed the world — the stale snapshot admitted an action
+// the later stop should have invalidated. With the advance minted only at an
+// unrejected Finish, a rejected fence publishes nothing, a completed stop
+// mints a value no earlier snapshot holds, and every pre-publication snapshot
+// stays stale.
+func TestForceStopFinishMintsEpochOnce(t *testing.T) {
+	locks := NewResumeLocks()
+	// A resume admitted before any fence snapshots the standing epoch; a
+	// waiter arriving during F1's hold snapshots the same value, because the
+	// fence publishes nothing at begin.
+	admitted := locks.RecoveryState("A").Epoch
+	f1 := locks.BeginForceStop([]string{"A"})
+	duringFence := locks.RecoveryState("A").Epoch
+	// F1 is refused: it canceled nothing, and publishes nothing.
+	f1.Reject()
+	f1.Finish(false)
+	if got := locks.RecoveryState("A").Epoch; got != admitted {
+		t.Fatalf("refused fence changed the admission epoch: got %d, want %d", got, admitted)
+	}
+	// F2 completes a real stop: its advance is minted exactly once.
+	f2 := locks.BeginForceStop([]string{"A"})
+	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+		t.Fatal(err)
+	}
+	f2.Finish(true)
+	if got := locks.RecoveryState("A").Epoch; got != admitted+1 {
+		t.Fatalf("completed stop did not mint exactly one advance: got %d, want %d", got, admitted+1)
+	}
+	// The during-F1 snapshot can never be reissued: a registration holding it
+	// is invalidated, and a stale completion cannot clear the newer recovery.
+	if _, err := locks.RegisterResume(t.Context(), "A", []string{"A"}, map[string]uint64{"A": duringFence}); !errors.Is(err, ErrResumeInvalidated) {
+		t.Fatalf("during-fence snapshot admitted after the world changed: %v", err)
+	}
+	if err := locks.ExplicitResumeCompleted("A", duringFence); err != nil {
+		t.Fatal(err)
+	}
+	if !locks.RecoveryState("A").ResumeRequired {
+		t.Fatal("stale completion cleared the newer recovery")
 	}
 }
 

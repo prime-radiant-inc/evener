@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/llm"
 )
 
 func TestEmitStruct(t *testing.T) {
@@ -323,6 +324,85 @@ func TestRegistryDiscoversSharedNestedTypesOnce(t *testing.T) {
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("registered names = %v, want %v", gotNames, wantNames)
 	}
+}
+
+// #1016: the registry keys by bare Go type name, so a same-named type in
+// another package used to be dropped silently — the first claimant won and the
+// second was never emitted. reflect.Type identity is package-qualified, so a
+// second, differently shaped claimant of a name is now a loud generator
+// failure instead. Before the fix this test fails: no panic, and the divergent
+// type is silently absent from the output.
+func TestRegistryPanicsOnDivergentSameNameTypes(t *testing.T) {
+	// Same bare name as appwire.AttentionSummary but a different shape, so
+	// emitting either interface would mistype the other.
+	type AttentionSummary struct {
+		NeedsYou int    `json:"needs_you"`
+		Extra    string `json:"extra"`
+	}
+
+	reg := newRegistry()
+	registerTopLevel(reg, appwire.AttentionSummary{}, "unused")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("a second, differently shaped type named AttentionSummary was silently dropped; registered %v", reg.order)
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "AttentionSummary") || !strings.Contains(msg, "collides") {
+			t.Fatalf("panic %q does not name the colliding type", msg)
+		}
+	}()
+	registerTopLevel(reg, AttentionSummary{}, "unused")
+}
+
+// The live catalog already contains one same-named pair across packages —
+// hubapi.AttentionSummary and appwire.AttentionSummary (#1014's aliasing never
+// landed here). Their shapes are identical, so the generated TypeScript cannot
+// tell them apart and the dedup is invisible and correct. This pins that the
+// collision guard leaves such a pair alone: no panic, one interface emitted.
+func TestRegistryAllowsIdenticalSameNameTypesFromDifferentPackages(t *testing.T) {
+	reg := newRegistry()
+	registerTopLevel(reg, hubapi.AttentionSummary{}, "unused")
+	registerTopLevel(reg, appwire.AttentionSummary{}, "unused")
+
+	occurrences := 0
+	for _, name := range reg.order {
+		if name == "AttentionSummary" {
+			occurrences++
+		}
+	}
+	if occurrences != 1 {
+		t.Fatalf("AttentionSummary registered %d times, want 1 (registered: %v)", occurrences, reg.order)
+	}
+}
+
+// A same-named pair that renders identically is deduped, but the second
+// claimant's fields must still be walked: otherwise a divergent same-named
+// type reachable only through the dropped claimant would never be discovered,
+// quietly reintroducing the #1016 silent drop one level down.
+//
+// Two local outer types render identically ("m: Message;") while nesting two
+// different packages' Message structs; appwire.Message and llm.Message have
+// different fields. The dedupe of the outer name must still walk the second
+// claimant's fields and surface that inner Message collision as a panic.
+func TestRegistryWalksFieldsOfEmissionEqualDuplicate(t *testing.T) {
+	type OuterA struct {
+		M appwire.Message `json:"m"`
+	}
+	type OuterB struct {
+		M llm.Message `json:"m"`
+	}
+
+	reg := newRegistry()
+	// Both added under one name so the second is an emission-equal duplicate of
+	// the first, hitting exactly the dedupe path.
+	reg.addNamed("Outer", reflect.TypeFor[OuterA]())
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("a divergent Message nested only in the deduped claimant was not discovered; registered %v", reg.order)
+		}
+	}()
+	reg.addNamed("Outer", reflect.TypeFor[OuterB]())
 }
 
 // registerTopLevel falls back to the wire-derived name only when the value

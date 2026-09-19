@@ -140,8 +140,9 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	fenced := make(map[string]bool)
 	var descendantFences []*hubcore.ForceStopFence
 	// A refusal that has canceled nothing must not leave the descendant
-	// fences' advanced admission epochs and connection sequences behind
-	// either: existing descendant clients stay valid despite the refusal.
+	// fences' connection sequences behind either — they advanced no
+	// admission epoch at begin, so the sequences are all a refusal gives
+	// back: existing descendant clients stay valid despite the refusal.
 	// Fences installed after the cancellation — the post-termination scan —
 	// are never rejected: termination was attempted and the stop's
 	// follow-through must stale connections admitted before it.
@@ -220,9 +221,9 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if reservationsHeld {
 		reserved = append(reserved, aliases...)
 		if err := deletionFenceErrorForGroup(cfg, deletionFenceAliases); err != nil {
-			// The refusal canceled nothing, so it must not leave the epochs
-			// this fence advanced — or the descendant fences advanced —
-			// either.
+			// The refusal canceled nothing: the fence advanced no admission
+			// epoch at begin, so only the connection sequences — this
+			// fence's and the descendant fences' — roll back.
 			rejectDescendants()
 			fenceRecovery.Reject()
 			return err
@@ -241,10 +242,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// subject to the authoritative post-ownership reread below.
 	if params.ExpectedDaemon != nil {
 		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
-			// Refused before any cancellation: give back the admission epochs
-			// this fence advanced — and the descendant fences advanced — so
-			// the in-flight Resume the refusal preserves still completes its
-			// recovery clear against the epoch it was admitted under.
+			// Refused before any cancellation: the fence published no
+			// admission epoch at begin, so the in-flight Resume the refusal
+			// preserves still completes its recovery clear against the epoch
+			// it was admitted under; Reject rolls back only the connection
+			// sequences this fence — and the descendant fences — wrote.
 			rejectDescendants()
 			fenceRecovery.Reject()
 			return err
@@ -259,12 +261,13 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	canceledResumes = canceledResumes || drainCanceled
 	defer releaseResumes()
-	// A refusal after the drain keeps the fence's advance only when the drain
-	// actually stopped a Resume. A drain that canceled nothing leaves the
-	// refusal admission-neutral, the way the pre-cancellation refusals above
-	// are: the epochs and the connection-level sequences this fence advanced
-	// — and the pre-cancellation descendant fences advanced — roll back
-	// before the release below. The post-termination scan's fences are
+	// A refusal after the drain publishes the fence's epoch advance only when
+	// the drain actually stopped a Resume (its Finish lands unrejected). A
+	// drain that canceled nothing leaves the refusal admission-neutral, the
+	// way the pre-cancellation refusals above are: the fence advanced no
+	// epoch at begin, and the connection-level sequences this fence — and the
+	// pre-cancellation descendant fences — wrote roll back before the release
+	// below. The post-termination scan's fences are
 	// excluded: termination was attempted and the stop's follow-through must
 	// stale connections admitted before it.
 	refuseStop := func(err error) error {
@@ -360,7 +363,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
-	if err := cfg.ResumeLocks.PersistForceStop(aliases, target.SessionID); err != nil {
+	if err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {
@@ -512,8 +515,9 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		// been aborted. That re-check still runs, so a deletion that starts in
 		// this window is still caught.
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
-			// The refusal canceled nothing, so it must not leave the epochs
-			// this fence advanced either.
+			// The refusal canceled nothing; the fence advanced no
+			// admission epoch at begin, so only its connection sequence
+			// rolls back.
 			fence.Reject()
 			return confirmedStoppedDecision{}, err
 		}
@@ -538,8 +542,9 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	if reservationsHeld {
 		acquired = len(aliases)
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
-			// The refusal canceled nothing, so it must not leave the epochs
-			// this fence advanced either.
+			// The refusal canceled nothing; the fence advanced no
+			// admission epoch at begin, so only its connection sequence
+			// rolls back.
 			fence.Reject()
 			return confirmedStoppedDecision{}, err
 		}
@@ -553,10 +558,11 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			// discovery recheck under alias ownership below stays
 			// authoritative.
 			if err := expectedDaemonRevalidationError(cfg, sessionID, state.ResumeSessionID, expectedDaemon); err != nil {
-				// Refused before any cancellation: give back the admission
-				// epochs this fence advanced, so the in-flight Resume the
+				// Refused before any cancellation: the fence published no
+				// admission epoch at begin, so the in-flight Resume the
 				// refusal preserves still completes its recovery clear against
-				// the epoch it was admitted under.
+				// the epoch it was admitted under; Reject rolls back only the
+				// connection sequence the fence wrote.
 				fence.Reject()
 				return confirmedStoppedDecision{}, err
 			}
@@ -660,8 +666,10 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			if slices.Contains(aliases, alias) {
 				// An existing claim, even foreign or stale, must take the ordinary
 				// verified process path. Never turn its eventual error into success.
-				// The caller installs its own fence next, so hand the admissions
-				// this fence advanced back unless the drain canceled a Resume.
+				// The caller installs its own fence next, so this fence's
+				// release stays admission-neutral — no epoch publication, the
+				// connection sequence rolled back — unless the drain canceled a
+				// Resume.
 				return refuseAfterDrain(confirmedStoppedDecision{}, nil)
 			}
 		}

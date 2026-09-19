@@ -221,6 +221,28 @@ func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveE
 	return hubcore.LiveEntry{}, false
 }
 
+// recoveryGroupClaimExists reports whether fresh discovery still shows a
+// process that could be the stopped owner: a live entry on any recovery
+// alias, or an unconfirmed claim whose process is alive but unverified —
+// "absence from List" is not proof of released ownership for those. Crash
+// markers are the opposite case (a PID confirmed gone) and count as exit
+// evidence, so they never block here.
+func recoveryGroupClaimExists(roster *hubcore.Roster, aliases []string) bool {
+	for _, alias := range aliases {
+		if _, ok := liveDaemonForThread(roster, alias); ok {
+			return true
+		}
+	}
+	for _, entry := range roster.UnconfirmedEntries() {
+		for _, alias := range aliases {
+			if entry.SessionID == alias || entry.ThreadID == alias || entry.WorkspaceRef == localAppRef(alias) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Refresh ownership before a local metadata write or before treating a missing
 // daemon as proof that a mutation was not accepted. Successful delivery uses
 // the live source directly and does not wait for an unrelated roster probe.
