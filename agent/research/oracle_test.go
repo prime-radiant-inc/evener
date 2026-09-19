@@ -16,16 +16,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// writeTranscript writes a minimal valid v2 transcript: header + entries.
-// A nil entries slice still writes the header, which is a valid walkable
-// transcript that loads as zero entries.
-func writeTranscript(t *testing.T, dir, sid string, entries []transcript.Entry) string {
+// writeTranscriptAt writes a minimal valid v2 transcript: header + entries,
+// into an explicit sessions directory. A nil entries slice still writes the
+// header, which is a valid walkable transcript that loads as zero entries.
+func writeTranscriptAt(t *testing.T, sessionsDir, sid string, entries []transcript.Entry) string {
 	t.Helper()
-	sessions := filepath.Join(dir, "projects", "proj", "sessions")
-	if err := os.MkdirAll(sessions, 0o755); err != nil {
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(sessions, sid+".transcript.jsonl")
+	path := filepath.Join(sessionsDir, sid+".transcript.jsonl")
 	var b strings.Builder
 	headerLine := fmt.Sprintf(`{"kind":"header","format_version":%d}`, transcript.FormatVersion)
 	fmt.Fprintf(&b, "%s\n", headerLine)
@@ -42,6 +41,13 @@ func writeTranscript(t *testing.T, dir, sid string, entries []transcript.Entry) 
 	return path
 }
 
+// writeTranscript writes a transcript in the plain projects-bucket shape
+// (<dir>/projects/proj/sessions).
+func writeTranscript(t *testing.T, dir, sid string, entries []transcript.Entry) string {
+	t.Helper()
+	return writeTranscriptAt(t, filepath.Join(dir, "projects", "proj", "sessions"), sid, entries)
+}
+
 func timeNowPlus(seconds int64) time.Time {
 	return time.Now().Add(time.Duration(seconds) * time.Second)
 }
@@ -56,14 +62,17 @@ func TestWalkSessionTranscripts_NewestFirstAndLimit(t *testing.T) {
 	if err := os.Chtimes(a, timeNowPlus(-3600), timeNowPlus(-3600)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := walkSessionTranscripts(dir, 0)
+	got, layout, err := walkSessionTranscripts(dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0].SessionID != "bbb" || got[1].SessionID != "aaa" {
 		t.Fatalf("got %+v, want bbb then aaa", got)
 	}
-	limited, err := walkSessionTranscripts(dir, 1)
+	if layout != "projects/*/sessions" {
+		t.Fatalf("matched layout = %q, want the plain projects-bucket shape first", layout)
+	}
+	limited, _, err := walkSessionTranscripts(dir, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,5 +382,69 @@ func TestRunOracle_CorpusReportAndLedger(t *testing.T) {
 	}
 	if rec.Compaction.MaxPromptTokensSeen != 3000 {
 		t.Fatalf("ledger corpus MaxPromptTokensSeen = %d, want 3000", rec.Compaction.MaxPromptTokensSeen)
+	}
+}
+
+func TestRunOracle_XDGStateHomeShape(t *testing.T) {
+	// The real corpus on this machine lives at
+	// ~/.local/state/evener/projects/<id>/sessions — an XDG state home has
+	// one more evener/ segment than the plain bucket shape, mirroring
+	// doctor's base auto-detection (agent/doctor/locate.go). The default
+	// oracle walk must resolve it.
+	dir := t.TempDir()
+	writeTranscriptAt(t, filepath.Join(dir, "evener", "projects", "proj-xdg", "sessions"), "x", []transcript.Entry{
+		assistantToolCallTurn("x1", nil, 1500, 20),
+	})
+	var stdout strings.Builder
+	rep, err := RunOracle(OracleOptions{StateBase: dir, Stdout: &stdout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sessions != 1 || rep.Entries != 1 {
+		t.Fatalf("sessions=%d entries=%d, want 1/1 (XDG shape must resolve)", rep.Sessions, rep.Entries)
+	}
+	if !strings.Contains(stdout.String(), "evener/projects/*/sessions") {
+		t.Fatalf("stdout does not report the matched layout:\n%s", stdout.String())
+	}
+}
+
+func TestRunOracle_ScratchBucketShape(t *testing.T) {
+	// A base that is itself an override / scratch bucket (sessions/
+	// directly under EVENER_STATE_DIR) must resolve too.
+	dir := t.TempDir()
+	writeTranscriptAt(t, filepath.Join(dir, "sessions"), "s", []transcript.Entry{
+		assistantToolCallTurn("s1", nil, 700, 10),
+	})
+	rep, err := RunOracle(OracleOptions{StateBase: dir, Stdout: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sessions != 1 {
+		t.Fatalf("sessions=%d, want 1 (scratch-bucket shape must resolve)", rep.Sessions)
+	}
+}
+
+func TestRunOracle_EmptyCorpusRefusesVerdict(t *testing.T) {
+	// Zero transcripts resolved from any shape is a hard error naming the
+	// base and every layout tried — never a confident zero-verdict.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger := filepath.Join(t.TempDir(), "ledger.jsonl")
+	_, err := RunOracle(OracleOptions{StateBase: dir, OutPath: ledger, Stdout: io.Discard})
+	if err == nil {
+		t.Fatal("empty corpus returned a verdict; want a hard refusal")
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Fatalf("refusal does not name the base: %v", err)
+	}
+	for _, layout := range []string{"projects/*/sessions", "evener/projects/*/sessions", "sessions"} {
+		if !strings.Contains(err.Error(), layout) {
+			t.Fatalf("refusal does not name the %q layout: %v", layout, err)
+		}
+	}
+	if _, err := os.Stat(ledger); !os.IsNotExist(err) {
+		t.Fatal("ledger record written for an empty corpus")
 	}
 }

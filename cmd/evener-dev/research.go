@@ -12,7 +12,7 @@ import (
 )
 
 // researchUsageDoc is the usage text for the research subcommand family.
-const researchUsageDoc = `usage: evener-dev research <subcommand> [flags]
+const researchUsageDoc = `usage: evener dev research <subcommand> [flags]
 
 subcommands:
   oracle    measure harness overhead signals in real session transcripts
@@ -33,13 +33,13 @@ func runResearch(args []string) int {
 	case "rollout":
 		return researchRolloutCmd(args[1:])
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "evener-dev research: unknown subcommand %q\n%s", args[0], researchUsageDoc)
+		_, _ = fmt.Fprintf(os.Stderr, "evener dev research: unknown subcommand %q\n%s", args[0], researchUsageDoc)
 		return 2
 	}
 }
 
 func researchRolloutCmd(args []string) int {
-	fs := flag.NewFlagSet("evener-dev research rollout", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener dev research rollout", flag.ContinueOnError)
 	envDir := fs.String("env-dir", "research/environments", "environments directory")
 	var envs multiFlag
 	fs.Var(&envs, "env", "environment name (repeatable)")
@@ -81,10 +81,10 @@ type multiFlag []string
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
-// researchOracleCmd implements `evener-dev research oracle`: measure harness
+// researchOracleCmd implements `evener dev research oracle`: measure harness
 // overhead signals in real session transcripts and print the ranked report.
 func researchOracleCmd(args []string) int {
-	fs := flag.NewFlagSet("evener-dev research oracle", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener dev research oracle", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", "", "state base to walk (default: resolved like evener doctor)")
 	limit := fs.Int("limit", 30, "newest N sessions (0 = all)")
 	out := fs.String("out", "", "append the report record to this JSONL path")

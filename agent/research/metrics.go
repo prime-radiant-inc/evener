@@ -10,11 +10,11 @@ import (
 
 // AtifMetrics summarizes one rollout's recorded traffic.
 type AtifMetrics struct {
-	PromptTokens     int
-	CompletionTokens int
-	CachedTokens     int
-	Steps            int
-	ModelRequests    int
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	Steps            int `json:"steps"`
+	ModelRequests    int `json:"model_requests"`
 }
 
 // ExtractAtifMetrics decodes an ATIF v1.7 export written by `evener run -n`.
