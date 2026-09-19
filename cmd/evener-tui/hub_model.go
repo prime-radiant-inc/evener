@@ -163,11 +163,16 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel     *launchconfig.CredentialsPanel
-	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
-	pluginsPanel         *launchconfig.PluginsPanel
-	followupModal        *tuipick.TextInputModal
-	launchOverridesModal *launchconfig.LaunchOverridesModal
+	credentialsPanel    *launchconfig.CredentialsPanel
+	launchSettingsPanel *launchconfig.LaunchSettingsPanel
+	pluginsPanel        *launchconfig.PluginsPanel
+	// marketplaceRemovePending fences a remove until its result is settled.
+	// An applied-with-litter result keeps this identity until a fresh list
+	// confirms the post-removal state.
+	marketplaceRemovePending    string
+	marketplaceReconcilePending bool
+	followupModal               *tuipick.TextInputModal
+	launchOverridesModal        *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress
