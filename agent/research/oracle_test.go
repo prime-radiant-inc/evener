@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,5 +137,60 @@ func TestMeasureAdjacency_CountsEditThenTestCycles(t *testing.T) {
 	}
 	if got.SavedPromptTokens != 2200 || got.SavedCompletionTokens != 80 {
 		t.Fatalf("saved tokens = %d/%d, want 2200/80", got.SavedPromptTokens, got.SavedCompletionTokens)
+	}
+}
+
+func toolResultsTurn(results ...llm.ToolResultData) transcript.Entry {
+	content := make([]llm.ContentPart, 0, len(results))
+	for _, r := range results {
+		r := r
+		content = append(content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &r})
+	}
+	return transcript.Entry{Kind: "entry", Turn: schema.Turn{
+		Kind:    schema.TurnToolResults,
+		Message: llm.Message{Role: "tool", Content: content},
+	}}
+}
+
+func bigResult(name, text string) llm.ToolResultData {
+	return llm.ToolResultData{ToolCallID: "c_" + name, Name: name, Content: text}
+}
+
+func TestMeasureLargeObservations_ResendAfterFirstTwo(t *testing.T) {
+	big := strings.Repeat("x", 11*1024)
+	small := "ok"
+	entries := []transcript.Entry{
+		toolResultsTurn(bigResult("shell", big), bigResult("read_file", small)),
+		assistantToolCallTurn("r1", nil, 5000, 10), // request 1 sees it (free)
+		assistantToolCallTurn("r2", nil, 5200, 10), // request 2 sees it (free)
+		assistantToolCallTurn("r3", nil, 5400, 10), // request 3 pays: +len(big)
+		// compaction boundary ends residency accounting
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnCheckpoint}},
+		assistantToolCallTurn("r4", nil, 2000, 10), // after boundary: not counted
+	}
+	got := measureLargeObservations(entries, 10*1024)
+	if got.Results != 1 || got.TotalBytes != len(big) {
+		t.Fatalf("results=%d bytes=%d, want 1/%d", got.Results, got.TotalBytes, len(big))
+	}
+	if got.ResendBytes != len(big) || got.ResendRequests != 1 {
+		t.Fatalf("resend=%d over %d requests, want %d over 1", got.ResendBytes, got.ResendRequests, len(big))
+	}
+}
+
+func TestMeasureLogVolume_OnlyDeclaredCommands(t *testing.T) {
+	log := strings.Repeat("FAIL line\n", 600) // ~5.4 KiB, from go test
+	entries := []transcript.Entry{
+		assistantToolCallTurn("p", []llm.ToolCallData{shellCall("go test ./...")}, 10, 5),
+		toolResultsTurn(bigResult("shell", log)),
+		assistantToolCallTurn("r1", nil, 5000, 10),
+		assistantToolCallTurn("r2", nil, 5200, 10),
+		assistantToolCallTurn("r3", nil, 5400, 10),
+	}
+	vol := measureLogVolume(entries, 4*1024)
+	if vol.Results != 1 || vol.TotalBytes != len(log) {
+		t.Fatalf("vol results=%d bytes=%d", vol.Results, vol.TotalBytes)
+	}
+	if vol.ResendBytes != len(log) {
+		t.Fatalf("resend = %d, want %d", vol.ResendBytes, len(log))
 	}
 }

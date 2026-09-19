@@ -177,3 +177,138 @@ func measureAdjacency(entries []transcript.Entry) AdjacencyStats {
 	}
 	return st
 }
+
+// ObsResendStats measures bytes of oversized tool results that keep being
+// re-sent on requests after their first two. First two requests free; the
+// residual after that is what an ObservationPack style handle-plus-excerpt
+// mechanism could save. Re-send accounting stops at a compaction boundary
+// (TurnCheckpoint or TurnSummary) because masking/compaction may already
+// have removed the observation from context there. This is a proxy: the
+// transcript cannot show per-request masking, so treat results as resident
+// until a boundary appears.
+type ObsResendStats struct {
+	Results        int // number of oversized results
+	TotalBytes     int // sum of their sizes
+	ResendBytes    int // bytes re-sent on requests after the first two
+	ResendRequests int // requests paying that residual
+}
+
+// LogVolumeStats is the same measurement restricted to build/test-style
+// shell output (the Evidence-Preserving Reducer's input class).
+type LogVolumeStats struct {
+	Results        int
+	TotalBytes     int
+	ResendBytes    int
+	ResendRequests int
+}
+
+// resultTextOf flattens a tool result content into text. Content is
+// provider-shaped: usually a string, sometimes a list of parts.
+func resultTextOf(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var b strings.Builder
+		for _, p := range v {
+			if m, ok := p.(map[string]any); ok {
+				if s, ok := m["text"].(string); ok {
+					b.WriteString(s)
+				}
+			}
+			if s, ok := p.(string); ok {
+				b.WriteString(s)
+			}
+		}
+		return b.String()
+	case map[string]any:
+		if s, ok := v["text"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// shellCommandByCallID maps each shell tool call's ID to the command it ran,
+// so a tool result can be attributed to the command that produced it.
+func shellCommandByCallID(entries []transcript.Entry) map[string]string {
+	cmds := make(map[string]string)
+	for i := range entries {
+		turn := entries[i].Turn
+		if turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		for _, c := range toolCallsOf(turn.Message) {
+			if c.Name == "shell" {
+				cmds[c.ID] = shellCommandOf(c)
+			}
+		}
+	}
+	return cmds
+}
+
+// pendingObs tracks one counted result's residency in later requests.
+type pendingObs struct {
+	bytes int
+	seen  int // assistant requests that carried it so far
+}
+
+// walkObservations is the shared engine of both observation signals. A result
+// counts when its text is at least minBytes and filter accepts it. The filter
+// receives the result's name and text plus the command of the shell call that
+// produced it; cmdOK reports whether that command is build/test-style. Re-send
+// accounting stops at a compaction boundary.
+func walkObservations(entries []transcript.Entry, minBytes int, filter func(name, text, cmd string, cmdOK bool) bool) ObsResendStats {
+	callCommand := shellCommandByCallID(entries)
+	var st ObsResendStats
+	var pending []pendingObs
+	for i := range entries {
+		turn := entries[i].Turn
+		switch turn.Kind {
+		case schema.TurnToolResults:
+			for _, part := range turn.Message.Content {
+				if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+					continue
+				}
+				text := resultTextOf(part.ToolResult.Content)
+				if len(text) < minBytes {
+					continue
+				}
+				cmd, ok := callCommand[part.ToolResult.ToolCallID]
+				cmdOK := ok && researchTestBuildRe.MatchString(cmd)
+				if !filter(part.ToolResult.Name, text, cmd, cmdOK) {
+					continue
+				}
+				st.Results++
+				st.TotalBytes += len(text)
+				pending = append(pending, pendingObs{bytes: len(text)})
+			}
+		case schema.TurnAssistant:
+			for k := range pending {
+				pending[k].seen++
+				if pending[k].seen > 2 {
+					st.ResendBytes += pending[k].bytes
+					st.ResendRequests++
+				}
+			}
+		case schema.TurnCheckpoint, schema.TurnSummary:
+			// Compaction boundary: residency accounting stops here.
+			pending = pending[:0]
+		}
+	}
+	return st
+}
+
+func measureLargeObservations(entries []transcript.Entry, threshold int) ObsResendStats {
+	return walkObservations(entries, threshold, func(_, _, _ string, _ bool) bool { return true })
+}
+
+func measureLogVolume(entries []transcript.Entry, minBytes int) LogVolumeStats {
+	st := walkObservations(entries, minBytes, func(_, _, _ string, cmdOK bool) bool { return cmdOK })
+	return LogVolumeStats{
+		Results:        st.Results,
+		TotalBytes:     st.TotalBytes,
+		ResendBytes:    st.ResendBytes,
+		ResendRequests: st.ResendRequests,
+	}
+}
