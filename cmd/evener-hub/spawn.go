@@ -484,6 +484,12 @@ type waitConfig struct {
 }
 
 // withRendezvousTimeout applies the production startup budget when it is
+// completionOwnedResumeTimeout is the hub-side bound on a completion-owned
+// resume's rendezvous wait, mirroring the client's own RESUME_REQUEST_TIMEOUT_MS
+// (10m): no client waits longer, so the bound only fires for callers with no
+// deadline of their own. A var so tests can shrink it.
+var completionOwnedResumeTimeout = 10 * time.Minute
+
 // positive. A non-positive timeout leaves the caller's context as the only
 // bound, which lets deterministic host-process tests await the rendezvous edge
 // itself instead of turning an arbitrary duration into their behavior oracle.
@@ -642,7 +648,12 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 		return cleanupErr
 	}
 	if req.CompletionOwned {
-		timeout = 0
+		// A completion-owned resume answers to its caller's lifecycle, but the
+		// rendezvous wait still gets a hub-side bound: the web client caps its
+		// own wait at RESUME_REQUEST_TIMEOUT_MS (10m), and a client without a
+		// deadline must not hold the session's ownership aliases forever while
+		// each relay/isLive/workspace read degrades against the lock.
+		timeout = completionOwnedResumeTimeout
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
