@@ -67,7 +67,6 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		// well-formed regardless of the fuzzed id; re-derive the baseline after
 		// the override so the comparison is against the persisted shape.
 		m1.ID = "fuzz"
-		baseline := mustMarshalMeta(t, m1)
 		dir := t.TempDir()
 		if err := SaveSessionMeta(dir, m1); err != nil {
 			t.Fatalf("SaveSessionMeta: %v", err)
@@ -76,6 +75,14 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatalf("LoadSessionMeta: %v", err)
 		}
+		// SaveSessionMeta initializes the per-save Revision counter to 1 on a
+		// fresh file; assert that explicitly rather than copying it, so a
+		// regression that fails to initialize the counter is caught here.
+		if m3.Revision != 1 {
+			t.Fatalf("first save did not initialize Revision to 1: %d", m3.Revision)
+		}
+		m1.Revision = 1
+		baseline := mustMarshalMeta(t, m1)
 		if got := mustMarshalMeta(t, m3); !bytes.Equal(baseline, got) {
 			t.Fatalf("session meta save/load round-trip diverged:\n saved=%s\n loaded=%s", baseline, got)
 		}
