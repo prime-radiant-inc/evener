@@ -145,7 +145,6 @@ it("keeps an unavailable applied removal fenced across browser remounts", async 
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
 
-
 it("records an applied removal after selection changes while the request is pending", async () => {
   let releaseRemoval!: () => void;
   const pendingRemoval = new Promise<never>((_resolve, reject) => {
@@ -184,6 +183,7 @@ it("records an applied removal after selection changes while the request is pend
   expect(removeButton.props.disabled).toBe(true);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
+
 it("ignores an applied removal result from a replaced client", async () => {
   let releaseOld!: () => void;
   const oldRemoval = new Promise<never>((_resolve, reject) => {
@@ -278,7 +278,148 @@ it("keeps the guard and warning across a same-client connection flap", async () 
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
 
+it("records a pending removal settling after a remount whose list read failed", async () => {
+  let releaseRemoval!: () => void;
+  const pendingRemoval = new Promise<never>((_resolve, reject) => {
+    releaseRemoval = () => reject(cloneLitterError(null, false));
+  });
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      if (listCalls === 2) throw new Error("list unavailable");
+      return { marketplaces: [marketplace] };
+    },
+    remove: () => pendingRemoval,
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+  });
+  const request = alertRequests.at(-1);
+  const confirm = request?.buttons?.find((button) => button.text === "Remove");
+  if (!confirm?.onPress) throw new Error("Remove confirmation was not shown");
+  await act(async () => confirm.onPress?.());
 
+  // Leave the browse tab and come back while the removal is still pending:
+  // the remounted browser's own list read fails, so no authoritative list
+  // has been seen when the outcome settles.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+  });
+  await act(async () => {});
+  releaseRemoval();
+  await act(async () => {});
+
+  // The guard and warning still land - the screen owns them, not the
+  // browser that asked - and the failed read keeps its own copy until a
+  // fresh read reconciles: the flow that started on the unmounted
+  // browser's store refetches nothing, because that store's publishes are
+  // dropped with it.
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+  expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(2);
+
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Retry marketplaces" }).props.onPress();
+  });
+  await act(async () => {});
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(true);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+});
+
+it("leaves a re-added marketplace removable after an applied removal reconciles the list", async () => {
+  let releaseRemoval!: () => void;
+  const firstRemoval = new Promise<never>((_resolve, reject) => {
+    releaseRemoval = () => reject(cloneLitterError(null, false));
+  });
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The hub answers the mount read with acme; the browser remount's
+      // read finds the removal the hub already applied - its list omits
+      // acme.
+      return { marketplaces: listCalls === 1 ? [marketplace] : [] };
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1 ? firstRemoval : Promise.resolve({ marketplaces: [] });
+    },
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+  });
+  const request = alertRequests.at(-1);
+  const confirm = request?.buttons?.find((button) => button.text === "Remove");
+  if (!confirm?.onPress) throw new Error("Remove confirmation was not shown");
+  await act(async () => confirm.onPress?.());
+
+  // Leave the browse tab and come back while the removal is still pending:
+  // the remounted browser reads the reconciled list the hub now publishes -
+  // acme is gone from it - BEFORE the outcome records with the screen's
+  // guard. A record that ignores the list it arrives into fences acme
+  // against a re-add forever.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+  });
+  await act(async () => {});
+  releaseRemoval();
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+  // Re-add acme through the browser's own modal.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Marketplace source" })
+      .props.onChangeText("https://example.test/plugins.git");
+  });
+  const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
+  const submit = adds.at(-1);
+  if (!submit) throw new Error("Add marketplace submit was not rendered");
+  await act(async () => {
+    submit.props.onPress();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
 
 it("clears the fence when a same-name re-add registers while reconciliation reads keep failing", async () => {
   let releaseRemoval!: () => void;
@@ -472,6 +613,68 @@ it("keeps the fence when an add resolving after unmount registers another name",
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
 
+it("keeps a re-added marketplace removable when its registration is observed before the removal settles", async () => {
+  let releaseRemoval!: () => void;
+  const firstRemoval = new Promise<never>((_resolve, reject) => {
+    releaseRemoval = () => reject(cloneLitterError(null, false));
+  });
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // remount's read - issued while the removal is still pending - finds
+      // the registration another client made after the hub applied it.
+      return {
+        marketplaces:
+          listCalls === 1 ? [marketplace] : [{ ...marketplace, lastUpdated: 2 }],
+      };
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1 ? firstRemoval : Promise.resolve({ marketplaces: [] });
+    },
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+  });
+  const request = alertRequests.at(-1);
+  const confirm = request?.buttons?.find((button) => button.text === "Remove");
+  if (!confirm?.onPress) throw new Error("Remove confirmation was not shown");
+  await act(async () => confirm.onPress?.());
+
+  // Another client re-added acme while the removal was pending, and the
+  // remounted browser read that new registration before the outcome settled:
+  // the fence the outcome raises must target the registration the write
+  // removed, never the newer one that replaced it.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+  });
+  await act(async () => {});
+  releaseRemoval();
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
 
 it("clears the fence for a re-added marketplace whose registration carries the same wire timestamp", async () => {
   const hub = marketplaceClient({

@@ -107,6 +107,16 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // Lowered by this browser's own unmount: a write it started must not then
+  // refetch through its store, which died with it and drops everything that
+  // read publishes - the mounted browser's own read is the reconciliation.
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   useEffect(() => {
     if (state.marketplaces !== null)
       onAuthoritativeMarketplaces(state.marketplaces, client);
@@ -187,6 +197,10 @@ export function MarketplaceBrowser({
         style: "destructive",
         onPress: () => {
           if (revision.current !== version || appliedRemovalNames.has(name)) return;
+          // Classify, record, and reconcile BEFORE the revision fence: the
+          // guard and warning live at the screen, so they must survive this
+          // view's selection changes and remounts; only the browser-local
+          // busy and write-failed displays stay behind the fence.
           void (async () => {
             setError(null);
             let caught: unknown;
@@ -196,8 +210,8 @@ export function MarketplaceBrowser({
                 throw error;
               }),
             );
-            if (revision.current !== version) return;
             if (outcome === "refused") {
+              if (revision.current !== version) return;
               setError(PLUGIN_MUTATION_BUSY);
               return;
             }
@@ -207,12 +221,14 @@ export function MarketplaceBrowser({
             // becomes the screen-level warning, null shows nothing - and
             // reconcile a stale list, never a retry hint.
             const notice = appliedRemovalNotice(caught);
-            if (notice === undefined) {
-              setError(WRITE_FAILED);
+            if (notice !== undefined) {
+              if (!onAppliedRemoval(name, notice, client, target)) return;
+              if (alive.current && refetchAfterRemoval(model, name))
+                void state.fetchMarketplaces();
               return;
             }
-            if (!onAppliedRemoval(name, notice, client, target)) return;
-            if (refetchAfterRemoval(model, name)) void state.fetchMarketplaces();
+            if (revision.current !== version) return;
+            setError(WRITE_FAILED);
           })();
         },
       },
