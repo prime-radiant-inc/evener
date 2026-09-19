@@ -22,6 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
   runGatedMutation,
@@ -46,6 +47,8 @@ export function MarketplaceBrowser({
   hubName,
   installed,
   gate,
+  ready,
+  canUseConnection,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
@@ -56,6 +59,8 @@ export function MarketplaceBrowser({
   // it takes has to outlive the view - and living at the screen means the
   // installed list sees a marketplace write as busy too, and vice versa.
   gate: PluginMutationGate;
+  ready: boolean;
+  canUseConnection: LiveReadiness;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
@@ -114,7 +119,7 @@ export function MarketplaceBrowser({
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    const outcome = await runGatedMutation(gate, action);
+    const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (revision.current !== version) return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed") setError(WRITE_FAILED);
@@ -126,11 +131,11 @@ export function MarketplaceBrowser({
     (item) => item.name === selected,
   );
   function refresh() {
-    if (!marketplace || busy) return;
+    if (!marketplace || busy || !canUseConnection()) return;
     void act(() => state.refreshMarketplace(marketplace.name));
   }
   function remove() {
-    if (!marketplace || busy) return;
+    if (!marketplace || busy || !canUseConnection()) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -160,9 +165,10 @@ export function MarketplaceBrowser({
       <ErrorMessage message={error || listError} />
       {listError && (
         <Action
-          onPress={() => {
+          disabled={!ready}
+          onPress={whenReady(canUseConnection, () => {
             void state.fetchMarketplaces();
-          }}
+          })}
         >
           Retry marketplaces
         </Action>
@@ -174,10 +180,10 @@ export function MarketplaceBrowser({
           {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
-            <Action disabled={busy} onPress={refresh}>
+            <Action disabled={busy || !ready} onPress={refresh}>
               Refresh source
             </Action>
-            <Action disabled={busy} onPress={remove}>
+            <Action disabled={busy || !ready} onPress={remove}>
               Remove marketplace
             </Action>
           </View>
@@ -197,25 +203,27 @@ export function MarketplaceBrowser({
           <ErrorMessage message={catalogError || installedError} />
           {catalogError && (
             <Action
-              onPress={() => {
+              disabled={!ready}
+              onPress={whenReady(canUseConnection, () => {
                 void state.reloadCatalog(selected);
-              }}
+              })}
             >
               Retry catalog
             </Action>
           )}
           {installedError && (
             <Action
-              onPress={() => {
+              disabled={!ready}
+              onPress={whenReady(canUseConnection, () => {
                 void plugins.fetchPlugins();
-              }}
+              })}
             >
               Retry installed status
             </Action>
           )}
         </>
       ) : (
-        <Action disabled={busy} onPress={() => setAdding(true)}>
+        <Action disabled={busy || !ready} onPress={whenReady(canUseConnection, () => setAdding(true))}>
           Add marketplace
         </Action>
       )}
@@ -235,7 +243,7 @@ export function MarketplaceBrowser({
           ListHeaderComponent={header}
           refreshing={browsing}
           onRefresh={() => {
-            void state.reloadCatalog(selected);
+            if (canUseConnection()) void state.reloadCatalog(selected);
           }}
           ListEmptyComponent={
             browsing ? (
@@ -268,7 +276,12 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={busy || !plugins.plugins || !!installedError}
+                  disabled={
+                    busy ||
+                    !plugins.plugins ||
+                    !!installedError ||
+                    (!existing && !ready)
+                  }
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
@@ -289,7 +302,7 @@ export function MarketplaceBrowser({
           ListHeaderComponent={header}
           refreshing={state.marketplacesLoading}
           onRefresh={() => {
-            void state.fetchMarketplaces();
+            if (canUseConnection()) void state.fetchMarketplaces();
           }}
           ListEmptyComponent={
             state.marketplacesLoading ? (
@@ -324,6 +337,8 @@ export function MarketplaceBrowser({
           client={client}
           hubName={hubName}
           gate={gate}
+          ready={ready}
+          canUseConnection={canUseConnection}
           onClose={() => setAdding(false)}
           onAdd={(params) => state.addMarketplace(params)}
         />
@@ -336,11 +351,15 @@ function AddMarketplace({
   client,
   hubName,
   gate,
+  ready,
+  canUseConnection,
   onClose,
   onAdd,
 }: {
   hubName: string;
   gate: PluginMutationGate;
+  ready: boolean;
+  canUseConnection: LiveReadiness;
   onClose(): void;
   /** The write itself; the gate around it lives here, so a refusal keeps the
    * modal open on the busy copy just as it does everywhere else. */
@@ -353,6 +372,10 @@ function AddMarketplace({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Everything below gates on this, not on `busy` alone: `busy` is only true
+  // while a submission is actually in flight, and disables nothing while
+  // disconnected on its own.
+  const disabled = busy || !ready;
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -361,11 +384,11 @@ function AddMarketplace({
     [],
   );
   async function submit() {
-    if (busy || !source.trim()) return;
+    if (disabled || !source.trim()) return;
     setBusy(true);
     setError(null);
     const value = source.trim();
-    const outcome = await runGatedMutation(gate, () =>
+    const outcome = await runGatedMutation(gate, canUseConnection, () =>
       onAdd({
         name: name.trim(),
         source:
@@ -450,7 +473,7 @@ function AddMarketplace({
                 label="Marketplace source"
                 value={source}
                 onChange={setSource}
-                disabled={busy}
+                disabled={disabled}
               />
             ) : (
               <TextInput
@@ -487,10 +510,10 @@ function AddMarketplace({
               <ActivityIndicator accessibilityLabel="Adding marketplace" />
             )}
             <Action
-              disabled={busy || !source.trim()}
-              onPress={() => {
+              disabled={disabled || !source.trim()}
+              onPress={whenReady(canUseConnection, () => {
                 void submit();
-              }}
+              })}
             >
               Add marketplace
             </Action>
