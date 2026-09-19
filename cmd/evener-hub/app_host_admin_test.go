@@ -1028,6 +1028,90 @@ func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 	}
 }
 
+// TestHostAdminFanOutExitClearSparesReplacementWake pins the round-4 M5
+// finding: during remove/re-add churn the cancelled predecessor's deferred
+// clearAttachWake deleted whatever wake entry the host had — including the
+// channel its REPLACEMENT was parked on — so the replacement's next
+// EventAttached parked a wakeup nobody read and the fan-out slept its backoff
+// out. Wake channels are owned per fan-out generation now: the exiting loop
+// clears the entry only when it is still its own.
+func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// Generation one: it parks in backoff while the host reports offline.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		controller.fanOut(ctx1, source)
+	}()
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The churn's re-add launches the replacement BEFORE the cancelled
+	// predecessor exits — the removal's stop and the re-add's launch are two
+	// notifications, so the replacement can hold its wake channel while the
+	// predecessor is still winding down.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		controller.fanOut(ctx2, source)
+	}()
+	time.Sleep(250 * time.Millisecond)
+
+	// The removal's cancellation ends generation one. Waiting for its exit
+	// makes the ordering exact: the deferred wake clear has run before the
+	// attach event below fires.
+	cancel1()
+	select {
+	case <-done1:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled fan-out did not exit")
+	}
+
+	// The attach flips the host online and wakes the replacement through the
+	// wake entry the REPLACEMENT registered. The replacement must subscribe
+	// promptly: its first backoff timer is a full hostNotificationRetryBase
+	// away, so a missed wakeup is distinguishable from a served one.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the predecessor's exit cleared its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out did not return after its context was canceled")
+	}
+}
+
 // TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
 // of the fail-closed checks: a method the proxy may never forward is refused
 // with InvalidParams even when the host is offline, without consulting the

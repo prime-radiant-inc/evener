@@ -42,14 +42,30 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 }
 
 // hostRegistryFromConfig returns the cfg's live host registry when one was
-// threaded through WebConfig, else a fresh one built from the validated
-// entries — the fallback the server constructors (newWebServer and
-// newHubAppServerWithNavigationAndTrace) build ONCE and share with every
-// host-dependent handler. Config loading already validated the entries
-// (main.go builds the same registry from the same entries), so the error
-// path is the impossible-duplicate fallback; an empty registry keeps the
-// surface serving refusals instead of panicking.
+// threaded through WebConfig, else the fallback the server constructors
+// (newWebServer and newHubAppServerWithNavigationAndTrace) build ONCE and
+// share with every host-dependent handler. With a threaded SSH manager the
+// fallback is the MANAGER's registry (sshconn.Manager.Registry) — the instance
+// Ensure validates against and AddHost/RemoveHost mutate — never a fresh copy
+// from the configured entries: a fresh copy alongside a manager would split
+// the surfaces, because the host-management surface commits runtime adds and
+// removals through the manager while boot sidecar entries load into whatever
+// registry it was handed (the round-4 M2 finding: sidecar entries would land
+// where the manager never dials, Ensure answering ErrHostNotFound, and a
+// runtime Add would insert where host/list and host/attach never read).
+// A manager with no registry keeps the fresh copy: its AddHost refuses
+// loudly, so an add can never silently diverge.
+//
+// Without a manager, config loading already validated the entries (main.go
+// builds the same registry from the same entries), so the error path is the
+// impossible-duplicate fallback; an empty registry keeps the surface serving
+// refusals instead of panicking.
 func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
+	if cfg.RemoteHostSSHManager != nil {
+		if reg := cfg.RemoteHostSSHManager.Registry(); reg != nil {
+			return reg
+		}
+	}
 	hosts, err := hostreg.New(cfg.RemoteHosts)
 	if err != nil {
 		hosts, _ = hostreg.New(nil)

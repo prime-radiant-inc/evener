@@ -7,10 +7,9 @@ import styles from "./hosts.module.css";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
 
-// How often the section re-reads host rows while any row reports a
-// server-side attach in flight (the mid-attach poll below). Matches the
-// HubResidents section's poll cadence.
-export const HOST_ATTACH_POLL_MS = 2000;
+// How often the section re-reads host rows while it is mounted (the poll
+// below). Matches the HubResidents section's poll cadence.
+export const HOST_POLL_MS = 2000;
 
 const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
@@ -74,18 +73,22 @@ export function HostsSection(_props: HostsSectionProps) {
 
   useConnectedEffect(() => hostsStore.getState().fetch(), []);
 
-  // Re-read while any row reports a server-side attach in flight. An attach
-  // that starts outside this tab — the SSH supervisor's background reconnect,
-  // another client's Connect — settles without a local action to trigger the
-  // refresh, so the row would sit on "connecting" with Connect disabled
-  // forever. The poll is owned by the component like HubResidents' and stops
-  // the moment no row is mid-attach.
-  const anyMidAttach = useHostsStore((s) => s.load.phase === "ready" && s.load.hosts.some((row) => row.midAttach));
+  // Re-read while the section is mounted: host rows change out-of-band — an
+  // external attach completes unobserved, the SSH supervisor's background
+  // reconnect settles, a detached host's channel drops — and no controller-side
+  // host lifecycle notification exists on the wire to subscribe to
+  // (evener/host/notification relays the remote hub's own config
+  // notifications, not this controller's attach lifecycle), so the pane must
+  // poll. Gating the poll on a row reporting mid-attach (round 3) left the
+  // other out-of-band transitions stale: a detached host stayed "online" with
+  // no Connect button until some local action re-read. The quiet refresh never
+  // flashes the loading state and keeps the last rows on failure, so the idle
+  // poll is invisible; the poll is owned by the component like HubResidents'
+  // and stops when the section unmounts.
   useEffect(() => {
-    if (!anyMidAttach) return;
-    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_ATTACH_POLL_MS);
+    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
     return () => clearInterval(id);
-  }, [anyMidAttach]);
+  }, []);
 
   async function handleAdd(): Promise<void> {
     setAdding(true);

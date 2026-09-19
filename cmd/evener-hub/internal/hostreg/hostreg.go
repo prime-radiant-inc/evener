@@ -64,15 +64,15 @@ type Host struct {
 	// does); a UI-added sidecar host carries its key here so the one live dial
 	// path — the registry entry this package stores — sees it.
 	KeyPath string
-	// Generation is the per-name registry-entry generation: a counter the
-	// registry assigns on every insert, advancing across remove/re-add cycles,
-	// so a name's re-added entry — even with byte-identical content — is a
-	// different entry from the one an earlier Get handed out. It mirrors the
-	// 08 spec series' per-name generation semantics for attach identity:
-	// callers construct Hosts with it zero, Add (AddWithUpstreams) overwrites
-	// whatever they set, and an attach that captured an entry pins itself to
-	// the generation as much as to the content — content equality alone
-	// cannot tell a removed entry from its re-added twin (see Equal).
+	// Generation is the registry-wide insert generation: a counter the
+	// registry advances on every insert and never reuses, so a name's
+	// re-added entry — even with byte-identical content — is a different
+	// entry from the one an earlier Get handed out. It carries the 08 spec
+	// series' generation semantics for attach identity: callers construct
+	// Hosts with it zero, Add (AddWithUpstreams) overwrites whatever they
+	// set, and an attach that captured an entry pins itself to the
+	// generation as much as to the content — content equality alone cannot
+	// tell a removed entry from its re-added twin (see Equal).
 	Generation uint64
 }
 
@@ -173,11 +173,17 @@ type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]Host
 	edges map[string][]string // host name -> names of its upstream hosts
-	// gens records how many times each name has ever been inserted. The
-	// counters outlive Remove on purpose: without a surviving count a
-	// remove/re-add would assign the same generation again, and a byte-identical
-	// re-add would be indistinguishable from the entry it replaced.
-	gens map[string]uint64
+	// gen is the registry-wide insert generation: one monotonic counter,
+	// advanced by every Add and never reused, that AddWithUpstreams stamps
+	// on each inserted entry. It replaces the per-name counters round 3 used
+	// (one map entry per name ever added — unbounded growth under churn,
+	// and unprunable: dropping a name's count would let a byte-identical
+	// re-add reuse the removed entry's generation). Every Host.Generation
+	// consumer compares a captured entry with the live entry of the same
+	// name, so a registry-wide counter preserves those semantics exactly —
+	// a remove/re-add of any name still always advances past the removed
+	// entry's generation — while the retained state stays one integer.
+	gen uint64
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -189,7 +195,6 @@ func New(entries []Host) (*Registry, error) {
 	r := &Registry{
 		hosts: make(map[string]Host, len(entries)),
 		edges: make(map[string][]string, len(entries)),
-		gens:  make(map[string]uint64, len(entries)),
 	}
 	for _, entry := range entries {
 		if err := r.Add(entry); err != nil {
@@ -229,11 +234,12 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
 		return err
 	}
-	// The generation is assigned under the lock, from the per-name counter that
-	// survives removals: a re-add of the same name — byte-identical or not —
-	// always carries a generation the removed entry never had.
-	entry.Generation = r.gens[entry.Name] + 1
-	r.gens[entry.Name] = entry.Generation
+	// The generation is assigned under the lock, from the registry-wide
+	// counter: a re-add of the same name — byte-identical or not, interleaved
+	// with other hosts' churn or not — always carries a generation the
+	// removed entry never had.
+	entry.Generation = r.gen + 1
+	r.gen = entry.Generation
 	r.hosts[entry.Name] = entry
 	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
 	return nil
@@ -348,10 +354,10 @@ func (r *Registry) Get(name string) (Host, bool) {
 // A removed host stays removed: Get and All no longer report it, and a later
 // Add of the same name starts clean rather than inheriting the old edges (a
 // stale edges entry under the re-added name would false-positive the cycle
-// check against upstreams that no longer apply). The name's generation counter
-// is kept on purpose: the re-add's Add assigns the next generation, so the
-// re-added entry stays distinguishable from the one Remove deleted even when
-// every configured byte matches.
+// check against upstreams that no longer apply). The registry-wide generation
+// counter needs no cleanup here — it only advances, so the re-add's Add
+// assigns the next generation and the re-added entry stays distinguishable
+// from the one Remove deleted even when every configured byte matches.
 //
 // Edges recorded on other hosts that name the removed host are left alone: the
 // cycle walk already treats an unknown upstream as a leaf, so they dangle

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
-import { HOST_ATTACH_POLL_MS, HostsSection } from "./hosts";
+import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
@@ -125,6 +125,37 @@ test("a server-reported midAttach row renders connecting and disables Connect", 
   expect(connect.disabled).toBe(true);
 });
 
+test("an external detach converges via the mounted poll: online -> offline", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    let detached = false;
+    fake.on("evener/host/list", () => ({
+      hosts: [
+        detached
+          ? row({ name: "beta", address: "b.example", attached: false })
+          : row({ name: "beta", address: "b.example", attached: true }),
+      ],
+    }));
+    render(<HostsSection sectionId="hosts" />);
+    expect(await screen.findByText("online")).toBeTruthy();
+
+    // The host drops out-of-band — a detach this tab observed no action for
+    // (the SSH supervisor gave up, another client's remove). No row is
+    // mid-attach, so only the pane's mounted poll re-reads the rows
+    // (round-4 M3): without it the row stays "online" with no Connect button.
+    detached = true;
+    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
+
+    await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
+    expect(screen.queryByText("online")).toBeNull();
+    const betaRow = screen.getByText("beta").closest("li")!;
+    expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("remove confirms then calls evener/host/remove", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -178,7 +209,7 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
     // reconnect, another client's Connect — so no local action triggers a
     // refresh. The mid-attach poll re-reads the row.
     settled = true;
-    await vi.advanceTimersByTimeAsync(HOST_ATTACH_POLL_MS);
+    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
 
     const settledRow = screen.getByText("beta").closest("li")!;
     await waitFor(() => {

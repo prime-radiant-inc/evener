@@ -396,3 +396,101 @@ func TestHostManageRuntimeHostClassifiedRemoteThroughRealServer(t *testing.T) {
 	ghostErr := client.Request(context.Background(), appwire.MethodEvenerHostRequest, appwire.HostRequestParams{Host: "ghost", Method: appwire.MethodEvenerInstanceList}, nil)
 	assertWireCode(t, ghostErr, appwire.CodeInvalidParams)
 }
+
+// TestHostManageManagerWithoutRegistrySharesTheManagers pins the round-4 M2
+// finding: when a caller threads RemoteHostSSHManager but leaves
+// RemoteHostRegistry nil (a supported embedder shape), the constructor's
+// fallback used to be a fresh registry built from RemoteHosts while Add and
+// Remove mutated the manager's own registry — so boot sidecar entries landed
+// where the manager never dialed (Ensure -> ErrHostNotFound) and a runtime Add
+// inserted where host/list and host/attach never read. The fallback is the
+// manager's registry now: one instance behind every surface.
+func TestHostManageManagerWithoutRegistrySharesTheManagers(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A sidecar from a previous run: its entry loads at construction and must
+	// land in the registry the manager dials through, or Ensure would refuse
+	// it as unknown after a restart.
+	if err := os.WriteFile(filepath.Join(dir, hostSidecarFileName), []byte(`{"hosts":[{"name":"boot-side","ssh":"bs.example"}]}`), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	// The manager over its own registry, exactly the way runMain builds it —
+	// but the config deliberately threads no RemoteHostRegistry alongside it.
+	entries := []hostreg.Host{{Name: "m4", SSH: "m4.example"}}
+	reg, err := hostreg.New(entries)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{Runner: detachRefusingRunner{}})
+	t.Cleanup(func() { _ = manager.Close() })
+	var dialMu sync.Mutex
+	var dialed []string
+	cfg := hubcore.WebConfig{
+		Past:                 hubcore.NewPastIndex(""),
+		RemoteHosts:          entries,
+		RemoteHostSSHManager: manager,
+		RemoteHostConfigPath: configPath,
+		RemoteHostClient: func(_ context.Context, host string) (*appwire.Client, error) {
+			dialMu.Lock()
+			dialed = append(dialed, host)
+			dialMu.Unlock()
+			return &appwire.Client{}, nil
+		},
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The fallback the constructor built IS the manager's registry: attach,
+	// management, and the admin proxy all validate against the instance the
+	// dial paths mutate.
+	if web.cfg.RemoteHostRegistry != manager.Registry() {
+		t.Fatal("the fallback registry is not the SSH manager's: host surfaces would split between two registries")
+	}
+	// The boot sidecar entry landed where the manager dials: Ensure resolves
+	// hosts from its own registry, so an entry only in the fallback would be
+	// refused as unknown after a restart.
+	if _, ok := manager.Registry().Get("boot-side"); !ok {
+		t.Fatal("the boot sidecar entry is missing from the SSH manager's registry")
+	}
+
+	// A runtime Add goes through the manager's AddHost; host/list must show it.
+	var added appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	var list appwire.HostListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostList, appwire.EmptyParams{}, &list); err != nil {
+		t.Fatalf("evener/host/list: %v", err)
+	}
+	var listed []string
+	for _, row := range list.Hosts {
+		listed = append(listed, row.Name)
+	}
+	for _, want := range []string{"boot-side", "m4", "web-side"} {
+		if !slices.Contains(listed, want) {
+			t.Fatalf("evener/host/list = %v, want it to include %q", listed, want)
+		}
+	}
+	// Attach validates against the same registry the add committed to, so the
+	// request reaches the dial seam instead of an unknown-host refusal.
+	var attached appwire.HostAttachResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: "web-side"}, &attached); err != nil {
+		t.Fatalf("evener/host/attach for the added host = %v, want success: the handlers must share the manager's registry", err)
+	}
+	if !attached.Attached || attached.Host != "web-side" {
+		t.Fatalf("attach response = %+v, want attached web-side", attached)
+	}
+	dialMu.Lock()
+	defer dialMu.Unlock()
+	if !slices.Contains(dialed, "web-side") {
+		t.Fatalf("dialed %v, want the added host dialed through the shared registry", dialed)
+	}
+}

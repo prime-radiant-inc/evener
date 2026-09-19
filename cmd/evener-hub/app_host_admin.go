@@ -426,12 +426,45 @@ func (c *hubHostAdminController) stopFanOut(host string) {
 	c.clearAttachWake(host)
 }
 
-// clearAttachWake drops host's attach wakeup entry. Both hostAttached and the
-// fan-out's backoff path create the buffered channel on demand, so deleting it
-// can never strand a live waiter: the next wakeup or backoff re-creates it.
+// clearAttachWake drops host's attach wakeup entry unconditionally. It is the
+// removal hook's teardown (stopFanOut): the removal ends every fan-out the
+// host has, so the entry — whatever generation owns it — goes with it. The
+// fan-out loops themselves use clearAttachWakeIfOwned, which spares an entry a
+// replacement generation registered. Both hostAttached and a fan-out's entry
+// create the buffered channel under the host, so a deletion can never strand a
+// live waiter: the next wakeup or backoff re-creates one.
 func (c *hubHostAdminController) clearAttachWake(host string) {
 	c.attachWakeMu.Lock()
 	delete(c.attachWake, host)
+	c.attachWakeMu.Unlock()
+}
+
+// takeAttachWakeOwnership registers a fresh wake channel under host for this
+// fan-out generation and returns it. The previous entry — a cancelled
+// predecessor's, or an orphan an earlier hostAttached parked for a fan-out
+// that never launched — is replaced: a freshly launched generation checks
+// Online() on its first loop iteration before any backoff, so a wakeup parked
+// before it existed is never needed.
+func (c *hubHostAdminController) takeAttachWakeOwnership(host string) chan struct{} {
+	ch := make(chan struct{}, 1)
+	c.attachWakeMu.Lock()
+	c.attachWake[host] = ch
+	c.attachWakeMu.Unlock()
+	return ch
+}
+
+// clearAttachWakeIfOwned drops host's wake entry only when it is still ch —
+// the channel this goroutine registered. Remove/re-add churn can launch a
+// replacement that registers its own channel before the cancelled predecessor
+// exits, and an unconditional delete from the exiting loop would remove the
+// replacement's entry: the replacement's next EventAttached would park its
+// wakeup on a channel nobody waits on, and the fan-out would sleep its backoff
+// out (the round-4 M5 finding).
+func (c *hubHostAdminController) clearAttachWakeIfOwned(host string, ch chan struct{}) {
+	c.attachWakeMu.Lock()
+	if c.attachWake[host] == ch {
+		delete(c.attachWake, host)
+	}
 	c.attachWakeMu.Unlock()
 }
 
@@ -451,6 +484,14 @@ func (c *hubHostAdminController) clearAttachWake(host string) {
 // exponential backoff, so a permanently-down host costs one in-memory check per
 // interval rather than an SSH preflight every second.
 //
+// Each fan-out generation owns its wake channel for its whole lifetime: the
+// channel is registered under the host when the loop starts (replacing a
+// cancelled predecessor's), passed to every backoff wait below, and cleared on
+// exit only when the entry is still the loop's own (see
+// clearAttachWakeIfOwned). The round-4 M5 defect cleared whatever entry the
+// host had on exit, which during remove/re-add churn deleted the channel the
+// REPLACEMENT was parked on.
+//
 // hostAttached wakes this host's fan-out out of backoff: the sshconn
 // EventAttached path calls it once the fresh channel is installed, so the
 // fan-out re-checks Online() and subscribes through ClientIfAttached
@@ -462,15 +503,17 @@ func (c *hubHostAdminController) clearAttachWake(host string) {
 // wakeup resolves to SessionUnavailable and the loop backs off again.
 func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
 	host := remote.ID()
-	// The loop's own teardown. Cancellation is asynchronous, so a cancelled loop
-	// (replaced by a re-add, or ended by a removal's stopFanOut) can re-create
-	// the wake entry after stopFanOut cleared it; the exit is the one point
-	// after which no goroutine can touch the entry again.
-	defer c.clearAttachWake(host)
+	// The loop's own wake channel, owned for the loop's whole lifetime. The
+	// exit clear is ownership-checked: cancellation is asynchronous, so a
+	// cancelled loop (replaced by a re-add, or ended by a removal's
+	// stopFanOut) can exit long after its replacement registered a fresh
+	// channel, and only an entry this loop still owns may go.
+	wake := c.takeAttachWakeOwnership(host)
+	defer c.clearAttachWakeIfOwned(host, wake)
 	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {
 		if !remote.Online() {
-			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -480,7 +523,7 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		notifications, err := remote.SubscribeHostNotifications(subCtx)
 		if err != nil {
 			cancel()
-			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -489,7 +532,7 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		delay = hostNotificationRetryBase
 		c.relayHostNotifications(ctx, host, notifications)
 		cancel()
-		if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+		if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 			return
 		}
 		delay = nextHostNotificationBackoff(delay)
@@ -501,9 +544,12 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 // same transition already pokes the remote-thread refresher (main.go's
 // onAttach) and invalidates the navigation snapshot, and this rides that same
 // event rather than inventing a second one. The signal is a buffered wakeup
-// per host, created on demand: an attach with no running fan-out (an unknown
-// host, or a host whose fan-out already subscribed) parks one pending wakeup
-// the next backoff takes immediately, which is harmless — the fan-out still
+// resolved through the host's current map entry: a running fan-out's own
+// channel, or a fresh orphan an attach with no live fan-out parks. A parked
+// orphan goes unread by design — the next fan-out generation registers its own
+// channel and checks Online() on its first iteration before any backoff, so
+// the transition the wakeup records is already observed — and a generation
+// already subscribed ignores one the same way: harmless — the fan-out still
 // re-checks Online() and the attached-only lookup before subscribing.
 func (c *hubHostAdminController) hostAttached(host string) {
 	host = strings.TrimSpace(host)
@@ -524,18 +570,14 @@ func (c *hubHostAdminController) hostAttached(host string) {
 }
 
 // hostNotificationBackoffOrAttach waits delay but returns true early when
-// the host's attach wakeup fires, reporting false only
-// when ctx ended first. The caller re-checks Online() and re-resolves the
-// client through the attached-only lookup, so a stale or spurious wakeup
-// cannot subscribe a dead generation: it just shortens one sleep.
-func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Context, host string, delay time.Duration) bool {
-	c.attachWakeMu.Lock()
-	ch, ok := c.attachWake[host]
-	if !ok {
-		ch = make(chan struct{}, 1)
-		c.attachWake[host] = ch
-	}
-	c.attachWakeMu.Unlock()
+// the caller's attach wakeup fires, reporting false only when ctx ended
+// first. wake is the calling fan-out generation's own channel — the one its
+// deferred exit clear is ownership-checked against — so a wakeup can never
+// land on a channel from a different generation of the same host's fan-out.
+// The caller re-checks Online() and re-resolves the client through the
+// attached-only lookup, so a stale or spurious wakeup cannot subscribe a dead
+// generation: it just shortens one sleep.
+func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Context, wake <-chan struct{}, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -543,7 +585,7 @@ func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Con
 		return false
 	case <-timer.C:
 		return true
-	case <-ch:
+	case <-wake:
 		return true
 	}
 }

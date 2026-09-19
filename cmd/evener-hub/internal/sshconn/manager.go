@@ -423,6 +423,15 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 	}
 }
 
+// Registry returns the registry this manager dials and mutates through: the
+// same instance Ensure validates against and AddHost and RemoveHost commit to.
+// The hub's host surfaces share it — hostRegistryFromConfig prefers it when a
+// caller threads the manager without a separate RemoteHostRegistry — so a
+// runtime Add is visible to every reader and an added host is Ensure-able,
+// instead of the surfaces splitting between the manager's registry and a
+// fresh copy built from the configured entries (the round-4 M2 finding).
+func (m *Manager) Registry() *hostreg.Registry { return m.reg }
+
 // Ensure returns a connected, initialized channel for host, preflighting and
 // attaching as needed. It is idempotent while attached: repeated calls return
 // the same *Channel.

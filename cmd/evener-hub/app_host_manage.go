@@ -665,7 +665,10 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 // exposed, so a save failure commits nothing (no registry entry, no sidecar
 // row, no source) and the caller can retry. Only after the save lands does
 // the live set gain the entry — registry, sidecar row, and a fully wired
-// source — at which point the host is attachable without a restart.
+// source — at which point the host is attachable without a restart. A live
+// insert that fails after the save rolls the sidecar back to the pre-add
+// contents (rollbackSidecar), so the durable state never keeps an add the API
+// reported as failed.
 func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostRow{}, err
@@ -687,16 +690,21 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, hostreg.ErrDuplicateHost))
 	}
 	// Durable commit first: the sidecar file is the record of truth for
-	// sidecar names, so the entry is exposed only after the save landed.
-	next := append(m.cfg.sidecar.snapshot(), entry)
-	if err := m.saveSidecar(next); err != nil {
+	// sidecar names, so the entry is exposed only after the save landed. The
+	// pre-save snapshot is the rollback copy: should the live insert below
+	// fail, the file must not keep the entry (a failed add resurrecting on
+	// the next start, the round-4 L2 finding).
+	prev := m.cfg.sidecar.snapshot()
+	if err := m.saveSidecar(append(prev, entry)); err != nil {
 		return appwire.HostRow{}, err
 	}
 	if err := m.addHostToRegistry(entry); err != nil {
-		// Cannot happen — the entry was validated and duplicate-checked
-		// under mu — but should it ever, the file's copy reloads on the next
-		// start, so the add completes rather than being lost.
-		return appwire.HostRow{}, err
+		// The live insert refused — e.g. an SSH manager with no registry, the
+		// one seam that can fail here — so the API reports failure and the
+		// file rolls back to the pre-add contents: a retry starts from the
+		// same durable state, instead of the next start silently completing
+		// an add this call reported as failed.
+		return appwire.HostRow{}, m.rollbackSidecar(prev, err)
 	}
 	m.cfg.sidecar.add(entry)
 	m.cfg.state.remove(entry.Name) // a re-added name starts with no stale record
@@ -738,6 +746,23 @@ func (m *hubHostManager) saveSidecar(entries []hostreg.Host) error {
 		return fmt.Errorf("host sidecar %s not rewritten: %w (fix or remove the unloaded entries in the file first)", m.cfg.sidecarPath, err)
 	}
 	return saveHostSidecar(m.cfg.sidecarPath, entries)
+}
+
+// rollbackSidecar re-persists previous after a post-save live mutation failed,
+// keeping the durable sidecar in step with the live set: the API reported the
+// mutation as failed, so the file must not keep a copy the next start would
+// resurrect (Add) or drop an entry the live set still holds (Remove). This is
+// the compensating half of the durable-first ordering round 1 chose — the save
+// still leads, so a save failure still commits nothing live and the caller can
+// retry — closing the window round 1 left open, the live mutation failing
+// after the save landed (the round-4 L2 finding). A rollback save failure is
+// surfaced alongside cause: the file is then known to diverge, and the caller
+// must hear it rather than a clean-looking refusal.
+func (m *hubHostManager) rollbackSidecar(previous []hostreg.Host, cause error) error {
+	if err := m.saveSidecar(previous); err != nil {
+		return fmt.Errorf("%w; host sidecar rollback failed: %w", cause, err)
+	}
+	return cause
 }
 
 // List returns every known host with truthful online state in name-sorted
@@ -800,9 +825,11 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 // caller can retry — and the teardown is manager-owned: with a manager wired,
 // RemoveHost drops the registry entry, stops the supervisor, and clears the
 // channel under the host lock in one step, so a concurrent Ensure cannot
-// publish a fresh channel after deregistration. Nothing is resurrected: the
-// entry, its source, its channel, and its retained attach state are all gone
-// by the time Remove returns.
+// publish a fresh channel after deregistration. A teardown that fails after
+// the save rolls the sidecar forward again to keep the entry (rollbackSidecar),
+// so the durable state never forgets a host the live set still holds. Nothing
+// is resurrected: the entry, its source, its channel, and its retained attach
+// state are all gone by the time a successful Remove returns.
 func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostRemoveResponse{}, err
@@ -819,19 +846,21 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	}
 	// Persist first: the durable sidecar loses the entry before any live
 	// state changes, so a save failure resurrects nothing — the host stays
-	// fully intact and the caller can retry.
-	next := m.cfg.sidecar.without(host.Name)
-	if err := m.saveSidecar(next); err != nil {
+	// fully intact and the caller can retry. The pre-save snapshot is the
+	// rollback copy: should the live teardown below fail, the file regains
+	// the entry, keeping the durable state in step with the live one.
+	prev := m.cfg.sidecar.snapshot()
+	if err := m.saveSidecar(m.cfg.sidecar.without(host.Name)); err != nil {
 		return appwire.HostRemoveResponse{}, err
 	}
 	if m.cfg.manager != nil {
 		// Manager-owned teardown: registry entry, supervisor, channel, and
 		// per-host caches drop together under the host lock.
 		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
-			return appwire.HostRemoveResponse{}, fmt.Errorf("remove host %q: %w", host.Name, err)
+			return appwire.HostRemoveResponse{}, m.rollbackSidecar(prev, fmt.Errorf("remove host %q: %w", host.Name, err))
 		}
 	} else if err := m.cfg.hosts.Remove(host.Name); err != nil {
-		return appwire.HostRemoveResponse{}, err
+		return appwire.HostRemoveResponse{}, m.rollbackSidecar(prev, err)
 	}
 	if m.cfg.sources != nil {
 		m.cfg.sources.Remove(host.Name)

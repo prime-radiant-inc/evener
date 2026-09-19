@@ -513,7 +513,7 @@ func TestRemoveThenReAddStartsClean(t *testing.T) {
 }
 
 // A remove and byte-identical re-add of a name is a new registry entry: the
-// per-name generation advances across the cycle even though every configured
+// registry-wide generation advances across the cycle even though every configured
 // field — the content Equal compares — is unchanged. That Equal passes between
 // the two is exactly why an identity recheck must compare the generation
 // alongside it: content equality alone cannot tell them apart (the round-3
@@ -543,6 +543,61 @@ func TestRemoveReaddIdenticalAdvancesGeneration(t *testing.T) {
 	}
 	if second.Generation <= first.Generation {
 		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", second.Generation, first.Generation)
+	}
+}
+
+// TestGenerationIsRegistryWideMonotonic pins the round-4 L1 design: the
+// registry assigns generations from ONE registry-wide monotonic counter, not
+// a per-name count that survives removals. A per-name counter map grows one
+// tombstone per name ever added — unbounded growth under churn — and pruning
+// it cannot stay safe: dropping a name's count lets a re-add reuse the
+// generation a byte-identical re-add must not match. Registry-wide assignment
+// costs nothing semantically, because every Host.Generation consumer compares
+// a captured entry with the live entry of the SAME name (sshconn's attach
+// rechecks): a parked Ensure reads only its own host's entry, so an unrelated
+// host's add/remove never changes what it compares against, and a remove/
+// re-add of any name still never reuses a generation — the counter only
+// advances.
+func TestGenerationIsRegistryWideMonotonic(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a1, ok := r.Get("a")
+	if !ok {
+		t.Fatal("Get(a) missing after New")
+	}
+	b1, ok := r.Get("b")
+	if !ok {
+		t.Fatal("Get(b) missing after New")
+	}
+	// Registry-wide: every insert advances the one counter, so b's insert —
+	// not b's name — carries the next generation. A per-name counter would
+	// restart at 1 here.
+	if b1.Generation <= a1.Generation {
+		t.Fatalf("b's generation = %d, want greater than a's %d: the counter is registry-wide", b1.Generation, a1.Generation)
+	}
+	// Churn on unrelated names interleaved with a remove/re-add must not let
+	// the re-added name reuse a generation: the byte-identical re-add is
+	// still a different entry from the one Remove deleted.
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	if err := r.Add(host("c")); err != nil {
+		t.Fatalf("Add(c): %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("re-Add(a): %v", err)
+	}
+	a2, ok := r.Get("a")
+	if !ok {
+		t.Fatal("Get(a) missing after the re-add")
+	}
+	if !a1.Equal(a2) {
+		t.Fatalf("Equal refused byte-identical entries: %+v vs %+v", a1, a2)
+	}
+	if a2.Generation <= a1.Generation {
+		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", a2.Generation, a1.Generation)
 	}
 }
 

@@ -948,6 +948,48 @@ func TestHostManageSaveFailureCommitsNothing(t *testing.T) {
 	}
 }
 
+// TestHostManageAddRollsSidecarBackWhenLiveInsertFails pins the round-4 L2
+// finding: the durable-first commit saves the sidecar before the live insert,
+// so a failed insert used to leave the entry in the file — the API reported
+// failure, but the next start resurrected the add. The post-failure rollback
+// re-persists the pre-add contents, so the durable state never keeps a change
+// the API reported as failed.
+func TestHostManageAddRollsSidecarBackWhenLiveInsertFails(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A manager with no registry: its AddHost refuses deterministically — the
+	// one seam that fails between the durable save and the live insert.
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, nil, nil)
+
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "resurrect", Address: "r.example"}); err == nil {
+		t.Fatal("Add over a manager with no registry succeeded, want the live-insert refusal")
+	}
+	// The live set committed nothing...
+	if _, ok := m.cfg.hosts.Get("resurrect"); ok {
+		t.Fatal("Add exposed a registry entry the live insert never committed")
+	}
+	if m.cfg.sidecar.isSidecar("resurrect") {
+		t.Fatal("Add recorded a sidecar row the live insert never committed")
+	}
+	// ...and neither may the durable file: a restart must not resurrect the
+	// add this call reported as failed.
+	entries, err := loadHostSidecar(sidecarPathFor(configPath))
+	if err != nil {
+		t.Fatalf("loadHostSidecar: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name == "resurrect" {
+			t.Fatalf("the sidecar kept %q after the live insert failed: the next start would resurrect it", e.Name)
+		}
+	}
+}
+
 // TestHostManageSidecarInvalidEntryIsLoudAndKeepsFile pins the per-entry
 // discipline: a valid entry beside an invalid one loads and serves, the
 // invalid one is logged by name and poisons saves, and the file keeps both

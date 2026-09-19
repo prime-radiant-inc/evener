@@ -98,8 +98,10 @@ type WebConfig struct {
 	// attach handler validates against, and the host-management surface
 	// (evener/host/add|list|status|remove) mutates — one shared instance, so
 	// a host added at runtime is attachable without a restart. nil (tests,
-	// embedders) makes each of those surfaces build its own registry from
-	// RemoteHosts instead.
+	// embedders) makes the constructors' fallback build one registry and
+	// share it across every surface: the SSH manager's own registry when a
+	// manager is threaded (the instance its dial paths and AddHost/RemoveHost
+	// mutate), else a fresh one built from RemoteHosts.
 	RemoteHostRegistry *hostreg.Registry
 	// RemoteHostSSHManager owns the live SSH channels for the configured
 	// hosts. The host-management surface wires it in so Remove tears the

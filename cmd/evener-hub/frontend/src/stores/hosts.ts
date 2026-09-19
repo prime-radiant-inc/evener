@@ -49,36 +49,67 @@ function errorText(err: unknown): string {
 // same promise (mirrors stores/daemonResidents.ts).
 let refreshInflight: Promise<void> | null = null;
 
+// latestGeneration increments with every list request fetch and refresh issue,
+// so a slow earlier response is silently discarded once a later one has
+// already published (mirrors stores/daemonResidents.ts). fetch is the mutation
+// paths' re-read and refresh is the background poll, and the two are
+// independent requests: without the guard, a background response that lands
+// after an add/remove's re-read would overwrite the newer rows.
+let latestGeneration = 0;
+
 export const hostsStore = create<HostsStoreState>((set, get) => ({
   load: { phase: "loading" },
 
   fetch: async () => {
+    const generation = ++latestGeneration;
     set({ load: { phase: "loading" } });
     try {
       const res = await requireClient().request("evener/host/list", {});
       if (res.hosts === undefined) throw new Error("evener/host/list returned no hosts");
-      set({ load: { phase: "ready", hosts: res.hosts } });
+      // Discard this response if a newer request has already published.
+      if (generation === latestGeneration) {
+        set({ load: { phase: "ready", hosts: res.hosts } });
+      }
     } catch (err) {
-      set({ load: { phase: "error", message: errorText(err) } });
+      // The error publish is guarded too: an older fetch's failure must not
+      // blank the rows a newer request already delivered.
+      if (generation === latestGeneration) {
+        set({ load: { phase: "error", message: errorText(err) } });
+      }
     }
   },
 
   refresh: async () => {
     if (refreshInflight) return refreshInflight;
-    refreshInflight = (async () => {
+    // The IIFE runs synchronously up to its first await, so an immediate
+    // throw inside it (requireClient with no connected client) runs its
+    // whole body before this expression finishes. The cleanup therefore
+    // cannot live inside the IIFE: it would clear refreshInflight before
+    // the assignment below stores the already-settled promise, wedging the
+    // gate non-null forever and turning every later refresh() into a no-op
+    // (the round-4 M1 finding). Assign the promise first, then clear it from
+    // a finally callback that also checks it is still the current one.
+    const p = (async () => {
+      const generation = ++latestGeneration;
       try {
         const res = await requireClient().request("evener/host/list", {});
         if (res.hosts === undefined) throw new Error("evener/host/list returned no hosts");
-        set({ load: { phase: "ready", hosts: res.hosts } });
+        // Discard this response if a newer request has already published.
+        if (generation === latestGeneration) {
+          set({ load: { phase: "ready", hosts: res.hosts } });
+        }
       } catch {
         // A failed background poll keeps the last rows: blanking the section
         // on a transient failure would flash the empty state every tick, and
         // the next tick retries anyway.
-      } finally {
-        refreshInflight = null;
       }
     })();
-    return refreshInflight;
+    refreshInflight = p;
+    return p.finally(() => {
+      if (refreshInflight === p) {
+        refreshInflight = null;
+      }
+    });
   },
 
   add: async (params) => {
@@ -108,6 +139,7 @@ export const hostsStore = create<HostsStoreState>((set, get) => ({
 
   resetForTests: () => {
     refreshInflight = null;
+    latestGeneration = 0;
     set({ load: { phase: "loading" } });
   },
 }));
