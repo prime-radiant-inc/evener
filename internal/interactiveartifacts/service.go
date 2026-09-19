@@ -263,6 +263,9 @@ func (s *service) call(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallTo
 	var value any
 	var err error
 	raw := r.Params.Arguments
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
 	switch r.Params.Name {
 	case "artifact_publish":
 		value, err = s.store.Publish(ctx, hash, raw, PublicationOrigin{})
@@ -278,6 +281,8 @@ func (s *service) call(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallTo
 		value, err = s.store.SaveState(ctx, hash, raw)
 	case "artifact_report_diagnostic":
 		value, err = s.store.ReportDiagnostic(ctx, hash, raw)
+	default:
+		return nil, errors.New("unknown artifact tool")
 	}
 	result := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Artifact operation completed."}}, StructuredContent: value}
 	if err != nil {

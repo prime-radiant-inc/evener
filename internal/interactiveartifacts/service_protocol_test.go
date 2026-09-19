@@ -126,3 +126,52 @@ func TestServiceHeaderlessInitializeSelectsOnlyQualifiedProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceOmittedArgumentsUseListDefaults(t *testing.T) {
+	s, token := serviceFixture(t)
+	for i := range 21 {
+		_, err := s.store.Publish(t.Context(), sha256.Sum256([]byte(token)), []byte(createJSON(fmt.Sprintf("default-%d", i))), PublicationOrigin{})
+		requireNoError(t, err)
+	}
+	for _, test := range []struct {
+		name, tool, arguments string
+		valid                 bool
+	}{
+		{name: "absent", tool: "artifact_list", valid: true},
+		{name: "object", tool: "artifact_list", arguments: `,"arguments":{}`, valid: true},
+		{name: "null", tool: "artifact_list", arguments: `,"arguments":null`},
+		{name: "required", tool: "artifact_read"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q%s}}`, test.tool, test.arguments))
+			status, wire := postProtocol(t, s, token, []string{"2025-11-25"}, body)
+			if status != http.StatusOK {
+				t.Fatalf("HTTP status=%d", status)
+			}
+			var response struct {
+				Error  json.RawMessage `json:"error"`
+				Result struct {
+					IsError           bool       `json:"isError"`
+					StructuredContent ListResult `json:"structuredContent"`
+				} `json:"result"`
+			}
+			requireNoError(t, json.Unmarshal(wire, &response))
+			failed := len(response.Error) != 0 || response.Result.IsError
+			if failed == test.valid {
+				t.Fatalf("valid=%v response=%s", test.valid, wire)
+			}
+			if test.valid && (len(response.Result.StructuredContent.Artifacts) != 20 || response.Result.StructuredContent.NextCursor == "") {
+				t.Fatalf("missing default pagination: %+v", response.Result.StructuredContent)
+			}
+		})
+	}
+}
+
+func TestServiceUnknownHandlerNameFailsClosed(t *testing.T) {
+	s, token := serviceFixture(t)
+	ctx := context.WithValue(t.Context(), callerKey{}, sha256.Sum256([]byte(token)))
+	result, err := s.call(ctx, &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "not-in-the-catalog", Arguments: json.RawMessage(`{}`)}})
+	if err == nil || result != nil {
+		t.Fatalf("unknown internal dispatch succeeded: result=%+v err=%v", result, err)
+	}
+}
