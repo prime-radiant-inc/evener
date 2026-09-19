@@ -1650,8 +1650,8 @@ describe("the form", () => {
   // save — no longer matches the entry that carries it. Without re-anchoring,
   // the next Save refuses with the replacement error for an instance nothing
   // replaced. The draft is the user's own landed change: re-anchoring keeps it
-  // and lets the retry through instead of reporting a replacement that never
-  // happened.
+  // and rebases the diff baseline to what landed, so the next Save is not
+  // refused and is not spuriously dirty either.
   test("a superseded endpoint save re-anchors so the next save is not refused as a replacement", async () => {
     const before = instance({
       name: "work",
@@ -1678,9 +1678,11 @@ describe("the form", () => {
     await refreshList(fake, [landed]);
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
 
-    await user.click(saveButton());
+    // The draft now equals the landed row, so no replacement error appears and
+    // Save is clean (disabled) rather than re-sending the same edit.
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+    expect(saveButton().disabled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 
   // The re-anchor above turns on the listing carrying THIS save's declaration.
@@ -1791,9 +1793,9 @@ describe("the form", () => {
     await refreshList(fake, [authored]);
     await act(async () => finish({ instances: [authored], availableProviders: [OPENAI] }));
 
-    await user.click(saveButton());
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+    expect(saveButton().disabled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 
   // The transition is one-directional: an authored row does not become
@@ -1892,7 +1894,8 @@ describe("the form", () => {
     });
 
     // The hub serves Go's net/url form, which preserves the host case and the
-    // default port this URL was authored with.
+    // default port this URL was authored with. The draft equals the landed row,
+    // so the re-anchor leaves Save clean rather than re-sending.
     const landed = {
       ...before,
       baseUrl: "https://GW.example.test:443/v1",
@@ -1901,9 +1904,9 @@ describe("the form", () => {
     await refreshList(fake, [landed]);
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
 
-    await user.click(saveButton());
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+    expect(saveButton().disabled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 
   // Clearing an endpoint override drops the authored value, and the listing
@@ -2199,11 +2202,10 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
-  // A rename riding along with a clear still landed: its confirmation is the
-  // untouched identity fields it did not change, and the clear is merely
-  // unverifiable. Failing the whole rename on the clear leaves the sheet on a
-  // name the store no longer holds.
-  test("a superseded rename that also clears a credential field is still confirmed", async () => {
+  // A rename riding along with a credential clear cannot be confirmed: the hub
+  // omits an authored value it cannot serve, so a replacement under the new name
+  // with different (hidden) credentials reads the same. The rename fails closed.
+  test("a superseded rename that also clears a credential field is not confirmed", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -2236,9 +2238,9 @@ describe("the form", () => {
     await refreshList(fake, [landed]);
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
 
-    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // The credential-clear exemption above is only for clears whose landed value
@@ -2676,5 +2678,86 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A confirmed re-anchor rebases the diff baseline to the landed row, so the
+  // draft is clean; reverting the landed edit to its pre-save value must then be
+  // dirty and writable rather than a Save the sheet cannot press.
+  test("a confirmed superseded re-anchor lets a landed edit be reverted", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // Draft equals landed: clean, no replacement error.
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1");
+    expect(saveButton().disabled).toBe(false);
+    await user.click(saveButton());
+    const edits = fake.calls.filter((c) => c.method === "evener/instance/edit");
+    expect(edits).toHaveLength(2);
+    expect(edits[1]?.params).toMatchObject({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1",
+      originClientId: "test-tab",
+    });
+  });
+
+  // A bare trailing `?` is endpoint identity the hub preserves but WHATWG parses
+  // as an empty query, so a rename declaration carrying one must not match a
+  // listing without it.
+  test("a superseded rename is not confirmed by a listing that drops a bare query delimiter", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1?");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1?",
+      originClientId: "test-tab",
+    });
+
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 });

@@ -286,9 +286,14 @@ function pathPreservedByParser(raw: string): boolean {
 function endpointMatches(declared: string, listed: string | undefined): boolean {
   const trimmed = declared.trim();
   if (trimmed === "") return false;
+  const listedRaw = (listed ?? "").trim();
+  // A raw query/fragment delimiter is endpoint identity the hub keeps but the
+  // sanitized listing cannot show; a bare `?` or `#` parses to an empty
+  // component, so refuse any declaration (or listing) that carries one.
+  if (trimmed.includes("?") || trimmed.includes("#")) return false;
+  if (listedRaw.includes("?") || listedRaw.includes("#")) return false;
   const want = listedEndpoint(trimmed);
   if (want === "") return false;
-  const listedRaw = (listed ?? "").trim();
   if (want !== listedEndpoint(listedRaw)) return false;
   if (!pathPreservedByParser(trimmed) || !pathPreservedByParser(listedRaw)) return false;
   // want !== "" means listedEndpoint parsed this URL with a scheme and host.
@@ -318,13 +323,20 @@ function normalizedCredentialHeader(raw: string): string {
  * keyed at all - see endpointMatches). An ENDPOINT clear (baseUrl/protocol/
  * surface) drops the authored value and the listing then serves the RESOLVED
  * one, which proves nothing about the clear: it always fails closed. A
- * credential clear (apiKeyEnv/credentialHeader) is allowed here - the hub omits
- * an authored value it cannot serve, and the rename is confirmed by the
- * untouched identity fields it did not change. A declared header is compared
- * after the hub's own normalization. A declared var has to be present and
- * equal, key by key. */
+ * credential clear does too - the hub omits an authored value it cannot serve,
+ * so a replacement under the new name with different (hidden) credentials reads
+ * the same. A declared header is compared after the hub's own normalization. A
+ * declared var has to be present and equal, key by key. */
 function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (
+    params.clearBaseUrl ||
+    params.clearProtocol ||
+    params.clearSurface ||
+    params.clearApiKeyEnv ||
+    params.clearCredentialHeader
+  ) {
+    return false;
+  }
   // A save that changed vars/protocol/surface without declaring a Base URL moved
   // the RESOLVED URL, which the listing alone cannot prove - the client does not
   // resolve the provider's template. Without an authoritative fingerprint the
@@ -426,12 +438,11 @@ function credentialValuesLanded(
  * - whose endpointFingerprint is the hub's keyed identity for the complete
  * resolved endpoint. Comparing that settles vars/protocol/surface-only edits,
  * stripped query/userinfo parts, and path-normalization differences at once,
- * none of which survive in the listing's sanitized baseUrl. When the
- * authoritative row carries no fingerprint (an unkeyable instance), fall back
- * to verifying the declared values the listing can represent. Editing an
- * implicit instance authors a shadow under the same name, so implicit
- * legitimately falls true -> false here; the other direction is a different
- * instance. */
+ * none of which survive in the listing's sanitized baseUrl. When that
+ * authoritative row carries no fingerprint (an unkeyable instance) there is no
+ * such proof, so the match fails closed. Editing an implicit instance authors a
+ * shadow under the same name, so implicit legitimately falls true -> false
+ * here; the other direction is a different instance. */
 function supersededSaveLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
@@ -458,9 +469,13 @@ function supersededSaveLanded(
   // same fingerprint, so the capture cannot tell this save's clear from a
   // replacement's override. Fail closed; the caller marks the draft stale.
   if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
-  // The fingerprint settles the destination; the fields it does not cover
-  // (credentials, surface, declared variables) are verified separately, and
-  // a credential clear fails closed.
+  // The fingerprint settles the destination; the fields it does not cover are
+  // verified separately. The captured row and the listing must also agree on the
+  // credential fields outright: a replacement that changed a credential to a
+  // value the hub also omits reads the same otherwise, and the retained draft
+  // would be written over it.
+  if ((authoritative?.apiKeyEnv ?? "") !== (listed.apiKeyEnv ?? "")) return undefined;
+  if ((authoritative?.credentialHeader ?? "") !== (listed.credentialHeader ?? "")) return undefined;
   if (!credentialValuesLanded(listed, params, true)) return undefined;
   return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
 }
@@ -698,6 +713,14 @@ export function InstanceSheet({
           const landed = supersededSaveLanded(listedInstances, instance, params, authoritative);
           if (landed !== undefined) {
             seededIdentity.current = draftIdentity(landed);
+            // Rebase the diff baseline to what landed, keeping the draft: "draft
+            // equals landed" is then correctly not dirty, and a user reverting a
+            // field to its pre-save value becomes correctly dirty and writable
+            // (the pre-save baseline alone left params null and Save disabled).
+            const landedTemplate = credentialsStore
+              .getState()
+              .availableProviders.find((p) => p.id === landed.providerId);
+            setInitial(draftFor(landed, landedTemplate));
           } else {
             // The save was superseded and its landing could not be confirmed.
             // The fields a draft edits are deliberately excluded from
