@@ -29,7 +29,7 @@ func TestWriterReportsNoCountUntilItIsAskedToTrack(t *testing.T) {
 	w := newFailureTestWriter(t, filepath.Join(t.TempDir(), "transcript.jsonl"))
 	defer w.Close()
 
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if count, ok := w.FailedToolCalls(); ok {
@@ -45,16 +45,16 @@ func TestWriterCountsFailuresAsTheyAreWritten(t *testing.T) {
 	if count, ok := w.FailedToolCalls(); !ok || count != 0 {
 		t.Fatalf("FailedToolCalls() = (%d, %t), want a measured 0 before anything is written", count, ok)
 	}
-	if err := w.Append(toolCallTurn("call_1", "shell")); err != nil {
+	if _, err := w.Append(toolCallTurn("call_1", "shell")); err != nil {
 		t.Fatalf("Append call: %v", err)
 	}
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", ToolState: exitState(1)})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", ToolState: exitState(1)})); err != nil {
 		t.Fatalf("Append result: %v", err)
 	}
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("FailedToolCalls() = (%d, %t), want (1, true) right after the failure landed", count, ok)
 	}
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_2", Name: "read_file", IsError: true})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_2", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append second result: %v", err)
 	}
 	if count, _ := w.FailedToolCalls(); count != 2 {
@@ -69,7 +69,7 @@ func TestWriterSeedsFromTheEntriesAlreadyOnDisk(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w := newFailureTestWriter(t, path)
 	w.TrackFailures(nil, 0)
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -86,7 +86,7 @@ func TestWriterSeedsFromTheEntriesAlreadyOnDisk(t *testing.T) {
 	if count, ok := reopened.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("FailedToolCalls() = (%d, %t), want (1, true) seeded from the transcript", count, ok)
 	}
-	if err := reopened.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_2", Name: "read_file", IsError: true})); err != nil {
+	if _, err := reopened.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_2", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append after resume: %v", err)
 	}
 	if count, _ := reopened.FailedToolCalls(); count != 2 {
@@ -100,7 +100,7 @@ func TestWriterKeepsItsCountAfterClose(t *testing.T) {
 	// to survive Close or the figure blinks out exactly at the moment it settles.
 	w := newFailureTestWriter(t, filepath.Join(t.TempDir(), "transcript.jsonl"))
 	w.TrackFailures(nil, 0)
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -122,7 +122,7 @@ func TestWriterDoesNotCountAnEntryThatFailedToLand(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	// A closed writer drops appends on the floor; nothing lands, nothing counts.
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
+	if _, err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append after close: %v", err)
 	}
 	if count, _ := w.FailedToolCalls(); count != 0 {

@@ -173,13 +173,13 @@ type steerAppendRefusal struct {
 
 func refuseSteerAppends(s *Session, clientMutationID string) *steerAppendRefusal {
 	r := &steerAppendRefusal{}
-	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
+	s.clientMutationTranscriptAppend = func(turn schema.Turn) (int, error) {
 		if r.refuse.Load() && turn.Kind == schema.TurnSteering && turn.ClientMutationID == clientMutationID {
 			r.refusals.Add(1)
 			if r.onRefuse != nil {
 				r.onRefuse()
 			}
-			return errors.New("injected: no space left on device")
+			return 0, errors.New("injected: no space left on device")
 		}
 		return s.writeTranscriptDurableLocked(turn)
 	}
@@ -913,10 +913,10 @@ func TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain(t *testing.T) {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
 	var refusals atomic.Int32
-	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
+	s.clientMutationTranscriptAppend = func(turn schema.Turn) (int, error) {
 		if turn.Kind == schema.TurnFailure && turn.ClientMutationID == "steer-bad-skill" {
 			refusals.Add(1)
-			return errors.New("injected: no space left on device")
+			return 0, errors.New("injected: no space left on device")
 		}
 		return s.writeTranscriptDurableLocked(turn)
 	}
@@ -1098,10 +1098,10 @@ func TestFailedSelectionRecordParksTheSteerUntilTheNextExternalWake(t *testing.T
 	var refuse atomic.Bool
 	refuse.Store(true)
 	var refusals atomic.Int32
-	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
+	s.clientMutationTranscriptAppend = func(turn schema.Turn) (int, error) {
 		if refuse.Load() && turn.Kind == schema.TurnFailure && turn.ClientMutationID == "steer-bad-skill" {
 			refusals.Add(1)
-			return errors.New("injected: no space left on device")
+			return 0, errors.New("injected: no space left on device")
 		}
 		return s.writeTranscriptDurableLocked(turn)
 	}

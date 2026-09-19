@@ -140,18 +140,95 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// retainedFrom is the index of the first entry ResumeHistory keeps: the last
-// compaction turn, or 0 when the transcript never compacted. Callers that need to
-// map a position in the full transcript onto the resumed history read it here, so
-// the window rule lives in one place.
-func retainedFrom(entries []transcript.Entry) int {
+// resumeAnchor finds where a resume begins, scanning backward to the FIRST
+// (newest) compaction marker or fold record it meets. When that anchor is a
+// fold record, it drives the reconstruction (record != nil). When it is a bare
+// marker — a newer fold whose own record write failed left recordless markers,
+// or a pre-#1200 transcript — resume falls back to that marker plus everything
+// after it (record == nil). Because a valid fold always writes its record AFTER
+// its own markers, a record older than the newest marker is never reached: the
+// marker is met first and wins, which is exactly the "stale record" rule. An
+// uncompacted transcript yields (0, nil): the whole transcript.
+func resumeAnchor(entries []transcript.Entry) (idx int, record *schema.FoldRecord) {
 	for i := range slices.Backward(entries) {
-		kind := entries[i].Turn.Kind
-		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
-			return i
+		switch entries[i].Turn.Kind {
+		case schema.TurnFoldRecord:
+			if entries[i].Turn.Fold != nil {
+				return i, entries[i].Turn.Fold
+			}
+		case schema.TurnCheckpoint, schema.TurnSummary:
+			return i, nil
 		}
 	}
-	return 0
+	return 0, nil
+}
+
+// resumeTurns reconstructs the pre-repair resumed history and, for each turn,
+// the index in entries it came from (its origin), so a caller can map a
+// full-transcript position onto the resumed history. A fold record drives the
+// reconstruction when it is the anchor: the head marker(s) it names (Layers),
+// then the pre-existing turns it kept (RetainedSeqs), each looked up by Seq,
+// then every entry recorded after the record. Absent a record, the anchor is a
+// bare marker (or index 0) and resume is that entry plus everything after it.
+// resumeTurns also reports the fold id and any Seqs the fold record named that
+// did not resolve to a transcript entry (a corrupted or short transcript), so a
+// restore can warn about the retained turns it dropped. Resume is fail-open: it
+// rebuilds from what resolved rather than refusing, since a partial history is
+// more useful than none and the alternative is an unrecoverable session.
+func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int, foldID string, unresolvedSeqs []int) {
+	turns = make([]schema.Turn, 0, len(entries))
+	origins = make([]int, 0, len(entries))
+	appendEntry := func(i int) {
+		// A fold record is durable bookkeeping, never a live turn: skip it once
+		// here, so neither a Seq that a write bug pointed at the record (e.g. an
+		// unspent seq reused after a failed marker write) nor a stray post-anchor
+		// record can inject the record into history. Turn.Seq was seeded from
+		// Entry.Seq by DecodeEntry.
+		if entries[i].Turn.Kind == schema.TurnFoldRecord {
+			return
+		}
+		turns = append(turns, entries[i].Turn)
+		origins = append(origins, i)
+	}
+	// lookup maps a durable Seq to its entry index. Entry.Seq is strictly
+	// monotonic in file order (the writer assigns firstSeq+i per append,
+	// resumes at maxSeq+1, and a failed write spends no Seq), so entries are
+	// sorted by Seq: index == Seq in the common gap-free case (fast path), with
+	// a binary search as the general fallback. A negative sentinel
+	// (NoTranscriptEntrySeq) matches nothing.
+	lookup := func(seq int) (int, bool) {
+		if seq >= 0 && seq < len(entries) && entries[seq].Seq == seq {
+			return seq, true
+		}
+		return slices.BinarySearchFunc(entries, seq, func(e transcript.Entry, s int) int { return e.Seq - s })
+	}
+
+	anchorIdx, rec := resumeAnchor(entries)
+	if rec != nil {
+		foldID = rec.FoldID
+		add := func(seq int) {
+			if i, ok := lookup(seq); ok {
+				appendEntry(i)
+				return
+			}
+			unresolvedSeqs = append(unresolvedSeqs, seq)
+		}
+		for _, seq := range rec.Layers {
+			add(seq)
+		}
+		for _, seq := range rec.RetainedSeqs {
+			add(seq)
+		}
+		for i := anchorIdx + 1; i < len(entries); i++ {
+			appendEntry(i)
+		}
+		return turns, origins, foldID, unresolvedSeqs
+	}
+
+	for i := anchorIdx; i < len(entries); i++ {
+		appendEntry(i)
+	}
+	return turns, origins, "", nil
 }
 
 // resumeHistoryIndexed is ResumeHistory, also reporting each synthetic repair
@@ -160,30 +237,28 @@ func retainedFrom(entries []transcript.Entry) int {
 // history can shift it per insertion at or before that position, exactly as
 // history_repair.go shifts the in-flight boundary.
 func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
-	compactionIdx := retainedFrom(entries)
-
-	var turns []schema.Turn
-	if compactionIdx == 0 {
-		// No compaction: the whole transcript.
-		turns = make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-		}
-	} else {
-		// The compaction turn + everything after it.
-		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
-		for i := compactionIdx; i < len(entries); i++ {
-			turns = append(turns, entries[i].Turn)
-		}
-	}
-
-	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
+	repaired, insertedAt, _, _, _ := resumeHistoryReconstruct(entries)
 	return repaired, insertedAt
 }
 
-// ResumeHistory extracts the history needed for session resume from transcript entries.
-// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
+// resumeHistoryReconstruct also returns the pre-repair origins (the entry index
+// each pre-repair turn came from), which the fork-provenance boundary maps a
+// persisted DivergenceTurn through — see RestoreSessionFromMetaWithConfig — and,
+// when a fold record drove the reconstruction, its fold id and any Seqs it
+// named that did not resolve to a transcript entry (a restore surfaces those as
+// a dropped-retained-turns warning).
+func resumeHistoryReconstruct(entries []transcript.Entry) (repaired []schema.Turn, insertedAt []int, origins []int, foldID string, unresolvedSeqs []int) {
+	turns, origins, foldID, unresolvedSeqs := resumeTurns(entries)
+	repaired, _, insertedAt = repairOrphanedToolResultsIndexed(turns)
+	return repaired, insertedAt, origins, foldID, unresolvedSeqs
+}
+
+// ResumeHistory extracts the history needed for session resume from transcript
+// entries. When a compaction fold record exists, it rebuilds the exact history
+// that fold left live: the marker(s) it names, the pre-existing turns it kept
+// (by Seq), then everything recorded after the record. Absent a record, a
+// legacy marker anchor returns [last compaction turn, ...subsequent], and an
+// uncompacted transcript returns all turns.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	turns, _ := resumeHistoryIndexed(entries)
 	return turns

@@ -103,7 +103,7 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	}
 	have := make([]string, 0, len(fileLines))
 	for _, line := range fileLines {
-		if trender_isAttentionResolution(line) {
+		if trender_isPrivateRecord(line) {
 			continue
 		}
 		have = append(have, trender_canonicalEntry(line, true))
@@ -111,10 +111,11 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	return trender_isSubsequence(want, have)
 }
 
-// trender_isAttentionResolution reports whether a JSONL entry line carries the
-// private turn kind publicTranscriptLine refuses to render. A line that is not a
+// trender_isPrivateRecord reports whether a JSONL entry line carries a private
+// turn kind publicTranscriptLine refuses to render (an attention resolution or
+// a fold record — schema.TurnKind.IsPrivateRecord). A line that is not a
 // decodable entry is not one, which leaves it to the ordinary comparison.
-func trender_isAttentionResolution(line string) bool {
+func trender_isPrivateRecord(line string) bool {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return false
@@ -127,7 +128,7 @@ func trender_isAttentionResolution(line string) bool {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return false
 	}
-	return kind == schema.TurnAttentionResolution
+	return kind.IsPrivateRecord()
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
@@ -312,6 +313,12 @@ func FuzzRawLinesForRange(f *testing.F) {
 		{`{"kind":"header","format_version":2,"session_id":"s1","system_prompt":"private"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}}
 {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT"}}`, 0, 1},
+		// A private fold record between two ordinary entries: the projection must
+		// omit it, and the oracle's subsequence check must expect it omitted.
+		{`{"kind":"header","format_version":2,"session_id":"sfold"}
+{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}}
+{"kind":"entry","seq":1,"turn":{"kind":"FOLD_RECORD","fold_record":{"fold_id":"1","layers":[0],"retained_seqs":[0]}}}
+{"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT"}}`, 0, 2},
 		{`{"kind":"header","format_version":2,"session_id":"s2"}
 {"kind":"entry"}
 not json
@@ -518,7 +525,7 @@ func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if err := w.Append(entry.Turn); err != nil {
+		if _, err := w.Append(entry.Turn); err != nil {
 			_ = w.Close()
 			t.Fatal(err)
 		}
@@ -596,7 +603,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if err := w.Append(entry.Turn); err != nil {
+		if _, err := w.Append(entry.Turn); err != nil {
 			_ = w.Close()
 			t.Fatal(err)
 		}

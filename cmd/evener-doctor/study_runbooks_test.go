@@ -52,7 +52,7 @@ func writeStudySession(t *testing.T, base, sid string, turns []schema.Turn) (buc
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}

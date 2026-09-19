@@ -47,7 +47,7 @@ func FuzzTranscriptWriterRoundTrip(f *testing.F) {
 			t.Fatalf("new writer: %v", err)
 		}
 		for _, turn := range turns {
-			if err := w.Append(turn); err != nil {
+			if _, err := w.Append(turn); err != nil {
 				t.Fatalf("append turn: %v", err)
 			}
 		}
@@ -61,7 +61,7 @@ func FuzzTranscriptWriterRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatalf("reopen writer: %v", err)
 		}
-		if err := w2.Append(schema.Turn{Kind: schema.TurnUserInput}); err != nil {
+		if _, err := w2.Append(schema.Turn{Kind: schema.TurnUserInput}); err != nil {
 			t.Fatalf("append after reopen: %v", err)
 		}
 		if err := w2.Close(); err != nil {

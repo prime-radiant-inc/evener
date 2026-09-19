@@ -341,9 +341,9 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			live.SkillState = live.SkillState.Clone()
 			persisted.SkillState = persisted.SkillState.Clone()
 			if err := s.appendTurnAfterTranscriptWrite(
-				persisted,
-				func() error { return s.writeTranscriptSyncedLocked(persisted) },
-				func() {
+				func() (int, error) { return s.writeTranscriptSyncedLocked(persisted) },
+				func(seq int) {
+					live.Seq = seq
 					s.history = append(s.history, live)
 					s.consumeSkillReloadReminderLocked(publicationID)
 				},

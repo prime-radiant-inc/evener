@@ -1214,8 +1214,8 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 		t.Fatalf("clientMutationQueue: %v", err)
 	}
 	queued := sess.popQueueHead()
-	sess.clientMutationTranscriptAppend = func(schema.Turn) error {
-		return errors.New("injected transcript append failure")
+	sess.clientMutationTranscriptAppend = func(schema.Turn) (int, error) {
+		return 0, errors.New("injected transcript append failure")
 	}
 
 	ctx := withQueuedClientMutation(context.Background(), queued)
@@ -1319,8 +1319,8 @@ func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing
 	if got := sess.SteeringQueueSnapshot(); len(got) != 0 {
 		t.Fatalf("claimed steering was reprojected before append outcome: %#v", got)
 	}
-	sess.clientMutationTranscriptAppend = func(schema.Turn) error {
-		return errors.New("injected transcript append failure")
+	sess.clientMutationTranscriptAppend = func(schema.Turn) (int, error) {
+		return 0, errors.New("injected transcript append failure")
 	}
 	sess.consumeSteeringMessage(msg)
 

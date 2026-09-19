@@ -3331,6 +3331,18 @@ func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStab
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("warm stable delegate retained no child session %q", fixture.childID)
 	}
+	// Completing the warm result acknowledges it, but the warm run's own
+	// finalization is a short async tail. Wait for the delegate to be fully
+	// idle before returning: a caller that immediately starts another turn
+	// would otherwise race the tail and get target_busy (delegate still
+	// finalizing) under load, which the send path is right to refuse.
+	// TRIPWIRE: the warm run is served by a scripted in-process adapter, so it
+	// finalizes in milliseconds; this bound only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, fmt.Sprintf("warm stable delegate %q to quiesce", fixture.childID), func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return !sub.running && !sub.driving && !sub.finalizing
+	})
 	return sub
 }
 

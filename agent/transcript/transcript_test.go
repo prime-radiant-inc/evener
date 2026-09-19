@@ -87,7 +87,7 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	defer w.Close()
 
 	// Write one successful entry (seq 0).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
 		t.Fatalf("Append 0: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	w.mu.Unlock()
 
 	// This Append should fail (file is closed).
-	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")))
+	_, err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")))
 	if err == nil {
 		t.Fatal("expected error from Append on closed file")
 	}
@@ -113,7 +113,7 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 
 	// The next successful write should use seq 1 (not seq 2, which would
 	// indicate the failed write incremented seq).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
 		t.Fatalf("Append after reopen: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 
 	// Write several entries rapidly.
 	for i := range 5 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -209,7 +209,7 @@ func TestWriter_AppendDurableSyncsWithinInterval(t *testing.T) {
 	w.SyncInterval = 1 * time.Hour
 
 	before := time.Now()
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
 		t.Fatalf("AppendDurable: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	w.SyncInterval = 1 * time.Millisecond
 
 	// Write first entry.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -260,7 +260,7 @@ func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	w.mu.Unlock()
 
 	// Next write should trigger a sync because the interval has elapsed.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
 	w.SyncInterval = 0
 
 	for i := range 3 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 		// After each write with zero interval, dirty should be false.

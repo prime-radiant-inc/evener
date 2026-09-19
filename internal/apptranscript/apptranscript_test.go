@@ -52,7 +52,7 @@ func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind:      schema.TurnUserInput,
 		Message:   llm.User("hello"),
 		Timestamp: ts,
@@ -119,7 +119,7 @@ func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t
 			SteeringSource:   events.SteeringSourceUser,
 		},
 	} {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -170,7 +170,7 @@ func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind:         schema.TurnSteering,
 		Message:      llm.User("steering decoded once"),
 		Timestamp:    ts,
@@ -358,7 +358,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1306,5 +1306,20 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	}, toolNames, nil, nil)
 	if len(items) != 1 || items[0].StartedAt != nil {
 		t.Fatalf("zero-timestamp tool call item StartedAt=%v, want nil", items[0].StartedAt)
+	}
+}
+
+// A compaction fold record is durable bookkeeping the resume path reads to
+// rebuild history; it is never part of live history and carries no displayable
+// content, so the reload projector must emit no item for it — exactly as the
+// live path never sees one. Its presence between two ordinary turns must not
+// disturb their projection either.
+func TestProjectTurn_FoldRecordProjectsNothing(t *testing.T) {
+	items := ProjectTurn("turn_fold", 2, schema.Turn{
+		Kind: schema.TurnFoldRecord,
+		Fold: &schema.FoldRecord{FoldID: "fold-3", Layers: []int{4}, RetainedSeqs: []int{1, 2, 3}},
+	}, map[string]string{}, nil, nil)
+	if len(items) != 0 {
+		t.Fatalf("fold record projected %d items, want 0: %+v", len(items), items)
 	}
 }

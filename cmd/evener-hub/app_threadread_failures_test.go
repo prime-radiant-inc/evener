@@ -71,13 +71,13 @@ func seedPastSessionWithShellExits(t testing.TB, divergenceTurn int, rounds []sh
 			Kind:       llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "shell", Content: "output", ToolState: state},
 		}}}
-		if err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("run it")}); err != nil {
+		if _, err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("run it")}); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: announce}); err != nil {
+		if _, err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: announce}); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: results}); err != nil {
+		if _, err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: results}); err != nil {
 			t.Fatal(err)
 		}
 	}

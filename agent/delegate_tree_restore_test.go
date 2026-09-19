@@ -212,7 +212,7 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 	runtime := &Session{id: sessionID, stateDir: c.stateDir, transcript: writer, transcriptReady: true}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 	attention.AttentionID = "attention-live"
-	if err := runtime.writeTranscriptDurable(attention); err != nil {
+	if _, err := runtime.writeTranscriptDurable(attention); err != nil {
 		t.Fatalf("write attention: %v", err)
 	}
 	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
@@ -247,7 +247,7 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 		t.Fatalf("stop remained after live cleanup: %#v", c.stop)
 	}
 	ordinary := schema.NewTurn(schema.TurnSteering, llm.User("resident write after cleanup"))
-	if err := runtime.writeTranscriptDurable(ordinary); err != nil {
+	if _, err := runtime.writeTranscriptDurable(ordinary); err != nil {
 		t.Fatalf("resident write after cleanup: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -308,7 +308,7 @@ func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *t
 			}
 			attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 			attention.AttentionID = "attention-live-unusable"
-			if err := writer.AppendDurable(attention); err != nil {
+			if _, err := writer.AppendDurable(attention); err != nil {
 				_ = writer.Close()
 				t.Fatalf("AppendDurable attention: %v", err)
 			}
@@ -778,7 +778,7 @@ func writeDelegateAttentionTranscript(t *testing.T, path, sessionID, attentionID
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.AppendDurable(turn); err != nil {
 		_ = writer.Close()
 		t.Fatalf("AppendDurable attention: %v", err)
 	}
@@ -795,7 +795,7 @@ func appendDelegateAttentionTurn(t *testing.T, path, sessionID, attentionID stri
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.AppendDurable(turn); err != nil {
 		_ = writer.Close()
 		t.Fatalf("AppendDurable attention: %v", err)
 	}

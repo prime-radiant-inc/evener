@@ -32,7 +32,7 @@ func largeEntryProjectionFixture(t testing.TB) (string, transcript.Header, []tra
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d with some body text to make the line realistic", i)))
 		turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}

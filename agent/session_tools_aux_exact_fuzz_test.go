@@ -315,7 +315,7 @@ func auxFindExact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("find needle"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("find needle"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

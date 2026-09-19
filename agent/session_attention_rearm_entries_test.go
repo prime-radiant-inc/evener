@@ -36,14 +36,14 @@ func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Sessio
 	pending := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_rearm">stay pending</delegate-notification>`))
 	pending.AttentionID = pendingID
 	pending.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(pending); err != nil {
+	if _, err := writer.AppendDurable(pending); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append pending attention: %v", err)
 	}
 	consumed := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_rearm">already resolved</delegate-notification>`))
 	consumed.AttentionID = consumedID
 	consumed.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(consumed); err != nil {
+	if _, err := writer.AppendDurable(consumed); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append consumed attention: %v", err)
 	}
@@ -53,7 +53,7 @@ func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Sessio
 		Disposition:      string(delegateAttentionConsumed),
 		ResumeGeneration: 0,
 	}
-	if err := writer.AppendDurable(resolution); err != nil {
+	if _, err := writer.AppendDurable(resolution); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append resolution: %v", err)
 	}

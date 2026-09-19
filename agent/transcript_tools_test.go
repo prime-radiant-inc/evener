@@ -66,7 +66,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("expanded", 4000)))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("expanded", 4000)))); err != nil {
 		_ = w.Close()
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func writeFindSession(t *testing.T, bucketDir string, spec findMetaSpec, turnTex
 	if err != nil {
 		t.Fatalf("write find transcript %s: %v", spec.id, err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(turnText))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(turnText))); err != nil {
 		t.Fatalf("append find turn %s: %v", spec.id, err)
 	}
 	if err := tw.Close(); err != nil {
@@ -592,11 +592,11 @@ func writeMultiTurnSession(t *testing.T, bucketDir string, spec findMetaSpec, nT
 	}
 	for i := range nTurns {
 		if i%2 == 0 {
-			if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("user turn"))); err != nil {
+			if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("user turn"))); err != nil {
 				t.Fatalf("append user turn %d: %v", i, err)
 			}
 		} else {
-			if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant turn"))); err != nil {
+			if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant turn"))); err != nil {
 				t.Fatalf("append assistant turn %d: %v", i, err)
 			}
 		}
@@ -628,7 +628,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 	callID := "call-expand-001"
 	toolCallArgs := json.RawMessage(`{"command":"ls -la"}`)
 	// Turn 0: user
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run a command"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run a command"))); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
 	// Turn 1: assistant with tool call
@@ -642,7 +642,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 			}},
 		},
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
 		t.Fatalf("append assistant tool-call turn: %v", err)
 	}
 	// Build a large result body: 60 UNIQUE non-empty lines so head+tail truncation
@@ -663,7 +663,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 			}},
 		},
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnToolResults, resultMsg)); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnToolResults, resultMsg)); err != nil {
 		t.Fatalf("append tool-result turn: %v", err)
 	}
 	if err := tw.Close(); err != nil {

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -307,6 +308,12 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
+		if takesNoLogicalTurn(record.TurnKind) {
+			// Transparent to grouping: it takes no group and no ordinal, and
+			// leaves the open group open, exactly as the full projection's
+			// accumulator does (takesNoLogicalTurn).
+			continue
+		}
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
@@ -714,6 +721,27 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 	return index, stats, nil
 }
 
+// lastGroupingKind is the kind of the most recent record that took a logical
+// turn: the batch this scan has appended so far, then the committed index
+// behind it. Fold records are transparent to grouping (takesNoLogicalTurn), so
+// the entry after one continues whatever group was open before the record --
+// and a scan that resumes at the committed size can BEGIN on a fold record, so
+// the answer is often in the index rather than the batch. Empty means the
+// transcript starts here and nothing precedes this entry.
+func lastGroupingKind(appended []indexedTurn, index turnIndexDisk) schema.TurnKind {
+	for _, record := range slices.Backward(appended) {
+		if !takesNoLogicalTurn(record.TurnKind) {
+			return record.TurnKind
+		}
+	}
+	for i := index.recordCount() - 1; i >= 0; i-- {
+		if kind := index.recordAt(i).TurnKind; !takesNoLogicalTurn(kind) {
+			return kind
+		}
+	}
+	return ""
+}
+
 func validIndexedItemCounts(ctx context.Context, index turnIndexDisk) (bool, error) {
 	for i := 0; i < index.recordCount(); i++ {
 		if err := ctx.Err(); err != nil {
@@ -909,12 +937,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					openTurnID, openCalls = openGroupState(*index)
 				}
 			}
-			prevKind := schema.TurnKind("")
-			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
-			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
-			}
+			prevKind := lastGroupingKind(appended, *index)
 			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
 			if record.StartsGroup {
 				openTurnID = record.TurnID

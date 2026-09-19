@@ -60,12 +60,29 @@ func groupOpenAfter(kind schema.TurnKind) bool {
 	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
 }
 
+// takesNoLogicalTurn reports whether a persisted record is absent from live
+// history and so must take no logical turn of its own on reload: the live
+// snapshot never allocated an entry ordinal for it, and one allocated here
+// would push every later item one ordinal on, so the same item would carry
+// different keys live and after a reload. Only the compaction fold record is
+// such an entry -- it is written after the fold's markers and read only by
+// ResumeHistory. The other private record, ATTENTION_RESOLUTION, IS a live
+// history turn (the session appends it and folds preserve it), so it keeps its
+// own logical turn. The entry is transparent, not deleted: raw entry indexes,
+// and therefore every persisted turn id, are unchanged.
+func takesNoLogicalTurn(kind schema.TurnKind) bool {
+	return kind == schema.TurnFoldRecord
+}
+
 // recordStartsGroup reports whether a record of this kind starts a new
 // logical group given the kind of the record immediately before it ("" when
 // there is none). Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
 func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
+	if takesNoLogicalTurn(kind) {
+		return false
+	}
 	if opensLogicalTurn(kind, goalContinuation) {
 		return true
 	}
@@ -107,6 +124,11 @@ type logicalTurnAccumulator struct {
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	kind := entry.Kind
+	if takesNoLogicalTurn(kind) {
+		// Transparent: no group, no ordinal, and the open group stays open, so
+		// the entries around it group exactly as they did in live history.
+		return
+	}
 	owner := entry.OwningTurnID
 	switch {
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):

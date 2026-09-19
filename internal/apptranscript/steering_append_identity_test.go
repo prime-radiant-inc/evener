@@ -31,7 +31,7 @@ func TestSteeringOwnerIncrementalIndexIdentity(t *testing.T) {
 
 		appendTurn := func(turn schema.Turn) {
 			t.Helper()
-			if err := writer.Append(turn); err != nil {
+			if _, err := writer.Append(turn); err != nil {
 				t.Fatalf("Append %s: %v", turn.Kind, err)
 			}
 		}

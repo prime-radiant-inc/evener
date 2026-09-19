@@ -11,6 +11,26 @@ import (
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string
 
+// IsPrivateRecord reports whether a turn of this kind is durable bookkeeping
+// with no model-visible content: an attention-resolution marker or a
+// compaction fold record. Every public projection over transcript entries
+// (markdown, outline, ATIF, the read_transcript tool, doctor reconstruction,
+// fork-context inheritance) omits these; the model-request builders drop them
+// too. Sites with attention-mechanics semantics (resolution matching,
+// attention-transparent history) are NOT this predicate — they act on
+// TurnAttentionResolution specifically and a fold record is not an attention
+// turn.
+func (k TurnKind) IsPrivateRecord() bool {
+	return k == TurnAttentionResolution || k == TurnFoldRecord
+}
+
+// NoTranscriptEntrySeq marks a Turn.Seq that names no durable transcript
+// entry: a repair synthetic, a strategy injection, or a turn whose write
+// failed. It is negative so it can never collide with a real 0-based Entry.Seq;
+// the compaction fold omits such turns from the fold record, and resume never
+// resolves the sentinel to an entry.
+const NoTranscriptEntrySeq = -1
+
 const (
 	// TurnUserInput is a turn carrying input from the user.
 	TurnUserInput TurnKind = "USER_INPUT"
@@ -68,7 +88,42 @@ const (
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
+	// TurnFoldRecord is a compaction fold's durable manifest: it names, by
+	// transcript Seq, the entries the newly published folded history is made
+	// of, so a restart reconstructs exactly the history the fold left live
+	// instead of anchoring on the last marker and dropping the retained tail
+	// (issue #1200). The record itself is never part of live history — it
+	// carries Turn.Fold, is written after the fold's markers, and is used only
+	// by ResumeHistory. Projections skip it (no item), and expandHistory never
+	// sees it because it is not added to Session.history.
+	TurnFoldRecord TurnKind = "FOLD_RECORD"
 )
+
+// FoldRecord is the durable manifest a compaction fold writes so a restart can
+// rebuild the history it left live. The folded history is reconstructed as the
+// Layers entries (this fold's own marker turns, at the head) followed by the
+// Retained entries (the pre-existing turns the fold kept, in history order),
+// each looked up by transcript Seq, followed by every entry recorded after the
+// record. It replaces the pre-#1200 scheme of re-appending persisted pair
+// forms after the markers, which the last-marker resume anchor silently
+// dropped along with the retained tail.
+type FoldRecord struct {
+	// FoldID is this publication's identity (the winning fold's history
+	// revision), unique per recorded fold — a debugging/idempotency handle,
+	// never reused by a later fold.
+	FoldID string `json:"fold_id"`
+	// Layers holds the transcript Seqs of this fold's own marker turns that
+	// head the resumed history: the summary's Seq (or the checkpoint's, when
+	// summarization did not run). The checkpoint entry that a summary replaced
+	// is written for its receipt but is not listed here — it is not part of
+	// the live folded history.
+	Layers []int `json:"layers"`
+	// RetainedSeqs holds the transcript Seqs of the pre-existing turns the fold
+	// kept — the preserved recent tail, the turns recorded during the fold that
+	// it merged back, and any steering it injected — in resumed-history order
+	// after the markers. These are exactly the entries #1200's anchor dropped.
+	RetainedSeqs []int `json:"retained_seqs"`
+}
 
 // AttentionResolutionInfo identifies one durable attention item and its
 // terminal disposition. The resolution is append-only so cold reconciliation
@@ -199,7 +254,15 @@ type GoalContinuationInfo struct {
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
-	Kind      TurnKind    `json:"kind"`      // category of this history item
+	Kind TurnKind `json:"kind"` // category of this history item
+	// Seq is the transcript Entry.Seq this turn was written as — its durable,
+	// monotonic per-line id (>= 0). In-memory only (json:"-"): it is stamped
+	// when the turn is appended to the transcript (or seeded from the entry on
+	// restore), and the compaction fold names the entries it retains by these
+	// Seqs. It is NoTranscriptEntrySeq (negative) on a turn that names no
+	// durable entry — a repair synthetic, a strategy injection, or a turn whose
+	// write failed — so the fold omits it and resume never resolves it.
+	Seq       int         `json:"-"`
 	Message   llm.Message `json:"message"`   // the underlying LLM message
 	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
 	// Usage carries the token-usage stats reported by the provider; set only on
@@ -255,6 +318,14 @@ type Turn struct {
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseContextMarker           string `json:"response_context_marker,omitempty"`
+	// Fold is set only on TurnFoldRecord turns: the compaction fold's durable
+	// manifest of the entries its published history is made of. Nil everywhere
+	// else. A new wire field, so a transcript that carries a fold record is
+	// unreadable to a pre-#1200 daemon (its strict decoder rejects the unknown
+	// field and, decoding whole-transcript in one pass, the whole file) until
+	// that daemon restarts on a build that declares it — the same one-way door
+	// every prior schema.Turn field addition opened (kata wf7e).
+	Fold *FoldRecord `json:"fold_record,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

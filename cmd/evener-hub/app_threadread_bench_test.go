@@ -56,7 +56,7 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	appendTurn := func(turn schema.Turn) {
 		seq++
 		turn.Timestamp = time.Unix(1_700_000_000+int64(seq), 0).UTC()
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Append(turn); err != nil {
 			tb.Fatal(err)
 		}
 	}

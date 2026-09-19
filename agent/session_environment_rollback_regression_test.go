@@ -263,21 +263,6 @@ func historyEnvironmentTurnIDs(sess *Session) []string {
 	return ids
 }
 
-// pairLogEnvironmentTurnIDs lists the ENVIRONMENT turns recorded in the
-// append/write pair log, the forms a fold publication re-appends after its
-// compaction markers.
-func pairLogEnvironmentTurnIDs(sess *Session) []string {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	var ids []string
-	for _, turn := range sess.persistedAppendLog {
-		if turn.Kind == schema.TurnEnvironment {
-			ids = append(ids, turn.StableTurnID)
-		}
-	}
-	return ids
-}
-
 // assertEnvironmentTrackerMatchesModelHistory requires the environment tracker
 // to describe exactly what the model has been shown: replaying the ENVIRONMENT
 // blocks in history has to land on the tracker's own state. A tracker advanced
@@ -589,10 +574,9 @@ func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T)
 // entry whose own fsync failed, then its barrier (a second fsync, past the
 // one-shot injected failure) makes it durable — so the write succeeds and
 // commits with no error. Everything the clean path does with a committed
-// environment entry has to happen too — model history, the pair log a fold
-// publication replays after its markers, the persisted tracker state, and the
-// live ENVIRONMENT event — or the model and every watching client omit a block
-// that cold restore reads straight out of the transcript.
+// environment entry has to happen too — model history, the persisted tracker
+// state, and the live ENVIRONMENT event — or the model and every watching
+// client omit a block that cold restore reads straight out of the transcript.
 func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
@@ -610,9 +594,6 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 
 	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("model history environment turns = %v, want the confirmed durable entry %v", got, confirmed)
-	}
-	if got := pairLogEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
-		t.Fatalf("pair-log environment turns = %v, want the confirmed durable entry %v", got, confirmed)
 	}
 	if got := environmentEventTurnIDs(t, drainPendingEvents(sess)); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("live environment events = %v, want the confirmed durable entry %v", got, confirmed)
@@ -755,7 +736,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	// write that stops partway with no rollback behind it.
 	fs := attachEnvironmentFailureFS(t, sess)
 	armEnvironmentPartialWrite(fs)
-	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+	if _, err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
 		t.Fatal("partial transcript write reported success")
 	}
 
@@ -940,7 +921,7 @@ func poisonSessionTranscript(t *testing.T, sess *Session) {
 	t.Helper()
 	fs := attachEnvironmentFailureFS(t, sess)
 	armEnvironmentPartialWrite(fs)
-	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+	if _, err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
 		t.Fatal("partial transcript write reported success")
 	}
 	if !sess.attachedTranscript().Poisoned() {
@@ -1519,7 +1500,7 @@ func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
 func TestSyncedWriteRefusesAHeldPreAttachTurn(t *testing.T) {
 	s := &Session{id: "sess-not-ready", stateDir: t.TempDir()}
 	// transcriptReady is false: attachTranscript has not run.
-	if err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {
+	if _, err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {
 		t.Fatal("writeTranscriptSyncedLocked returned nil for a held pre-attach turn; an owner would read that as durable")
 	}
 }

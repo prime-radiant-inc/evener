@@ -1228,9 +1228,8 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
-			t,
-			func() error { return s.appendClientMutationTranscriptLocked(t) },
-			func() { s.history = append(s.history, t) },
+			func() (int, error) { return s.appendClientMutationTranscriptLocked(t) },
+			func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 		); err != nil {
 			// The steer did not land. The store never left accepted, so ending
 			// its in-flight window puts it back in the queue, parked runnable:
@@ -1356,9 +1355,8 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	}
 	turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
 	if err := s.appendTurnAfterTranscriptWrite(
-		turn,
-		func() error { return s.appendClientMutationTranscriptLocked(turn) },
-		func() { s.history = append(s.history, turn) },
+		func() (int, error) { return s.appendClientMutationTranscriptLocked(turn) },
+		func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 	); err != nil {
 		// The prominent record did not persist. Put the steering back so a
 		// later drain retries the failure instead of silently dropping it: a
@@ -1447,9 +1445,8 @@ func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID str
 	t.SteeringKind = kind
 	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
-		t,
-		func() error { return s.writeTranscriptSyncedLocked(t) },
-		func() { s.history = append(s.history, t) },
+		func() (int, error) { return s.writeTranscriptSyncedLocked(t) },
+		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

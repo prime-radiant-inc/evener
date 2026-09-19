@@ -194,7 +194,14 @@ func replaceSteeringMarkerTurn(ctx context.Context, history *[]schema.Turn, mark
 	}
 	*history = filtered
 
-	*history = append(*history, schema.NewTurn(schema.TurnSteering, llm.User(text)))
+	// A strategy's re-injected marker (memory crystals, distilled memory,
+	// orientation) lives only in model history; it is never written to the
+	// transcript, so it carries no durable entry. Mark it as such (a negative
+	// Seq) so a compaction fold omits it from the fold record rather than
+	// naming its zero value as entry 0 — the strategy re-injects it each fold.
+	injected := schema.NewTurn(schema.TurnSteering, llm.User(text))
+	injected.Seq = schema.NoTranscriptEntrySeq
+	*history = append(*history, injected)
 
 	reportPostFoldInjection(ctx, len(*history)-preLen+removedBeforeBaseline)
 }

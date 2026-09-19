@@ -114,7 +114,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				if err != nil {
 					t.Fatalf("open owed attention transcript: %v", err)
 				}
-				if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, delegateAttentionConsumed, 1)); err != nil {
+				if _, err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, delegateAttentionConsumed, 1)); err != nil {
 					_ = writer.Close()
 					t.Fatalf("append owed resolution: %v", err)
 				}

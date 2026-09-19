@@ -157,7 +157,7 @@ func writeOneHistoricalJob(t *testing.T, stateDir, sessionID string) {
 // mirroring the writer idiom from atif_test.go.
 func appendTurnWithUsage(t *testing.T, tw *transcript.Writer, usage llm.Usage) {
 	t.Helper()
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Append(schema.Turn{
 		Kind:      schema.TurnAssistant,
 		Message:   llm.Assistant("done"),
 		Timestamp: time.Unix(402, 0).UTC(),

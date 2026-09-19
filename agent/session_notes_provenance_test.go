@@ -353,7 +353,8 @@ func TestInheritedHistoryIsEscapedWithoutAJournalInReach(t *testing.T) {
 		{Turn: schema.Turn{Kind: schema.TurnSteering, ClientMutationID: id, Message: llm.User(ordinary)}},
 	}
 
-	out := escapeInheritedHistory(inherited)
+	durable, order := splitInheritedContext(inherited)
+	out, _ := escapeInheritedHistory(durable, order)
 	if len(out) != 2 {
 		t.Fatalf("inherited history = %d turns, want 2", len(out))
 	}
@@ -490,7 +491,7 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the child wrote after inheriting")},
 		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.AppendDurable(turn); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -581,7 +582,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 		{Kind: schema.TurnSteering, ClientMutationID: collideID, Message: llm.User(inheritedText)},
 		{Kind: schema.TurnUserInput, Message: llm.User("child own turn")},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.AppendDurable(turn); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -615,6 +616,110 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 	got := modelBoundText(restored)
 	if !strings.Contains(got, inheritedText) {
 		t.Fatalf("the inherited steer lost bytes to the child's colliding record: %q", got)
+	}
+}
+
+// A fold re-inserts the older turns it retained AFTER its own head marker, so a
+// restored fork's history interleaves provenance: the child's marker, the
+// parent's retained turns, the child's own tail. A boundary counted as a leading
+// run of inherited turns stops at the marker and hands every retained turn to
+// the child's journal, whose colliding record says note and strips bytes the
+// parent wrote.
+func TestRestoredFoldRetainedParentTurnKeepsItsBytes(t *testing.T) {
+	t.Parallel()
+	const sessionID = "01KFOLDRETAINEDBOUND000000"
+	const collideID = "cm-collide-notes"
+	const ownID = "cm-own-after-fold"
+	const inheritedText = "keep \x1b[31mthese\x1b[0m parent bytes"
+	const ownText = "run the child tests\x1b[31mwith red lines\x1b[0m"
+	stateDir := t.TempDir()
+
+	store, err := newClientMutationStore(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(func(snapshot *clientMutationSnapshot) error {
+		for _, id := range []string{collideID, ownID} {
+			req := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, id, struct{ Note string }{Note: "child note"})
+			snapshot.Journal[id] = clientMutationRecord{
+				ClientMutationID:  id,
+				Method:            req.Method,
+				Payload:           req.Payload,
+				PayloadHash:       req.PayloadHash,
+				OperationState:    clientMutationOperationTerminal,
+				ExecutionState:    "incorporated",
+				ProjectionState:   appwire.MutationProjectionReflected,
+				AttemptGeneration: 1,
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The child's transcript: a parent user turn and a kindless parent steering
+	// turn whose id collides with a child note record (both inherited), the
+	// child's own kindless note-origin steer, then the fold's checkpoint marker
+	// and the record naming the marker plus the two turns the fold retained.
+	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("new transcript writer: %v", err)
+	}
+	var seqs []int
+	for _, turn := range []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("parent user turn")},
+		{Kind: schema.TurnSteering, ClientMutationID: collideID, Message: llm.User(inheritedText)},
+		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
+		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the fold wrote")},
+	} {
+		seq, err := tw.AppendDurable(turn)
+		if err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		seqs = append(seqs, seq)
+	}
+	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
+	record.Fold = &schema.FoldRecord{FoldID: "fold-1", Layers: []int{seqs[3]}, RetainedSeqs: []int{seqs[1], seqs[2]}}
+	if _, err := tw.AppendDurable(record); err != nil {
+		t.Fatalf("append fold record: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		// Two inherited turns precede the child's own history.
+		ParentSessionID: "01KPARENT0000000000000000",
+		DivergenceTurn:  3,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	got := modelBoundText(restored)
+	if !strings.Contains(got, inheritedText) {
+		t.Fatalf("the retained inherited steer lost bytes to the child's colliding record: %q", got)
+	}
+	if strings.Contains(got, ownText) {
+		t.Fatalf("the child's own note-origin turn kept its controls through a folded resume: %q", got)
 	}
 }
 

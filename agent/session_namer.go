@@ -466,7 +466,7 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	publishedRevision := s.newestPublishedFoldRevision
 	s.mu.Unlock()
 	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(t)
+	_, writeErr := s.writeTranscriptLocked(t)
 	if isSessionNameCompactionTurn(t) {
 		s.mu.Lock()
 		changed := s.resetEnvContextTrackerLocked()

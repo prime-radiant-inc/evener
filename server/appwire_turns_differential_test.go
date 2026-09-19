@@ -33,7 +33,7 @@ func writeDifferentialFixture(t *testing.T, sessionID string) string {
 	}
 	appendTurn := func(turn schema.Turn) {
 		t.Helper()
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Append(turn); err != nil {
 			t.Fatalf("append %s: %v", turn.Kind, err)
 		}
 	}
@@ -188,5 +188,66 @@ func TestPrepareAppIdentityFromEntriesRejectsForeignHeader(t *testing.T) {
 	header.SessionID = "th_other"
 	if _, err := PrepareAppIdentityFromEntries("local", sessionID, appwire.Ref{SourceID: "local", ThreadID: sessionID}.String(), header, entries); err == nil {
 		t.Fatal("entries form accepted a header naming a different session")
+	}
+}
+
+// A fold record is never a live turn -- the fold writes it after its markers
+// and only ResumeHistory reads it -- so the wire projection of a reloaded
+// transcript must place every item exactly where the live session placed it.
+// An ordinal spent on the record would shift every item after the fold and
+// give the same item two different keys across a reload.
+func TestFoldRecordDoesNotShiftWireItemPositions(t *testing.T) {
+	const sessionID = "th_fold_record"
+	header := transcript.Header{SessionID: sessionID, CreatedAt: time.Unix(1_700_000_000, 0).UTC()}
+	live := []transcript.Entry{
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("before the fold")}},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("after the fold")}},
+	}
+	reloaded := []transcript.Entry{
+		live[0],
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{
+			Kind: schema.TurnFoldRecord,
+			Fold: &schema.FoldRecord{FoldID: "fold-1", Layers: []int{1}, RetainedSeqs: []int{0}},
+		}},
+		live[1],
+	}
+
+	liveTurns, _, err := appTurnsFromEntries(header, live)
+	if err != nil {
+		t.Fatalf("projection without the record: %v", err)
+	}
+	reloadedTurns, _, err := appTurnsFromEntries(header, reloaded)
+	if err != nil {
+		t.Fatalf("projection with the record: %v", err)
+	}
+	positions := func(turns []appwire.Turn) []string {
+		var out []string
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				out = append(out, item.TranscriptKey)
+			}
+		}
+		return out
+	}
+	// The ids differ by design (they are raw entry indexes, which the record
+	// occupies), so the shared fact is the ORDINAL each item sits at.
+	ordinals := func(turns []appwire.Turn) []uint64 {
+		var out []uint64
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Position == nil {
+					t.Fatalf("item %q has no position", item.TranscriptKey)
+				}
+				out = append(out, item.Position.Entry)
+			}
+		}
+		return out
+	}
+	if len(positions(liveTurns)) == 0 {
+		t.Fatal("fixture projected no items; the proof would be vacuous")
+	}
+	if !reflect.DeepEqual(ordinals(reloadedTurns), ordinals(liveTurns)) {
+		t.Fatalf("item ordinals with the fold record = %v, want the live %v (keys: %v vs %v)",
+			ordinals(reloadedTurns), ordinals(liveTurns), positions(reloadedTurns), positions(liveTurns))
 	}
 }

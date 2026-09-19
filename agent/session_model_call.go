@@ -248,7 +248,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			historyTurns = append([]schema.Turn{}, s.history...)
 			preManageLen := len(historyTurns)
 			snapRevision := s.historyRevision
-			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
 			// Variant B (forced note): if a compaction is imminent, elicit +
@@ -281,7 +280,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, historyTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
@@ -1714,9 +1713,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()
 			history = append(history, t.Message)
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution:
-			// Presentational telemetry and attention resolution can appear inside
-			// a tool round without interrupting it.
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord:
+			// Presentational telemetry, attention resolution, and a fold record
+			// (durable-only bookkeeping, defended here at the model boundary) can
+			// appear without interrupting a tool round; none is sent to the model.
 		case schema.TurnModelSwitch, schema.TurnFailure:
 			// Persisted switch/failure markers are presentational only and are
 			// never sent to the model.

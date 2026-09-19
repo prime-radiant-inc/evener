@@ -17,7 +17,7 @@ func TestNewWriterEmitsFormatVersionTwoAndSemanticEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -91,7 +91,7 @@ func TestOpenWriterToleratesOnlyIncompleteFinalLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := w.Close(); err != nil {

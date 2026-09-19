@@ -98,7 +98,7 @@ type delegateAttentionFold struct {
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
 	fold := newDelegateAttentionFold()
 	for _, entry := range entries {
-		turn := entry.Turn
+		turn := entry.Turn // Turn.Seq is seeded from Entry.Seq by DecodeEntry
 		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
 			return delegateAttentionFold{}, err
 		}
@@ -257,7 +257,7 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	// errors. A read-back would find a retained (recorded but unsynced) line
 	// and wrongly call it durable, so this side of delegate attention asks the
 	// writer, through AppendSynced, rather than the file.
-	if err := writer.AppendSynced(turn); err != nil {
+	if _, err := writer.AppendSynced(turn); err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
@@ -402,10 +402,15 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
 	// AppendSynced records AND syncs, or errors; a retained (recorded but
-	// unsynced) line the read-back would find is not durable.
-	if err := writer.AppendSynced(turn); err != nil {
+	// unsynced) line the read-back would find is not durable. Stamp the turn
+	// with the durable Seq it spent so retainDelegateAttentionTurn carries an
+	// entry-backed turn into history (not a Seq-0 turn a later fold's merge-back
+	// would resolve to the session's first entry).
+	seq, err := writer.AppendSynced(turn)
+	if err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
+	turn.Seq = seq // err is nil here (AppendSynced is fully durable or it errored above), so this is the recorded Seq
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
 	}
@@ -1000,13 +1005,14 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	}
 	ids := fold.pendingIDs()
 	// A pending attention's model-visible turn can be missing from the
-	// resumed history: attention turns carry no fold-publication rewrite
-	// (they are deliberately excluded from the pair log — their durability
-	// is attention-owned), so ResumeHistory's last-marker anchor drops any
-	// recorded before a compaction marker, and the attention would re-arm
-	// with no content explaining what must be addressed. The attention
-	// machinery owns its restart story, so restore the durable content here,
-	// before arming the wake: retain is ID-keyed
+	// resumed history: a fold record only names the turns its published
+	// history kept, and an attention turn recorded before a compaction and
+	// summarized out of the fold's tail is named by no record — its
+	// durability is attention-owned, not fold-owned — so ResumeHistory would
+	// not restore it and the attention would re-arm with no content
+	// explaining what must be addressed. The attention machinery owns its
+	// restart story, so restore the durable content here, before arming the
+	// wake: retain is ID-keyed
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
@@ -1063,11 +1069,23 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		// must not be able to publish over it and silently resurrect the
 		// stale resident turn.
 		s.history[index] = turn
+		s.readmitEntrySeqLocked(turn)
 		s.bumpHistoryRevisionLocked()
 		return nil
 	}
 	s.history = append(s.history, turn)
+	s.readmitEntrySeqLocked(turn)
 	return nil
+}
+
+// readmitEntrySeqLocked clears a turn's entry from the withdrawn set: this turn
+// is in live history again -- the read-back confirmed the entry the withdrawal
+// distrusted -- so a fold must name it like any other retained turn. Callers
+// hold mu.
+func (s *Session) readmitEntrySeqLocked(turn schema.Turn) {
+	if turn.Seq >= 0 {
+		delete(s.withdrawnSeqs, turn.Seq)
+	}
 }
 
 func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
@@ -1079,6 +1097,16 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			// not be able to publish over it and silently resurrect the
 			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			// The entry itself stays on disk (the transcript is append-only),
+			// so a fold that snapshotted this turn before the deletion would
+			// name it and bring it back on resume. Remember the entry as
+			// withdrawn; writeFoldRecordLocked never names one.
+			if turn.Seq >= 0 {
+				if s.withdrawnSeqs == nil {
+					s.withdrawnSeqs = map[int]bool{}
+				}
+				s.withdrawnSeqs[turn.Seq] = true
+			}
 			// Deleting a turn strictly before the N4 boundary shifts every
 			// in-flight turn left by one, so the boundary moves with them —
 			// atomically with the mutation.
@@ -1249,7 +1277,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		disposition = delegateAttentionDiscarded
 	}
 	if !resolved {
-		if err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+		if _, err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
 			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, err)
 		}
 	} else if err := reopened.EstablishDurability(); err != nil {
@@ -1283,7 +1311,7 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
+		if _, err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
 		fold.resolutions[attentionID] = disposition
@@ -1362,4 +1390,13 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 		}
 	}
 	return 0, false
+}
+
+// withdrawnEntrySeqs is the set of durable entry Seqs whose turn was withdrawn
+// from live history. A fold record never names one: its entry is still in the
+// transcript, so naming it would restore a turn the session dropped.
+func (s *Session) withdrawnEntrySeqs() map[int]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.withdrawnSeqs)
 }

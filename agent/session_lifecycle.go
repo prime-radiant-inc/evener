@@ -2348,14 +2348,16 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(turn)
+	seq, writeErr := s.writeTranscriptLocked(turn)
 	if writeErr != nil && s.attachedTranscript().Poisoned() {
 		s.attentionMu.Unlock()
 		return errors.Join(writeErr, errTranscriptRefusesRecords())
 	}
+	// The turn stays in model history even on a failed write, but carries no
+	// durable Seq then (recordedSeq — see its doc).
+	turn.Seq = recordedSeq(seq, writeErr)
 	s.mu.Lock()
 	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
 	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	if writeErr != nil {
@@ -2494,9 +2496,8 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
-			turn,
-			func() error { return s.appendClientMutationTranscriptLocked(turn) },
-			func() { s.history = append(s.history, turn) },
+			func() (int, error) { return s.appendClientMutationTranscriptLocked(turn) },
+			func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 		); err != nil {
 			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
 				return errors.Join(err, returnErr)

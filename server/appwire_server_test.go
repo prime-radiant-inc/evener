@@ -166,10 +166,10 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old input"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old input"))); err != nil {
 		t.Fatalf("Append user: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old output"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old output"))); err != nil {
 		t.Fatalf("Append assistant: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -1880,7 +1880,7 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1893,7 +1893,7 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append tool call: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
 		t.Fatalf("append tool result: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1924,7 +1924,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1953,10 +1953,10 @@ func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
 		t.Fatalf("append checkpoint: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
 		t.Fatalf("append summary: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1985,10 +1985,10 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -2711,7 +2711,7 @@ func TestAppTurnsFromTranscriptFileProjectsToolResultImages(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'e', 'e', 'd'}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
+	if _, err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
 		Role: llm.RoleTool,
 		Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -2779,10 +2779,10 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 	if err := w.Close(); err != nil {

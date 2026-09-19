@@ -157,7 +157,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// Resolution markers are private and transparent to tool-round
 			// structure, so look through them for this assistant's observation.
 			resultIndex := i + 1
-			for resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution {
+			for resultIndex < len(entries) && entries[resultIndex].Turn.Kind.IsPrivateRecord() {
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {
@@ -264,6 +264,11 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 
 		case schema.TurnAttentionResolution:
 			// Durable private correlation record; public export omits it.
+
+		case schema.TurnFoldRecord:
+			// Private resume bookkeeping (the entries a fold's history is made
+			// of, by Seq); it is not model-visible content, so export omits it
+			// rather than emit an empty source:"system" step.
 
 		default:
 			// A turn kind this exporter has not been taught. TurnKind is a

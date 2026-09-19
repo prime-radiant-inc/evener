@@ -307,7 +307,13 @@ func seedNumberedSessionHistory(t *testing.T, s *Session, n int) {
 	t.Helper()
 	s.mu.Lock()
 	for i := range n {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i))))
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i)))
+		// These seeded turns are placed straight into history without a
+		// transcript write, so they have no durable entry; mark them as such
+		// (never a bare Seq 0, which names entry 0). A fold correctly omits
+		// them from its record, exactly as the pre-A2 anchor dropped them.
+		turn.Seq = schema.NoTranscriptEntrySeq
+		s.history = append(s.history, turn)
 	}
 	s.mu.Unlock()
 }

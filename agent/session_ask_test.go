@@ -2159,10 +2159,10 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "ask1", Name: "ask_user", Arguments: askArgs, Type: "function"}},

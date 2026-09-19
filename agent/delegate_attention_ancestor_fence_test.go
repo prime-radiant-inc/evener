@@ -291,7 +291,7 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("undelivered grandchild message"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.AppendDurable(turn); err != nil {
 		t.Fatalf("append grandchild attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {

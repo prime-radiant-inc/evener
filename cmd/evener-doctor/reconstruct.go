@@ -430,7 +430,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		}
 		content := m.Content
 		switch turn.Kind {
-		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
+		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord, schema.TurnSteering:
 			// Native history permits these records inside a pending tool round.
 		default:
 			toolRoundOrdinal = m.Ordinal
@@ -514,6 +514,10 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			// originating delivery IDs that the archive omits; converting them to
 			// another turn kind would expose private bookkeeping to the model.
 			report.HistoricalAttentionRecords++
+			continue
+		case schema.TurnFoldRecord:
+			// Private resume bookkeeping (the entries a fold's history is made
+			// of, by Seq); it has no model content, so it is not reconstructed.
 			continue
 		case schema.TurnSystem, schema.TurnModelSwitch, schema.TurnFailure, schema.TurnHookCompleted:
 			turn.Message.Role = llm.RoleSystem

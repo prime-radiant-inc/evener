@@ -1079,7 +1079,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 			Phase:     skillCompactionReceiptCancelled,
 			Reason:    skillCompactionCancelForcedNotPublished,
 		}}
-		if err := writer.AppendDurable(cancelledTurn); err != nil {
+		if _, err := writer.AppendDurable(cancelledTurn); err != nil {
 			t.Fatalf("append fixture: %v", err)
 		}
 		if err := writer.Close(); err != nil {
@@ -1147,7 +1147,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 			Operation: schema.SkillCompactionOperation{Generation: 8, Origin: "forced", Phase: "published", PublicationID: "fold-9"},
 			Phase:     skillCompactionReceiptDelivered,
 		}}
-		if err := writer.AppendDurable(deliveredTurn); err != nil {
+		if _, err := writer.AppendDurable(deliveredTurn); err != nil {
 			t.Fatalf("append fixture: %v", err)
 		}
 		if err := writer.Close(); err != nil {
