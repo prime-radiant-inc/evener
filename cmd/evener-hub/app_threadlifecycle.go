@@ -433,23 +433,20 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		// Register before waiting for ownership; complete after every subsequent
 		// defer has released ownership and the launcher has confirmed cleanup.
 		defer func() { active.Complete(cleanupErr) }()
-		// Use force stop's sorted ownership order, retaining the original mutexes.
-		acquired := 0
 		var heldStarted time.Time
 		defer func() {
-			for _, id := range slices.Backward(aliases[:acquired]) {
-				cfg.ResumeLocks.For(id).Unlock()
-			}
+			// AcquireOwnership and ReleaseOwnership bracket the same span the
+			// reacquire loop used to, in the registration's sorted ownership
+			// order, and hubcore records the hold so a concurrent force stop
+			// can tell this launch's reservation from an unrelated action's.
+			active.ReleaseOwnership()
 			if !heldStarted.IsZero() {
 				trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 			}
 		}()
-		for _, id := range aliases {
-			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
-				lockDone(err)
-				return appwire.ThreadResumeResponse{}, err
-			}
-			acquired++
+		if err := active.AcquireOwnership(ctx); err != nil {
+			lockDone(err)
+			return appwire.ThreadResumeResponse{}, err
 		}
 		lockDone(nil)
 		heldStarted = time.Now()

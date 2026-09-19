@@ -322,3 +322,69 @@ func TestActiveResumeQueuedLaunchCannotPassFailedChildWithoutRecovery(t *testing
 	first.ChildReaped()
 	<-first.CleanupDone()
 }
+
+// TestActiveResumeOwnershipHoldCoversDrainGroup pins the hold tracking behind
+// the entry drain's deferral: between registration and AcquireOwnership a
+// Resume holds nothing — an unrelated action can hold the group's
+// reservations — while an acquired Resume provably does, so a force stop can
+// tell a launch's reservation from another action's.
+func TestActiveResumeOwnershipHoldCoversDrainGroup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := NewResumeLocks()
+		active, err := locks.RegisterResume(t.Context(), "owner", []string{"owner", "stable"}, resumeEpochs(locks, "owner", "stable"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if locks.HeldByActiveResumes([]string{"owner", "stable"}) {
+			t.Fatal("registration alone reported the Resume holding its reservations")
+		}
+		if err := active.AcquireOwnership(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if !locks.HeldByActiveResumes([]string{"owner", "stable"}) {
+			t.Fatal("acquired ownership was not attributed to the active Resume")
+		}
+		active.ReleaseOwnership()
+		if locks.HeldByActiveResumes([]string{"owner", "stable"}) {
+			t.Fatal("released ownership was still reported as held")
+		}
+		active.ReleaseOwnership() // idempotent
+		active.Complete(nil)
+	})
+}
+
+// TestActiveResumeOwnershipAcquireFailureReleasesPrefix pins the failure
+// path: an acquisition that parks behind an unrelated holder must release the
+// prefix it took when its context goes away, and the hold marks must not
+// report a group a parked acquisition only partially covers.
+func TestActiveResumeOwnershipAcquireFailureReleasesPrefix(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := NewResumeLocks()
+		active, err := locks.RegisterResume(t.Context(), "owner", []string{"owner", "stable"}, resumeEpochs(locks, "owner", "stable"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An unrelated action holds the second alias, so the acquisition
+		// parks after taking the first.
+		locks.For("stable").Lock()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		failed := make(chan error, 1)
+		go func() { failed <- active.AcquireOwnership(ctx) }()
+		synctest.Wait() // the acquisition is parked on the held alias
+		if locks.HeldByActiveResumes([]string{"owner", "stable"}) {
+			t.Fatal("partial acquisition reported the drain group covered")
+		}
+		cancel()
+		if err := <-failed; !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquisition = %v, want canceled", err)
+		}
+		if !locks.For("owner").TryLock() {
+			t.Fatal("failed acquisition kept the prefix locked")
+		}
+		locks.For("owner").Unlock()
+		active.ReleaseOwnership() // nothing is held; must not double-release
+		locks.For("stable").Unlock()
+		active.Complete(nil)
+	})
+}

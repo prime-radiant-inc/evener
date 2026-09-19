@@ -239,6 +239,12 @@ type ActiveResume struct {
 	// kill its own child; guarded by owner.mu. Retained until the child is
 	// confirmed reaped so the stop draining this Resume can retry it.
 	childCleanup func() error
+	// heldAliases records which of the registered aliases this Resume's
+	// handler currently holds the per-alias ownership reservation for, from
+	// AcquireOwnership until ReleaseOwnership, so a concurrent force stop can
+	// attribute a held reservation to a launch the drain will cancel rather
+	// than to an unrelated action. Guarded by owner.mu.
+	heldAliases map[string]bool
 }
 
 func (a *ActiveResume) Context() context.Context { return a.ctx }
@@ -247,6 +253,68 @@ func (a *ActiveResume) Context() context.Context { return a.ctx }
 // child has been confirmed reaped, or after a successful handoff. It is not the
 // handler completion edge.
 func (a *ActiveResume) CleanupDone() <-chan struct{} { return a.cleanupDone }
+
+// AcquireOwnership takes the per-alias ownership reservations of the
+// registered aliases, in the sorted registration order force stop's own
+// reservations use, and records the hold so a concurrent force stop can
+// attribute a held reservation to this launch rather than to an unrelated
+// action. On failure it releases the prefix it took.
+func (a *ActiveResume) AcquireOwnership(ctx context.Context) error {
+	acquired := 0
+	for _, alias := range a.aliases {
+		if err := a.owner.For(alias).LockContext(ctx); err != nil {
+			a.unmarkHeld(a.aliases[:acquired])
+			for _, held := range slices.Backward(a.aliases[:acquired]) {
+				a.owner.For(held).Unlock()
+			}
+			return err
+		}
+		a.markHeld(alias)
+		acquired++
+	}
+	return nil
+}
+
+func (a *ActiveResume) markHeld(alias string) {
+	r := a.owner
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a.heldAliases == nil {
+		a.heldAliases = make(map[string]bool)
+	}
+	a.heldAliases[alias] = true
+}
+
+func (a *ActiveResume) unmarkHeld(aliases []string) {
+	if len(aliases) == 0 {
+		return
+	}
+	r := a.owner
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		delete(a.heldAliases, alias)
+	}
+}
+
+// ReleaseOwnership gives back the per-alias ownership reservations
+// AcquireOwnership took. It is idempotent and safe to call whether
+// acquisition succeeded, failed partway, or never ran.
+func (a *ActiveResume) ReleaseOwnership() {
+	r := a.owner
+	r.mu.Lock()
+	var held []string
+	for _, alias := range slices.Backward(a.aliases) {
+		if a.heldAliases[alias] {
+			held = append(held, alias)
+			delete(a.heldAliases, alias)
+		}
+	}
+	r.mu.Unlock()
+	for _, alias := range held {
+		r.For(alias).Unlock()
+	}
+}
 
 // BeforeLaunch runs immediately before Start, while the caller owns all aliases.
 // It refuses to launch while another in-flight operation on the same aliases has
@@ -318,6 +386,8 @@ func (a *ActiveResume) settleLocked() {
 	if !a.handlerDone || (a.childPrepared && a.launchFailed && !a.childReaped) {
 		return
 	}
+	// A settled Resume holds nothing, whatever its handler left behind.
+	clear(a.heldAliases)
 	for _, alias := range a.aliases {
 		delete(r.active[alias], a)
 		if len(r.active[alias]) == 0 {
@@ -511,6 +581,30 @@ func (r *ResumeLocks) HasActiveResume(aliases []string) bool {
 		}
 	}
 	return false
+}
+
+// HeldByActiveResumes reports whether every alias's per-alias reservation is
+// currently held by an active Resume. A force stop that could not take a
+// drain group's reservations uses it to tell a launch that provably holds its
+// own aliases — and so blocks deletion publication across the drain — from an
+// unrelated action whose reservation may release inside the check-to-cancel
+// window.
+func (r *ResumeLocks) HeldByActiveResumes(aliases []string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		held := false
+		for active := range r.active[alias] {
+			if active.heldAliases[alias] {
+				held = true
+				break
+			}
+		}
+		if !held {
+			return false
+		}
+	}
+	return true
 }
 
 // ActiveResumeStopAliases resolves the ownership group BeginActiveResumeStop
