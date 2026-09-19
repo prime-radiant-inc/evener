@@ -50,7 +50,8 @@ const initialize: InitializeResponse = {
 	features: { keybindingsSettings: true, transcriptDisplaySettings: false },
 } as InitializeResponse;
 
-function clientFixture({ deferred = false } = {}) {
+function clientFixture({ deferred = false, failed = false, keybindingsError = false } = {}) {
+	let shouldFailKeybindings = keybindingsError;
 	const readyListeners = new Set<(value: InitializeResponse) => void>();
 	const notifications = new Set<(value: AnyNotification) => void>();
 	let resolveConnected!: () => void;
@@ -66,6 +67,9 @@ function clientFixture({ deferred = false } = {}) {
 	const requests: string[] = [];
 	const client = {
 		connect: async () => {
+			if (failed) {
+				throw new Error("handshake failed");
+			}
 			if (!deferred) {
 				for (const listener of readyListeners) listener(initialize);
 				resolveConnected();
@@ -84,8 +88,10 @@ function clientFixture({ deferred = false } = {}) {
 		},
 		request: async (method: string) => {
 			requests.push(method);
-			if (method === "evener/settings/keybindings/get")
+			if (method === "evener/settings/keybindings/get") {
+				if (shouldFailKeybindings) throw new Error("hub request failed");
 				return { version: 1, revision: 1, rules: [] };
+			}
 			throw new Error(`Unexpected request: ${method}`);
 		},
 	} as unknown as AppwireClient;
@@ -93,6 +99,9 @@ function clientFixture({ deferred = false } = {}) {
 		client,
 		connected,
 		requests,
+		setKeybindingsError: (value: boolean) => {
+			shouldFailKeybindings = value;
+		},
 		resolveConnect: (value = initialize) => {
 			for (const listener of readyListeners) listener(value);
 			resolveConnect(value);
@@ -253,6 +262,416 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
 			draft: { revision: 2, rules: [] },
 			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("reconciles a readable replacement into the retained snapshot while the same-hub client waits", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		expect(confirmed).toEqual({ version: 1, revision: 1, rules: [] });
+
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: true,
+		});
+		const replacement = clientFixture({ deferred: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: { revision: 2, rules: [] },
+			writeUncertain: true,
+			conflict: true,
+			error: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("tracks retained unreadable classification across storage failures and recovery", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+
+		writeDraft("hub-a", "{not json");
+		const unreadable = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: unreadable.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: true,
+			draftError:
+				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			storageUnavailable: true,
+			writeUncertain: false,
+		});
+
+		harness.storage.throwOnGet = true;
+		const failedProbe = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: failedProbe.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: true,
+			draftError:
+				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			storageUnavailable: true,
+		});
+
+		harness.storage.throwOnGet = false;
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		const readable = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: readable.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		const absent = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: absent.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+			writeUncertain: false,
+		});
+		mounted.unmount();
+	});
+
+	it("clears the retained unreadable projection after a failed same-hub replacement removes the record", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		expect(mounted.current.snapshot?.keybindings.storageUnavailable).toBe(true);
+
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		let outcome: unknown;
+		act(() => {
+			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+		});
+
+		expect(outcome).toBe("removed");
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: null,
+			writeUncertain: false,
+			conflict: false,
+			error: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("preserves an unrelated hub error across a failed probe and readable or absent recovery", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture({ keybindingsError: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 1, rules: [] },
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+
+		const replacement = clientFixture({ failed: true });
+		harness.storage.throwOnGet = true;
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 1, rules: [] },
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: true,
+		});
+
+		harness.storage.throwOnGet = false;
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "ready",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			conflict: false,
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			conflict: false,
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("preserves the hub source after unreadable discard and absent replacement", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draftError: expect.any(String),
+			hubError: null,
+			loadError: null,
+		});
+
+		let outcome: unknown;
+		await act(async () => {
+			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+			await Promise.resolve();
+		});
+		expect(outcome).toBe("removed");
+		first.setKeybindingsError(true);
+		await act(async () => {
+			await mounted.current.model?.refresh();
+		});
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftError: null,
+			hubError: "hub request failed",
+			loadError: null,
+			error: "The hub request could not be confirmed.",
+		});
+
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftError: null,
+			hubError: "hub request failed",
+			loadError: null,
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("clears an initial genuine storage failure when a replacement read succeeds", async () => {
+		harness.storage.throwOnGet = true;
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draftError: expect.any(String),
+			hubError: null,
+			loadError: null,
+			storageUnavailable: true,
+		});
+
+		harness.storage.throwOnGet = false;
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draftError: null,
+			hubError: null,
+			loadError: null,
+			error: null,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("clears a draft source while preserving a simultaneous hub source", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture({ keybindingsError: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		await act(async () => {
+			await mounted.current.model?.refresh();
+		});
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draftError: expect.any(String),
+			hubError: "hub request failed",
+			loadError: null,
+			error: expect.any(String),
+		});
+
+		harness.storage.throwOnGet = false;
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 2, rules: [] },
+			draftError: null,
+			hubError: "hub request failed",
+			loadError: null,
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("marks only the retained draft projection unavailable when replacement storage throws", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		const draft = mounted.current.snapshot?.keybindings.draft;
+
+		const replacement = clientFixture({ failed: true });
+		harness.storage.throwOnGet = true;
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft,
+			storageUnavailable: true,
 		});
 		mounted.unmount();
 	});

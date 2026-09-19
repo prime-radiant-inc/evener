@@ -9,6 +9,7 @@ import {
 	useState,
 } from "react";
 import {
+	decodeKeybindingDraftFields,
 	discardStoredKeybindingDraft,
 	isReadableKeybindingDraft,
 } from "@evener/appwire-client";
@@ -25,11 +26,13 @@ import {
 	nativeTranscriptDrafts,
 	rawStringDraftBackend,
 	readDraftOutcome,
+	readDraftOutcomeWithValue,
 } from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
 	NativePreferencesSnapshot,
 } from "./nativePreferences";
+import { keybindingsErrorMessage } from "./nativePreferences";
 
 interface Preferences {
 	hubId: string | null;
@@ -67,6 +70,86 @@ const Context = createContext<Preferences | null>(null);
 // nativePreferenceDrafts.test.ts's rawBytesBackend) - one implementation,
 // not a parallel reimplementation of the parse/compare logic.
 const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
+
+type DraftReadWithValue = ReturnType<typeof readDraftOutcomeWithValue>;
+
+const DRAFT_RESTORE_FAILED_MESSAGE =
+	"Could not restore the saved shortcut draft. Check current shortcuts to retry.";
+
+function reconcileRetainedDraftProjection(
+	snapshot: NativePreferencesSnapshot,
+	result: DraftReadWithValue,
+): NativePreferencesSnapshot {
+	const keybindings = snapshot.keybindings;
+	let draft = keybindings.draft;
+	let writeUncertain = keybindings.writeUncertain;
+	let storageUnavailable = keybindings.storageUnavailable;
+	let draftUnreadable = keybindings.draftUnreadable;
+	let conflict = keybindings.conflict;
+	let draftError = keybindings.draftError;
+	switch (result.outcome) {
+		case "storageUnavailable":
+			storageUnavailable = true;
+			break;
+		case "absent":
+			draft = null;
+			writeUncertain = false;
+			storageUnavailable = false;
+			draftUnreadable = false;
+			conflict = false;
+			draftError = null;
+			break;
+		case "unreadable":
+			draft = null;
+			writeUncertain = false;
+			storageUnavailable = true;
+			draftUnreadable = true;
+			conflict = false;
+			draftError = DRAFT_RESTORE_FAILED_MESSAGE;
+			break;
+		case "readable": {
+			const fields = decodeKeybindingDraftFields(result.value);
+			draft = fields.draft;
+			writeUncertain = fields.writeUncertain;
+			storageUnavailable = false;
+			draftUnreadable = false;
+			conflict =
+				draft !== null &&
+				keybindings.confirmed !== null &&
+				draft.revision !== keybindings.confirmed.revision;
+			draftError = null;
+			break;
+		}
+	}
+	const error = keybindingsErrorMessage(
+		draftError,
+		keybindings.hubError,
+		keybindings.loadError,
+	);
+	if (
+		keybindings.draft === draft &&
+		keybindings.writeUncertain === writeUncertain &&
+		keybindings.storageUnavailable === storageUnavailable &&
+		keybindings.draftUnreadable === draftUnreadable &&
+		keybindings.conflict === conflict &&
+		keybindings.draftError === draftError &&
+		keybindings.error === error
+	)
+		return snapshot;
+	return {
+		...snapshot,
+		keybindings: {
+			...keybindings,
+			draft,
+			writeUncertain,
+			storageUnavailable,
+			draftUnreadable,
+			conflict,
+			draftError,
+			error,
+		},
+	};
+}
 
 export function NativePreferencesProvider({
 	children,
@@ -114,7 +197,9 @@ export function NativePreferencesProvider({
 			// a NEWLY selected hub has no earlier classification of ITS OWN to
 			// preserve.
 			setOfflineStorageUnavailable(true);
-			if (probedHubId.current !== hubId) setOfflineDraftUnreadable(false);
+			if (probedHubId.current !== hubId) {
+				setOfflineDraftUnreadable(false);
+			}
 			probedHubId.current = hubId;
 			return;
 		}
@@ -122,9 +207,36 @@ export function NativePreferencesProvider({
 		setOfflineStorageUnavailable(false);
 		setOfflineDraftUnreadable(outcome === "unreadable");
 	}, [hubId, state]);
+	const reconcileRetainedDraft = (
+		expectedClient: AppwireClient | undefined,
+		result: DraftReadWithValue,
+	) => {
+		if (!hubId) return;
+		setBound((previous) => {
+			if (
+				!previous ||
+				previous.hubId !== hubId ||
+				previous.client !== expectedClient ||
+				previous.client === client
+			)
+				return previous;
+			const snapshot = reconcileRetainedDraftProjection(previous.snapshot, result);
+			return snapshot === previous.snapshot ? previous : { ...previous, snapshot };
+		});
+	};
+	useEffect(() => {
+		if (!hubId || !bound || bound.client === client) return;
+		const expectedClient = bound.client;
+		const result = readDraftOutcomeWithValue(
+			nativeKeybindingDrafts(hubId, backend),
+			isReadableKeybindingDraft,
+		);
+		reconcileRetainedDraft(expectedClient, result);
+	}, [hubId, client, state, bound?.client]);
 	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | "storageUnavailable" | null => {
 		if (!hubId) return null;
 		const storage = nativeKeybindingDrafts(hubId, backend);
+		const expectedClient = bound?.client;
 		// discardStoredKeybindingDraft degrades a genuine port failure (not a
 		// record this build cannot decode) to "storageUnavailable" itself -
 		// see its own docs - so no outer catch is needed here.
@@ -135,14 +247,17 @@ export function NativePreferencesProvider({
 			// Returning the same `null` either way would make a failed discard
 			// indistinguishable from an action that never ran.
 			setOfflineStorageUnavailable(true);
+			reconcileRetainedDraft(expectedClient, { outcome, value: undefined });
 			return "storageUnavailable";
 		}
 		// A second, independent re-read (see draftUnreadableAfterDiscard): the
 		// CURRENT record, not the one discardStoredDraft last saw, is what
 		// decides whether the notice still belongs up.
-		const current = readDraftOutcome(storage, isReadableKeybindingDraft);
+		const currentResult = readDraftOutcomeWithValue(storage, isReadableKeybindingDraft);
+		const { outcome: current } = currentResult;
 		if (current === "storageUnavailable") {
 			setOfflineStorageUnavailable(true);
+			reconcileRetainedDraft(expectedClient, currentResult);
 			// The follow-up read cannot say what is there now - preserve the
 			// notice only if the discard itself was refused (something is still
 			// there this build could not remove); a "removed"/"absent" outcome
@@ -152,6 +267,7 @@ export function NativePreferencesProvider({
 			return outcome;
 		}
 		setOfflineStorageUnavailable(false);
+		reconcileRetainedDraft(expectedClient, currentResult);
 		// Kept in sync regardless of whether `bound` exists: the cold-offline
 		// signal below (offlineDraftUnreadable) is what the screen falls back
 		// to before any model has published a snapshot, and a discard can
