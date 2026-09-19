@@ -827,10 +827,6 @@ export function Composer({ ref, focused }: ComposerProps) {
   const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = ENDED_STATUSES.has(model.status.type);
-  // Read here rather than inside the handlers below, which close over `model`
-  // outside the narrowing this component does at its top (see that block's own
-  // comment on why every handler reads a pre-narrowed local).
-  const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
   // A stopped local session is recovery-fenced. It keeps its follow-up card so
   // the retained draft and the recovery notice's explicit Resume action stay
   // reachable, but Send and Queue are NOT offered: turn/start no longer carries
@@ -987,16 +983,22 @@ export function Composer({ ref, focused }: ComposerProps) {
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not
-  // strand a typed message with no visible way to send it.
-  const followUpEngaged = localNotLoaded || followUpFocused || hasContent;
+  // strand a typed message with no visible way to send it. The one session
+  // engaged from the start is a recovery-fenced local one: its card keeps the
+  // control row (and the explicit Resume action) reachable while the fence
+  // stands, which is the whole point of keeping the card at all. Every OTHER
+  // local notLoaded snapshot rests exactly like a non-local one.
+  const followUpEngaged = recoveryFencedLocal || followUpFocused || hasContent;
   // While the card rests, its control row - and with it the composer chrome
   // that opts into initial activity discovery - is not mounted. A saved
   // notLoaded session with send enabled is exactly that shape, so mount a
   // chrome-less discovery owner for the interval instead; once the card is
   // engaged the chrome above owns discovery, so exactly one owner exists at a
-  // time (issue #1335). A send-disabled ended session is left alone: it renders
-  // no card at all, and a local notLoaded one is already owned by Session.tsx's
-  // own menu mount - this must never become a second owner there.
+  // time (issue #1335). Session.tsx's own menu/discovery mount is gated on
+  // !controlsFor(model).send, so it owns only a send-DISABLED local notLoaded
+  // snapshot (which renders no card here): a send-enabled local one is left to
+  // this chrome-less owner alone, never to both, and a send-disabled one is
+  // left to Session.tsx alone.
   const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
