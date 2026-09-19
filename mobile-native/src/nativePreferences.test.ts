@@ -327,6 +327,13 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	});
 	await model.refresh();
 	await expect(model.saveKeybindings([])).rejects.toThrow();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draftError: null,
+		hubError: "unreadable settings",
+		loadError: "unreadable settings",
+		error:
+			"The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
+	});
 	expect(client.requests.map((x) => x.method)).toEqual([
 		"evener/settings/keybindings/get",
 	]);
