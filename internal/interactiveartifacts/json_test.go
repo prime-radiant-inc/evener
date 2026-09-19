@@ -125,6 +125,17 @@ func TestFingerprintSemanticIdentity(t *testing.T) {
 	}
 }
 
+func TestFingerprintRejectsInvalidUTF8Namespace(t *testing.T) {
+	for _, namespace := range []string{string([]byte{0xff}), string([]byte{0xfe})} {
+		if _, err := Fingerprint(namespace, []byte(`{"artifactId":"A"}`)); err == nil {
+			t.Fatal("fingerprinted an invalid UTF-8 namespace")
+		}
+	}
+	if _, err := Fingerprint("�", []byte(`{"artifactId":"A"}`)); err != nil {
+		t.Fatalf("literal replacement character namespace rejected: %v", err)
+	}
+}
+
 func TestNumericValidationBoundsExponentWork(t *testing.T) {
 	for _, token := range []string{"0e-1000000000", "0e1000000000", "-0e-1000000000", "0e100000000000000000000"} {
 		state, err := ValidateState([]byte(`{"n":` + token + `}`))
