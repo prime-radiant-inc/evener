@@ -10,11 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -1408,90 +1408,61 @@ func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 // wait reproduces both #1879 occurrences (2 of the 4 named tests / round 1's
 // and round 2's CI failures) at once.
 //
-// Only retirementClaimAfterFirstTurn itself runs on the spawned goroutine (no
-// *testing.T call can run there: Fatal would only unwind that goroutine, not
-// the test). started, closed as that goroutine's first statement, rules out
-// the goroutine simply never having been scheduled before the read below --
-// the failure mode a prior version of this test had. The runtime.Gosched()
-// loop after it then gives a buggy (un-waited) claim every opportunity to
-// race ahead and settle before that read, without a wall-clock literal; it
-// makes an early, specific failure likely but is not itself what proves
-// anything, and the comment on the second select below is the one entitled
-// to say so.
-//
-// The second select, after release, is the actual proof: resultCh is
-// buffered, so whatever it holds is fixed at the instant
-// retirementClaimAfterFirstTurn's TryClaim call actually ran, independent of
-// when this goroutine reads it. sync.WaitGroup's own invariant guarantees a
-// correct implementation's sendersWG.Wait() cannot return before release is
-// closed, so that call cannot have happened yet in the correct
-// implementation; a version that skips the wait calls TryClaim immediately
-// against the still-blocked real namer and gets back a genuine ineligible
-// verdict, which is exactly the value this second select receives, whenever
-// it happens to run.
+// The test runs in a synctest bubble so its first Wait reaches a stable
+// interleaving: the real namer is blocked on release, and the claim goroutine
+// is blocked in retirementClaimAfterFirstTurn's sendersWG.Wait. A version that
+// skips that wait runs TryClaim and fills resultCh before the first Wait
+// returns, proving the shared helper is the seam under test. After release, a
+// second Wait drains both goroutines before the eligible claim is checked.
 func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
-		return finalResponse("turn settled")
-	}))
-	c := retirementEvidenceController(t, root)
-	held, release := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseNamer) // never leak the namer goroutine on an earlier Fatal
-	namer := llm.NewClient()
-	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
-		close(held)
-		<-release
-		return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
-	}})
-	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
-	if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-held: // the namer goroutine is provably still in flight right here
-	case <-time.After(5 * time.Second): // TRIPWIRE: the fixture's namer call is synchronous from ProcessInput; reaching it is near-instant.
-		t.Fatal("namer fixture never reached its held gate")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
+			return finalResponse("turn settled")
+		}))
+		c := retirementEvidenceController(t, root)
+		held, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseNamer) // never leak the namer goroutine on an earlier Fatal
+		namer := llm.NewClient()
+		namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+			close(held)
+			<-release
+			return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
+		}})
+		updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+		if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
+			t.Fatal(err)
+		}
+		<-held // the namer goroutine is provably still in flight right here
 
-	type outcome struct {
-		claim *RetirementClaim
-		state RetirementSnapshot
-		err   error
-	}
-	started := make(chan struct{})
-	resultCh := make(chan outcome, 1)
-	go func() {
-		close(started)
-		claim, state, err := retirementClaimAfterFirstTurn(root, c)
-		resultCh <- outcome{claim, state, err}
-	}()
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second): // TRIPWIRE: goroutine dispatch; near-instant on any live scheduler.
-		t.Fatal("claim goroutine never started")
-	}
-	for range 10000 {
-		runtime.Gosched() // best-effort: see the doc comment above.
-	}
-	select {
-	case res := <-resultCh:
-		t.Fatalf("claim settled while the namer was still held in flight: %+v %v", res.state, res.err)
-	default:
-	}
+		type outcome struct {
+			claim *RetirementClaim
+			state RetirementSnapshot
+			err   error
+		}
+		resultCh := make(chan outcome, 1)
+		go func() {
+			claim, state, err := retirementClaimAfterFirstTurn(root, c)
+			resultCh <- outcome{claim, state, err}
+		}()
+		synctest.Wait()
+		select {
+		case res := <-resultCh:
+			t.Fatalf("claim settled while the namer was still held in flight: %+v %v", res.state, res.err)
+		default:
+		}
 
-	releaseNamer()
-	select {
-	case res := <-resultCh:
+		releaseNamer()
+		synctest.Wait()
+		res := <-resultCh
 		if res.err != nil || res.claim == nil {
 			t.Fatalf("claim blocked eligibility after the namer released: %+v %v", res.state, res.err)
 		}
 		if err := c.Abort(res.claim, ""); err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second): // TRIPWIRE: real settlement is microseconds once the namer is released; this only bounds a genuine hang.
-		t.Fatal("claim did not settle after the namer was released")
-	}
+	})
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
