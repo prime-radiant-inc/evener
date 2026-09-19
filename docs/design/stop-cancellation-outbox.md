@@ -248,9 +248,13 @@ and the BroadcastChannel (payload unchanged; correctness never depends on it).
 - Native conforms at the storage-port level (2026-09-19): `MutationOutboxSQLite`
   implements `enqueueInterruptAndCancel`, skips `canceled` rows in
   `nextDispatchable`, and honors the stop barrier over an additive `stop_epoch`
-  column on its `mutation_sequence` rows (migrated in place, default 0). The
-  phone's Stop/UX flows do not call the combined write yet — adopting it there
-  is a follow-up, so nothing native issues a Stop's durable write today.
+  column on its `mutation_sequence` rows (migrated in place, default 0), and
+  persists the enqueue-time `instanceId` — §6's fused fencing identity — through
+  an additive `instance_id` column on its record tables, migrated in place the
+  same way (existing rows read as identity-less, falling back to their
+  threadId). The phone's Stop/UX flows do not call the combined write yet —
+  adopting it there is a follow-up, so nothing native issues a Stop's durable
+  write today.
 
 ## 9. Test plan
 
