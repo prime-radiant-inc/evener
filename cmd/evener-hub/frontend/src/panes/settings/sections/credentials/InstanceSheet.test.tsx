@@ -2026,4 +2026,80 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
+
+  // A malformed or hostless URL is stored verbatim by the hub but sanitizes to
+  // empty for the listing, so two distinct invalid destinations read the same.
+  // Matching empty-to-empty would re-anchor the draft onto a same-name
+  // replacement; the check fails closed instead.
+  test("a superseded save with a malformed URL does not re-anchor onto another malformed entry", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "not a url");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "not a url",
+      originClientId: "test-tab",
+    });
+
+    // A different invalid destination, which the hub also sanitizes to "".
+    const foreign = { ...before, baseUrl: "also not a url", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The hub omits apiKeyEnv/credentialHeader when the authored value is invalid
+  // or a literal secret, so an omitted listing field is not proof that this
+  // save cleared it: a concurrent replacement with redacted metadata reads the
+  // same. The check fails closed on those clears instead of re-anchoring.
+  test("a superseded endpoint-plus-credential clear does not re-anchor onto redacted metadata", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // A replacement at the same endpoint whose apiKeyEnv the hub redacted.
+    const foreign = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+    });
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
 });

@@ -250,18 +250,17 @@ function listedEndpoint(raw: string): string {
  * declaration that has any of them is indistinguishable from a concurrent
  * write that differs only there: the match fails closed on a lossy declaration
  * rather than re-anchor the draft onto a foreign endpoint. A declaration the
- * hub stores verbatim but cannot sanitize (unparseable) reduces to empty on
- * both sides and matches, as the hub's own listing does. */
+ * hub cannot key (malformed or hostless) reduces to empty, exactly like any
+ * other unkeyable listing, so two distinct invalid destinations would compare
+ * equal: the match fails closed on those too rather than accept one. */
 function endpointMatches(declared: string, listed: string | undefined): boolean {
   const trimmed = declared.trim();
   if (trimmed === "") return false;
-  if (listedEndpoint(trimmed) !== listedEndpoint(listed ?? "")) return false;
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return true;
-  }
+  const want = listedEndpoint(trimmed);
+  if (want === "") return false;
+  if (want !== listedEndpoint(listed ?? "")) return false;
+  // want !== "" means listedEndpoint parsed this URL with a scheme and host.
+  const parsed = new URL(trimmed);
   return parsed.search === "" && parsed.hash === "" && parsed.username === "" && parsed.password === "";
 }
 
@@ -283,29 +282,35 @@ function normalizedCredentialHeader(raw: string): string {
  *
  * The representation differs per field. A declared Base URL is compared as the
  * sanitized endpoint the listing serves (and fails closed when it carries
- * parts the listing strips - see endpointMatches). A `clear` of an endpoint
- * override (baseUrl/protocol/surface) drops the authored value and the listing
- * then serves the RESOLVED value - the base provider's URL, protocol or
- * surface - which the client cannot know, so the match fails closed on those
- * clears rather than accept any same-name instance as the clear's landing.
- * apiKeyEnv and credentialHeader are authored-only, so their clears do show as
- * empty in the listing and are compared; a declared header is compared after
- * the hub's own normalization. A declared var has to be present and equal, key
- * by key. */
+ * parts the listing strips, or cannot be keyed at all - see endpointMatches).
+ * A `clear` drops the authored value, and the listing then serves either the
+ * RESOLVED value (baseUrl/protocol/surface inherit from the base provider) or
+ * an OMITTED field (apiKeyEnv/credentialHeader, which the hub omits when the
+ * authored value is invalid or a literal secret) - neither is proof of the
+ * clear, so the match fails closed on every clear rather than accept any
+ * same-name instance as the clear's landing. A declared header is compared
+ * after the hub's own normalization. A declared var has to be present and
+ * equal, key by key. */
 function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (
+    params.clearBaseUrl ||
+    params.clearProtocol ||
+    params.clearSurface ||
+    params.clearApiKeyEnv ||
+    params.clearCredentialHeader
+  ) {
+    return false;
+  }
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
   if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
-  if (params.clearApiKeyEnv && (listed.apiKeyEnv ?? "") !== "") return false;
   if (
     params.credentialHeader !== undefined &&
     normalizedCredentialHeader(listed.credentialHeader ?? "") !== normalizedCredentialHeader(params.credentialHeader)
   ) {
     return false;
   }
-  if (params.clearCredentialHeader && (listed.credentialHeader ?? "") !== "") return false;
   for (const [key, value] of Object.entries(params.vars ?? {})) {
     if ((listed.vars?.[key] ?? "") !== value) return false;
   }
