@@ -509,7 +509,19 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 // nil); a clean durable append is not fsynced twice.
 func (w *Writer) AppendSynced(turn schema.Turn) error {
 	if w == nil {
-		return nil // no writer to record into — see Append's nil no-op
+		return nil // preserve the ordinary absent-writer contract
+	}
+	_, err := w.AppendSyncedEntry(turn)
+	return err
+}
+
+// AppendSyncedEntry is the strict indexed durability door. Unlike AppendSynced,
+// it refuses an absent writer. Its sequence identifies a durable or retained
+// record; any other error means no record was appended. A retained record must
+// be adopted and synced, never appended again.
+func (w *Writer) AppendSyncedEntry(turn schema.Turn) (int, error) {
+	if w == nil {
+		return 0, ErrWriterClosed
 	}
 	// failClosed=true: a closed writer records nothing, and this door must not
 	// read that as durable. The decision is made under appendBatch's lock, so a
@@ -518,16 +530,16 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 	// that never existed (w == nil, above).
 	firstSeq, retained, err := w.appendBatch([]schema.Turn{turn}, true, false, true)
 	if err != nil {
-		return err // not recorded (includes ErrWriterClosed)
+		return firstSeq, err // not recorded (includes ErrWriterClosed)
 	}
 	if retained == nil {
-		return nil // recorded and its own fsync succeeded: durable
+		return firstSeq, nil // recorded and its own fsync succeeded: durable
 	}
 	// Recorded but unsynced: the record is in the file, so a barrier that
 	// fsyncs the whole file settles it.
 	barrierErr := w.EstablishDurability()
 	if barrierErr == nil {
-		return nil
+		return firstSeq, nil
 	}
 	// The record is durable neither by its own fsync nor the barrier. It is
 	// still a record: queue its diagnostic for the session to surface, and tell
@@ -535,7 +547,7 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 	w.mu.Lock()
 	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
 	w.mu.Unlock()
-	return &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
+	return firstSeq, &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 }
 
 // AppendBatch writes every turn as one write and one fsync, all-or-nothing:
