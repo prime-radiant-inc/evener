@@ -10806,6 +10806,108 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("canceled");
   });
 
+  // RoboRev PR #1873 medium, the pin half: the cross-tab removal notified
+  // persistence only when it deleted a row and never refreshed the pin set.
+  // publishAndReconcileThreadHydration's own pin refresh races the
+  // fire-and-forget discardCanceledOfInstance write, so the refresh can read
+  // the row before the discard commits, pin the ref, and leave the pin stale
+  // once the row is gone - and releaseThread returns early on a pinned ref,
+  // so the cleared thread's model stays in `threads` forever after its last
+  // pane closes. This test pins that whole chain, with the race's order made
+  // deterministic at the storage seam: the cleanup write is held until the
+  // hydration's own pin refresh has read the row, then commits.
+  test("a cross-tab cleanup that removes the last row also refreshes the pin releaseThread waits on", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      // The ref's ONLY durable row is another tab's Stop residue against the
+      // old instance; the tracked model is that old instance, pane-held.
+      const canceled = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_old",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await storage.cancelUnattempted("ref_a");
+      threadsStore.setState({
+        threads: new Map([["ref_a", hydrateThread(readResponseWithId("ref_a", "thr_old"), "ref_a", 1000)]]),
+      });
+      const fake = connectMutationClient();
+      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_old"));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // Hold the cleanup's durable write at the seam: the discard is issued by
+      // the transition's publication, and the write that lands is the real
+      // one - only its completion waits for the test.
+      const realDiscard = storage.discardCanceledOfInstance.bind(storage);
+      const discardReached = deferred<void>();
+      const discardRelease = deferred<void>();
+      storage.discardCanceledOfInstance = (targetRef: string, instanceThreadId: string) => {
+        discardReached.resolve();
+        return discardRelease.promise.then(() => realDiscard(targetRef, instanceThreadId));
+      };
+
+      // The re-read every subscribed tab runs when the daemon's resync push
+      // lands: the replacement instance publishes, the cleanup fires (held at
+      // the seam), and the hydration's own pin refresh reads the still-durable
+      // row - the raced order that leaves the pin stale without this fix.
+      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+      await threadsStore.getState().refreshThread("ref_a");
+      await discardReached.promise;
+      // The refresh drive also schedules a dispatch whose tail re-reads pins;
+      // hold the discard until that last scheduled refresh has completed too,
+      // so every pin read the drive can make has seen the pre-discard view.
+      // Releasing after that leaves the pin stale - the finding's chain -
+      // unless the cleanup's own tail refreshes it.
+      await flushIndexedDBUntil(() => false);
+      discardRelease.resolve();
+
+      // The pane closes. A stale pin makes releaseThread return early and the
+      // cleared thread's model leak; the cleanup's own pin refresh must let
+      // the release drop it.
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the superseded row to leave",
+        async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+      );
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The same finding's notify half, the cross-tab path: a cleanup that removes
+  // nothing still has to notify persistence (the rule the deletion-fence path
+  // already carries) - zero says what THIS tab's write removed, never what
+  // another tab may have removed from under this tab's cached projection.
+  test("a cross-tab cleanup that removes nothing still notifies persistence", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_old"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let notified = false;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_a")) notified = true;
+    });
+    try {
+      // The superseded instance holds no canceled rows: the cleanup succeeds
+      // with zero, and the notify is the whole observable.
+      fake.on("thread/read", (params) => readResponseWithId(params.ref ?? "ref_a", "thr_new"));
+      await threadsStore.getState().refreshThread("ref_a");
+      await flushUntilArrived("the zero-row cross-tab cleanup to notify persistence", () => notified);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   // RoboRev PR #1873 low, the notify half: a zero-discard success still has
   // to notify persistence. Zero says what THIS tab's write removed - never what
   // another tab removed from under this tab's cached projection, and the

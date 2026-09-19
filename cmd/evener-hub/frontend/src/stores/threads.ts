@@ -559,7 +559,16 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
   void runtime.storage
     .discardCanceledOfInstance(targetRef, supersededThreadId)
     .then((discarded) => {
-      if (discarded.length > 0 && isCurrentMutationRuntime(runtime)) notifyMutationPersistence([targetRef]);
+      if (!isCurrentMutationRuntime(runtime)) return;
+      // Every successful cleanup notifies, zero included - the rule the
+      // deletion-fence path already carries: zero says what THIS tab's write
+      // removed, never what another tab removed from under this tab's cached
+      // projection, and the notify is what refreshes that projection. When
+      // rows left, the pin refresh follows for the same reason as the clear's
+      // own discard: the removal may have taken the ref's last durable row,
+      // and a stale pin keeps releaseThread from dropping the model.
+      notifyMutationPersistence([targetRef]);
+      if (discarded.length > 0) void refreshMutationPins(runtime, [targetRef]).catch(() => {});
     })
     .catch(() => {});
 }
