@@ -191,7 +191,10 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// well: a record naming one of its aliases must refuse this request the
 	// same way one naming the daemon's own aliases does, whether the entry
 	// drain above ran or was deferred to the drain below. The extra aliases
-	// are validated refusal-only, without holding their reservations.
+	// are validated refusal-only before the drain, then reserved alongside
+	// the daemon's own aliases through the authoritative re-check and the
+	// process-control operation, so no record can publish on them after the
+	// final fence check and race the force-stop signal.
 	deletionFenceAliases := aliases
 	if len(entryResumeAliases) != 0 {
 		deletionFenceAliases = append(slices.Clone(aliases), entryResumeAliases...)
@@ -202,12 +205,10 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	defer func() { fenceRecovery.Finish(stopErr == nil) }()
 	// Clear gives one daemon stable and current session aliases. Lock both so
 	// resume or deletion through either alias cannot race exit confirmation.
-	acquired := 0
-	defer func() {
-		for _, alias := range slices.Backward(aliases[:acquired]) {
-			cfg.ResumeLocks.For(alias).Unlock()
-		}
-	}()
+	// reserved records every per-alias reservation this request holds, in
+	// acquisition order; the deferred release walks it backward.
+	var reserved []string
+	defer func() { unlockForceStopReservations(cfg.ResumeLocks, reserved) }()
 	// Deletion publication takes the same per-alias reservations an in-flight
 	// Resume holds across its launch. Take them before cancelling whenever they
 	// are free, so the deletion re-check under them is the final validation and
@@ -217,7 +218,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// the re-check after ownership below stays authoritative.
 	reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, aliases)
 	if reservationsHeld {
-		acquired = len(aliases)
+		reserved = append(reserved, aliases...)
 		if err := deletionFenceErrorForGroup(cfg, deletionFenceAliases); err != nil {
 			// The refusal canceled nothing, so it must not leave the epochs
 			// this fence advanced — or the descendant fences advanced —
@@ -285,12 +286,31 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			}
 		}
 	}
+	// The authoritative re-check below, and the process-control operation it
+	// guards, must be final for every alias a deletion record may name — not
+	// only the daemon's own aliases but also the entry-active Resume's group
+	// aliases the deletion-fence set resolved. Reserve the complete
+	// deduplicated set across both: take the extra aliases whenever they are
+	// free, and when one is held — by an in-flight launch or an unrelated
+	// action — hand the daemon aliases back and take the complete set in one
+	// sorted pass. Waiting for a held alias while holding the others could
+	// deadlock a registration already parked on them; the sorted pass uses the
+	// acquisition order RegisterResume and a launch use, so it cannot.
+	deletionFenceExtras := slices.DeleteFunc(slices.Clone(deletionFenceAliases), func(id string) bool {
+		return slices.Contains(aliases, id)
+	})
+	if reservationsHeld && !tryLockForceStopReservations(cfg.ResumeLocks, deletionFenceExtras) {
+		unlockForceStopReservations(cfg.ResumeLocks, reserved)
+		reserved, reservationsHeld = nil, false
+	} else if reservationsHeld {
+		reserved = append(reserved, deletionFenceExtras...)
+	}
 	if !reservationsHeld {
-		for _, id := range aliases {
+		for _, id := range deletionFenceAliases {
 			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
 				return refuseStop(err)
 			}
-			acquired++
+			reserved = append(reserved, id)
 		}
 	}
 	if err := ctx.Err(); err != nil {
