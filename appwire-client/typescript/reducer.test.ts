@@ -3216,6 +3216,8 @@ test("mergeOlderItemPage keeps normalized fresh traversal when an older bridge j
     id: "item_tool_1_0",
     output: "later",
   });
+});
+
 test("mergeTurnHistory keeps a fresh completed call ahead of an older partial result", () => {
   const merged = mergeTurnHistory(
     [
