@@ -985,20 +985,18 @@ export function Composer({ ref, focused }: ComposerProps) {
   // focus: a restored draft, or a blur with text still in the field, must not
   // strand a typed message with no visible way to send it. The one session
   // engaged from the start is a recovery-fenced local one: its card keeps the
-  // control row (and the explicit Resume action) reachable while the fence
-  // stands, which is the whole point of keeping the card at all. Every OTHER
-  // local notLoaded snapshot rests exactly like a non-local one.
+  // control row reachable while the fence stands, which is the whole point of
+  // keeping the card at all. Every OTHER local notLoaded snapshot rests exactly
+  // like a non-local one.
   const followUpEngaged = recoveryFencedLocal || followUpFocused || hasContent;
   // While the card rests, its control row - and with it the composer chrome
   // that opts into initial activity discovery - is not mounted. A saved
   // notLoaded session with send enabled is exactly that shape, so mount a
   // chrome-less discovery owner for the interval instead; once the card is
-  // engaged the chrome above owns discovery, so exactly one owner exists at a
-  // time (issue #1335). Session.tsx's own menu/discovery mount is gated on
-  // !controlsFor(model).send, so it owns only a send-DISABLED local notLoaded
-  // snapshot (which renders no card here): a send-enabled local one is left to
-  // this chrome-less owner alone, never to both, and a send-disabled one is
-  // left to Session.tsx alone.
+  // engaged the chrome above owns discovery. Session.tsx's own menu/discovery
+  // mount is gated on !controlsFor(model).send (alongside its notLoaded /
+  // local / no-owner / !restartPending conditions), so it does not double up
+  // with this one; the #1335 intent is exactly one discovery owner at a time.
   const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {

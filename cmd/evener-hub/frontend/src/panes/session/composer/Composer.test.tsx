@@ -301,9 +301,10 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
 async function mountComposerWithHandle(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean } = {},
+  options: { focused?: boolean; prepare?: (fake: FakeClient) => void } = {},
 ) {
   const fake = connectFakeClient();
+  options.prepare?.(fake);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
@@ -3241,32 +3242,29 @@ test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with n
 // advertises Send is the same resting shape as any other notLoaded snapshot.
 // It must rest as a bare one-line invitation - no submit, no attach, no inline
 // chrome - until the user focuses it or gives it content, exactly like the
-// non-local case above. Session.tsx mounts its own menu/discovery owner only
-// for a local notLoaded snapshot with NO Send surface (its mount is gated on
-// !controlsFor(model).send), so for this send-enabled shape the composer's
-// chrome-less discovery owner is the ONLY owner while the card rests, and the
-// inline chrome takes over the moment the card engages: exactly one at a time.
-test("an unfenced local notLoaded session with sending enabled rests as a bare invitation", async () => {
+// non-local case above. Session.tsx's own menu/discovery mount requires
+// !controlsFor(model).send (among other conditions), so it never mounts for
+// this send-enabled shape: the composer's chrome-less discovery owner is the
+// one owner while the card rests, and the inline chrome takes over when the
+// card engages.
+test("a saved local notLoaded session with sending enabled rests as a bare invitation", async () => {
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
-  const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
-  fake.on("thread/read", () =>
-    readResponse(ref, {
+  await mountComposerWithHandle(
+    ref,
+    {
       status: { type: "notLoaded" },
       evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
-    }),
-  );
-  fake.on("evener/jobs/list", (params) => {
-    activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
-  });
-  await threadsStore.getState().ensureThread(ref);
-
-  render(
-    <ClientProvider client={fake}>
-      <Composer ref={ref} focused={false} />
-    </ClientProvider>,
+    },
+    {
+      prepare: (fake) => {
+        fake.on("evener/jobs/list", (params) => {
+          activityRefs.push(params.ref);
+          return { data: emptyActivityTree(ref) };
+        });
+      },
+    },
   );
 
   const card = screen.getByTestId("composer-input-card");
@@ -3275,8 +3273,7 @@ test("an unfenced local notLoaded session with sending enabled rests as a bare i
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   expect(screen.queryByTestId("composer-submit")).toBeNull();
-  // The chrome-less owner is what keeps discovery alive for the resting card;
-  // the inline chrome above is genuinely absent for this whole interval.
+  // The chrome-less owner still discovers for the resting card.
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
 
