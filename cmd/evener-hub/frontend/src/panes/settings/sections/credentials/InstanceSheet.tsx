@@ -251,6 +251,25 @@ function listedEndpoint(raw: string): string {
   return parsed.toString();
 }
 
+/** Whether WHATWG parsing leaves this URL's path exactly as authored. It
+ * collapses dot-segments (`/a/../b` -> `/b`) and supplies a `/` for a bare
+ * authority, while the hub's Go sanitizer preserves the authored path exactly.
+ * When parsing changes the path the two libraries can disagree about two
+ * distinct endpoints, so a match built on the parsed form is refused. */
+function pathPreservedByParser(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (trimmed === "") return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "" || parsed.host === "") return false;
+  const authoredPath = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/.exec(trimmed)?.[1] ?? "";
+  return authoredPath === parsed.pathname;
+}
+
 /** Whether the listed endpoint is the one this save declared. The listed URL
  * cannot carry userinfo, query or fragment (the hub strips them), so a
  * declaration that has any of them is indistinguishable from a concurrent
@@ -258,13 +277,17 @@ function listedEndpoint(raw: string): string {
  * rather than re-anchor the draft onto a foreign endpoint. A declaration the
  * hub cannot key (malformed or hostless) reduces to empty, exactly like any
  * other unkeyable listing, so two distinct invalid destinations would compare
- * equal: the match fails closed on those too rather than accept one. */
+ * equal: the match fails closed on those too. Either side whose path WHATWG
+ * parsing rewrites also fails closed, so distinct Go paths cannot be conflated
+ * (see pathPreservedByParser). */
 function endpointMatches(declared: string, listed: string | undefined): boolean {
   const trimmed = declared.trim();
   if (trimmed === "") return false;
   const want = listedEndpoint(trimmed);
   if (want === "") return false;
-  if (want !== listedEndpoint(listed ?? "")) return false;
+  const listedRaw = (listed ?? "").trim();
+  if (want !== listedEndpoint(listedRaw)) return false;
+  if (!pathPreservedByParser(trimmed) || !pathPreservedByParser(listedRaw)) return false;
   // want !== "" means listedEndpoint parsed this URL with a scheme and host.
   const parsed = new URL(trimmed);
   return parsed.search === "" && parsed.hash === "" && parsed.username === "" && parsed.password === "";
@@ -342,15 +365,24 @@ function renamedInstanceLanded(
 }
 
 /** The entry the store's own listing carries for a plain (non-rename) save
- * whose response it superseded, or undefined when the listing does not carry
- * this save's declaration. A refresh that starts after a save answers first,
- * and the store discards the save's response as superseded while its listing
- * already holds the change the save declared. The seeded identity anchor was
- * taken before the save, so the derived endpointFingerprint the save produced
- * no longer matches it, and the next save would refuse with the replacement
- * error for an instance nothing replaced. The listing has to match on the
- * fields this save left alone *and* carry the values it declared; otherwise a
- * concurrent replacement is mistaken for this save's own landing. Editing an
+ * whose response it superseded, or undefined when the listing cannot be shown
+ * to carry this save's own landing. A refresh that starts after a save answers
+ * first, and the store discards the save's response as superseded while its
+ * listing already holds the change the save declared. The seeded identity
+ * anchor was taken before the save, so the derived endpointFingerprint the
+ * save produced no longer matches it, and the next save would refuse with the
+ * replacement error for an instance nothing replaced.
+ *
+ * The listing has to match on the fields this save left alone (with the
+ * derived baseUrl/endpointFingerprint excused when an endpoint-affecting field
+ * changed), and its destination has to be the one this save produced. That
+ * destination comes from the mutation's own discarded answer - `authoritative`
+ * - whose endpointFingerprint is the hub's keyed identity for the complete
+ * resolved endpoint. Comparing that settles vars/protocol/surface-only edits,
+ * stripped query/userinfo parts, and path-normalization differences at once,
+ * none of which survive in the listing's sanitized baseUrl. When the
+ * authoritative row carries no fingerprint (an unkeyable instance), fall back
+ * to verifying the declared values the listing can represent. Editing an
  * implicit instance authors a shadow under the same name, so implicit
  * legitimately falls true -> false here; the other direction is a different
  * instance. */
@@ -358,6 +390,7 @@ function supersededSaveLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
   params: InstanceEditParams,
+  authoritative: InstanceEntry | undefined,
 ): InstanceEntry | undefined {
   if (params.newName !== undefined) return undefined;
   const listed = instances.find((instance) => instance.name === before.name);
@@ -365,6 +398,10 @@ function supersededSaveLanded(
   if (listed.implicit !== before.implicit && !(before.implicit && !listed.implicit)) return undefined;
   const plainBase = (a: InstanceEntry, b: InstanceEntry): boolean => fieldValue(a, "base") === fieldValue(b, "base");
   if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
+  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
+  if (authoritativeFingerprint !== "") {
+    return listed.endpointFingerprint === authoritativeFingerprint ? listed : undefined;
+  }
   return declaredValuesLanded(listed, params, true) ? listed : undefined;
 }
 
@@ -561,7 +598,15 @@ export function InstanceSheet({
       // this response as superseded. Its listing is then a document nothing
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
-      const applied = await credentialsStore.getState().edit(params);
+      // The discarded answer is still the hub's authoritative post-write row
+      // for this instance, though, so keep it to compare against the listing
+      // now held (see supersededSaveLanded).
+      let authoritative: InstanceEntry | undefined;
+      const applied = await credentialsStore.getState().edit(params, {
+        onSuperseded: (response) => {
+          authoritative = response.instances.find((entry) => entry.name === instance.name);
+        },
+      });
       const listedInstances = credentialsStore.getState().instances;
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
@@ -590,7 +635,7 @@ export function InstanceSheet({
           // the save landed as — without reseeding, which would discard the
           // draft. The next Save then compares like against like instead of
           // refusing an instance that was never replaced.
-          const landed = supersededSaveLanded(listedInstances, instance, params);
+          const landed = supersededSaveLanded(listedInstances, instance, params, authoritative);
           if (landed !== undefined) seededIdentity.current = draftIdentity(landed);
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);
