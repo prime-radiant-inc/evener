@@ -1047,6 +1047,21 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 		})
 	}
 	persistedParts := projectToolResultsForTranscript(calls, results, parts)
+	if hasManagedResults(llm.Message{Content: persistedParts}) {
+		// Completed managed receipts retain their original outcome on cancellation.
+		// Each has a separately bounded carrier; the journal remains available
+		// until reconciliation proves all retained transcript bytes durable.
+		for index := range parts {
+			live := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts[index : index+1]})
+			persisted := live
+			persisted.Message.Content = persistedParts[index : index+1]
+			if _, writeErr := s.appendManagedTurn(live, persisted); writeErr != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
+				return
+			}
+		}
+		return
+	}
 	s.appendTurnWithTranscriptMessage(
 		schema.TurnToolResults,
 		llm.Message{Role: llm.RoleTool, Content: parts},

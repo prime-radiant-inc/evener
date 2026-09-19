@@ -229,8 +229,9 @@ func toolBatchPanicError(value any) error {
 	panic(value)
 }
 
-// persistToolResults aggregates the round's tool results into a single tool-result
-// turn and appends it to history. For any result carrying image/document data it
+// persistToolResults appends the round's results to history. Managed-containing
+// rounds use individual turns to bound the complete encoded transcript line.
+// For any result carrying image/document data it
 // makes a side-channel vision call (GPT models in tool-calling mode never describe
 // images themselves — they immediately write code) and injects the description as
 // steering so the agent can use it. It returns the abort error if the turn is
@@ -241,7 +242,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 			s.removeAllTurnOwnedSteering()
 		}
 	}()
-	// Aggregate all tool results into a single TurnToolResults turn.
+	// Ordinary-only rounds retain their aggregated result turn.
 	var parts []llm.ContentPart
 	for _, r := range results {
 		parts = append(parts, llm.ContentPart{
@@ -262,8 +263,18 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 			},
 		})
 	}
-	if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
-		return abortErr
+	if hasManagedResults(llm.Message{Content: parts}) {
+		for index := range parts {
+			chunkCalls := calls[min(index, len(calls)):min(index+1, len(calls))]
+			if err := s.appendToolResults(ctx, chunkCalls, results[index:index+1], parts[index:index+1]); err != nil {
+				// Later chunks never acquired their receipts for persistence. Release
+				// only this batch's remaining claims so their durable heads replay.
+				abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls[min(index+1, len(calls)):]))
+				return err
+			}
+		}
+	} else if err := s.appendToolResults(ctx, calls, results, parts); err != nil {
+		return err
 	}
 	s.consumePersistedTerminalJobStatusNotifications(calls, results)
 

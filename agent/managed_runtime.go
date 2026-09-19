@@ -74,6 +74,13 @@ type ManagedRequest struct {
 }
 
 // ManagedResult separates original model text from the trusted host envelope.
+// Its complete default encoding/json representation must fit 112 MiB; the
+// separately authored ModelText JSON string must fit 8 MiB, including escaping.
+// A trusted adapter retains the whole service payload and bounds its additional
+// encoded origin/tool metadata to 1 MiB. A 16 MiB unescaped wire response can
+// become 96 MiB under durable HTML escaping. These limits leave room for both
+// original and provider-facing text in a single 128 MiB transcript entry.
+// ModelText is a deliberate allowlisted projection, never the host envelope.
 type ManagedResult struct {
 	ModelText string         `json:"model_text"`
 	Host      *llm.MCPResult `json:"host,omitempty"`

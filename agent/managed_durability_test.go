@@ -15,6 +15,7 @@ import (
 // The wrapper faults actual file operations; all retained bytes and reopens use
 // the real filesystem and transcript writer, not an in-memory journal replica.
 type managedFaultFS struct {
+	beforeWrite func([]byte)
 	afero.Fs
 	mu                     sync.Mutex
 	failSync, failTruncate bool
@@ -31,6 +32,12 @@ func (f *managedFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afer
 		return nil, err
 	}
 	return &managedFaultFile{file, f}, nil
+}
+func (f *managedFaultFile) Write(data []byte) (int, error) {
+	if f.fs.beforeWrite != nil {
+		f.fs.beforeWrite(data)
+	}
+	return f.File.Write(data)
 }
 func (f *managedFaultFile) Sync() error {
 	f.fs.mu.Lock()

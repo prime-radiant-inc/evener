@@ -264,6 +264,14 @@ func managedUnknown(invocation managedInvocation, cause error) (any, error) {
 	return tool.ManagedResult{Output: "Managed operation outcome is pending. It may have committed; this is not a rollback or rejection. The original invocation is retained for exact recovery.", InvocationID: invocation.ID}, cause
 }
 func validateManagedResult(result ManagedResult, request ManagedRequest, sessionID string) error {
+	if len(result.ModelText) > maxManagedModelBytes {
+		return errors.New("managed model projection exceeds encoded limit")
+	}
+	modelJSON, err := json.Marshal(result.ModelText)
+	if err != nil || len(modelJSON) > maxManagedModelBytes {
+		return errors.New("managed model projection exceeds encoded limit")
+	}
+
 	if result.Host != nil {
 		origin := result.Host.Origin
 		if result.Host.Version != 1 || origin.BindingID != request.Identity.BindingID || origin.ServiceID != request.Identity.ServiceID || origin.SessionID != sessionID {

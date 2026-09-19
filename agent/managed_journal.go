@@ -13,9 +13,10 @@ import (
 )
 
 const managedJournalVersion = 1
-const maxManagedJournalBytes = 32 << 20
+const maxManagedJournalBytes = 512 << 20
 const maxManagedPending = 256
-const maxManagedResultBytes = 4 << 20
+const maxManagedResultBytes = 112 << 20
+const maxManagedModelBytes = 8 << 20
 const maxManagedRequestBytes = 4 << 20
 
 type managedInvocation struct {
@@ -135,10 +136,7 @@ func (j *managedJournal) validate(e managedInvocation) error {
 		return err
 	}
 	if e.Result != nil {
-		raw, err := json.Marshal(e.Result)
-		if err != nil || len(raw) > maxManagedResultBytes {
-			return errors.New("invalid or oversized managed result")
-		}
+		return validateManagedResult(*e.Result, e.Request, e.SessionID)
 	}
 	return nil
 }
