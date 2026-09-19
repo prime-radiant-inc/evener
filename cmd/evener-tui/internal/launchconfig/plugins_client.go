@@ -23,8 +23,9 @@ const (
 // fetch (including one forwarded from a successful mutation). The panel
 // understands only this type for populating its marketplace list.
 type MarketplaceListResultMsg struct {
-	List appwire.MarketplaceListResponse
-	Err  error
+	List                appwire.MarketplaceListResponse
+	Err                 error
+	ReconcileGeneration uint64
 }
 
 // MarketplaceMutateResultMsg carries the result of a marketplace mutation
@@ -33,8 +34,10 @@ type MarketplaceListResultMsg struct {
 // InstanceMutateResultMsg) while a passive list-load error stays local to the
 // panel.
 type MarketplaceMutateResultMsg struct {
-	List appwire.MarketplaceListResponse
-	Err  error
+	List   appwire.MarketplaceListResponse
+	Err    error
+	Action string
+	Name   string
 }
 
 // MarketplaceBrowseResultMsg carries the result of a evener/marketplace/browse
@@ -115,11 +118,23 @@ type PluginSetAutoUpgradeMsg struct {
 }
 
 func CmdMarketplaceList(client *appwire.Client) tea.Cmd {
+	return cmdMarketplaceList(client, 0)
+}
+
+// CmdMarketplaceReconcileList requests the fresh list used to settle an
+// applied-but-unconfirmed removal. Its generation belongs only to that
+// reconciliation; ordinary list reads remain untagged until the ordered-read
+// consumer adds the broader generation contract.
+func CmdMarketplaceReconcileList(client *appwire.Client, generation uint64) tea.Cmd {
+	return cmdMarketplaceList(client, generation)
+}
+
+func cmdMarketplaceList(client *appwire.Client, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsQuickTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceList(ctx)
-		return MarketplaceListResultMsg{List: resp, Err: err}
+		return MarketplaceListResultMsg{List: resp, Err: err, ReconcileGeneration: generation}
 	}
 }
 
@@ -128,7 +143,7 @@ func CmdMarketplaceAdd(client *appwire.Client, params appwire.MarketplaceAddPara
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceAdd(ctx, params)
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "add"}
 	}
 }
 
@@ -137,7 +152,7 @@ func CmdMarketplaceRemove(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRemove(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "remove", Name: name}
 	}
 }
 
@@ -146,7 +161,7 @@ func CmdMarketplaceRefresh(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRefresh(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "refresh", Name: name}
 	}
 }
 

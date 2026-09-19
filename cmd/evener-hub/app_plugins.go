@@ -261,10 +261,47 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 	return c.listMarketplaces(ctx)
 }
 
+// hubPluginsReconcileAfterCloneLitter runs immediately before RemoveMarketplace's
+// litter path re-lists the marketplaces to build its WireError's Data.Applied -
+// a no-op in production, and a seam for a test to break that specific read
+// (e.g. a permission change) without touching RemoveMarketplace's own
+// already-successful unregister-then-clone-cleanup, matching
+// credentialWriteBetween's and the navigation service's between-step hooks.
+var hubPluginsReconcileAfterCloneLitter = func() {}
+
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
 // Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
+// A clone-removal failure after the unregister has already landed is not
+// that refusal: the marketplace is already gone, so folding it into the same
+// plain-error path would read as "removal failed" when it applied, and a
+// retry would then land on ErrMarketplaceNotFound instead of ever surfacing
+// the litter. Its own WireError carries the updated list in Data.Applied
+// instead - the shape ErrorKeybindingsPostRename established for an
+// applied-then-a-durable-step-fails outcome - so the caller reconciles from
+// Applied instead of retrying. Re-listing to build Applied is itself a fresh
+// read that can fail on its own account (a fault landing in the narrow window
+// after RemoveMarketplace already returned), unrelated to whether the
+// removal applied; that must never drop the typed outcome back to a plain
+// error indistinguishable from an ordinary failure, so it sets
+// Data.AppliedUnavailable instead and keeps the same WireError shape.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
+		if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+			data := appwire.MarketplaceUnregisteredCloneRemainsData{
+				EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			}
+			hubPluginsReconcileAfterCloneLitter()
+			if applied, listErr := c.listMarketplaces(ctx); listErr != nil {
+				data.AppliedUnavailable = true
+			} else {
+				data.Applied = applied
+			}
+			return appwire.MarketplaceListResponse{}, appwire.WireError{
+				Code:    appwire.CodeInternalError,
+				Message: err.Error(),
+				Data:    data,
+			}
+		}
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.listMarketplaces(ctx)
