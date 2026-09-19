@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,7 +26,10 @@ import type {
   MarketplaceEntry,
   PluginRefParams,
 } from "@evener/appwire-client";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -125,6 +129,7 @@ function Plugins({
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
+  const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
@@ -200,6 +205,16 @@ function Plugins({
     },
     [],
   );
+  // The browser's first list read is a passive effect. Bind this screen-owned
+  // store before child effects run so that first read is not mistaken for a
+  // reconnect and issued twice by the lifecycle's wanted-list recovery.
+  useLayoutEffect(() => {
+    marketplaces.connectionChanged(client, connectionState);
+  }, [marketplaces, client, connectionState]);
+  useLayoutEffect(() => {
+    marketplaces.start();
+    return () => marketplaces.dispose();
+  }, [marketplaces]);
   // Tells the store which connection its list belongs to, on every
   // transition that connection reports - a passive flap keeps `client`
   // itself unchanged (this effect's other dep), so the mount effect below is
@@ -303,6 +318,7 @@ function Plugins({
           appliedRemovalNames={appliedRemovalNames}
           onAppliedRemoval={markAppliedRemoval}
           onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+          marketplaces={marketplaces}
         />
       ) : (
         <FlatList

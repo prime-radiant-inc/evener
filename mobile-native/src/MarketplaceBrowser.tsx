@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,8 +20,8 @@ import type {
   PluginRefParams,
 } from "@evener/appwire-client";
 import {
-  createMarketplacesStore,
   marketplaceRemovalOutcome,
+  type MarketplacesStore,
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -50,6 +50,7 @@ export function MarketplaceBrowser({
   client,
   hubName,
   installed,
+  marketplaces,
   gate,
   canUseConnection,
   connectionState,
@@ -61,6 +62,7 @@ export function MarketplaceBrowser({
   client: ConversationClientLike;
   hubName: string;
   installed: PluginsStore;
+  marketplaces: MarketplacesStore;
   // The screen's plugin-mutation gate, shared with the installed list: a
   // write started here keeps running after this view is gone, so the lock
   // it takes has to outlive the view - and living at the screen means the
@@ -78,8 +80,7 @@ export function MarketplaceBrowser({
 }) {
   const colors = useColors();
   const ready = isReady(connectionState);
-  const model = useMemo(() => createMarketplacesStore(client), [client]);
-  const state = useSyncExternalStore(model.subscribe, model.getState);
+  const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
   // Marketplace writes take the same gate an install does; see
   // pluginMutationGate.ts for why the gate exists.
@@ -89,31 +90,16 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
-  // Tells the store which connection its list/catalog cache belongs to, on
-  // every transition that connection reports - a passive flap keeps `client`
-  // itself unchanged, so the mount effect below is never rebuilt for one, and
-  // only this call tells the store to recover once ready again
-  // (storeLifecycle.ts's connectionChanged). Declared BEFORE the mount
-  // effect for the same reason PluginsScreen.tsx's identical wiring is: on
-  // mount, nothing has asked for the list yet, so this call's own "does
-  // anything want it" check is answered honestly before fetchMarketplaces()
-  // below says yes - reversed, this call would see that read already marked
-  // live and refetch a second time for the same first load.
-  useEffect(() => {
-    model.connectionChanged(client, connectionState);
-  }, [model, client, connectionState]);
   useEffect(() => {
     if (state.marketplaces !== null)
       onAuthoritativeMarketplaces(state.marketplaces, client);
   }, [client, onAuthoritativeMarketplaces, state.marketplaces]);
   useEffect(() => {
-    model.start();
-    void model.getState().fetchMarketplaces();
+    void marketplaces.getState().fetchMarketplaces();
     return () => {
       revision.current += 1;
-      model.dispose();
     };
-  }, [model]);
+  }, [marketplaces]);
   // A new selection starts clean: the filter and the last action's error
   // belong to the marketplace they were typed against.
   function select(name: string | null) {
