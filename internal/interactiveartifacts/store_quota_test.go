@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,5 +164,22 @@ func TestStoreRefusesSchemaOneWithoutChangingContent(t *testing.T) {
 	requireNoError(t, db.QueryRow("SELECT count(*) FROM artifact_mutations WHERE mutation_id='retained'").Scan(&receipts))
 	if version != 1 || receipts != 1 {
 		t.Fatalf("refusal changed content: version %d receipts %d", version, receipts)
+	}
+}
+
+func TestStoreQuotaAllowsShrinkingAboveLimit(t *testing.T) {
+	s, hash, _ := setupStore(t, StoreOptions{})
+	ctx := context.Background()
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
+	requireNoError(t, err)
+	_, err = s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "large", 1, 1, `{"text":"`+strings.Repeat("a", 2000)+`"}`))
+	requireNoError(t, err)
+	before := assertUsage(t, s)
+	s.quota = 1
+	_, err = s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "smaller", 1, 2, `{}`))
+	requireNoError(t, err)
+	after := assertUsage(t, s)
+	if after >= before || after <= s.quota {
+		t.Fatalf("fixture did not shrink above quota: before %d after %d", before, after)
 	}
 }
