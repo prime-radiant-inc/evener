@@ -342,12 +342,26 @@ type PendingThreadHydration = {
   epoch: number;
   notifications: AnyNotification[];
   routing: PendingHydrationRouting;
+  // The tracked-hydration attempt that owns this pending entry (tracked
+  // hydrations only): the per-ref sequence beginThreadHydration stamps from
+  // trackedHydrationAttempts, which the Stop-cancellation unwind compares
+  // against that map so only the ref's newest attempt may unwind.
+  attempt?: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+// Tracked-hydration attempts: one monotonically increasing counter per ref,
+// stamped onto each tracked pending and never reset. This is the currency the
+// Stop-cancellation unwind requires: only the ref's NEWEST attempt may unwind
+// the dispatch gate and recovery obligation, because only it can still speak
+// for the state a Stop would cancel. A superseded refresh published nothing
+// (publishThreadHydration refuses it), and an overtaken one's banking belongs
+// to the newer attempt's fresh proof now, so a stale cancellation re-arming
+// recovery would clobber a resume that already succeeded.
+const trackedHydrationAttempts = new Map<string, number>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
@@ -1676,11 +1690,14 @@ function beginThreadHydration(
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
+  trackedHydrationAttempts.set(ref, attempt);
   const pending = {
     client,
     epoch,
     notifications: [],
     routing: pendingHydrationRouting(ref, model),
+    attempt,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -2216,7 +2233,17 @@ async function retryWatchedHydration(client: AppwireClientLike, epoch: number, r
 // queued mutations on the strength of both despite the acknowledged Stop. The
 // ref leaves the dispatchable set, and the obligation re-arms (the forceStop
 // tail's own retention rule) until a fresh snapshot proves it can clear.
-function unwindStopCanceledRefresh(ref: string): void {
+//
+// But only the ref's NEWEST tracked-hydration attempt may unwind (the attempt
+// is the caller's own beginThreadHydration stamp): a superseded refresh
+// published nothing to bank, and an overtaken one's banking belongs to the
+// newer attempt's fresh proof, so a stale cancellation re-arming recovery
+// here would clobber a resume that already succeeded - including closing the
+// newer attempt's reconciliation out of its own clear, whose captured
+// obligation symbol would no longer match. A refresh that never began
+// (no attempt) banked nothing either and does not unwind.
+function unwindStopCanceledRefresh(ref: string, attempt?: number): void {
+  if (attempt === undefined || trackedHydrationAttempts.get(ref) !== attempt) return;
   dispatchableMutationRefs.delete(ref);
   threadsStore.setState((state) => ({
     restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
@@ -2234,10 +2261,15 @@ async function refreshTrackedThread(
   targetedResync: boolean,
   reportFailure = false,
   beforePublish?: () => void,
-): Promise<void> {
-  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
+): Promise<number | undefined> {
+  // Returns the tracked-hydration attempt this refresh began, or undefined
+  // when it never began one (an unowned ref, or an in-flight non-targeted
+  // predecessor): refreshThread's tail recheck passes that attempt to
+  // unwindStopCanceledRefresh, whose currency check needs to know which
+  // attempt a cancellation belongs to.
+  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return undefined;
   const previous = pendingThreadHydrations.get(ref);
-  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
+  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return undefined;
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
   // No pre-check here: pending.client is this `client` and pending.epoch is this
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
@@ -2257,8 +2289,12 @@ async function refreshTrackedThread(
       // evaluation must unwind the canceled refresh itself, or the state
       // recovery banked before it - the open dispatch gate, the cleared
       // restart-blocking obligation - stays standing for the outbox's own
-      // later discovery scan to dispatch against despite the acknowledged Stop.
-      unwindStopCanceledRefresh(ref);
+      // later discovery scan to dispatch against despite the acknowledged
+      // Stop. The unwind carries this attempt so only the ref's newest
+      // hydration performs it: a superseded read's late cancellation is
+      // still its caller's honest rejection, but it banked nothing, and the
+      // newer attempt owns the ref's convergence from fresh state.
+      unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
     return publishAndReconcileThreadHydration(ref, pending, result);
@@ -2300,6 +2336,7 @@ async function refreshTrackedThread(
   } finally {
     if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
   }
+  return pending.attempt;
 }
 
 // refreshWatchedThread is the watched-owner mirror of refreshTrackedThread.
@@ -2930,7 +2967,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       await requireReadyClient(remaining);
       client = requireClient();
     } while (client.state !== "ready");
-    await refreshTrackedThread(client, readyEpoch, ref, true, true, beforePublish);
+    const attempt = await refreshTrackedThread(client, readyEpoch, ref, true, true, beforePublish);
     // beforePublish was evaluated before publication, but reconciliation above
     // runs asynchronously after it. A Stop acknowledged in that window must
     // cancel the dispatch this refresh earned too, exactly as handleReady's
@@ -2945,8 +2982,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (error) {
       // Stop canceled this refresh, so its earned dispatchability goes with
       // it: close the gate and re-arm recovery (the forceStop tail's own
-      // retention rule) until a fresh snapshot proves it can clear.
-      unwindStopCanceledRefresh(ref);
+      // retention rule) until a fresh snapshot proves it can clear - but only
+      // while this refresh is still the ref's newest hydration attempt. An
+      // overtaken refresh's cancellation is its caller's honest rejection,
+      // while the newer attempt's fresh proof owns the ref now; unwinding
+      // here would re-arm recovery over it, closing the newer attempt's
+      // reconciliation out of its own clear.
+      unwindStopCanceledRefresh(ref, attempt);
       throw error;
     }
     const runtime = getMutationRuntime();
