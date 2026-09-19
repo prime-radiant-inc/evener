@@ -292,6 +292,43 @@ test("markUnknown sets the given state and its onlyAttempted guard refuses an un
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
 });
 
+// Oracle: "markUnknown's state parameter names exactly blockedUnknown"
+// (mutationOutboxIndexedDB.cancel.test.ts:519, the web's 79ecf2839
+// narrowing) - the native adapter never received. The compile-time guard
+// against writing "canceled" or "submitting" through the uncertain-outcome
+// path: "canceled" is the user's durable decision (only an explicit user
+// Retry releases it), and "submitting" is the settle/reopen paths' verdict,
+// never this one's. The two misuse bindings are type-level only and never
+// execute.
+test("markUnknown's state parameter names exactly blockedUnknown", async () => {
+	const record = await storage.enqueueIntent(intent("typed row"));
+	await expect(storage.markUnknown(record.clientMutationId, "blockedUnknown")).resolves.toBe(true);
+
+	const legal: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "blockedUnknown";
+	// @ts-expect-error markUnknown cannot name "canceled"
+	const misusedCanceled: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "canceled";
+	// @ts-expect-error markUnknown cannot name "submitting"
+	const misusedSubmitting: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "submitting";
+	expect([legal, misusedCanceled, misusedSubmitting].filter((value) => value === "blockedUnknown")).toEqual([
+		"blockedUnknown",
+	]);
+	// Nothing but the one legal call ever ran: the row is exactly where the
+	// call above left it.
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+});
+
+// The runtime half of the same guard: a caller with no types at all (a JS
+// bridge, a deserialized argument) must not be able to create a "canceled"
+// row through the uncertain-outcome path either. The refusal is loud, the
+// same contract-violation style as enqueueIntent's "targetRef is required".
+test("markUnknown refuses a runtime state other than blockedUnknown", async () => {
+	const record = await storage.enqueueIntent(intent("runtime guarded"));
+	const untyped = storage.markUnknown.bind(storage) as unknown as (id: string, state: string) => Promise<boolean>;
+	await expect(untyped(record.clientMutationId, "canceled")).rejects.toThrow();
+	await expect(untyped(record.clientMutationId, "submitting")).rejects.toThrow();
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ state: "submitting" });
+});
+
 // Oracle: "a pending receipt atomically hands input display from transport
 // outbox to durable optimistic state" (mutationOutbox.test.ts:235).
 test("settleReceipt moves a pending, input-carrying record into the optimistic table", async () => {

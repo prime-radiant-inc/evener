@@ -324,9 +324,20 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	async markUnknown(
 		clientMutationId: string,
-		state: MutationOutboxState,
+		// The literal type is the port's own contract (outbox.ts's
+		// MutationOutboxStorage declares exactly "blockedUnknown"): the type
+		// system rejects asking the uncertain-outcome write for any other
+		// state, the same narrowing the web adapter's 79ecf2839 gave it.
+		state: "blockedUnknown",
 		options?: { onlyAttempted: boolean },
 	): Promise<boolean> {
+		// The runtime half of the same guard, for a caller with no types at
+		// all (a JS bridge, a deserialized argument): "canceled" is the user's
+		// durable decision only an explicit user Retry releases, and
+		// "submitting" is the settle/reopen paths' verdict, never this one's,
+		// so the request itself is a contract violation - the same loud
+		// refusal enqueueIntent gives an empty targetRef.
+		if (state !== "blockedUnknown") throw new Error('markUnknown only names "blockedUnknown"');
 		return (
 			changedRows(
 				this.db.runSync(
