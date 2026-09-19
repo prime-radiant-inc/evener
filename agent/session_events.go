@@ -310,7 +310,7 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 	// turn text still show the failure.
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
-	s.recordTurn(turn, turn)
+	_ = s.recordTurn(turn, turn)
 }
 
 // emitHookCompleted reports a finished hook on both channels a client can
@@ -343,7 +343,7 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	_ = s.recordTurn(turn, turn)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

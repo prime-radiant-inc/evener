@@ -74,7 +74,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
-		return nil
+		return nil //nolint:nilerr // Elicitation is best effort; canonical-source failures returned above are strict.
 	}
 	// Split the selection block from the free-text note and accept both as one
 	// generation-owned automatic operation. An invalid selection preserves the

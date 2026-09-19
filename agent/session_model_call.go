@@ -205,11 +205,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// for both context management and message expansion.
 	if _, settleErr := s.settlePendingFold(); settleErr != nil {
 		err = settleErr
-		return
+		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
 	if _, repairErr := s.repairOrphanedToolResults(ctx, "before model request"); repairErr != nil {
 		err = repairErr
-		return
+		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
@@ -264,8 +264,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// pin a must-keep note from the model BEFORE the fold, so
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
-			if err = s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys)); err != nil {
-				return
+			if err := s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys)); err != nil {
+				return profile, sys, history, req, fullHistory, reasoningEffort, err
 			}
 
 			// This per-request fold is the REQUESTING caller of the pending
@@ -281,7 +281,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			}
 			if commit.inputError != nil {
 				err = commit.inputError
-				return
+				return profile, sys, history, req, fullHistory, reasoningEffort, err
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()

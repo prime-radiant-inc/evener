@@ -152,20 +152,6 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// retainedFrom is the index of the first entry ResumeHistory keeps: the last
-// compaction turn, or 0 when the transcript never compacted. Callers that need to
-// map a position in the full transcript onto the resumed history read it here, so
-// the window rule lives in one place.
-func retainedFrom(entries []transcript.Entry) int {
-	for i := range slices.Backward(entries) {
-		kind := entries[i].Turn.Kind
-		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
-			return i
-		}
-	}
-	return 0
-}
-
 // resumedHistory keeps per-occurrence raw provenance after projection/repair.
 type resumedHistory struct {
 	Turns   []schema.Turn

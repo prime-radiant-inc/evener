@@ -375,9 +375,9 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the newest PUBLICATION skips its last-write-wins effects, whichever flush
 // runs first.
 //
-// actualCompaction reports whether this fold's layers actually compacted
-// anything (staged EventContextCompaction payloads exist) — never merely
-// that the history published: an unchanged publication sets it false.
+// actualCompaction reports whether the winning history selects a newly
+// created checkpoint or summary. Layer events and old-marker callbacks alone
+// cannot claim durable compaction.
 // captured is the explicit operation snapshot the fold's REQUESTING caller
 // captured (the round-tail dispatch's forced operation, or the per-request
 // fold's pending automatic operation); an unrelated manual fold captures
@@ -396,7 +396,6 @@ type foldCommit struct {
 	publishedRevision            int
 	actualCompaction             bool
 	captured                     *schema.SkillCompactionOperation
-	stagedCompactionCount        func() int
 	claimCompactionLocked        func()
 	receipt                      *schema.SkillCompactionReceipt
 }
@@ -639,8 +638,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	injectedTurns := func() int { return len(pendingSteering) + strategyInjected }
 	// The generation-matched publication claim, run by the winning publish
 	// inside its s.mu critical section (see foldCommit). actualCompaction is
-	// decided by the publisher from the staged EventContextCompaction
-	// payloads; the claim itself matches the captured operation's generation
+	// decided by the publisher from the selected new marker; the claim matches the captured operation's generation
 	// AND note generation against the live pending operation, so a fold
 	// whose intent was superseded or cleared mid-flight claims nothing. The
 	// publication identity is minted from the lifecycle revision the claim
@@ -649,7 +647,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// can never re-mint a prior publication's identity. A real compaction
 	// that captured no operation still records the absent-selection
 	// reminder handoff.
-	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
 	commit.claimCompactionLocked = func() {
 		captured := commit.captured
 		pending := s.skillLifecycle.PendingCompaction

@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -11,11 +12,12 @@ import (
 // TurnOccurrence is an in-memory occurrence identity. Copies of a turn retain
 // it; JSON never carries it. Its nonzero size makes distinct allocations unique.
 type TurnOccurrence struct {
-	identity         byte
 	repair           bool
 	strategyArtifact bool
+	canonicalMessage bool
 }
 
+// Occurrence returns the append/decode identity without creating one.
 func (t Turn) Occurrence() *TurnOccurrence { return t.occurrence }
 
 // EnsureOccurrence initializes a turn at its append or decode boundary.
@@ -33,6 +35,7 @@ type CompactionLocator struct {
 	AddedIndex *int `json:"added_index,omitempty"`
 }
 
+// CompactionHistoryItem selects exactly one retained source or staged artifact.
 type CompactionHistoryItem struct {
 	Source *CompactionLocator `json:"source,omitempty"`
 	Added  *Turn              `json:"added,omitempty"`
@@ -55,11 +58,11 @@ func ValidateCompactionArtifact(t Turn) error {
 		return fmt.Errorf("invalid compaction artifact kind %q", t.Kind)
 	}
 	if t.Message.Role != llm.RoleUser || t.Message.Name != "" || t.Message.ToolCallID != "" {
-		return fmt.Errorf("invalid compaction artifact message")
+		return errors.New("invalid compaction artifact message")
 	}
 	for _, p := range t.Message.Content {
 		if p.Kind != llm.ContentText || !reflect.DeepEqual(p, llm.ContentPart{Kind: llm.ContentText, Text: p.Text}) {
-			return fmt.Errorf("compaction artifact is not plain text")
+			return errors.New("compaction artifact is not plain text")
 		}
 	}
 	t.Kind = ""
@@ -68,7 +71,7 @@ func ValidateCompactionArtifact(t Turn) error {
 	t.SteeringKind = ""
 	t.occurrence = nil
 	if !reflect.DeepEqual(t, Turn{}) {
-		return fmt.Errorf("compaction artifact carries non-context fields")
+		return errors.New("compaction artifact carries non-context fields")
 	}
 	return nil
 }
@@ -81,10 +84,24 @@ func (t Turn) WithOccurrenceOf(source Turn) Turn {
 }
 
 // MarkHistoryRepair identifies a transient orphan repair owned by reconstruction.
-func (t *Turn) MarkHistoryRepair()   { t.EnsureOccurrence().repair = true }
+func (t *Turn) MarkHistoryRepair() { t.EnsureOccurrence().repair = true }
+
+// IsHistoryRepair reports reconstruction-owned transient context.
 func (t Turn) IsHistoryRepair() bool { return t.occurrence != nil && t.occurrence.repair }
 
 // MarkStrategyArtifact records provenance at the strategy's actual creation
 // callback. It grants no identity or receipt outside transient context staging.
-func (t *Turn) MarkStrategyArtifact()   { t.EnsureOccurrence().strategyArtifact = true }
+func (t *Turn) MarkStrategyArtifact() { t.EnsureOccurrence().strategyArtifact = true }
+
+// IsStrategyArtifact reports provenance established by the strategy callback.
 func (t Turn) IsStrategyArtifact() bool { return t.occurrence != nil && t.occurrence.strategyArtifact }
+
+// MarkCanonicalMessage records a live/persisted divergence at the append
+// boundary, before the occurrence is exposed to history readers.
+func (t *Turn) MarkCanonicalMessage() { t.EnsureOccurrence().canonicalMessage = true }
+
+// NeedsCanonicalMessage survives history copies and competing publications.
+// Missing recorded-source metadata must never erase this requirement.
+func (t Turn) NeedsCanonicalMessage() bool {
+	return t.occurrence != nil && t.occurrence.canonicalMessage
+}

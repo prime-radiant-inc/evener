@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"primeradiant.com/evener/agent/internal/tool"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -20,10 +23,13 @@ import (
 
 type foldFaultFS struct {
 	afero.Fs
-	mu      sync.Mutex
-	mode    string
-	marker  bool
-	reached int
+	mu            sync.Mutex
+	mode          string
+	marker        bool
+	reached       int
+	markerReady   chan struct{}
+	releaseMarker chan struct{}
+	barrier       sync.Once
 }
 type foldFaultFile struct {
 	afero.File
@@ -48,6 +54,12 @@ func (f *foldFaultFile) Write(p []byte) (int, error) {
 	}
 	mode := f.fs.mode
 	f.fs.mu.Unlock()
+	if !isMarker && mode == "record" {
+		f.fs.mu.Lock()
+		f.fs.reached++
+		f.fs.mu.Unlock()
+		return 0, errors.New("injected ordinary record failure")
+	}
 	if isMarker && mode == "partial" {
 		n, err := f.File.Write(p[:len(p)/2])
 		return n, errors.Join(err, errors.New("injected partial marker"))
@@ -61,6 +73,9 @@ func (f *foldFaultFile) Sync() error {
 		f.fs.reached++
 	}
 	f.fs.mu.Unlock()
+	if marker && mode == "blocked" {
+		f.fs.barrier.Do(func() { close(f.fs.markerReady); <-f.fs.releaseMarker })
+	}
 	if mode == "source" && !marker || marker && (mode == "rollback" || mode == "retained") {
 		return errors.New("injected sync failure")
 	}
@@ -104,11 +119,17 @@ func TestFoldPendingMarkerSettlesWithoutAnotherSummaryOrClaim(t *testing.T) {
 	if _, err := s.requestSkillCompaction(t.Context(), "conflicting note", "", schema.SkillReloadSelection{State: "absent"}); err == nil {
 		t.Error("conflicting note mutation crossed pending marker")
 	}
+	if outcome := s.consumeSteeringMessage(steeringMessage{Text: "queued through pending fold", Kind: events.SteeringKindNotification}); outcome != steeringAppendFailed {
+		t.Fatal("pending fold acknowledged an unrecorded steering message")
+	}
 	fs.mu.Lock()
 	fs.mode = ""
 	fs.mu.Unlock()
 	if err := s.Compact(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	if !s.injectDrainedSteering() {
+		t.Fatal("pending fold lost deferred steering")
 	}
 	if calls != 1 || fs.reached != 1 {
 		t.Fatalf("settlement repeated work: summaries=%d marker writes=%d", calls, fs.reached)
@@ -416,7 +437,7 @@ func TestFoldTwiceReopensInlineNoteAndDistinctReusedCalls(t *testing.T) {
 	if err := s.setPinnedNote("inline note survives twice"); err != nil {
 		t.Fatal(err)
 	}
-	for fold := 0; fold < 2; fold++ {
+	for fold := range 2 {
 		if err := s.Compact(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -470,5 +491,428 @@ func TestFoldTwiceReopensInlineNoteAndDistinctReusedCalls(t *testing.T) {
 	}
 	if markers != 2 || rawResults != 2 || inlineSources < 1 {
 		t.Fatalf("markers=%d original results=%d concrete inline refs=%d", markers, rawResults, inlineSources)
+	}
+}
+
+func TestFoldMarkerIOPreservesConcurrentMutationGenerations(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "blocked-marker", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("summary")} }, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, NoProjectPrompts: true}))
+	disableSessionNaming(s)
+	for range 12 {
+		if err := s.appendTurn(schema.TurnUserInput, llm.User("older input")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.setPinnedNote("old captured note"); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Meta()
+	if err := s.transcript.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &foldFaultFS{Fs: afero.NewOsFs(), mode: "blocked", markerReady: make(chan struct{}), releaseMarker: make(chan struct{})}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.attachTranscript(writer)
+	foldDone := make(chan error, 1)
+	var release sync.Once
+	releaseBarrier := func() { release.Do(func() { close(fs.releaseMarker) }) }
+	t.Cleanup(releaseBarrier)
+	go func() { foldDone <- s.Compact(t.Context()) }()
+	select {
+	case <-fs.markerReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("did not reach final marker fsync")
+	}
+	// The final whole line is physically present, but no owner may be visible
+	// in a metadata snapshot until this exact barrier completes.
+	old := s.Meta()
+	if old.Skills.Revision != before.Skills.Revision || old.PinnedNote != before.PinnedNote || len(old.Skills.PendingHandoffs) != 0 {
+		t.Fatal("uncommitted publication escaped into metadata")
+	}
+	if err := schema.SaveSessionMeta(s.stateDir, old); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 3)
+	mutations := make(chan error, 3)
+	go func() {
+		started <- struct{}{}
+		_, err := s.repairOrphanedToolResults(t.Context(), "blocked publication")
+		mutations <- err
+	}()
+	go func() {
+		started <- struct{}{}
+		mutations <- s.persistSkillToolObligations(&schema.SkillTurnState{Obligations: []schema.SkillDeliveryObligation{{InvocationID: "unrelated-invocation", ToolCallID: "unrelated-call"}}})
+	}()
+	go func() {
+		started <- struct{}{}
+		if err := s.setPinnedNote("new note generation"); err != nil {
+			mutations <- err
+			return
+		}
+		_, err := s.requestSkillCompaction(t.Context(), "new forced note", "", schema.SkillReloadSelection{State: "absent"})
+		mutations <- err
+	}()
+	for range 3 {
+		<-started
+	}
+	releaseBarrier()
+	if err := <-foldDone; err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := <-mutations; err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta := s.Meta()
+	if meta.PinnedNote != "new forced note" || meta.Skills.PendingCompaction == nil || meta.Skills.PendingCompaction.Phase != skillCompactionPhasePending || len(meta.Skills.Obligations) != 1 || meta.Skills.Obligations[0].InvocationID != "unrelated-invocation" {
+		t.Fatal("publication overwrote unrelated lifecycle or note generation")
+	}
+	if meta.Skills.Revision <= before.Skills.Revision+1 {
+		t.Fatal("later lifecycle mutations were overwritten by prepared receipt")
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Compaction != nil {
+			markers++
+			if entry.Turn.SkillState.Compaction.Revision != before.Skills.Revision+1 {
+				t.Fatal("marker did not retain its exact prepared revision")
+			}
+		}
+	}
+	if markers != 1 || fs.reached != 1 {
+		t.Fatal("publication repeated its durable marker")
+	}
+}
+
+func TestFoldReferencesLargeManagedResultWithoutCopy(t *testing.T) {
+	f := &managedFixture{}
+	s := newScriptedSummaryCompactSession(t, "large-fold", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("summary")} }, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, ManagedRuntime: f, NoProjectPrompts: true}))
+	disableSessionNaming(s)
+	for range 12 {
+		if err := s.appendTurn(schema.TurnUserInput, llm.User("old prefix")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := strings.Repeat("<", (16<<20)-1024)
+	result := managedPayloadResult(s, source, "small model projection", false)
+	f.result = &result
+	response := managedCallStep(llm.Request{})
+	if err := s.appendAssistantTurn(response, ModelAttemptMetadata{AttemptGroupID: "large-retained"}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.execToolBatch(t.Context(), response.ToolCalls(), s.currentProfile(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.persistToolResults(t.Context(), response.ToolCalls(), results); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta := after.Size() - before.Size(); delta <= 0 || delta > 4096 {
+		t.Fatalf("fold copied large payload: appended bytes=%d", delta)
+	}
+	t.Logf("original transcript bytes=%d, marker growth=%d", before.Size(), after.Size()-before.Size())
+	restored, err := restoreManagedFixture(t, s, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, turn := range restored.history {
+		for _, part := range turn.Message.Content {
+			if part.ToolResult != nil && part.ToolResult.ManagedInvocationID != "" {
+				count++
+				assertManagedHostPayload(t, part.ToolResult.MCPResult, source)
+			}
+		}
+	}
+	if count != 1 || len(f.requests) != 1 || len(restored.managedJournal.pending()) != 0 {
+		t.Fatal("large retained result duplicated, lost, or replayed")
+	}
+}
+
+func TestFoldRetainsPreexistingMaskedPrivateResultAndDelegateReceipt(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "private-delegate-fold", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("safe summary")} }, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, NoProjectPrompts: true}))
+	disableSessionNaming(s)
+	for range 12 {
+		if err := s.appendTurn(schema.TurnUserInput, llm.User("older input")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	childWriter, err := transcript.NewWriter(transcriptPath(c.stateDir, "child-dlg_target"), transcript.Header{SessionID: "child-dlg_target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := childWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	plan := finishDelegateDeliveryGeneration(t, c, lease, "delivered").deliveries[0]
+	if _, err := deliverDelegatePacket(plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	resolution := <-waiter.resolution
+	original := s.delegateController
+	s.delegateController = c
+	c.rootRuntime = s
+	defer func() { s.delegateController = original; c.rootRuntime = nil }()
+	s.queueDelegateDeliveryCommit("delivery", resolution.commit)
+	calls := []llm.ToolCallData{{ID: "private", Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log"}`)}, {ID: "delivery", Name: "delegate_send", Arguments: json.RawMessage(`{}`)}}
+	message := llm.Message{Role: llm.RoleAssistant}
+	for i := range calls {
+		message.Content = append(message.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &calls[i]})
+	}
+	if err := s.appendAssistantTurn(llm.Response{Message: message}, ModelAttemptMetadata{AttemptGroupID: "private-delegate"}); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "PREEXISTING_PRIVATE_SENTINEL"
+	if err := s.persistToolResults(t.Context(), calls, []tool.ExecResult{{CallID: "private", ToolName: calls[0].Name, Output: strings.Repeat(secret, 30)}, {CallID: "delivery", ToolName: calls[1].Name, Output: `{"status":"completed"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.durable["dlg_target"].PendingDeliveries) != 0 {
+		t.Fatal("original durable delegate completion did not settle")
+	}
+	masked := append([]schema.Turn(nil), s.history...)
+	s.contextMgr.PreserveRecentTurns = 0
+	s.contextMgr.ObservationMaskThreshold = 0
+	s.contextMgr.CheckpointThreshold = 2
+	if err := contextmgr.NewObsMaskStrategy(s.contextMgr).ManageContext(t.Context(), &masked, 0, func(events.EventKind, events.EventData) {}); err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range toolResultContents(masked) {
+		if strings.Contains(content, secret) {
+			t.Fatal("real observation masking did not run")
+		}
+	}
+	s.attentionMu.Lock()
+	s.mu.Lock()
+	s.history = masked
+	s.bumpHistoryRevisionLocked()
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := mustResumeHistory(t, data.Entries)
+	rawResults, retainedReceipts := 0, 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnToolResults {
+			rawResults++
+		}
+	}
+	for _, turn := range history {
+		for _, receipt := range turn.DelegateDeliveryCommits {
+			if receipt.DeliveryID != plan.deliveryID || receipt.ToolCallID != "delivery" {
+				t.Fatal("persisted delegate sidecar changed")
+			}
+			retainedReceipts++
+		}
+	}
+	bytes, err := os.ReadFile(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bytes), secret) {
+		t.Fatal("private result or masked excerpt reached fold storage")
+	}
+	after, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawResults != 1 || retainedReceipts != 1 || len(after) != len(before) || len(c.ReplayDeliveries()) != 0 {
+		t.Fatal("fold duplicated result or delegate completion")
+	}
+}
+
+func TestFoldOriginTracksHeldFlushAndHardFailure(t *testing.T) {
+	for _, mode := range []string{"held-flush", "hard-failure", "ephemeral"} {
+		t.Run(mode, func(t *testing.T) {
+			state := ""
+			if mode != "ephemeral" {
+				state = t.TempDir()
+			}
+			s := newScriptedSummaryCompactSession(t, "origin-boundary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("summary")} }, withConfig(SessionConfig{StateDir: state, NoProjectPrompts: true}))
+			disableSessionNaming(s)
+			if mode == "held-flush" {
+				if err := s.transcript.Close(); err != nil {
+					t.Fatal(err)
+				}
+				s.mu.Lock()
+				s.transcript = nil
+				s.transcriptReady = false
+				s.mu.Unlock()
+			}
+			for range 12 {
+				if err := s.appendTurn(schema.TurnUserInput, llm.User("held or existing input")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "held-flush" {
+				if len(s.historyOrigins) != 0 {
+					t.Fatal("buffered write invented a locator")
+				}
+				writer, _, err := transcript.OpenWriterForSession(s.TranscriptPath(), s.id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.attachTranscript(writer)
+				if len(s.historyOrigins) != 12 {
+					t.Fatal("actual held flush did not bind its receipts")
+				}
+			}
+			if mode == "hard-failure" {
+				if err := s.transcript.Close(); err != nil {
+					t.Fatal(err)
+				}
+				fs := &foldFaultFS{Fs: afero.NewOsFs(), mode: "record"}
+				writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.attachTranscript(writer)
+				if err := s.appendTurn(schema.TurnUserInput, llm.User("unrecorded live input")); err != nil {
+					t.Fatal("ordinary warn-and-continue behavior changed")
+				}
+				if fs.reached != 1 {
+					t.Fatal("hard write barrier not reached")
+				}
+				fs.mu.Lock()
+				fs.mode = ""
+				fs.mu.Unlock()
+				if err := s.Compact(t.Context()); err == nil {
+					t.Fatal("hard-failed live record was treated as durable")
+				}
+				return
+			}
+			if err := s.Compact(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "ephemeral" && len(s.historyOrigins) != 0 {
+				t.Fatal("ephemeral fold invented durable origins")
+			}
+		})
+	}
+}
+
+func TestFoldMarkerRefusesDuplicateRecordedOccurrence(t *testing.T) {
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true}))
+	if err := s.appendTurn(schema.TurnUserInput, llm.User("recorded")); err != nil {
+		t.Fatal(err)
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.User("summary"))
+	commit := &foldCommit{artifacts: map[*schema.TurnOccurrence]schema.Turn{marker.Occurrence(): marker}}
+	s.mu.Lock()
+	_, _, err := s.foldMarkerLocked([]schema.Turn{marker, s.history[0], s.history[0]}, commit)
+	s.mu.Unlock()
+	if err == nil {
+		t.Fatal("publisher admitted duplicate exact source before writing")
+	}
+}
+
+func TestAutomaticFoldRefusalPreventsProviderDispatch(t *testing.T) {
+	for _, failure := range []string{"retained-marker", "missing-private-source"} {
+		t.Run(failure, func(t *testing.T) {
+			s := newScriptedSummaryCompactSession(t, "automatic-refusal", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("summary")} }, withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true}))
+			disableSessionNaming(s)
+			appendPrivateFoldResult(t, s, "private old content")
+			for range 12 {
+				if err := s.appendTurn(schema.TurnUserInput, llm.User("old input")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.contextMgr.CheckpointThreshold = 0
+			s.contextMgr.SummarizeThreshold = 2
+			s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+			var markerFS *foldFaultFS
+			if failure == "retained-marker" {
+				if err := s.transcript.Close(); err != nil {
+					t.Fatal(err)
+				}
+				fs := &foldFaultFS{Fs: afero.NewOsFs(), mode: "retained"}
+				markerFS = fs
+				writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.attachTranscript(writer)
+			} else {
+				if err := os.Rename(s.TranscriptPath(), s.TranscriptPath()+".saved"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { calls++; return finalResponse("must not run") }}})
+			if _, err := s.ProcessInput(t.Context(), "continue", nil); err == nil {
+				t.Error("automatic fold refusal was hidden")
+			} else {
+				t.Logf("visible refusal: %v", err)
+			}
+			if markerFS != nil && (markerFS.reached != 1 || s.pendingFold == nil) {
+				t.Fatalf("retained marker was not the reached refusal: writes=%d pending=%v", markerFS.reached, s.pendingFold != nil)
+			}
+			if calls != 0 {
+				t.Fatalf("provider dispatched %d times after failed fold publication/input", calls)
+			}
+		})
+	}
+}
+
+func TestStaleFoldKeepsCanonicalRequirementAfterWinningPublication(t *testing.T) {
+	calls := 0
+	s := newScriptedSummaryCompactSession(t, "private-stale", func(llm.Request) llm.Response {
+		calls++
+		return llm.Response{Message: llm.Assistant("safe summary")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true}))
+	disableSessionNaming(s)
+	appendPrivateFoldResult(t, s, "PRIVATE_STALE_FOLD_SENTINEL")
+	for range 12 {
+		if err := s.appendTurn(schema.TurnUserInput, llm.User("recent input")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.mu.Lock()
+	stale := append([]schema.Turn(nil), s.history...)
+	s.mu.Unlock()
+	ctx, emit, commit, _ := s.stageCompactionEffects(t.Context(), &stale)
+	if err := s.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatal("winning fold did not summarize the private occurrence")
+	}
+	// The winner prunes origins for consumed occurrences. A stale creator
+	// must retain the canonical-input requirement and fail visibly if its
+	// source metadata is no longer available, never use the live payload.
+	s.contextMgr.ForceCompact(ctx, &stale, "", emit)
+	if commit.inputError == nil || calls != 1 {
+		t.Fatalf("stale fold lost canonical requirement: err=%v summaries=%d", commit.inputError, calls)
 	}
 }

@@ -849,7 +849,14 @@ func (s *Session) maybeAppendNotesContext() {
 		next.everProjected = true
 		s.notesCommitted.Store(&next)
 	}
-	s.appendTurnWithTranscriptMessage(turn, modelBody, body)
+	if err := s.appendTurnWithTranscriptMessage(turn, modelBody, body); err != nil {
+		// recordTurn surfaced the refusal. Keep this projection retryable.
+		s.mu.Lock()
+		if s.notesLastProjected == block {
+			s.notesLastProjected = ""
+		}
+		s.mu.Unlock()
+	}
 }
 
 // resetNotesProjectionAfterCompaction clears the last-projected notes record

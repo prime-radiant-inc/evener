@@ -1062,7 +1062,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 		}
 		return
 	}
-	s.appendTurnWithTranscriptMessage(
+	_ = s.appendTurnWithTranscriptMessage(
 		schema.TurnToolResults,
 		llm.Message{Role: llm.RoleTool, Content: parts},
 		llm.Message{Role: llm.RoleTool, Content: persistedParts},

@@ -68,24 +68,17 @@ func (s *Session) pruneHistoryOriginsLocked() {
 		}
 	}
 	s.historyOrigins = keep
-	for occurrence := range s.canonicalFoldMessages {
-		if _, ok := keep[occurrence]; !ok {
-			delete(s.canonicalFoldMessages, occurrence)
-		}
-	}
+
 }
 
-func (s *Session) markCanonicalFoldMessageLocked(live, persisted schema.Turn) {
+func markCanonicalFoldMessage(live, persisted schema.Turn) {
 	if live.Kind != schema.TurnToolResults && live.Kind != schema.TurnTool {
 		return
 	}
 	if reflect.DeepEqual(live.Message, persisted.Message) {
 		return
 	}
-	if s.canonicalFoldMessages == nil {
-		s.canonicalFoldMessages = make(map[*schema.TurnOccurrence]bool)
-	}
-	s.canonicalFoldMessages[live.Occurrence()] = true
+	live.MarkCanonicalMessage()
 }
 
 // canonicalFoldHistory substitutes only recorded private tool-result messages.
@@ -99,13 +92,13 @@ func (s *Session) canonicalFoldHistory(history []schema.Turn) ([]schema.Turn, er
 	positions := make(map[int][]int)
 	s.mu.Lock()
 	for i, turn := range history {
-		if !s.canonicalFoldMessages[turn.Occurrence()] {
+		if !turn.NeedsCanonicalMessage() {
 			continue
 		}
 		source, ok := s.historyOrigins[turn.Occurrence()]
 		if !ok || source.AddedIndex != nil {
 			s.mu.Unlock()
-			return nil, fmt.Errorf("private fold input has no canonical recorded source")
+			return nil, errors.New("private fold input has no canonical recorded source")
 		}
 		positions[source.EntrySeq] = append(positions[source.EntrySeq], i)
 	}
@@ -127,10 +120,10 @@ func (s *Session) canonicalFoldHistory(history []schema.Turn) ([]schema.Turn, er
 		return nil, fmt.Errorf("read canonical fold input: %w", err)
 	}
 	if ambiguous {
-		return nil, fmt.Errorf("canonical fold input source is ambiguous")
+		return nil, errors.New("canonical fold input source is ambiguous")
 	}
 	if data.Header.SessionID != s.id {
-		return nil, fmt.Errorf("canonical fold input transcript owner mismatch")
+		return nil, errors.New("canonical fold input transcript owner mismatch")
 	}
 	for seq, indices := range positions {
 		message, ok := messages[seq]

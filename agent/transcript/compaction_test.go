@@ -1,7 +1,9 @@
 package transcript
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -26,6 +28,9 @@ func TestCompactionManifestConcreteLocators(t *testing.T) {
 	}{
 		{"wrong owner", func(m *schema.CompactionManifest) { m.SessionID = "other" }},
 		{"unsupported version", func(m *schema.CompactionManifest) { m.Version = 2 }},
+		{"too many items", func(m *schema.CompactionManifest) {
+			m.History = make([]schema.CompactionHistoryItem, MaxCompactionItems+1)
+		}},
 		{"forward", func(m *schema.CompactionManifest) { m.History[0].Source = &schema.CompactionLocator{EntrySeq: 21} }},
 		{"missing", func(m *schema.CompactionManifest) { m.History[0].Source = &schema.CompactionLocator{EntrySeq: 8} }},
 		{"reference chain", func(m *schema.CompactionManifest) {
@@ -93,5 +98,33 @@ func TestCompactionRejectsSourceAmbiguityAfterMarker(t *testing.T) {
 	duplicate := Entry{Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("different"))}
 	if _, err := ProjectHistory("owner", []Entry{input, marker, duplicate}); err == nil {
 		t.Fatal("later duplicate source replaced committed retained input")
+	}
+}
+
+func TestCompactionMarkerLimitRefusesBeforeWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := NewWriter(path, Header{SessionID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.User(strings.Repeat("x", DefaultMaxLineBytes)))
+	marker.Compaction = &schema.CompactionManifest{Version: 1, SessionID: "owner"}
+	if _, err := w.AppendSyncedEntry(marker); err == nil {
+		t.Fatal("oversize complete marker accepted")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatal("oversize marker wrote a prefix")
+	}
+	if _, err := w.AppendSyncedEntry(schema.NewTurn(schema.TurnUserInput, llm.User("still writable"))); err != nil {
+		t.Fatal(err)
 	}
 }

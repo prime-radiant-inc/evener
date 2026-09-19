@@ -450,9 +450,17 @@ func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.
 // bound -- otherwise the child's own turns are escaped as if they were the
 // parent's, and a kindless note-origin turn keeps its controls.
 func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
+	testRestoredCompactedForkProvenance(t, false)
+}
+func TestRestoredManifestForkPreservesBothSidesOfDivergence(t *testing.T) {
+	testRestoredCompactedForkProvenance(t, true)
+}
+func testRestoredCompactedForkProvenance(t *testing.T, manifest bool) {
+	t.Helper()
 	t.Parallel()
 	const sessionID = "01KCOMPACTEDFORKBOUND00000"
 	const ownID = "cm-own-after-compaction"
+	const parentText = "parent \x1b[31mraw bytes\x1b[0m"
 	const ownText = "run the child tests\x1b[31mwith red lines\x1b[0m"
 	stateDir := t.TempDir()
 
@@ -488,13 +496,23 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 		t.Fatalf("new transcript writer: %v", err)
 	}
 	for _, turn := range []schema.Turn{
-		{Kind: schema.TurnSteering, ClientMutationID: "cm-parent-one", Message: llm.User("parent one")},
+		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(parentText)},
 		{Kind: schema.TurnSteering, ClientMutationID: "cm-parent-two", Message: llm.User("parent two")},
 		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the child wrote after inheriting")},
 		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
 	} {
 		if err := tw.AppendDurable(turn); err != nil {
 			t.Fatalf("append: %v", err)
+		}
+	}
+	if manifest {
+		marker := schema.NewTurn(schema.TurnSummary, llm.User("committed child fold"))
+		marker.Compaction = &schema.CompactionManifest{Version: 1, SessionID: sessionID}
+		for seq := range 4 {
+			marker.Compaction.History = append(marker.Compaction.History, schema.CompactionHistoryItem{Source: &schema.CompactionLocator{EntrySeq: seq}})
+		}
+		if err := tw.AppendDurable(marker); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -525,6 +543,9 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 	defer restored.Close()
 
 	got := modelBoundText(restored)
+	if manifest && !strings.Contains(got, parentText) {
+		t.Fatal("manifest source lost inherited provenance to the child journal")
+	}
 	if strings.Contains(got, ownText) {
 		t.Fatalf("the child's own note-origin turn kept its controls through a compacted resume: %q", got)
 	}

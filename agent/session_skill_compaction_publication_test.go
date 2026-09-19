@@ -483,13 +483,6 @@ func TestSkillCompaction_UnchangedPublication(t *testing.T) {
 // pending, the winning retry consumes it, and no cancellation fires.
 func TestSkillCompaction_LosingAttempt(t *testing.T) {
 	t.Parallel()
-	competingResult := func(n int32) []schema.Turn {
-		turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\ncompeting %d\n[END SUMMARY]", n)))}
-		for i := range 7 {
-			turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("competing filler %d-%d", n, i))))
-		}
-		return turns
-	}
 	var summarizeCalls atomic.Int32
 	var s *Session
 	stateDir := t.TempDir()
@@ -499,7 +492,7 @@ func TestSkillCompaction_LosingAttempt(t *testing.T) {
 			// The first attempt's summarize call races a competing publish in
 			// the unlocked fold window, so that attempt must lose.
 			s.mu.Lock()
-			if _, ok := s.publishFoldedHistory(len(s.history), s.historyRevision, competingResult(n)); !ok {
+			if _, ok := s.publishFoldedHistory(len(s.history), s.historyRevision, append([]schema.Turn(nil), s.history[4:]...)); !ok {
 				t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
 			}
 			s.mu.Unlock()
@@ -620,11 +613,12 @@ func TestSkillCompaction_CompetingForced(t *testing.T) {
 
 	// Seed fresh post-winner history past PreserveRecentTurns so the forced
 	// operation's own fold is genuine, then dispatch it at the round tail.
-	s.mu.Lock()
 	for i := range 8 {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("post-winner turn %d", i))))
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("post-winner turn %d", i)))
+		if err := s.recordTurn(turn, turn); err != nil {
+			t.Fatalf("record post-winner history: %v", err)
+		}
 	}
-	s.mu.Unlock()
 	s.applyPendingForceCompact(context.Background())
 
 	if n := summarizeCalls.Load(); n != 2 {
@@ -747,11 +741,9 @@ func TestSkillCompaction_ConcurrentSteering(t *testing.T) {
 	}
 }
 
-// TestSkillCompaction_FinalSummary pins the coalescing rule: a fold that
-// publishes BOTH a checkpoint and a summary phase records ONE handoff for
-// that winning publication — the final (summary) phase's receipt — attached
-// by publication identity, never per-marker list position, and restart
-// reconciliation preserves that final handoff.
+// TestSkillCompaction_FinalSummary pins the commit rule: a fold that creates
+// checkpoint and summary phases records only the final summary and its one
+// handoff. Restart reconciliation preserves that final handoff exactly once.
 func TestSkillCompaction_FinalSummary(t *testing.T) {
 	t.Parallel()
 	var summarizeCalls atomic.Int32
@@ -776,16 +768,27 @@ func TestSkillCompaction_FinalSummary(t *testing.T) {
 	if op := s.pendingSkillCompactionSnapshot(); op != nil {
 		t.Fatalf("the fold must claim and consume generation %d, still holding %+v", forced, op)
 	}
-	// Both the checkpoint and the summary phase of this single publication
-	// carry the SAME receipt (one publication identity), and the handoff list
-	// coalesces them into exactly one final handoff.
+	// The final summary is the single authoritative commit. Intermediate
+	// checkpoint callbacks must not publish another receipt or marker.
 	receipts := publicationReceiptsFromTranscript(t, stateDir, id)
-	if len(receipts) != 2 {
-		t.Fatalf("transcript receipts = %+v, want the checkpoint and summary phases' receipts", receipts)
+	if len(receipts) != 1 || receipts[0].Operation.PublicationID == "" || receipts[0].Operation.Generation != forced {
+		t.Fatalf("transcript receipts = %+v, want one final receipt for generation %d", receipts, forced)
 	}
-	if receipts[0].Operation.PublicationID == "" || receipts[0].Operation.PublicationID != receipts[1].Operation.PublicationID ||
-		receipts[0].Operation.Generation != forced || receipts[1].Operation.Generation != forced {
-		t.Fatalf("both phases must carry the same publication identity for generation %d, got %+v", forced, receipts)
+	data, err := readTranscriptFull(transcriptPath(stateDir, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var markers int
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			markers++
+			if entry.Turn.Kind != schema.TurnSummary || entry.Turn.Compaction == nil {
+				t.Fatalf("published intermediate marker: %+v", entry.Turn)
+			}
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("published %d markers, want the final summary only", markers)
 	}
 	handoffs := pendingHandoffsSnapshot(s)
 	if len(handoffs) != 1 || handoffs[0].Phase != skillCompactionReceiptDelivered || handoffs[0].Operation.Generation != forced ||

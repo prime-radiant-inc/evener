@@ -31,7 +31,7 @@ func (s *Session) foldMarkerLocked(history []schema.Turn, commit *foldCommit) (s
 		if s.stateDir != "" {
 			for _, turn := range history {
 				if _, staged := commit.artifacts[turn.Occurrence()]; staged && !turn.IsStrategyArtifact() {
-					return schema.Turn{}, -1, fmt.Errorf("generated fold history has no new final compaction marker")
+					return schema.Turn{}, -1, errors.New("generated fold history has no new final compaction marker")
 				}
 			}
 		}
@@ -42,6 +42,9 @@ func (s *Session) foldMarkerLocked(history []schema.Turn, commit *foldCommit) (s
 		return schema.Turn{}, -1, err
 	}
 	manifest := &schema.CompactionManifest{Version: 1, SessionID: s.id}
+	type sourceKey struct{ seq, index int }
+	seenSources := make(map[sourceKey]bool)
+	seenAdded := make(map[*schema.TurnOccurrence]bool)
 	for i, t := range history {
 		if i == markerIndex {
 			continue
@@ -50,16 +53,32 @@ func (s *Session) foldMarkerLocked(history []schema.Turn, commit *foldCommit) (s
 			continue
 		}
 		if i < markerIndex {
-			return schema.Turn{}, -1, fmt.Errorf("retained history precedes final compaction marker")
+			return schema.Turn{}, -1, errors.New("retained history precedes final compaction marker")
 		}
 		if source, ok := s.historyOrigins[t.Occurrence()]; ok {
+			key := sourceKey{source.EntrySeq, -1}
+			if source.AddedIndex != nil {
+				key.index = *source.AddedIndex
+			}
+			if seenSources[key] {
+				return schema.Turn{}, -1, errors.New("duplicate retained compaction source")
+			}
+			seenSources[key] = true
 			manifest.History = append(manifest.History, schema.CompactionHistoryItem{Source: &source})
 		} else if canonical, ok := commit.artifacts[t.Occurrence()]; ok {
+			if seenAdded[t.Occurrence()] {
+				return schema.Turn{}, -1, errors.New("duplicate generated compaction artifact")
+			}
+			seenAdded[t.Occurrence()] = true
 			if err := schema.ValidateCompactionArtifact(canonical); err != nil {
 				return schema.Turn{}, -1, err
 			}
 			manifest.History = append(manifest.History, schema.CompactionHistoryItem{Added: &canonical})
 		} else if t.IsStrategyArtifact() {
+			if seenAdded[t.Occurrence()] {
+				return schema.Turn{}, -1, errors.New("duplicate strategy compaction artifact")
+			}
+			seenAdded[t.Occurrence()] = true
 			if err := schema.ValidateCompactionArtifact(t); err != nil {
 				return schema.Turn{}, -1, err
 			}
@@ -69,7 +88,7 @@ func (s *Session) foldMarkerLocked(history []schema.Turn, commit *foldCommit) (s
 		}
 	}
 	if len(manifest.History) > transcript.MaxCompactionItems {
-		return schema.Turn{}, -1, fmt.Errorf("too many retained compaction occurrences")
+		return schema.Turn{}, -1, errors.New("too many retained compaction occurrences")
 	}
 	marker.Compaction = manifest
 	return marker, markerIndex, nil

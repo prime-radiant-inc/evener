@@ -1273,7 +1273,11 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		s.unparkSteering()
 		return steeringDelivered
 	}
-	s.recordTurn(t, t)
+	if err := s.recordTurn(t, t); err != nil {
+		s.prependSteering([]steeringMessage{msg})
+		s.parkSteering()
+		return steeringAppendFailed
+	}
 	// Same ordering requirement as the client-mutation branch above: clear
 	// before the event that triggers the server's ask-facet refresh, admit
 	// after it (unchanged order).
@@ -1417,7 +1421,9 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
 	t.OwningTurnID = s.activeTurnOwner()
-	s.recordTurn(t, t)
+	if err := s.recordTurn(t, t); err != nil {
+		return
+	}
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
 }
 

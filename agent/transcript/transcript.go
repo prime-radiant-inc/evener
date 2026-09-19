@@ -650,7 +650,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 			return firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 		if turn.Compaction != nil && buf.Len()-start-1 > DefaultMaxLineBytes {
-			return firstSeq, nil, fmt.Errorf("compaction record exceeds transcript line limit")
+			return firstSeq, nil, errors.New("compaction record exceeds transcript line limit")
 		}
 	}
 	data := buf.Bytes()

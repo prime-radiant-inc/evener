@@ -412,7 +412,6 @@ type Session struct {
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyOrigins                map[*schema.TurnOccurrence]schema.CompactionLocator // actual local transcript locators; guarded by mu
-	canonicalFoldMessages         map[*schema.TurnOccurrence]bool                     // tool-result live variants requiring exact persisted fold input; guarded by mu
 	pendingFold                   *pendingFoldPublication                             // one recorded marker awaiting sync; guarded by attentionMu
 	historyRevision               int                                                 // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	newestPublishedFoldRevision   int                                                 // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
@@ -1560,7 +1559,9 @@ func (s *Session) SetModel(model string) error {
 		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
-	s.recordTurn(marker, marker)
+	if err := s.recordTurn(marker, marker); err != nil {
+		return err
+	}
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
@@ -2045,7 +2046,7 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	appendLocked()
 	if len(s.history) == before+1 {
 		s.history[before] = s.history[before].WithOccurrenceOf(persisted)
-		s.markCanonicalFoldMessageLocked(s.history[before], persisted)
+		markCanonicalFoldMessage(s.history[before], persisted)
 	}
 	s.mu.Unlock()
 	return nil
@@ -2096,12 +2097,12 @@ func (s *Session) recordTurn(live, persisted schema.Turn) error {
 	s.attentionMu.Lock()
 	if s.pendingFold != nil {
 		s.attentionMu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("recording history refused", errFoldDurabilityPending))
+		s.emitDiagnosticWarning(warningDataFromError("recording history refused", errFoldDurabilityPending))
 		return errFoldDurabilityPending
 	}
 	s.mu.Lock()
 	s.history = append(s.history, live)
-	s.markCanonicalFoldMessageLocked(live, persisted)
+	markCanonicalFoldMessage(live, persisted)
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
 	s.attentionMu.Unlock()

@@ -319,7 +319,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// instructions. Then persist the terminal transition: it happens after
 		// processOneInput's defer-save, so without the save a blocked goal would
 		// be saved as still-active and resume on restart (/par A4).
-		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+		_ = s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
 			"[goal-no-progress-breaker] Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
 			snap.NoProgressStreak)))
 		s.reportGoalEnded()
@@ -439,7 +439,7 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		// transcript never says the goal stopped, and the only trace is the
 		// ephemeral EventGoalEnded plus whatever failed turn the caller emitted
 		// (provider recovery emits one; the generic lifecycle tail does not).
-		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+		_ = s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
 			"[goal-blocked-on-error] Goal blocked after a turn failed: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
 			err.Error())))
 		s.reportGoalEnded()

@@ -198,6 +198,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
 	}
+	if err := transcript.ValidateCompactionManifests(cfg.spawn.parentSessionID, cfg.spawn.inheritedContext); err != nil {
+		return nil, fmt.Errorf("inherited history: %w", err)
+	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}

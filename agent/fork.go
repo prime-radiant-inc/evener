@@ -240,7 +240,7 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 		allEntries = append(allEntries, entry)
 	}
 	if parentHeader.SessionID != parentID {
-		return transcript.Header{}, nil, fmt.Errorf("fork parent transcript owner mismatch")
+		return transcript.Header{}, nil, errors.New("fork parent transcript owner mismatch")
 	}
 	if err := transcript.ValidateCompactionManifests(parentID, allEntries); err != nil {
 		return transcript.Header{}, nil, err
@@ -315,7 +315,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 					source := *item.Source
 					seq, ok := sequences[source.EntrySeq]
 					if !ok {
-						return "", fmt.Errorf("fork compaction source missing from prefix")
+						return "", errors.New("fork compaction source missing from prefix")
 					}
 					source.EntrySeq = seq
 					manifest.History[i].Source = &source
@@ -328,7 +328,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
 		if !recorded {
-			return "", fmt.Errorf("child transcript did not record prefix turn")
+			return "", errors.New("child transcript did not record prefix turn")
 		}
 		sequences[entry.Seq] = seq
 		if entry.Turn.Kind == schema.TurnAssistant {

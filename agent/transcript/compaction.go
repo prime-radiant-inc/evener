@@ -1,11 +1,13 @@
 package transcript
 
 import (
+	"errors"
 	"fmt"
 
 	"primeradiant.com/evener/agent/schema"
 )
 
+// MaxCompactionItems bounds the ordered retained-history manifest.
 const MaxCompactionItems = 65536
 
 type compactionSource struct {
@@ -22,21 +24,23 @@ type CompactionValidator struct {
 	sources   map[int]compactionSource
 }
 
+// NewCompactionValidator binds source validation to one transcript owner.
 func NewCompactionValidator(sessionID string) *CompactionValidator {
 	return &CompactionValidator{sessionID: sessionID, sources: make(map[int]compactionSource)}
 }
 
+// Observe validates one physical entry before remembering its source metadata.
 func (v *CompactionValidator) Observe(e Entry) error {
 	source := compactionSource{attention: e.Turn.AttentionID != "" || e.Turn.AttentionResolution != nil}
 	if m := e.Turn.Compaction; m != nil {
 		if m.Version != 1 || m.SessionID == "" || m.SessionID != v.sessionID {
-			return fmt.Errorf("invalid compaction version or transcript owner")
+			return errors.New("invalid compaction version or transcript owner")
 		}
 		if e.Turn.Kind != schema.TurnSummary && e.Turn.Kind != schema.TurnCheckpoint {
-			return fmt.Errorf("compaction manifest requires final marker")
+			return errors.New("compaction manifest requires final marker")
 		}
 		if len(m.History) > MaxCompactionItems {
-			return fmt.Errorf("too many compaction history items")
+			return errors.New("too many compaction history items")
 		}
 		type key struct{ seq, index int }
 		seen := make(map[key]bool, len(m.History))
@@ -63,11 +67,11 @@ func (v *CompactionValidator) Observe(e Entry) error {
 			if locator.AddedIndex != nil {
 				k.index = *locator.AddedIndex
 				if k.index < 0 || !target.added[k.index] {
-					return fmt.Errorf("compaction source is not a direct inline artifact")
+					return errors.New("compaction source is not a direct inline artifact")
 				}
 			}
 			if seen[k] {
-				return fmt.Errorf("duplicate compaction source")
+				return errors.New("duplicate compaction source")
 			}
 			seen[k] = true
 			target.referenced = true
@@ -84,6 +88,7 @@ func (v *CompactionValidator) Observe(e Entry) error {
 	return nil
 }
 
+// ValidateCompactionManifests validates a complete raw transcript projection.
 func ValidateCompactionManifests(sessionID string, entries []Entry) error {
 	validator := NewCompactionValidator(sessionID)
 	for _, entry := range entries {

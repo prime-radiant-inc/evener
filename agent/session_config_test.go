@@ -733,12 +733,18 @@ func compactionReminders(sess *Session) []string {
 	return reminders
 }
 
-func setCompactionTestHistory(sess *Session) {
+func setCompactionTestHistory(t *testing.T, sess *Session) {
+	t.Helper()
 	sess.contextMgr.PreserveRecentTurns = 1
-	sess.history = []schema.Turn{
+	turns := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report enough detail to summarize.")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	}
+	for _, turn := range turns {
+		if err := sess.recordTurn(turn, turn); err != nil {
+			t.Fatalf("record compaction history: %v", err)
+		}
 	}
 	// A user-set name is not eligible for compaction refresh. This keeps the
 	// scripted provider dedicated to summarization rather than asynchronous naming.
@@ -759,7 +765,7 @@ func TestSession_CompactQueuesOneExactTranscriptReminder(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	setCompactionTestHistory(sess)
+	setCompactionTestHistory(t, sess)
 
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -827,7 +833,7 @@ func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T)
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	setCompactionTestHistory(sess)
+	setCompactionTestHistory(t, sess)
 
 	for i := range 2 {
 		if err := sess.Compact(context.Background()); err != nil {
@@ -859,7 +865,7 @@ func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *tes
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	setCompactionTestHistory(sess)
+	setCompactionTestHistory(t, sess)
 
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -905,7 +911,7 @@ func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T)
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	setCompactionTestHistory(sess)
+	setCompactionTestHistory(t, sess)
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}

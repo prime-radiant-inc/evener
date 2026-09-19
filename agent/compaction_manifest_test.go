@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -113,5 +114,29 @@ func TestForkRebasesConcreteCompactionSourcesWithoutAdoptingReceipt(t *testing.T
 	}
 	if source := data.Entries[2].Turn.Compaction.History[1].Source; source.EntrySeq != 1 || source.AddedIndex == nil || *source.AddedIndex != 1 {
 		t.Fatalf("inline source was not rebased: %+v", source)
+	}
+}
+
+func TestInheritedManifestRefusesBeforeOwnershipAcquisition(t *testing.T) {
+	for _, owner := range []string{"other-parent", "expected-parent"} {
+		t.Run(owner, func(t *testing.T) {
+			input := schema.NewTurn(schema.TurnUserInput, llm.User("parent input"))
+			marker := schema.NewTurn(schema.TurnSummary, llm.User("parent summary"))
+			source := 7
+			if owner == "expected-parent" {
+				source = 8
+			}
+			marker.Compaction = &schema.CompactionManifest{Version: 1, SessionID: owner, History: []schema.CompactionHistoryItem{{Source: &schema.CompactionLocator{EntrySeq: source}}}}
+			acquired := 0
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, AcquireSessionOwnership: func(string) error { acquired++; return nil }, spawn: spawnConfig{parentSessionID: "expected-parent", inheritedContext: []transcript.Entry{{Seq: 7, Turn: input}, {Seq: 10, Turn: marker}}}, testOnly: testConfig{skipGitSnapshot: true}})
+			if s != nil {
+				s.Close()
+			}
+			if err == nil || acquired != 0 {
+				t.Fatalf("malformed inherited history err=%v acquired=%d", err, acquired)
+			}
+		})
 	}
 }

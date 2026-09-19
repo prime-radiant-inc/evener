@@ -468,14 +468,24 @@ func TestManagedPendingOccurrenceSurvivesActualFold(t *testing.T) {
 	if managedAnchorPresent(full.Entries, wrongLocator) {
 		t.Fatal("ignored original assistant sequence integrity locator")
 	}
-	copied := false
+	var originals, references int
 	for _, entry := range full.Entries {
-		if entry.Turn.AttemptGroupID == "fold-round" && entry.Seq != pending.AssistantSeq {
-			copied = true
+		if entry.Turn.AttemptGroupID == "fold-round" {
+			originals++
+			if entry.Seq != pending.AssistantSeq {
+				t.Fatal("fold duplicated the assistant occurrence")
+			}
+		}
+		if manifest := entry.Turn.Compaction; manifest != nil {
+			for _, item := range manifest.History {
+				if item.Source != nil && item.Source.EntrySeq == pending.AssistantSeq && item.Source.AddedIndex == nil {
+					references++
+				}
+			}
 		}
 	}
-	if !copied {
-		t.Fatal("actual fold did not copy assistant occurrence to a new sequence")
+	if originals != 1 || references != 1 {
+		t.Fatalf("actual fold retained assistant originals=%d references=%d, want one of each", originals, references)
 	}
 	f.executeErr = nil
 	restored, err := restoreManagedFixture(t, s, f)
