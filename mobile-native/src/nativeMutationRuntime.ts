@@ -89,6 +89,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 	#started = false;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
+		if (!this.#started) return undefined;
 		if (targetRef !== undefined) return this.#targets.get(targetRef)?.client;
 		return [...this.#targets.values()].find(({ client }) => client.state === "ready")?.client;
 	}

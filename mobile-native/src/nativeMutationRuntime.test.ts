@@ -206,6 +206,63 @@ test("a ready target dispatches while another target remains unresolved", async 
 	await runtime.stop();
 });
 
+test("stop fences the next queued send while an in-flight request settles", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("closed");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	let releaseFirst!: () => void;
+	const firstStarted = new Promise<void>((resolve) => {
+		client.on("turn/start", (params) => {
+			resolve();
+			return new Promise((resolveResponse) => {
+				releaseFirst = () => resolveResponse(appliedReceipt(params));
+			});
+		});
+	});
+	let releaseSecond!: () => void;
+	let resolveSecondStarted!: () => void;
+	const secondStarted = new Promise<void>((resolve) => {
+		resolveSecondStarted = resolve;
+	});
+	let secondAttempts = 0;
+	client.on("turn/queue", (params) => {
+		secondAttempts += 1;
+		if (secondAttempts === 1) {
+			resolveSecondStarted();
+			return new Promise((resolveResponse) => {
+				releaseSecond = () => resolveResponse(appliedReceipt(params));
+			});
+		}
+		return appliedReceipt(params);
+	});
+	await runtime.start();
+	await runtime.submit(request("send"));
+	await runtime.submit(request("queue"));
+	client.emitStateChange("ready");
+	await firstStarted;
+	await runtime.stop();
+
+	releaseFirst();
+	await vi.waitFor(async () => {
+		 expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
+	expect(client.calls).toHaveLength(1);
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({ state: "submitting" });
+
+	await runtime.start();
+	await secondStarted;
+	expect(client.calls).toHaveLength(2);
+	releaseSecond();
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-2")).toBeUndefined();
+	});
+	expect(secondAttempts).toBe(1);
+	await runtime.stop();
+});
+
 test("an interval retries a ready transport failure with the same mutation id", async () => {
 	let nextId = 0;
 	const intervals: Array<() => void> = [];
