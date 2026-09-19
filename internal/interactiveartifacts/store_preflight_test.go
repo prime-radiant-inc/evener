@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
 func TestStoreSchemaRefusalDoesNotEnableWAL(t *testing.T) {
 	for _, version := range []int{0, 1, 200} {
-		t.Run(fmt.Sprint(version), func(t *testing.T) {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "private", "refused.sqlite")
 			requireNoError(t, os.Mkdir(filepath.Dir(path), 0700))
 			file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
@@ -117,6 +118,7 @@ func TestStoreEmptyAndCurrentConnectionsKeepDurablePragmas(t *testing.T) {
 			conn, err := s.db.Conn(context.Background())
 			requireNoError(t, err)
 			held = append(held, conn)
+			t.Cleanup(func() { _ = conn.Close() })
 			var journal string
 			var sync, foreign, version int
 			requireNoError(t, conn.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&journal))
