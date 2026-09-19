@@ -569,7 +569,10 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		return m, nil
 	}
 	m.err = nil
-	if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
+	if m.marketplaceReconcilePending || (msg.Action == "remove" && msg.Name == m.marketplaceRemovePending) {
+		// A successful mutation carries the server's current marketplace list.
+		// It is authoritative enough to settle an earlier applied removal while
+		// also invalidating the older reconciliation request below.
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
 	}

@@ -52,6 +52,19 @@ func TestClassifyMarketplaceCloneRemainsJSONData(t *testing.T) {
 	}
 }
 
+func TestClassifyMarketplaceCloneRemainsDiscardsPartialJSONSnapshot(t *testing.T) {
+	malformed := map[string]any{
+		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": 42}},
+		},
+	}
+	state, applied := classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(malformed))
+	if state != marketplaceCloneRemainsUnavailable || applied.Marketplaces != nil {
+		t.Fatalf("malformed partial snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
+	}
+}
+
 func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T) {
 	removed := appwire.MarketplaceEntry{Name: "removed"}
 	kept := appwire.MarketplaceEntry{Name: "kept"}
@@ -168,6 +181,55 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	remove = cmd().(launchconfig.MarketplaceRemoveMsg)
 	if remove.Name != confirmed.Name {
 		t.Fatalf("old reconciliation reply changed selected marketplace to %q, want %q", remove.Name, confirmed.Name)
+	}
+}
+
+func TestMarketplaceMutationSnapshotSettlesPendingReconciliation(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed"}
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {})
+	defer cleanup()
+
+	m := hubModel{
+		client:                      client,
+		pluginsPanel:                marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending:    removed.Name,
+		marketplaceReconcilePending: true,
+		marketplaceListGeneration:   1,
+	}
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Action: "refresh",
+		Name:   kept.Name,
+		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+	})
+	if cmd != nil {
+		t.Fatal("authoritative successful mutation should not need a replacement read")
+	}
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("successful mutation left pending state = %q/%v, want cleared", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.marketplaceListGeneration != 2 {
+		t.Fatalf("successful mutation generation = %d, want 2", after.marketplaceListGeneration)
+	}
+
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:           appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed}},
+		ListGeneration: 1,
+	})
+	after = got.(hubModel)
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("old reconciliation reply should not discard the mutation snapshot")
+	}
+	remove := panelCmd().(launchconfig.MarketplaceRemoveMsg)
+	if remove.Name != kept.Name {
+		t.Fatalf("old reconciliation reply changed selected marketplace to %q, want %q", remove.Name, kept.Name)
+	}
+
+	got, cmd = after.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: kept.Name})
+	if cmd == nil || got.(hubModel).marketplaceRemovePending != kept.Name {
+		t.Fatal("successful mutation should release the fence for a subsequent remove")
 	}
 }
 

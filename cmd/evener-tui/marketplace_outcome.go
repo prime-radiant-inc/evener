@@ -57,9 +57,14 @@ func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregistered
 		}
 	}
 	if rawApplied, ok := fields["applied"]; ok && string(rawApplied) != "null" {
-		if err := json.Unmarshal(rawApplied, &data.Applied); err != nil {
+		var applied appwire.MarketplaceListResponse
+		if err := json.Unmarshal(rawApplied, &applied); err != nil {
+			// json.Unmarshal may leave partially decoded entries behind. Never
+			// let that partial snapshot look authoritative to the caller.
+			data.Applied = appwire.MarketplaceListResponse{}
 			return data, true
 		}
+		data.Applied = applied
 	}
 	return data, true
 }
