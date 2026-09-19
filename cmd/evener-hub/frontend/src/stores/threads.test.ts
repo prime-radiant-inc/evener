@@ -9807,6 +9807,196 @@ test("a later discovery cannot dispatch what a Stop during a refresh's pre-publi
   }
 });
 
+// RoboRev Medium (PR 1393 fresh review, 0708b9b): both of a Stop-canceled
+// refresh's unwind evaluations ran unconditionally, so a SUPERSEDED refresh's
+// stale fence could clobber a newer resume's success. The old refresh's held
+// read resolves late; its pre-Stop baseline still throws at the
+// pre-publication evaluation; and the unconditional unwind then re-armed the
+// restart-blocking obligation and closed the dispatch gate that the NEWER
+// refresh - the one that began after the Stop, published a fresh snapshot, and
+// reconciled - had just earned. The unwind must be owned by currency: only
+// the ref's newest tracked-hydration attempt may unwind, because only it can
+// still speak for the state a Stop would cancel. A superseded refresh banked
+// nothing itself (publishThreadHydration refuses it), and the newer attempt
+// owns the ref's convergence from fresh state.
+test("a superseded refresh's stale Stop fence cannot unwind a newer resume's state", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "superseded-unwind" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise.
+    let status = "restartRequired";
+    // The one-shot read hold: the refresh under test parks its thread/read on
+    // `holdRead`, so the Stop and the newer resume below land inside that
+    // refresh's pre-publication window; every later read answers live.
+    let holdRead: Promise<void> | undefined;
+    let heldReadArrived!: () => void;
+    const readArrived = new Promise<void>((resolve) => {
+      heldReadArrived = resolve;
+    });
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", { status: { type: status } });
+      const hold = holdRead;
+      holdRead = undefined;
+      if (!hold) return response;
+      heldReadArrived();
+      return hold.then(() => response);
+    });
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The refresh under test: fenced with a PRE-Stop baseline, its read held.
+    const release = deferred<void>();
+    holdRead = release.promise;
+    const fence = resumeStopFence("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+    await readArrived;
+    // The Stop lands while the held read is still in flight.
+    await threadsStore.getState().shutdown("ref_a");
+    // The newer resume: a fresh fenced refresh captured AFTER the Stop. It
+    // supersedes the held read and proves recovery from a fresh snapshot -
+    // its publication opens the gate and its reconciliation clears the
+    // obligation.
+    status = "idle";
+    const resumeFence = resumeStopFence("ref_a");
+    const resumed = threadsStore.getState().refreshThread("ref_a", resumeFence);
+    await resumed;
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    // The held read releases late: its PRE-Stop fence still throws, and the
+    // rejection is still its caller's honest cancellation - but the superseded
+    // refresh must not unwind the newer resume's banked state.
+    release.resolve();
+    await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    // The newer resume's dispatchability stands: the later discovery scan
+    // delivers the queued message.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => sends >= 1);
+    expect(sends).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The same currency rule at the SECOND unwind site - refreshThread's tail
+// recheck: a refresh can publish and still be overtaken before its tail runs
+// (its reconciliation is the window), and a newer refresh that published after
+// the Stop must not have its state re-armed over by the older refresh's tail
+// cancellation. The older refresh's reconciliation clear is legitimately
+// canceled by the acknowledged Stop, but the OBLIGATION re-arm closes the
+// newer refresh's reconciliation out (its captured obligation symbol no
+// longer matches), leaving the resumed session fenced with no fresh proof
+// pending - the clobber, reached from the tail instead of the pre-publication
+// evaluation.
+test("a refresh overtaken before its tail recheck cannot unwind the newer resume's state", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "overtaken-tail-unwind" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise - and stopped again once the Stop below lands.
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The resume's proven snapshot: the refresh under test publishes it, and
+    // its held reconciliation is the window where the Stop and the newer
+    // refresh both land.
+    status = "idle";
+    const release = deferred<void>();
+    let reconciliationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reconciliationStarted = resolve;
+    });
+    const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+    const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+      this: MutationDispatcher,
+      ...args
+    ) {
+      reconciliationStarted();
+      await release.promise;
+      return reconcile.apply(this, args);
+    });
+    try {
+      const fence = resumeStopFence("ref_a");
+      const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+      await started;
+      // The Stop lands while the resume-proving refresh's reconciliation is
+      // in flight.
+      await threadsStore.getState().shutdown("ref_a");
+      // The newer resume: a fresh fenced refresh captured after the Stop. Its
+      // own read answers live and it PUBLISHES during the held reconciliation
+      // (its reconciliation chains behind the held one); its publication is
+      // the store's per-ref hydration counter advancing.
+      const published = (threadsStore.getState().hydrations.get("ref_a") ?? 0) + 1;
+      const resumeFence = resumeStopFence("ref_a");
+      const resumed = threadsStore.getState().refreshThread("ref_a", resumeFence);
+      await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("ref_a") ?? 0).toBe(published));
+      // The held reconciliation completes; the overtaken refresh's tail
+      // recheck then finds the acknowledged Stop and throws - its rejection
+      // is its caller's honest cancellation, but it must not unwind the newer
+      // resume's state.
+      release.resolve();
+      await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+      await resumed;
+      expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+      // The newer resume's dispatchability stands: the later discovery scan
+      // delivers the queued message.
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => sends >= 1);
+      expect(sends).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 // RoboRev Medium on fee4eb8 (PR 1393): pruning a ref's Stop generation on
 // release could make a fence miss a REAL Stop in one interleaving - the
 // baseline sees the absent entry as 0, the Stop records a nonzero sequence
@@ -10047,6 +10237,64 @@ test("a recovery-fenced local session's send refuses at admission for every call
   ).rejects.toThrow("Send isn't available until this session is resumed");
   expect(await storage.listOutbox("local:session")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// RoboRev Medium (PR 1393 fresh review, 0708b9b): 91764c32d6 fenced only the
+// send action at its own admission, so every OTHER durable action still
+// funneled an obligation-blocked local session's intent straight into the
+// outbox: steer, queue, drainAsSteer, promoteQueuedAsSteer, cancelQueued,
+// clearThread and setHumanNote each parked a mutation the hub's recovery
+// admission refuses for the obligation's whole window (sessionActionRecoveryError
+// is reached by every one of those methods' handlers - withDeletionTargetOwnership
+// for the turn verbs and thread/clear, relayWithResume's durable leg for
+// notes/human/set), to deliver or fail only after an explicit Resume. The fence
+// must read the obligation at enqueueMutationIntent - the one funnel every
+// durable action passes through - and refuse exactly the verbs the hub refuses,
+// so no caller shape can park what the fence exists to keep unparked.
+// turn/interrupt is the deliberate exemption: Stop is how the fenced window
+// ends, the Stop button is never disabled by the fence, and the typed
+// /interrupt agrees with the button (commands.ts's own carve-out), so
+// interrupt still enqueues and settles after Resume.
+test("a recovery-fenced local session's non-send durable admissions refuse at the shared funnel", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "shared-fence" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:session";
+  await threadsStore.getState().ensureThread(ref);
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for (same seeding as the
+  // send-fence test above).
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+  await expect(threadsStore.getState().steer(ref, "steer text")).rejects.toThrow(
+    "Steer isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().queue(ref, "queued text")).rejects.toThrow(
+    "Queue isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().drainAsSteer(ref, "drain text")).rejects.toThrow(
+    "Drain isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().promoteQueuedAsSteer(ref, 0, "entry_1")).rejects.toThrow(
+    "Queue actions aren't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().cancelQueued(ref, 0, "entry_1")).rejects.toThrow(
+    "Queue actions aren't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().clearThread(ref)).rejects.toThrow(
+    "Clear isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().setHumanNote(ref, "note text")).rejects.toThrow(
+    "Notes aren't available until this session is resumed",
+  );
+  // turn/interrupt is the exemption: Stop stays pressable through the fence,
+  // so its admission still enqueues. The dispatcher keeps refusing the
+  // obligation, so nothing reaches the wire.
+  await threadsStore.getState().interrupt(ref);
+  const outbox = await storage.listOutbox(ref);
+  expect(outbox.map((record) => record.method)).toEqual(["turn/interrupt"]);
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
 });
 
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
