@@ -354,7 +354,7 @@ export function MarketplaceBrowser({
         />
       ) : (
         <FlatList
-          data={state.marketplaces ?? []}
+          data={state.marketplacesError === null ? state.marketplaces ?? [] : []}
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           ListHeaderComponent={header}
