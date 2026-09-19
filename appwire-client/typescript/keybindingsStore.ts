@@ -94,6 +94,17 @@ function memoryDraftStorage(): KeybindingDraftStorage {
   };
 }
 
+/** The offline editor's proposal: the rules and confirmed revision they were
+ * composed against, plus the ready generation that last confirmed them. A
+ * restored checkpoint starts with no generation because storage does not
+ * persist a hub-session identity. */
+export interface KeybindingsDraft {
+  version: 1;
+  revision: number;
+  rules: KeybindingsRule[];
+  generation: number | null;
+}
+
 export interface KeybindingsStoreFields {
   hubSupport: KeybindingsSupport;
   hubLoading: boolean;
@@ -133,7 +144,7 @@ export interface KeybindingsStoreFields {
   conflict: string | null;
   /** The offline editor's proposal: the rules and the confirmed revision they
    * were composed against. Restored from the draft port at creation. */
-  draft: KeybindingsOverrides | null;
+  draft: KeybindingsDraft | null;
   /** A checkpointed write is in flight. */
   saving: boolean;
   /** A checkpointed write left without a confirmed outcome; edits stay
@@ -413,14 +424,18 @@ export function discardStoredKeybindingDraft(
 }
 
 /** The draft fields a checkpoint (or its absence) describes. Keeping this
- * mapping beside restoreDraft gives an offline caller the same projection as
- * the live store without requiring a confirmed hub revision. */
-function draftFieldsFrom(checkpoint: KeybindingDraftCheckpoint | null): {
-  draft: KeybindingsOverrides | null;
+ * mapping beside restoreDraft gives the live store its typed projection
+ * without requiring a confirmed hub revision; the public decoder below keeps
+ * its existing storage-only shape for store-free callers. */
+function draftFieldsFrom(
+  checkpoint: KeybindingDraftCheckpoint | null,
+  generation: number | null = null,
+): {
+  draft: KeybindingsDraft | null;
   writeUncertain: boolean;
 } {
   return {
-    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null,
+    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation } : null,
     writeUncertain: checkpoint?.writeUncertain ?? false,
   };
 }
@@ -434,7 +449,11 @@ export function decodeKeybindingDraftFields(value: unknown): {
   writeUncertain: boolean;
 } {
   try {
-    return draftFieldsFrom(draftCheckpoint(value));
+    const { draft, writeUncertain } = draftFieldsFrom(draftCheckpoint(value));
+    return {
+      draft: draft === null ? null : { version: draft.version, revision: draft.revision, rules: draft.rules },
+      writeUncertain,
+    };
   } catch {
     return { draft: null, writeUncertain: false };
   }
@@ -749,6 +768,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return getState().hubSupport === "supported";
   }
 
+  /** The generation to stamp a freshly composed or reconciled draft with -
+   * null before any ready generation has begun. */
+  function currentGeneration(): number | null {
+    return fence.generation >= 0 ? fence.generation : null;
+  }
+
   /** Publishes the end of a write whose reply can never be settled by
    * anything else: lostHub (this write's own claim is intact and only
    * support went away - the unknown window keeps the state and the
@@ -825,6 +850,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // this set so a rule validation skips survives an unrelated edit. Only a
     // successful reconcile advances it - a failed apply leaves the last good
     // raw set beside the last good revision.
+    const draft =
+      state.draft !== null && state.draft.generation === null && fence.generation >= 0
+        ? { ...state.draft, generation: fence.generation }
+        : state.draft;
     setState({
       ...reconciled,
       rawOverrides: rules,
@@ -846,7 +875,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       hubError: payload.loadError ?? null,
       loadError: payload.loadError ?? null,
       conflict: null,
-      draftConflict: staleDraft(state.draft, payload.revision),
+      draft,
+      draftConflict: staleDraft(draft, payload.revision),
       ...extra,
       ...resolved,
     });
@@ -1350,9 +1380,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function editDraft(rules: readonly KeybindingsRule[]): void {
     const current = assertEditable();
     const checked = keybindingRules(rules);
-    const revision = getState().draft?.revision ?? current.revision;
+    const existing = getState().draft;
+    const revision = existing?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
-    const draft = { version: 1, revision, rules: checked };
+    const generation = existing !== null ? existing.generation : currentGeneration();
+    const draft: KeybindingsDraft = { version: 1, revision, rules: checked, generation };
     setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
   }
 
@@ -1434,7 +1466,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const token = fence.claimWrite();
     const generation = fence.generation;
     const stillMine = () => fence.writeStillMine(generation, token);
-    setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
+    const draftGeneration = existing !== null ? existing.generation : currentGeneration();
+    setState({
+      saving: true,
+      draft: { version: 1, revision, rules: checked, generation: draftGeneration },
+      draftError: null,
+    });
     let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
@@ -1574,7 +1611,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (draft === null || hubLoading || current.revision !== reviewedRevision)
       throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
     persistDraft({ baseRevision: current.revision, rules: draft.rules, writeUncertain: false });
-    setState({ draft: { ...draft, revision: current.revision }, draftConflict: false, draftError: null });
+    setState({
+      draft: { ...draft, revision: current.revision, generation: currentGeneration() },
+      draftConflict: false,
+      draftError: null,
+    });
   }
 
   return {

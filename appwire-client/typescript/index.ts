@@ -221,6 +221,7 @@ export type {
   KeybindingDraftCheckpoint,
   KeybindingDraftStorage,
   KeybindingsClient,
+  KeybindingsDraft,
   KeybindingsStore,
   KeybindingsStoreActions,
   KeybindingsStoreDeps,
