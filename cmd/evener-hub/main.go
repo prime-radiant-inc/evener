@@ -222,9 +222,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
-	artifacts := interactiveartifacts.NewSupervisor(filepath.Join(cfg.HubStateRoot, "artifacts"), interactiveartifacts.SupervisorOptions{})
-	defer func() { _ = artifacts.Close() }()
-
 	var appwireTrace *appserver.WebSocketTrace
 	if opts.appwireTrace != "" {
 		tracePath, absErr := filepath.Abs(opts.appwireTrace)
@@ -399,6 +396,24 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("load deletion state: %w", err)
 	}
+	authority, err := interactiveartifacts.OpenHostAuthority(filepath.Join(hubStateRoot, "artifacts"))
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("load artifact authority: %w", err)
+	}
+	defer func() { _ = authority.Close() }()
+	for _, record := range deletionStore.Deleting() {
+		sessionIDs := make([]string, 0, len(record.Targets))
+		for _, target := range record.Targets {
+			sessionIDs = append(sessionIDs, target.ThreadID)
+		}
+		if err := authority.ImportProjectDeletion(context.Background(), record.ProjectID, sessionIDs); err != nil {
+			_ = hubListener.Close()
+			return fmt.Errorf("import artifact project deletion %s: %w", record.ProjectID, err)
+		}
+	}
+	artifacts := interactiveartifacts.NewSupervisor(filepath.Join(hubStateRoot, "artifacts"), interactiveartifacts.SupervisorOptions{Policy: authority.Policy})
+	defer func() { _ = artifacts.Close() }()
 	transcriptDisplayStore, transcriptDisplayStoreErr := hubcore.NewTranscriptDisplayStore(hubStateRoot)
 	if transcriptDisplayStoreErr != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)

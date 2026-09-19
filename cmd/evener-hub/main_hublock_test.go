@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
@@ -77,6 +78,39 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 	want := filepath.Join(hubStateRoot, "hub.lock")
 	if gotLockPath != want {
 		t.Fatalf("lockPath = %q, want %q (must derive from cfg.HubStateRoot, not a raw home-dir join)", gotLockPath, want)
+	}
+	authorityPath := filepath.Join(hubStateRoot, "artifacts", "authority.json")
+	info, err := os.Stat(authorityPath)
+	if err != nil {
+		t.Fatalf("artifact authority was not opened under the configured state root: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("artifact authority permissions = %04o, want 0600", got)
+	}
+}
+
+func TestRunMainDoesNotOpenAuthorityWithoutRealHubLock(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	release, err := hostlock.AcquireLock(filepath.Join(cfg.HubStateRoot, "hub.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	deps := mainDeps{
+		loadConfig:  func(string) (Config, error) { return cfg, nil },
+		ensureDirs:  func() error { return nil },
+		acquireLock: hostlock.AcquireLock,
+	}
+	if err := runMain(nil, os.Stderr, deps); err == nil {
+		t.Fatal("runMain acquired a second real Hub lock")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.HubStateRoot, "artifacts", "authority.json")); !os.IsNotExist(err) {
+		t.Fatalf("authority opened despite lock refusal: %v", err)
 	}
 }
 
