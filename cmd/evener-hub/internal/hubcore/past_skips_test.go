@@ -16,8 +16,9 @@ import (
 // captureSkipReport runs fn with os.Stderr redirected to a pipe and returns the
 // past-index lines written to it. Other hubcore machinery logs to the same
 // stream from background goroutines, so the result is filtered to this
-// reporter's prefix rather than returned raw. Output is small enough to fit the
-// pipe buffer, so fn never blocks on a reader.
+// reporter's prefix rather than returned raw. Drain concurrently because
+// unrelated background diagnostics can share stderr while the fuzz scenario
+// is running and must not fill the pipe before fn returns.
 func captureSkipReport(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
@@ -26,6 +27,15 @@ func captureSkipReport(t *testing.T, fn func()) string {
 		t.Fatalf("Pipe: %v", err)
 	}
 	os.Stderr = w
+	type readResult struct {
+		raw []byte
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		raw, readErr := io.ReadAll(r)
+		readDone <- readResult{raw: raw, err: readErr}
+	}()
 
 	fn()
 
@@ -33,13 +43,13 @@ func captureSkipReport(t *testing.T, fn func()) string {
 	if err := w.Close(); err != nil {
 		t.Fatalf("close pipe writer: %v", err)
 	}
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
+	result := <-readDone
+	if result.err != nil {
+		t.Fatalf("ReadAll: %v", result.err)
 	}
 
 	var report strings.Builder
-	for line := range strings.SplitSeq(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(result.raw), "\n") {
 		if strings.HasPrefix(line, "[hub] past index: ") {
 			report.WriteString(line)
 			report.WriteString("\n")
