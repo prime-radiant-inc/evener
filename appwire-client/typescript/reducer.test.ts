@@ -6,7 +6,7 @@ import basicTurnFixture from "./fixtures/basic-turn.jsonl?raw";
 import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
-import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
+import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -194,6 +194,42 @@ function positionedFragmentTurn(
       status: "completed",
       position: { entry, item },
     })),
+  };
+}
+
+function toolWireTurn(turnId: string, itemId: string, callId: string, overrides: Partial<ThreadItem> = {}): Turn {
+  return {
+    id: turnId,
+    status: "completed",
+    itemsView: "full",
+    items: [
+      {
+        id: itemId,
+        turnId,
+        type: "commandExecution",
+        toolName: "shell",
+        callId,
+        ...overrides,
+      },
+    ],
+  };
+}
+
+function toolModelTurn(turnId: string, item: Partial<ThreadItem> & Pick<ThreadItem, "id" | "callId">): TurnModel {
+  return {
+    id: turnId,
+    status: "completed",
+    items: [
+      {
+        id: item.id,
+        turnId,
+        type: "commandExecution",
+        text: "",
+        toolName: "shell",
+        callId: item.callId,
+        ...item,
+      },
+    ],
   };
 }
 
@@ -2571,6 +2607,151 @@ test("a full turn settle that omits image fields keeps the item's images", () =>
   );
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
   expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
+test("mergeOlderItemPage keeps a fresh completed call ahead of an older standalone result", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-call", "item_tool_1_0", "call_A", {
+        output: "fresh output",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [toolWireTurn("old-result", "item_tool_result_0_0", "call_A", { output: "old output", completedAt: 10 })],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_A");
+
+  expect(item).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh output",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage fills absent fresh call fields from an older result without replacing fresh status", () => {
+  const model = testHydrate({
+    turns: [toolWireTurn("fresh-call", "item_tool_1_0", "call_B", { status: "inProgress", startedAt: 20 })],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("old-result", "item_tool_result_0_0", "call_B", {
+        output: "older output",
+        status: "completed",
+        completedAt: 10,
+        exitCode: 3,
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_B");
+
+  expect(item).toMatchObject({
+    output: "older output",
+    status: "inProgress",
+    completedAt: new Date(10).toISOString(),
+    exitCode: 3,
+  });
+});
+
+test("mergeOlderItemPage lets a fresh result settle an older call", () => {
+  const model = testHydrate({
+    turns: [
+      toolWireTurn("fresh-result", "item_tool_result_2_0", "call_C", {
+        output: "fresh result",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [toolWireTurn("old-call", "item_tool_1_0", "call_C", { status: "inProgress", startedAt: 10 })],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_C");
+
+  expect(item).toMatchObject({
+    id: "item_tool_1_0",
+    output: "fresh result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+    startedAt: new Date(10).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage prefers the fresh result even when an older result is visited later", () => {
+  const model = testHydrate();
+  model.turns = [
+    toolModelTurn("fresh-call", { id: "item_tool_1_0", callId: "call_D", status: "inProgress" }),
+    toolModelTurn("fresh-result", {
+      id: "item_tool_result_2_0",
+      callId: "call_D",
+      output: "fresh result",
+      status: "completed",
+      completedAt: new Date(20).toISOString(),
+    }),
+  ];
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("old-result", "item_tool_result_3_0", "call_D", {
+        output: "old result",
+        status: "completed",
+        completedAt: 10,
+      }),
+    ],
+  });
+  const item = merged.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === "call_D");
+
+  expect(item).toMatchObject({ output: "fresh result", completedAt: new Date(20).toISOString() });
+});
+
+test("mergeOlderItemPage preserves same-source call/result folding", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("old-call", "item_tool_1_0", "call_E", { status: "inProgress", startedAt: 10 }),
+      toolWireTurn("old-result", "item_tool_result_2_0", "call_E", {
+        output: "same-source result",
+        status: "completed",
+        completedAt: 20,
+      }),
+    ],
+  });
+
+  const items = merged.turns.flatMap((turn) => turn.items).filter((item) => item.callId === "call_E");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    output: "same-source result",
+    status: "completed",
+    completedAt: new Date(20).toISOString(),
+  });
+});
+
+test("mergeOlderItemPage keeps the last same-source result in traversal order", () => {
+  const merged = mergeOlderItemPage(testHydrate(), {
+    data: [
+      toolWireTurn("old-call", "item_tool_1_0", "call_F", { status: "inProgress", startedAt: 10 }),
+      toolWireTurn("old-result-one", "item_tool_result_2_0", "call_F", {
+        output: "first result",
+        status: "completed",
+        completedAt: 20,
+      }),
+      toolWireTurn("old-result-two", "item_tool_result_3_0", "call_F", {
+        output: "last result",
+        status: "completed",
+        completedAt: 30,
+      }),
+    ],
+  });
+
+  const items = merged.turns.flatMap((turn) => turn.items).filter((item) => item.callId === "call_F");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ output: "last result", completedAt: new Date(30).toISOString() });
 });
 
 test("mergeOlderItemPage coalesces every transitively overlapping fragment", () => {
