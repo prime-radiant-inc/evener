@@ -16,7 +16,7 @@ import (
 
 func (m hubModel) sessionHeaderLines() []string {
 	th := tuitheme.ActiveTheme()
-	title := envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	title := envvars.FirstNonEmpty(m.sessionDisplayName(), "untitled session")
 	state := strings.TrimSpace(m.detail.State)
 	if state == "" {
 		state = "idle"
@@ -304,7 +304,7 @@ func isSubagentRunMessage(msg transcript.ChatMessage) bool {
 // computation and the tuiprim.AppShell. Extracted so syncSessionViewport and sessionView
 // share the same chrome calculation.
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
-	title := envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	title := envvars.FirstNonEmpty(m.sessionDisplayName(), "untitled session")
 	topBar = truncateSessionLine("evener / session / "+title, m.sessionHeaderWidth())
 
 	// Footer is computed before the overlay so the command palette can window
