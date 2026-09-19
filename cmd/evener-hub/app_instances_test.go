@@ -4125,13 +4125,13 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 	}
 }
 
-// TestInstances_EditAnswersFromTheWriteLockedListing: the listing an edit
-// returns is captured under that edit's own write lock, so it carries the row
-// this edit wrote. A response read with a later List() could instead carry a
-// foreign edit that landed in the gap between the write and the read; the
-// captured answer is pinned here to the state the second edit produced even
-// after a third edit has landed.
-func TestInstances_EditAnswersFromTheWriteLockedListing(t *testing.T) {
+// TestInstances_EditAnswersWithItsOwnState: an edit asked for its captured
+// answer returns a listing carrying the row that edit wrote, and the returned
+// value is a snapshot - a later edit does not change it. (The write-lock GAP is
+// not exercised: Edit exposes no seam inside its critical section to pause on,
+// so a concurrent edit cannot be made to land between the write and the
+// capture. What the code enforces is that both happen under c.mu; see edit.)
+func TestInstances_EditAnswersWithItsOwnState(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/first"}); err != nil {
 		t.Fatalf("Edit(first): %v", err)
@@ -4142,8 +4142,7 @@ func TestInstances_EditAnswersFromTheWriteLockedListing(t *testing.T) {
 		t.Fatalf("edit(second): %v", err)
 	}
 
-	// A foreign edit lands after the captured answer was taken; a response read
-	// now would show it, but the captured answer must not.
+	// A later edit does not mutate the already-returned captured answer.
 	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/foreign"}); err != nil {
 		t.Fatalf("Edit(foreign): %v", err)
 	}

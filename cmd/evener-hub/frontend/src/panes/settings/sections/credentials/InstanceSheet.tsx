@@ -328,15 +328,10 @@ function normalizedCredentialHeader(raw: string): string {
  * the same. A declared header is compared after the hub's own normalization. A
  * declared var has to be present and equal, key by key. */
 function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  if (
-    params.clearBaseUrl ||
-    params.clearProtocol ||
-    params.clearSurface ||
-    params.clearApiKeyEnv ||
-    params.clearCredentialHeader
-  ) {
-    return false;
-  }
+  // Endpoint clears and the derived-endpoint rule belong to this path; the
+  // credential and protocol/surface/vars rules live in the shared helpers, so a
+  // fix to one (header normalization, key-by-key vars) cannot miss another copy.
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
   // A save that changed vars/protocol/surface without declaring a Base URL moved
   // the RESOLVED URL, which the listing alone cannot prove - the client does not
   // resolve the provider's template. Without an authoritative fingerprint the
@@ -350,19 +345,8 @@ function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams)
     return false;
   }
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
-  if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
-  if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
-  if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
-  if (
-    params.credentialHeader !== undefined &&
-    normalizedCredentialHeader(listed.credentialHeader ?? "") !== normalizedCredentialHeader(params.credentialHeader)
-  ) {
-    return false;
-  }
-  for (const [key, value] of Object.entries(params.vars ?? {})) {
-    if ((listed.vars?.[key] ?? "") !== value) return false;
-  }
-  return true;
+  if (!credentialValuesLanded(listed, params)) return false;
+  return declaredVarsAndSurfaceLanded(listed, params);
 }
 
 /** The name this save's rename landed under, or undefined when the store's own
@@ -391,7 +375,7 @@ function renamedInstanceLanded(
   if (authoritativeFingerprint === "") return declaredValuesLanded(listed, params) ? newName : undefined;
   if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
   if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
-  if (!credentialValuesLanded(listed, params, true)) return undefined;
+  if (!credentialValuesLanded(listed, params)) return undefined;
   return declaredVarsAndSurfaceLanded(listed, params) ? newName : undefined;
 }
 
@@ -416,14 +400,9 @@ function declaredVarsAndSurfaceLanded(listed: InstanceEntry, params: InstanceEdi
  * endpoint but different credential metadata. A declared value has to match
  * after the hub's normalization; a credential clear is unverifiable (the hub
  * omits an authored value it cannot serve, whether this save cleared it or a
- * replacement insists on its own), so it fails closed where the caller needs
- * proof. */
-function credentialValuesLanded(
-  listed: InstanceEntry,
-  params: InstanceEditParams,
-  failClosedOnClear: boolean,
-): boolean {
-  if (failClosedOnClear && (params.clearApiKeyEnv || params.clearCredentialHeader)) return false;
+ * replacement insists on its own), so it always fails closed. */
+function credentialValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.clearApiKeyEnv || params.clearCredentialHeader) return false;
   if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
   if (
     params.credentialHeader !== undefined &&
@@ -488,7 +467,7 @@ function supersededSaveLanded(
   // would be written over it.
   if ((authoritative?.apiKeyEnv ?? "") !== (listed.apiKeyEnv ?? "")) return undefined;
   if ((authoritative?.credentialHeader ?? "") !== (listed.credentialHeader ?? "")) return undefined;
-  if (!credentialValuesLanded(listed, params, true)) return undefined;
+  if (!credentialValuesLanded(listed, params)) return undefined;
   return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
 }
 

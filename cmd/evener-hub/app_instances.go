@@ -958,10 +958,10 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// resolves it before its read lock: resolving it can repair the file, and
 	// holding the write locks across that would stall every other writer. Only
 	// a caller that wants the captured listing (out != nil) needs it.
-	var key []byte
+	var fingerprintKey []byte
 	var keyErr error
 	if out != nil {
-		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
+		fingerprintKey, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1132,7 +1132,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// Still under this edit's write locks, so no concurrent edit can land
 		// between the write and this read. Reached for a plain edit AND a clean
 		// rename (the rename branch above only returns on an applied error).
-		*out = c.listLocked(key, keyErr)
+		*out = c.listLocked(fingerprintKey, keyErr)
 	}
 	return nil
 }
