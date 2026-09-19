@@ -1,11 +1,11 @@
-import type { MarketplaceEntry } from "@evener/appwire-client";
+import { type MarketplaceEntry, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Dispatch, SetStateAction } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
-import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectionStore, useConnectionStore } from "../../../../stores/connection";
+import { extensionsStore, resetExtensionsStoreForTests, useExtensionsStore } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplaceSheet } from "./MarketplaceSheet";
@@ -51,6 +51,55 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+function SheetHarness({
+  name,
+  onClose,
+  onRenamed,
+  expandedMarketplaces,
+  setExpandedMarketplaces,
+}: {
+  name: string | null;
+  onClose: () => void;
+  onRenamed: (newName: string) => void;
+  expandedMarketplaces: Set<string>;
+  setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
+}) {
+  const connectionClient = useConnectionStore((state) => state.client);
+  const marketplaces = useExtensionsStore((state) => state.marketplaces);
+  const [appliedRemovalNames, setAppliedRemovalNames] = useState<ReadonlySet<string>>(() => new Set());
+
+  // The dependency is intentionally observed even though the effect body only
+  // resets the page-owned marker when that identity changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset the durable marker on client replacement
+  useEffect(() => {
+    setAppliedRemovalNames(new Set());
+  }, [connectionClient]);
+  useEffect(() => {
+    if (marketplaces === null) return;
+    const currentNames = new Set(marketplaces.map((marketplace) => marketplace.name));
+    setAppliedRemovalNames((names) => {
+      const next = new Set([...names].filter((appliedName) => currentNames.has(appliedName)));
+      return next.size === names.size ? names : next;
+    });
+  }, [marketplaces]);
+
+  return (
+    <MarketplaceSheet
+      name={name}
+      onClose={onClose}
+      onRenamed={onRenamed}
+      expandedMarketplaces={expandedMarketplaces}
+      setExpandedMarketplaces={setExpandedMarketplaces}
+      appliedRemovalNames={appliedRemovalNames}
+      connectionClient={connectionClient}
+      onAppliedRemoval={(appliedName, owner) => {
+        if (connectionStore.getState().client !== owner) return;
+        setAppliedRemovalNames((names) => new Set(names).add(appliedName));
+      }}
+    />
+  );
+}
+
 function renderSheet(
   entry: MarketplaceEntry | null,
   expanded: Set<string> = new Set(),
@@ -64,7 +113,7 @@ function renderSheet(
   const tree = () => (
     <>
       <Toast />
-      <MarketplaceSheet
+      <SheetHarness
         name={selected}
         onClose={onClose}
         onRenamed={onRenamed}
@@ -96,6 +145,22 @@ function field(label: string): HTMLInputElement {
 }
 function saveButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+}
+
+function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> = {}): WireError {
+  return new WireError('marketplace "acme": marketplace unregistered, but its clone could not be removed', -32603, {
+    evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+    applied: { marketplaces },
+    ...extra,
+  });
+}
+
+function removeCalls(fake: FakeClient): number {
+  return fake.calls.filter((call) => call.method === "evener/marketplace/remove").length;
+}
+
+function listCalls(fake: FakeClient): number {
+  return fake.calls.filter((call) => call.method === "evener/marketplace/list").length;
 }
 
 beforeEach(() => {
@@ -640,6 +705,75 @@ test("a failed Remove toasts and keeps the sheet and its confirm open for a retr
   expect(screen.getByRole("dialog", { name: "Remove marketplace" })).toBeTruthy();
   expect((within(confirm).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   expect(onClose).not.toHaveBeenCalled();
+});
+
+test("an applied clone cleanup failure warns and closes the completed removal", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  fake.on("evener/marketplace/remove", () => {
+    throw cloneLitterError([LOCAL]);
+  });
+  const { onClose } = renderSheet(ACME);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() =>
+    expect(
+      getToasts().some((t) => t.kind === "warning" && t.text.includes("Marketplace removed; clone cleanup failed")),
+    ).toBe(true),
+  );
+  expect(screen.queryByRole("dialog", { name: "Remove marketplace" })).toBeNull();
+  expect(onClose).toHaveBeenCalled();
+  expect(removeCalls(fake)).toBe(1);
+});
+
+test("an applied cleanup failure that still lists the target refreshes and blocks retry", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  fake.on("evener/marketplace/remove", () => {
+    throw cloneLitterError([ACME]);
+  });
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  renderSheet(ACME);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() => expect(removeCalls(fake)).toBe(1));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(1));
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("an applied but unavailable cleanup failure closes confirmation, refreshes, and blocks retry", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  fake.on("evener/marketplace/remove", () => {
+    throw cloneLitterError(null);
+  });
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  const { select } = renderSheet(ACME);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() => expect(listCalls(fake)).toBe(1));
+  await waitFor(() =>
+    expect(
+      getToasts().some((t) => t.kind === "warning" && t.text.includes("Marketplace removed; clone cleanup failed")),
+    ).toBe(true),
+  );
+  expect(screen.queryByRole("dialog", { name: "Remove marketplace" })).toBeNull();
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(removeCalls(fake)).toBe(1);
+
+  act(() => extensionsStore.setState({ marketplaces: [ACME, OTHER] }));
+  select("other");
+  select("acme");
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 // The confirm names the entry the sheet currently shows, so a confirm left

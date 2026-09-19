@@ -303,6 +303,33 @@ func (m *Manager) ListMarketplaces(ctx context.Context) (Marketplaces, error) {
 	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
 }
 
+// cloneRemovalFailed reports that removing marketplace name's clone from disk
+// failed as a cleanup step whose own metadata change already applied - not a
+// write failure itself, since RemoveMarketplace has already saved the
+// unregistration by the time this runs. The error wraps
+// ErrMarketplaceUnregisteredCloneRemains, so a caller can tell this
+// applied-with-litter outcome from a plain refusal by errors.Is instead of
+// assuming a non-nil error means the marketplace is still registered.
+// removeErr's own text can carry this machine's absolute plugin-store path
+// (os.RemoveAll returns a *fs.PathError that names it), so it goes to the
+// hub's log instead of the RPC caller.
+func (m *Manager) cloneRemovalFailed(name string, removeErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace %q's clone failed: %v\n", name, removeErr)
+	return fmt.Errorf("marketplace %q: %w; see the hub's log for detail", name, ErrMarketplaceUnregisteredCloneRemains)
+}
+
+// RemoveMarketplace unregisters name: the metadata save lands first, so a
+// save failure is a plain refusal that leaves the marketplace registered and
+// its clone untouched. Only once that save has landed does the clone's own
+// removal run - a failure there is litter the hub's caller cannot undo
+// (reported as ErrMarketplaceUnregisteredCloneRemains), but the marketplace
+// itself is already gone from the listing. A retry after that litter finds
+// no entry for name and reports the plain ErrMarketplaceNotFound a lookup
+// miss always has: name is caller-controlled and unvalidated here, so
+// deriving m.marketplaceDir(name) and touching the filesystem on a miss -
+// name "" resolves to the marketplaces directory itself, ".." to its parent
+// - is refused rather than attempted. Whoever wants the litter cleaned up
+// retries some other way; this never mutates the filesystem on a miss.
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
@@ -313,26 +340,26 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := mk[name]; !ok {
+	_, ok := mk[name]
+	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
-	// A directory source's install location is its own path, so a directory
-	// under the store's canonical name is normally a stale clone — the one a
-	// git->directory re-source failed to remove, say. Sweep it whatever the
-	// recorded kind, or it outlives the marketplace under a name nothing
-	// records and blocks that name for a later rename. What must not be swept
-	// is any record's directory source that names this path, the removed
-	// record's included: a legacy record can source from the clone itself, and
-	// that directory is then live data the sweep must keep.
+	// Decide whether the clone is safe to sweep from the pre-removal registry.
+	// This includes the removed record's directory source: legacy data may use
+	// the canonical clone path as live source data, even though new writes refuse
+	// sources inside the store.
 	clone := m.marketplaceDir(name)
 	present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), clone)
+	delete(mk, name)
+	if err := m.saveMarketplaces(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
 	if present && !protect {
 		if err := marketplaceRemoveAll(clone); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
+			return m.cloneRemovalFailed(name, err)
 		}
 	}
-	delete(mk, name)
-	return m.saveMarketplaces(mk)
+	return nil
 }
 
 // sweepDestroysSource reports whether removing (or renaming away) the directory
