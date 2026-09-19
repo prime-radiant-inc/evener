@@ -184,6 +184,15 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		return { outbox, optimistic, recovery };
 	}
 
+	// A recovery action is complete only after the exact row is gone. Notify
+	// projections after that commit so a failed or already-settled discard
+	// cannot make a screen forget a record it can still recover.
+	async discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean> {
+		const discarded = await this.storage.discardRecovery(clientMutationId, targetRef);
+		if (discarded) this.#notifyStorageChange([targetRef]);
+		return discarded;
+	}
+
 	subscribeStorage(listener: NativeMutationStorageListener): () => void {
 		this.#storageListeners.add(listener);
 		return () => this.#storageListeners.delete(listener);

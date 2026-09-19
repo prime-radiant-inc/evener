@@ -243,6 +243,56 @@ test("durably keeps raw composer anchors and attachment metadata beside wire inp
 	});
 });
 
+test("discardRecovery removes only the exact recovery target and notifies after deletion", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	await runtime.submit(request("send"));
+	await runtime.storage.transferToRecovery("mutation-1", "rejected");
+
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await expect(runtime.discardRecovery("mutation-1", "wrong-target")).resolves.toBe(false);
+	expect(await runtime.storage.getRecovery("mutation-1")).toBeDefined();
+	expect(changes).toEqual([]);
+
+	await expect(runtime.discardRecovery("mutation-1", targetKey)).resolves.toBe(true);
+	expect(await runtime.storage.getRecovery("mutation-1")).toBeUndefined();
+	expect(changes).toEqual([[targetKey]]);
+	await expect(runtime.discardRecovery("mutation-1", targetKey)).resolves.toBe(false);
+	expect(changes).toEqual([[targetKey]]);
+
+	unsubscribe();
+	await runtime.stop();
+});
+
+test("discardRecovery leaves the row and projection quiet when storage deletion fails", async () => {
+	const database = openDatabase();
+	const runtime = new NativeMutationRuntime(database, {
+		createMutationId: () => "mutation-1",
+	});
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	await runtime.submit(request("send"));
+	await runtime.storage.transferToRecovery("mutation-1", "rejected");
+
+	database.execSync(`
+		CREATE TRIGGER reject_recovery_discard
+		BEFORE DELETE ON mutation_recovery
+		BEGIN
+			SELECT RAISE(ABORT, 'discard failed');
+		END
+	`);
+	const changes: string[][] = [];
+	runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+
+	await expect(runtime.discardRecovery("mutation-1", targetKey)).rejects.toThrow("discard failed");
+	expect(await runtime.storage.getRecovery("mutation-1")).toBeDefined();
+	expect(changes).toEqual([]);
+
+	await runtime.stop();
+});
+
 test.each([
 	["non-authoritative", { authoritative: false }],
 	["not-loaded", { status: "notLoaded" }],
