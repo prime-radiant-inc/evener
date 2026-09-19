@@ -1509,9 +1509,16 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		defs = append(defs, normalizeRegistryToolDefinition(td))
+		if _, managed := s.managedTools[td.Name]; managed {
+			defs = append(defs, td)
+		} else {
+			defs = append(defs, normalizeRegistryToolDefinition(td))
+		}
 	}
 	for i := range defs {
+		if _, managed := s.managedTools[defs[i].Name]; managed {
+			continue
+		}
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 		} else {

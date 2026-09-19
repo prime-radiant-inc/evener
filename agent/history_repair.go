@@ -39,6 +39,7 @@ func repairOrphanedToolResultsReserved(history []schema.Turn, reserved func(sche
 		return history, 0, nil
 	}
 
+	managedPairs, _ := managedResultPairing(history)
 	out := make([]schema.Turn, 0, len(history))
 	var pending []llm.ToolCallData
 	repairs := 0
@@ -67,14 +68,14 @@ func repairOrphanedToolResultsReserved(history []schema.Turn, reserved func(sche
 		pending = dst
 	}
 
-	for _, turn := range history {
+	for turnIndex, turn := range history {
 		switch turn.Kind {
 		case schema.TurnAssistant:
 			flushPending()
 			out = append(out, turn)
 			pending = nil
 			for index, call := range assistantToolCalls(turn.Message) {
-				if reserved == nil || !reserved(turn, index) {
+				if !managedPairs[turnIndex].hasToolIndex(index) && (reserved == nil || !reserved(turn, index)) {
 					pending = append(pending, call)
 				}
 			}

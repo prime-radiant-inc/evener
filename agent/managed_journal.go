@@ -16,6 +16,7 @@ const managedJournalVersion = 1
 const maxManagedJournalBytes = 32 << 20
 const maxManagedPending = 256
 const maxManagedResultBytes = 4 << 20
+const maxManagedRequestBytes = 4 << 20
 
 type managedInvocation struct {
 	ID             string         `json:"id"`
@@ -78,7 +79,7 @@ func openManagedJournal(path, sessionID string) (*managedJournal, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(f, maxManagedJournalBytes+1))
 	if err != nil {
 		return nil, err
@@ -121,12 +122,17 @@ func sameManagedOccurrence(a, b managedInvocation) bool {
 	return a.SessionID == b.SessionID && a.AttemptGroupID == b.AttemptGroupID && a.ToolIndex == b.ToolIndex
 }
 func (j *managedJournal) validate(e managedInvocation) error {
-	if e.ID == "" || e.SessionID != j.sessionID || e.AttemptGroupID == "" || e.ToolIndex < 0 || e.AssistantSeq < 0 || e.ToolName == "" || e.CallID == "" || e.Request.Operation == "" || e.Request.MutationID == "" || !json.Valid(e.Request.Arguments) || !json.Valid(e.Arguments) {
+	if len(e.Request.Arguments) > maxManagedRequestBytes || len(e.Arguments) > maxManagedRequestBytes {
+		return errors.New("managed arguments too large")
+	}
+	if e.Request.ToolName != e.ToolName || e.Request.ToolCallID != e.CallID || e.Request.InvocationID != e.ID {
+		return errors.New("managed request occurrence mismatch")
+	}
+	if e.ID == "" || e.SessionID != j.sessionID || e.AttemptGroupID == "" || e.ToolIndex < 0 || e.AssistantSeq < 0 || e.ToolName == "" || e.CallID == "" || e.Request.Operation == "" || e.Request.InvocationID == "" || !json.Valid(e.Request.Arguments) || !json.Valid(e.Arguments) {
 		return errors.New("incomplete managed invocation")
 	}
-	id := e.Request.Identity
-	if id.BindingID == "" || id.ServiceID == "" || id.RealmID == "" || id.PrincipalID == "" || id.NamespaceID == "" {
-		return errors.New("incomplete managed identity")
+	if err := validateManagedIdentity(e.Request.Identity); err != nil {
+		return err
 	}
 	if e.Result != nil {
 		raw, err := json.Marshal(e.Result)
@@ -199,9 +205,18 @@ func (j *managedJournal) put(e managedInvocation) error {
 			}
 		}
 	}
+	old, existed := j.entries[e.ID]
+	j.entries[e.ID] = cloneManagedInvocation(e)
+	if _, err := j.encodeLocked(); err != nil {
+		if existed {
+			j.entries[e.ID] = old
+		} else {
+			delete(j.entries, e.ID)
+		}
+		return err
+	}
 	// Retain even pre-rename candidates in this process: retry cannot remint an
 	// operation after an ambiguous filesystem acknowledgment.
-	j.entries[e.ID] = cloneManagedInvocation(e)
 	j.dirty = true
 	return j.writeLocked()
 }
@@ -246,12 +261,9 @@ func (j *managedJournal) barrier(point string) error {
 	return nil
 }
 func (j *managedJournal) replaceLocked() (renamed bool, err error) {
-	data, err := json.Marshal(managedJournalSnapshot{Version: managedJournalVersion, SessionID: j.sessionID, Pending: j.pendingLocked()})
+	data, err := j.encodeLocked()
 	if err != nil {
 		return false, err
-	}
-	if len(data) > maxManagedJournalBytes {
-		return false, errors.New("managed journal too large")
 	}
 	file, err := os.CreateTemp(filepath.Dir(j.path), ".managed-*")
 	if err != nil {
@@ -268,7 +280,7 @@ func (j *managedJournal) replaceLocked() (renamed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if err = file.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return false, err
 	}
 	if err = j.barrier("rename"); err == nil {
@@ -282,9 +294,29 @@ func (j *managedJournal) replaceLocked() (renamed bool, err error) {
 	if err != nil {
 		return true, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	if err = j.barrier("directory_sync"); err == nil {
 		err = dir.Sync()
 	}
 	return true, err
+}
+
+// encodeLocked reserves room for each admitted operation's maximum receipt.
+// Capacity refusal happens before admission, so an oversized new operation
+// cannot make existing pending work impossible to persist or settle.
+func (j *managedJournal) encodeLocked() ([]byte, error) {
+	data, err := json.Marshal(managedJournalSnapshot{Version: managedJournalVersion, SessionID: j.sessionID, Pending: j.pendingLocked()})
+	if err != nil {
+		return nil, err
+	}
+	reserved := 0
+	for _, entry := range j.entries {
+		if entry.Result == nil {
+			reserved += maxManagedResultBytes + 256
+		}
+	}
+	if len(data)+reserved > maxManagedJournalBytes {
+		return nil, errors.New("managed journal capacity exhausted")
+	}
+	return data, nil
 }

@@ -468,7 +468,9 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
-	if t.OmitIntent {
+	if t.OmitIntent && t.ValidateRaw != nil {
+		t.Definition.Parameters = CloneSchemaMap(t.Definition.Parameters)
+	} else if t.OmitIntent {
 		t.Definition = WithoutIntentParameter(t.Definition)
 	} else {
 		t.Definition = WithIntentParameter(t.Definition)

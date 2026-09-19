@@ -157,6 +157,9 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
+	if err := s.checkManagedHistory(); err != nil {
+		return nil, "", nil, llm.Request{}, nil, "", err
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
@@ -1635,6 +1638,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // thinking and web_search blocks a target cannot accept are stripped from the
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
+	managedPairs, movedManagedResults := managedResultPairing(historyTurns)
 	history := make([]llm.Message, 0, len(historyTurns))
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
@@ -1664,6 +1668,32 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		clear(pendingToolCalls)
 	}
 
+	appendToolResults := func(message llm.Message) {
+		for _, p := range message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+				history = append(history, llm.Message{
+					Role:       llm.RoleTool,
+					ToolCallID: p.ToolResult.ToolCallID,
+					Content: []llm.ContentPart{{
+						Kind: llm.ContentToolResult,
+						ToolResult: &llm.ToolResultData{
+							ToolCallID:     p.ToolResult.ToolCallID,
+							Name:           p.ToolResult.Name,
+							Content:        p.ToolResult.Content,
+							IsError:        p.ToolResult.IsError,
+							PrevalOnly:     p.ToolResult.PrevalOnly,
+							DurationMS:     p.ToolResult.DurationMS,
+							ToolState:      p.ToolResult.ToolState,
+							ImageData:      p.ToolResult.ImageData,
+							ImageMediaType: p.ToolResult.ImageMediaType,
+						},
+					}},
+				})
+			}
+		}
+		resolveToolResults(message)
+	}
+
 	for i, t := range historyTurns {
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
@@ -1678,30 +1708,16 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)
 		case schema.TurnToolResults:
-			// Expand aggregated tool results into individual messages.
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					history = append(history, llm.Message{
-						Role:       llm.RoleTool,
-						ToolCallID: p.ToolResult.ToolCallID,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolResult,
-							ToolResult: &llm.ToolResultData{
-								ToolCallID:     p.ToolResult.ToolCallID,
-								Name:           p.ToolResult.Name,
-								Content:        p.ToolResult.Content,
-								IsError:        p.ToolResult.IsError,
-								PrevalOnly:     p.ToolResult.PrevalOnly,
-								DurationMS:     p.ToolResult.DurationMS,
-								ToolState:      p.ToolResult.ToolState,
-								ImageData:      p.ToolResult.ImageData,
-								ImageMediaType: p.ToolResult.ImageMediaType,
-							},
-						}},
-					})
+			message := t.Message
+			if moved := movedManagedResults[i]; len(moved) > 0 {
+				message.Content = nil
+				for partIndex, part := range t.Message.Content {
+					if !moved[partIndex] {
+						message.Content = append(message.Content, part)
+					}
 				}
 			}
-			resolveToolResults(t.Message)
+			appendToolResults(message)
 		case schema.TurnTool:
 			history = append(history, scope.projectTurnMessage(t, inFlight))
 			resolveToolResults(t.Message)
@@ -1710,6 +1726,13 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			message := scope.projectTurnMessage(t, inFlight)
 			history = append(history, message)
 			startToolRound(message)
+			if pairs := managedPairs[i]; len(pairs) > 0 {
+				parts := make([]llm.ContentPart, 0, len(pairs))
+				for _, pair := range pairs {
+					parts = append(parts, pair.part)
+				}
+				appendToolResults(llm.Message{Role: llm.RoleTool, Content: parts})
+			}
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()

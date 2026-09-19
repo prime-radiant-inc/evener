@@ -102,14 +102,13 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	managedInitializationComplete bool
-	managedMu                     sync.Mutex
-	managedTools                  map[string]ManagedTool
-	managedBinding                ManagedBinding
-	managedBindingErr             error
-	managedCloseOnce              sync.Once
-	managedJournal                *managedJournal
-	managedAnchor                 managedOccurrenceAnchor
+	managedMu         sync.Mutex
+	managedTools      map[string]ManagedTool
+	managedBinding    ManagedBinding
+	managedBindingErr error
+	managedCloseOnce  sync.Once
+	managedJournal    *managedJournal
+	managedAnchor     managedOccurrenceAnchor
 
 	id  string
 	cfg SessionConfig

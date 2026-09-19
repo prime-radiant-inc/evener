@@ -698,7 +698,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			s.attentionMu.Unlock()
 		}
 
-		s.closeManagedBinding()
+		s.closeManagedBinding(budgetCtx)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -872,7 +872,7 @@ func (s *Session) discardRestoredCandidate() {
 			scratch = retainChildScratch
 		}
 		releaseOwnedChildEnvironment(env, scratch)
-		s.closeManagedBinding()
+		s.closeManagedBinding(context.Background())
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

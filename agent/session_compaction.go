@@ -19,6 +19,9 @@ import (
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
+	if err := s.checkManagedHistory(); err != nil {
+		return err
+	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
 		return admissionErr

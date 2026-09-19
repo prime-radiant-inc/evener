@@ -110,7 +110,7 @@ func TestManagedJournalBarriersPreventDispatchAndKeepSameInvocation(t *testing.T
 			if err := s.reconcileManagedInvocations(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.requests) != 1 || f.requests[0].MutationID != pending[0].Request.MutationID {
+			if len(f.requests) != 1 || f.requests[0].InvocationID != pending[0].Request.InvocationID {
 				t.Fatalf("recovery reminted: %+v", f.requests)
 			}
 		})
@@ -212,5 +212,56 @@ func TestManagedLateResolutionRetainedThenReopenedDoesNotDuplicate(t *testing.T)
 	}
 	if count != 1 || len(f.requests) != 2 || len(restored.managedJournal.pending()) != 0 {
 		t.Fatalf("resolutions=%d backend=%d pending=%d", count, len(f.requests), len(restored.managedJournal.pending()))
+	}
+}
+
+func TestManagedNilWriterCannotSettleOriginalReceipt(t *testing.T) {
+	f := &managedFixture{}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, ManagedRuntime: f}))
+	response := managedCallStep(llm.Request{})
+	if err := s.appendAssistantTurn(response, ModelAttemptMetadata{AttemptGroupID: "nil-result-writer"}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.execToolBatch(t.Context(), response.ToolCalls(), s.currentProfile(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.transcript.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.transcript = nil
+	s.mu.Unlock()
+	if err = s.persistToolResults(t.Context(), response.ToolCalls(), results); !errors.Is(err, transcript.ErrWriterClosed) {
+		t.Fatalf("nil result writer: %v", err)
+	}
+	pending := s.managedJournal.pending()
+	if len(pending) != 1 || pending[0].Result == nil || pending[0].Result.Host == nil {
+		t.Fatal("nil writer discarded original receipt")
+	}
+}
+func TestManagedCancellationPreservesReturnedReceipt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f := &managedFixture{afterExecute: cancel}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), ForceRealIO: true, ManagedRuntime: f}))
+	response := managedCallStep(llm.Request{})
+	if err := s.appendAssistantTurn(response, ModelAttemptMetadata{AttemptGroupID: "cancel-result"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.execToolBatch(ctx, response.ToolCalls(), s.currentProfile(), "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation=%v", err)
+	}
+	pending := s.managedJournal.pending()
+	if len(pending) != 1 || pending[0].Result == nil || pending[0].Result.Host == nil {
+		t.Fatal("cancellation discarded returned receipt")
+	}
+	f.afterExecute = nil
+	if err = s.reconcileManagedInvocations(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 1 || len(s.managedJournal.pending()) != 0 {
+		t.Fatal("cancellation forced duplicate backend call")
 	}
 }

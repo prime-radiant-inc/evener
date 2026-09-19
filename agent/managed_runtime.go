@@ -45,11 +45,15 @@ type ManagedBinding interface {
 	Close(context.Context) error
 }
 
+// ManagedCall is the accepted hook-prepared input and actual tool occurrence.
+// InvocationID is empty for ephemeral reads; durable reads keep it local. Only
+// fixed-catalog mutation operations may inject it into service mutationId.
 type ManagedCall struct {
-	ToolName, Operation, MutationID string
-	Arguments                       json.RawMessage
+	ToolName, ToolCallID, Operation, InvocationID string
+	Arguments                                     json.RawMessage
 }
 
+// ManagedIdentity contains stable logical authority, never a lease or transport.
 type ManagedIdentity struct {
 	BindingID   string `json:"binding_id"`
 	ServiceID   string `json:"service_id"`
@@ -61,19 +65,27 @@ type ManagedIdentity struct {
 // ManagedRequest contains immutable service input and stable authority IDs only.
 // The session journal stores Arguments as bytes so JSON formatting is preserved.
 type ManagedRequest struct {
-	Identity   ManagedIdentity `json:"identity"`
-	Operation  string          `json:"operation"`
-	MutationID string          `json:"mutation_id"`
-	Arguments  json.RawMessage `json:"arguments,omitempty"`
+	ToolName     string          `json:"tool_name"`
+	ToolCallID   string          `json:"tool_call_id"`
+	Identity     ManagedIdentity `json:"identity"`
+	Operation    string          `json:"operation"`
+	InvocationID string          `json:"invocation_id"`
+	Arguments    json.RawMessage `json:"arguments,omitempty"`
 }
 
+// ManagedResult separates original model text from the trusted host envelope.
 type ManagedResult struct {
 	ModelText string         `json:"model_text"`
 	Host      *llm.MCPResult `json:"host,omitempty"`
 }
 
+// ErrManagedUnavailable identifies transient runtime or service unavailability.
 var ErrManagedUnavailable = errors.New("managed runtime unavailable")
+
+// ErrManagedAuthorityDenied identifies current policy refusal, not a retry hint.
 var ErrManagedAuthorityDenied = errors.New("managed authority denied")
+
+// ErrManagedRecoveryPending marks an unresolved unpaired durable invocation.
 var ErrManagedRecoveryPending = errors.New("managed invocation recovery pending")
 
 // ManagedRecoveryPendingError refuses runnable history with an unpaired durable
@@ -90,6 +102,8 @@ func (e *ManagedRecoveryPendingError) Error() string {
 	return "managed invocation recovery pending: outcome unavailable"
 }
 func (e *ManagedRecoveryPendingError) Unwrap() error { return e.Cause }
+
+// Is identifies pending recovery without discarding the underlying cause.
 func (e *ManagedRecoveryPendingError) Is(target error) bool {
 	return target == ErrManagedRecoveryPending
 }

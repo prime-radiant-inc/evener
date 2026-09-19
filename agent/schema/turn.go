@@ -196,8 +196,6 @@ type GoalContinuationInfo struct {
 	Text string `json:"text"`
 }
 
-// Turn is the Session's typed history item. Steering turns are kept distinct for observability,
-// but are converted to user-role messages when building the LLM request.
 // ManagedResolutionInfo settles an earlier nonterminal managed tool result.
 // Host data stays outside Message, which carries only model-facing text.
 type ManagedResolutionInfo struct {
@@ -206,6 +204,8 @@ type ManagedResolutionInfo struct {
 	MCPResult    *llm.MCPResult `json:"mcp_result,omitempty"`
 }
 
+// Turn is the Session's typed history item. Steering turns are kept distinct for observability,
+// but are converted to user-role messages when building the LLM request.
 type Turn struct {
 	ManagedResolution *ManagedResolutionInfo `json:"managed_resolution,omitempty"`
 

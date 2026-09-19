@@ -15,7 +15,7 @@ func TestManagedRawDispatchPreservesNumbersAndSeparatesHostResult(t *testing.T) 
 	for _, domainError := range []bool{false, true} {
 		r := NewRegistry()
 		reached := false
-		err := r.Register(RegisteredTool{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "managed", Description: "Managed boundary fixture", Parameters: map[string]any{"type": "object"}}}, OmitIntent: true,
+		err := r.Register(RegisteredTool{Definition: llm.ToolDefinition{Name: "managed", Description: "Managed boundary fixture", Parameters: map[string]any{"type": "object"}}, OmitIntent: true,
 			ValidateRaw: func(raw json.RawMessage) error {
 				if !json.Valid(raw) || strings.Contains(string(raw), `"forbidden"`) {
 					return errors.New("invalid")

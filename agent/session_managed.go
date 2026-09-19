@@ -40,10 +40,11 @@ func (s *Session) initManagedCatalog() error {
 	if s.cfg.ManagedRuntime == nil {
 		return nil
 	}
-	catalog, err := s.cfg.ManagedRuntime.Catalog()
-	if err != nil {
-		s.managedBindingErr = err
-		return nil
+	catalog, catalogErr := s.cfg.ManagedRuntime.Catalog()
+	s.managedBindingErr = catalogErr
+	if catalogErr != nil {
+		// Discovery failure must leave fresh ordinary sessions usable.
+		catalog = nil
 	}
 	s.managedTools = map[string]ManagedTool{}
 	for _, definition := range catalog {
@@ -56,7 +57,7 @@ func (s *Session) initManagedCatalog() error {
 		}
 		definition.Definition.Parameters = tool.CloneSchemaMap(definition.Definition.Parameters)
 		s.managedTools[name] = definition
-		registered := tool.RegisteredTool{Tool: llm.Tool{Definition: definition.Definition, ReadOnly: definition.ReadOnly}, OmitIntent: true, ValidateRaw: definition.Validate,
+		registered := tool.RegisteredTool{Definition: definition.Definition, ReadOnly: definition.ReadOnly, OmitIntent: true, ValidateRaw: definition.Validate,
 			ExecRaw: func(ctx context.Context, _ execenv.ExecutionEnvironment, raw json.RawMessage) (any, error) {
 				return s.executeManaged(ctx, name, raw)
 			},
@@ -74,7 +75,7 @@ func (s *Session) bindManagedRuntime() {
 	}
 	names := []string{}
 	for name := range s.managedTools {
-		if s.cfg.spawn.parentSessionID != "" && !slices.Contains(s.cfg.managedParentTools, name) {
+		if s.isSubagentSession() && !slices.Contains(s.cfg.managedParentTools, name) {
 			s.reg.Remove(name)
 		}
 		if s.reg.Get(name) != nil {
@@ -91,10 +92,12 @@ func (s *Session) bindManagedRuntime() {
 		s.managedBindingErr = ErrManagedUnavailable
 	}
 }
-func (s *Session) closeManagedBinding() {
+func (s *Session) closeManagedBinding(ctx context.Context) {
 	s.managedCloseOnce.Do(func() {
 		if s.managedBinding != nil {
-			_ = s.managedBinding.Close(context.Background())
+			budgetCtx, cancel := ensureCloseBudget(ctx)
+			defer cancel()
+			_ = s.managedBinding.Close(budgetCtx)
 		}
 	})
 }
@@ -169,18 +172,25 @@ func (s *Session) executeManaged(ctx context.Context, name string, raw json.RawM
 		if !definition.ReadOnly {
 			return nil, errors.New("managed mutation requires durable session storage")
 		}
-		request, err := s.managedBinding.Prepare(ctx, ManagedCall{ToolName: name, Operation: definition.Operation, Arguments: raw})
+		call := ManagedCall{ToolName: name, ToolCallID: managedToolCallID(ctx), Operation: definition.Operation, Arguments: raw}
+		request, err := s.managedBinding.Prepare(ctx, call)
 		if err != nil {
 			return nil, err
 		}
-		if err = s.managedBinding.Authorize(ctx, request); err != nil {
+		if request.ToolName != call.ToolName || request.ToolCallID != call.ToolCallID || request.Operation != call.Operation || request.InvocationID != "" {
+			return nil, errors.New("managed preparation changed operation identity")
+		}
+		if err := validateManagedIdentity(request.Identity); err != nil {
+			return nil, err
+		}
+		if err := s.managedBinding.Authorize(ctx, request); err != nil {
 			return nil, err
 		}
 		result, err := s.managedBinding.Execute(ctx, request)
 		if err != nil {
 			return nil, err
 		}
-		if err = validateManagedResult(result, request, s.id); err != nil {
+		if err := validateManagedResult(result, request, s.id); err != nil {
 			return nil, err
 		}
 		return tool.ManagedResult{Output: result.ModelText, Host: result.Host}, nil
@@ -205,15 +215,15 @@ func (s *Session) executeManaged(ctx context.Context, name string, raw json.RawM
 	}
 	if invocation.ID == "" {
 		invocation = managedInvocation{ID: identifier.MustNewAgentCallID(), SessionID: s.id, AttemptGroupID: position.Anchor.AttemptGroupID, ToolIndex: position.ToolIndex, AssistantSeq: position.Anchor.AssistantSeq, ToolName: name, CallID: original.ID, Arguments: append([]byte(nil), original.Arguments...)}
-		request, err := s.managedBinding.Prepare(ctx, ManagedCall{ToolName: name, Operation: definition.Operation, MutationID: invocation.ID, Arguments: append(json.RawMessage(nil), raw...)})
+		request, err := s.managedBinding.Prepare(ctx, ManagedCall{ToolName: name, ToolCallID: original.ID, Operation: definition.Operation, InvocationID: invocation.ID, Arguments: append(json.RawMessage(nil), raw...)})
 		if err != nil {
 			return nil, err
 		}
-		if request.MutationID != invocation.ID || request.Operation != definition.Operation {
+		if request.InvocationID != invocation.ID || request.Operation != definition.Operation || request.ToolName != name || request.ToolCallID != original.ID {
 			return nil, errors.New("managed preparation changed operation identity")
 		}
 		invocation.Request = request
-		if err = s.managedBinding.Authorize(ctx, request); err != nil {
+		if err := s.managedBinding.Authorize(ctx, request); err != nil {
 			return nil, err
 		}
 		if err = s.managedJournal.put(invocation); err != nil {
@@ -366,7 +376,7 @@ func managedPaired(entries []transcript.Entry, invocation managedInvocation) boo
 	return false
 }
 func managedAnchorPresent(entries []transcript.Entry, invocation managedInvocation) bool {
-	found := false
+	foundOriginal := false
 	for _, entry := range entries {
 		turn := entry.Turn
 		if turn.Kind != schema.TurnAssistant || turn.AttemptGroupID != invocation.AttemptGroupID {
@@ -380,9 +390,11 @@ func managedAnchorPresent(entries []transcript.Entry, invocation managedInvocati
 		if call.ID != invocation.CallID || call.Name != invocation.ToolName || !sameManagedJSON(call.Arguments, invocation.Arguments) {
 			return false
 		}
-		found = true
+		if entry.Seq == invocation.AssistantSeq {
+			foundOriginal = true
+		}
 	}
-	return found
+	return foundOriginal
 }
 func (s *Session) managedPendingError(err error) *ManagedRecoveryPendingError {
 	return &ManagedRecoveryPendingError{Denied: errors.Is(err, ErrManagedAuthorityDenied), Cause: err}
@@ -466,7 +478,7 @@ func (s *Session) reconcileManagedInvocations(ctx context.Context) error {
 		} else {
 			result := invocation.Result
 			shaped := s.shapeManagedResult(invocation)
-			turn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: invocation.CallID, Name: invocation.ToolName, Content: shaped.Output, ManagedModelText: result.ModelText, IsError: result.Host != nil && result.Host.IsError, MCPResult: result.Host, ManagedInvocationID: invocation.ID}}}})
+			turn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: invocation.CallID, Name: invocation.ToolName, Content: shaped.Output, ManagedModelText: result.ModelText, IsError: result.Host != nil && result.Host.IsError, MCPResult: result.Host, ManagedInvocationID: invocation.ID, ManagedAttemptGroupID: invocation.AttemptGroupID, ManagedToolIndex: invocation.ToolIndex}}}})
 			_, err = s.appendManagedTurn(turn, turn)
 		}
 		if err != nil {
@@ -497,4 +509,16 @@ func sameManagedJSON(a, b []byte) bool {
 func (s *Session) shapeManagedResult(invocation managedInvocation) tool.ExecResult {
 	registered := s.reg.Get(invocation.ToolName)
 	return tool.ShapeManagedResult(invocation.ToolName, invocation.CallID, registered.Limit, tool.ManagedResult{Output: invocation.Result.ModelText, Host: invocation.Result.Host, InvocationID: invocation.ID}, nil)
+}
+
+func managedToolCallID(ctx context.Context) string {
+	id, _ := ctx.Value(ctxToolCallID).(string)
+	return id
+}
+
+func validateManagedIdentity(id ManagedIdentity) error {
+	if id.BindingID == "" || id.ServiceID == "" || id.RealmID == "" || id.PrincipalID == "" || id.NamespaceID == "" {
+		return errors.New("incomplete managed identity")
+	}
+	return nil
 }

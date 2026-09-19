@@ -193,6 +193,10 @@ type ToolResultData struct {
 	ManagedModelText    string     `json:"managed_model_text,omitempty"`
 	MCPResult           *MCPResult `json:"mcp_result,omitempty"`
 	ManagedInvocationID string     `json:"managed_invocation_id,omitempty"`
+	// Recovered results retain their original assistant occurrence so model
+	// pairing survives intervening inputs, journal eviction, and fold/reopen.
+	ManagedAttemptGroupID string `json:"managed_attempt_group_id,omitempty"`
+	ManagedToolIndex      int    `json:"managed_tool_index,omitempty"`
 
 	ToolCallID string `json:"tool_call_id"`
 	Name       string `json:"name,omitempty"`

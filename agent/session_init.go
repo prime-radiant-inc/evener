@@ -415,8 +415,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
 	defer func() {
-		if s != nil && s.managedBinding != nil && !s.managedInitializationComplete {
-			s.closeManagedBinding()
+		if !initComplete {
+			s.closeManagedBinding(context.Background())
 		}
 	}()
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
@@ -565,7 +565,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// a local exec env sweeps foreign lane residue laneSweepDelay after it opens.
 	// The method itself no-ops for subagent sessions and non-local envs.
 	s.armLaneResidueSweepTimer()
-	s.managedInitializationComplete = true
 	initComplete = true
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
@@ -1253,8 +1252,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	defer func() {
-		if s != nil && s.managedBinding != nil && !s.managedInitializationComplete {
-			s.closeManagedBinding()
+		if !restoreComplete {
+			s.closeManagedBinding(context.Background())
 		}
 	}()
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
@@ -1514,7 +1513,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
-	s.managedInitializationComplete = true
 	restoreComplete = true
 	closeDelegateStoreOnError = false
 	return s, nil
