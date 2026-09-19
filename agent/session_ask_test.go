@@ -4143,7 +4143,6 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
 	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
@@ -4170,6 +4169,17 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	}
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("live state after tool-round exhaustion = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after tool-round exhaustion = %q, want %q (live and restore must agree)", got, SessionAwaiting)
 	}
 }
 

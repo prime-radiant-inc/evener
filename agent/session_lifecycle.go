@@ -1339,9 +1339,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				}
 			}
 			// handleModelError owns terminal provider recovery: it emits the
-			// failed turn, blocks the active goal, and settles the session idle.
-			// Keep this generic tail for non-provider failures (and budget
-			// exhaustion), but do not duplicate provider goal/provenance effects.
+			// failed turn, blocks the active goal, and settles through the
+			// pending-aware failure boundary. Keep this generic tail for
+			// non-provider failures (and budget exhaustion), but do not duplicate
+			// provider goal/provenance effects.
 			if !isProviderTerminalError(err) {
 				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 					s.terminateGoalOnError(processCtx, err)
