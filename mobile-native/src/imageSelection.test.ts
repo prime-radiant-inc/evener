@@ -1,11 +1,11 @@
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { ImageSelection, type PickedImage } from "./imageSelection";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
-const databases: DatabaseSync[] = [];
+const databases: SqliteDoubleDatabase[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
@@ -13,14 +13,9 @@ function setup(
   pick: () => Promise<PickedImage[]>,
   encode: (image: PickedImage) => Promise<string>,
 ) {
-  const db = new DatabaseSync(":memory:");
+  const { database: db, port } = openSqliteSyncDouble();
   databases.push(db);
-  const repository = new DraftRepository({
-    execSync: (sql) => db.exec(sql),
-    runSync: (sql, ...params) => db.prepare(sql).run(...params),
-    getFirstSync: <T>(sql: string, ...params: string[]) =>
-      (db.prepare(sql).get(...params) as T | undefined) ?? null,
-  });
+  const repository = new DraftRepository(port);
   const destination = { hubId: "hub", sessionRef: "session" };
   const document = new DraftDocument(() => repository, destination);
   let id = 0;

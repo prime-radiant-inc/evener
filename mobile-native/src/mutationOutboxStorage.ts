@@ -29,6 +29,7 @@ import type {
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import { createSecureUUID } from "@evener/appwire-client/state/mutation";
+import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
 // getRandomValues, the native module every other id-generating call site in
@@ -38,27 +39,8 @@ function nativeRandomSource(): SecureRandomSource {
 	return { randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues };
 }
 
-// The affected-row count expo-sqlite's runSync and node:sqlite's run() both
-// report (sqlite3_changes64()), used to decide a write's boolean result from
-// the statement itself instead of a preceding SELECT.
-export interface MutationOutboxRunResult {
-	changes: number | bigint;
-}
-
-function changedRows(result: MutationOutboxRunResult): number {
+function changedRows(result: SqliteSyncRunResult): number {
 	return typeof result.changes === "bigint" ? Number(result.changes) : result.changes;
-}
-
-// The synchronous SQLite surface this adapter needs: expo-sqlite's
-// openDatabaseSync in production, node:sqlite's DatabaseSync in tests
-// (mirroring draftRepository.ts's DraftDatabase port), extended with
-// getAllSync for the multi-row scans nextDispatchable/listOptimistic/
-// listTargetRefs/restoreProvenAbsent all need.
-export interface MutationOutboxDatabase {
-	execSync(sql: string): void;
-	runSync(sql: string, ...params: (string | number | null)[]): MutationOutboxRunResult;
-	getFirstSync<T>(sql: string, ...params: (string | number)[]): T | null;
-	getAllSync<T>(sql: string, ...params: (string | number)[]): T[];
 }
 
 export interface MutationOutboxSQLiteOptions {
@@ -157,12 +139,12 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAttachmentRef>
 	implements MutationOutboxStorage<A>
 {
-	readonly db: MutationOutboxDatabase;
+	readonly db: SqliteSync;
 	readonly #createMutationId: () => string;
 	readonly #now: () => number;
 	readonly #getOwnClientId: () => string | undefined;
 
-	constructor(db: MutationOutboxDatabase, options: MutationOutboxSQLiteOptions = {}) {
+	constructor(db: SqliteSync, options: MutationOutboxSQLiteOptions = {}) {
 		this.db = db;
 		const randomSource = options.randomSource ?? nativeRandomSource();
 		this.#createMutationId = options.createMutationId ?? (() => createSecureUUID(randomSource));
@@ -583,20 +565,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return changedRows(this.db.runSync(`DELETE FROM ${table} WHERE client_mutation_id = ?`, clientMutationId)) > 0;
 	}
 
-	// Wraps a compound operation (sequence allocation plus an insert, a
-	// multi-table settlement, a recovery handoff) in one SQLite savepoint so a
-	// throw partway through rolls back every statement already run - the same
-	// SAVEPOINT/ROLLBACK TO/RELEASE pattern draftRepository.ts's write() uses
-	// for its own compound writes over this same synchronous database port.
+	// A compound operation (sequence allocation plus an insert, a multi-table
+	// settlement, a recovery handoff) runs in one SQLite savepoint so a throw
+	// partway through rolls back every statement already run - the one shared
+	// helper draftRepository and creationDraftRepository also write through.
 	protected transaction<T>(name: string, body: () => T): T {
-		this.db.execSync(`SAVEPOINT ${name}`);
-		try {
-			const result = body();
-			this.db.execSync(`RELEASE ${name}`);
-			return result;
-		} catch (error) {
-			this.db.execSync(`ROLLBACK TO ${name}; RELEASE ${name}`);
-			throw error;
-		}
+		return withSavepoint(this.db, name, body);
 	}
 }
