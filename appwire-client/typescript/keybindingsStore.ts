@@ -412,6 +412,34 @@ export function discardStoredKeybindingDraft(
   return discardStoredDraft(storage, isReadable);
 }
 
+/** The draft fields a checkpoint (or its absence) describes. Keeping this
+ * mapping beside restoreDraft gives an offline caller the same projection as
+ * the live store without requiring a confirmed hub revision. */
+function draftFieldsFrom(checkpoint: KeybindingDraftCheckpoint | null): {
+  draft: KeybindingsOverrides | null;
+  writeUncertain: boolean;
+} {
+  return {
+    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null,
+    writeUncertain: checkpoint?.writeUncertain ?? false,
+  };
+}
+
+/** Decodes a stored value into the draft fields restoreDraft publishes. A
+ * store-free caller uses this after classifying a readable replacement; an
+ * invalid value is treated as no draft because classification already owns
+ * the unreadable-record signal. */
+export function decodeKeybindingDraftFields(value: unknown): {
+  draft: KeybindingsOverrides | null;
+  writeUncertain: boolean;
+} {
+  try {
+    return draftFieldsFrom(draftCheckpoint(value));
+  } catch {
+    return { draft: null, writeUncertain: false };
+  }
+}
+
 /** Extracts a payload the hub attached to a rejection under `key` when the
  * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
  * `current` (the server's state after a lost revision race) and the
@@ -683,10 +711,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
     try {
       const checkpoint = drafts.load();
-      const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
+      const { draft, writeUncertain } = draftFieldsFrom(checkpoint);
       return {
         draft,
-        writeUncertain: checkpoint?.writeUncertain ?? false,
+        writeUncertain,
         storageUnavailable: false,
         draftUnreadable: false,
         draftError: null,
