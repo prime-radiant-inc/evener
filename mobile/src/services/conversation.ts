@@ -670,7 +670,7 @@ export function createConversationService<ReadLease = unknown>(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
-      const expectedThreadId = threadId ?? undefined;
+      const expectedThreadId = ref === threadRef ? threadId ?? undefined : undefined;
       const epoch = beginOpen(threadRef);
       const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const response: ThreadReadResponse = await client.request("thread/read", {
@@ -714,7 +714,7 @@ export function createConversationService<ReadLease = unknown>(
           : pendingProjection?.ref === threadRef
             ? pendingProjection.instanceId
             : null;
-      const expectedThreadId = threadId ?? undefined;
+      const expectedThreadId = ref === threadRef ? threadId ?? undefined : undefined;
       const epoch = beginOpen(threadRef);
       const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const read = client.request("thread/read", {
