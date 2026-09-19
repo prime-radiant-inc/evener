@@ -176,24 +176,54 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
 
-flags="$*"
-# The caller's argv, preserved for the two things that need values intact:
-# evener-dev decides which flags the enumeration also needs, and a value with a
-# space in it must reach it whole.
+# The caller's argv, preserved as an array and expanded quoted everywhere it
+# reaches a command: evener-dev decides which flags the enumeration also needs, a
+# value with a space must reach go test whole, and no value may be pathname-
+# expanded. It is never flattened back to a string.
 gate_args=("$@")
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 
-module_test_flags() {
-	local m="$1" flag selected=""
+# This gate appends its own -run/-skip filters and its own package list after the
+# caller's flags, so a caller flag that ends flag parsing would turn them into
+# arguments instead. Refuse rather than silently misplace them.
+for gate_arg in ${gate_args[@]+"${gate_args[@]}"}; do
+	case "$gate_arg" in
+	-args|--|--args)
+		printf 'run-module-tests.sh: %s ends flag parsing, which this gate cannot honour: it appends its own -run/-skip and package list after the caller'\''s flags\n' "$gate_arg" >&2
+		exit 2
+		;;
+	esac
+done
+
+# GOFLAGS applies to every go command this gate runs, including each module's
+# go test and its enumerating go list. A -C there would move them out of the
+# module directory the gate anchored, so the enumeration and the tests would
+# describe different trees. The effective value is what go env reports, since a
+# go env file can set it too.
+effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+for gate_arg in $effective_goflags; do
+	case "$gate_arg" in
+	-C|-C=*|--C|--C=*)
+		printf 'run-module-tests.sh: GOFLAGS carries %s, which would move the gate out of the module directory it anchors; remove it\n' "$gate_arg" >&2
+		exit 2
+		;;
+	esac
+done
+
+# module_test_flags_array sets the global test_flags array for module m: the
+# caller's argv, minus -short for the root module under ROOT_FULL. An array, not
+# a string, so a value with a space cannot be split when go test is invoked.
+module_test_flags_array() {
+	local m="$1" flag
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
-		printf '%s' "$flags"
+		test_flags=("${gate_args[@]}")
 		return
 	fi
-	for flag in $flags; do
+	test_flags=()
+	for flag in ${gate_args[@]+"${gate_args[@]}"}; do
 		[ "$flag" = "-short" ] && continue
-		selected="$selected $flag"
+		test_flags+=("$flag")
 	done
-	printf '%s' "${selected# }"
 }
 
 logdir=""
@@ -325,9 +355,12 @@ derive_list_flags() {
 }
 
 run_module() {
-	local m="$1" extra="$2" test_flags
-	test_flags="$(module_test_flags "$m")"
-	# Word-split flags and extra intentionally so callers can pass multiple flags.
+	local m="$1" extra="$2"
+	local -a test_flags
+	module_test_flags_array "$m"
+	# extra is the gate's own -p/-parallel words; it carries no caller value and
+	# no space, so it is word-split deliberately. test_flags is the caller's argv
+	# and is always expanded quoted.
 	# shellcheck disable=SC2086
 	if [ "$m" = "." ]; then
 		local -a packages=()
@@ -347,10 +380,10 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
-		# ROOT_FULL removes short mode through module_test_flags while retaining
-		# the regular Test/Example name filter. Fuzz-owned targets and sanity
-		# functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
+		# ROOT_FULL removes short mode through module_test_flags_array while
+		# retaining the regular Test/Example name filter. Fuzz-owned targets and
+		# sanity functions stay under the explicit make fuzz gate.
+		/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -369,7 +402,7 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards "${test_flags[@]}") || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
@@ -383,11 +416,11 @@ run_module() {
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$agent_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	/usr/bin/time -p go test "${test_flags[@]}" $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each

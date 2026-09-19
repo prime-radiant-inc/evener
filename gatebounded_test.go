@@ -35,6 +35,7 @@ func TestRunBoundedReportsSuccess(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 run_bounded 10 unit test "$dir/log" bash -c 'echo hello'
 rc=$?
@@ -50,6 +51,7 @@ func TestRunBoundedReplaysFailure(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 run_bounded 10 unit test "$dir/log" bash -c 'echo boom >&2; exit 3'
 rc=$?
@@ -61,6 +63,25 @@ rm -rf "$dir"
 	}
 }
 
+// TestRunBoundedRejectsAStatusPublishedAfterTheDeadline pins the rule that a
+// status file absent at the deadline is final: a command that ignores TERM and
+// exits zero during the grace must not turn the timed-out run into a success and
+// let the caller consume output produced after the bound.
+func TestRunBoundedRejectsAStatusPublishedAfterTheDeadline(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+export EVENER_STOP_TREE_GRACE_SECONDS=3
+. `+gateBoundedLib+`
+dir=$(mktemp -d)
+run_bounded 1 unit test "$dir/log" bash -c 'trap "" TERM; sleep 1.2; exit 0'
+printf 'rc=%s status=%s\n' "$?" "$(cat "$dir/log.status" 2>/dev/null)"
+rm -rf "$dir"
+`)
+	if !strings.Contains(got, "rc=1") {
+		t.Fatalf("run_bounded = %q, want rc=1 (the command finished only after the deadline)", got)
+	}
+}
+
 // TestRunBoundedTimesOutWithoutWaiting is the bound the gate claims: a command
 // that outlives it is stopped, the diagnostic hook runs, and run_bounded
 // returns promptly. It must not wait on the stopped process, or a survivor in
@@ -69,6 +90,7 @@ func TestRunBoundedTimesOutWithoutWaiting(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 run_bounded_timeout_diagnostic() { echo "diagnostic:$1:$2"; }
 start=$SECONDS
@@ -123,6 +145,7 @@ func TestStopProcessTreeCatchesALateFork(t *testing.T) {
 set -uo pipefail
 . `+gateBoundedLib+`
 `+pollGoneSnippet+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 cat > "$dir/child.sh" <<'CHILD'
 trap "" TERM
@@ -174,6 +197,7 @@ func TestStopProcessTreeReapsAChildWhenTheParentExits(t *testing.T) {
 set -uo pipefail
 . `+gateBoundedLib+`
 `+pollGoneSnippet+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 cat > "$dir/child.sh" <<'CHILD'
 trap "" TERM
@@ -218,6 +242,7 @@ func TestStopProcessTreeEscalatesToKill(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
+export EVENER_STOP_TREE_GRACE_SECONDS=1
 dir=$(mktemp -d)
 READY="$dir/ready" bash -c 'trap "" TERM; : > "$READY"; exec sleep 60' &
 pid=$!
