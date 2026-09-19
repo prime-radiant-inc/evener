@@ -1224,6 +1224,119 @@ func TestHostAdminFanOutLateCancelledPredecessorCannotOrphanReplacementWake(t *t
 	}
 }
 
+// TestHostAdminFanOutStopSparesWakeRegisteredMidTeardown pins the low-A
+// finding: stopFanOut used to drop the host's wake entry after releasing
+// fanOutMu, so a same-name re-add whose launch ran while the removal was
+// mid-teardown registered the replacement's channel in that window and then
+// lost it to the teardown's unconditional delete — the replacement parked on
+// an orphaned channel, missed the host's next EventAttached wakeup, and slept
+// out its full backoff. The predecessor's cancel handle parks the removal's
+// teardown inside stop(), the point after which the old code still had the
+// wake delete queued, so the re-add's launch provably runs mid-teardown —
+// deterministic, not a scheduling hope. The fixed stopFanOut drops the entry
+// inside the same fanOutMu critical section, before any launch can register.
+func TestHostAdminFanOutStopSparesWakeRegisteredMidTeardown(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	onlineChecks := make(chan struct{}, 16)
+	source.SetHostOnline(func() bool {
+		select {
+		case onlineChecks <- struct{}{}:
+		default:
+		}
+		return online.Load()
+	})
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// The removed generation: its launch registered a wake entry under the
+	// host, and its fanOuts cancel handle parks the removal's teardown inside
+	// stop().
+	controller.takeAttachWakeOwnership("m4")
+	inTeardown := make(chan struct{}, 1)
+	release := make(chan struct{})
+	controller.fanOutMu.Lock()
+	controller.fanOuts["m4"] = func() {
+		inTeardown <- struct{}{}
+		<-release
+	}
+	controller.fanOutMu.Unlock()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		controller.stopFanOut("m4")
+	}()
+	select {
+	case <-inTeardown:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopFanOut never reached the removed generation's cancel handle")
+	}
+
+	// The re-add's launch runs entirely while the removal is mid-teardown —
+	// the interleaving the registry permits and the old unlock-to-delete
+	// window admitted. It registers the replacement's wake channel
+	// synchronously under fanOutMu and parks the replacement in backoff.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	controller.launchFanOut(ctx2, source)
+	select {
+	case <-onlineChecks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out never reached its first Online() check")
+	}
+
+	// The removal's teardown completes only now, with the replacement already
+	// registered: the old code's wake delete ran here and took the
+	// replacement's entry; the fixed critical section dropped the removed
+	// generation's entry before the launch could register.
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopFanOut did not finish after its cancel handle returned")
+	}
+
+	// The attach flips the host online and must wake the replacement through
+	// the wake entry the re-add registered. The replacement's first backoff
+	// is a full hostNotificationRetryBase away, so a served wakeup subscribes
+	// promptly while a missed one is still sleeping when the deadline passes.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the removal's teardown cleared its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The replacement winds down with its context, so the test leaves no
+	// goroutine behind.
+	cancel2()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the replacement fan-out did not unwind after its context was canceled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
 // of the fail-closed checks: a method the proxy may never forward is refused
 // with InvalidParams even when the host is offline, without consulting the

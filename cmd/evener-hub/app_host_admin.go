@@ -425,24 +425,35 @@ func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsou
 // slot and one attachWake channel behind per removed name. Mirrors
 // launchFanOut's replace half: the cancelled loop stands down on its next
 // wakeup, or as soon as its current subscription ends.
+//
+// The wake entry drops inside the same fanOutMu critical section as the
+// cancel handle: launchFanOut registers a replacement generation's entry
+// under that lock too, so the drop is ordered against every launch — an entry
+// a same-name re-add registers after this removal's critical section
+// survives, while the entry the removal finds (the removed generation's, or
+// an orphan an attach parked for a fan-out that never launched) goes.
+// Dropping it after the unlock let a re-add's launch register in the gap and
+// lose its entry to the teardown's delete: the replacement parked on an
+// orphaned channel, missed the host's next EventAttached wakeup, and slept
+// out its full backoff (the low-A finding).
 func (c *hubHostAdminController) stopFanOut(host string) {
 	c.fanOutMu.Lock()
 	stop, ok := c.fanOuts[host]
 	delete(c.fanOuts, host)
+	c.clearAttachWake(host)
 	c.fanOutMu.Unlock()
 	if ok {
 		stop()
 	}
-	c.clearAttachWake(host)
 }
 
-// clearAttachWake drops host's attach wakeup entry unconditionally. It is the
-// removal hook's teardown (stopFanOut): the removal ends every fan-out the
-// host has, so the entry — whatever generation owns it — goes with it. The
-// fan-out loops themselves use clearAttachWakeIfOwned, which spares an entry a
-// replacement generation registered. Both hostAttached and a fan-out's launch
-// create the buffered channel under the host, so a deletion can never strand a
-// live waiter: the next wakeup or backoff re-creates one.
+// clearAttachWake drops host's attach wakeup entry unconditionally. That the
+// drop cannot take a live generation's entry is the caller's guarantee, not
+// this function's: stopFanOut calls it inside its fanOutMu critical section —
+// the same lock launchFanOut registers a generation's entry under — so the
+// drop is ordered against every launch, while the fan-out loops themselves
+// use clearAttachWakeIfOwned, which spares an entry a replacement generation
+// registered.
 func (c *hubHostAdminController) clearAttachWake(host string) {
 	c.attachWakeMu.Lock()
 	delete(c.attachWake, host)
