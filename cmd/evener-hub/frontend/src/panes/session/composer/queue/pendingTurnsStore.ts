@@ -1,6 +1,5 @@
 import {
   awaitingFirstFrameSend,
-  blockedEntries,
   createMutationProjectionFence,
   createMutationProjectionWorkTracker,
   createPendingTurnsStore,
