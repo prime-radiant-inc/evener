@@ -169,7 +169,10 @@ type hubModel struct {
 	// marketplaceRemovePending fences a remove until its result is settled.
 	// An applied-with-litter result keeps this identity until a fresh list
 	// confirms the post-removal state.
-	marketplaceRemovePending    string
+	marketplaceRemovePending string
+	// marketplaceRemoveGeneration identifies the active remove request so a
+	// delayed same-name result cannot complete a later retry.
+	marketplaceRemoveGeneration uint64
 	marketplaceReconcilePending bool
 	marketplaceListGeneration   uint64
 	followupModal               *tuipick.TextInputModal
