@@ -1,0 +1,245 @@
+<title>SDK Landing Queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --ground: #f6f7f5;
+    --panel: #ffffff;
+    --ink: #1c2422;
+    --ink-2: #4c5955;
+    --ink-3: #7c8985;
+    --line: #d9dfdc;
+    --accent: #0f6b62;
+    --accent-soft: #dcefec;
+    --ok: #2f7d3a; --ok-soft: #e1f1e3;
+    --warn: #9a6a00; --warn-soft: #fbefd0;
+    --bad: #b3352b; --bad-soft: #f8e0dd;
+    --hold: #5b4fa8; --hold-soft: #e7e3f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #151a19; --panel: #1e2524; --ink: #e8ecea; --ink-2: #b4bdb9; --ink-3: #7f8b87;
+      --line: #313b38; --accent: #5fc4b7; --accent-soft: #163632;
+      --ok: #7fd08a; --ok-soft: #1c3a22; --warn: #e6b74a; --warn-soft: #3d2f0c;
+      --bad: #f08a80; --bad-soft: #43201c; --hold: #b3a8f0; --hold-soft: #2b2650;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #151a19; --panel: #1e2524; --ink: #e8ecea; --ink-2: #b4bdb9; --ink-3: #7f8b87;
+    --line: #313b38; --accent: #5fc4b7; --accent-soft: #163632;
+    --ok: #7fd08a; --ok-soft: #1c3a22; --warn: #e6b74a; --warn-soft: #3d2f0c;
+    --bad: #f08a80; --bad-soft: #43201c; --hold: #b3a8f0; --hold-soft: #2b2650;
+  }
+  body { background: var(--ground); color: var(--ink); font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif; font-size: 16px; line-height: 1.45; padding-block: 28px 64px; padding-inline: 20px; }
+  .wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 28px; }
+  h1 { font-size: 30px; font-weight: 700; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 { font-size: 20px; font-weight: 700; margin: 0 0 12px; }
+  h3 { font-size: 16px; font-weight: 700; margin: 0 0 6px; }
+  p { margin: 0 0 10px; max-width: 72ch; }
+  .stamp { color: var(--ink-3); font-size: 14px; }
+  .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); font-weight: 600; margin-bottom: 4px; }
+  code, .mono { font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace; font-size: 0.86em; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile .n { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .tile .l { font-size: 13px; color: var(--ink-2); }
+  .callout { background: var(--panel); border-left: 4px solid var(--warn); border-radius: 6px; padding: 16px 18px; }
+  .callout.rec { border-left-color: var(--accent); }
+  .callout ul { margin: 6px 0 0; padding-left: 20px; }
+  .callout li { margin-bottom: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--panel); }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; background: var(--ground); position: sticky; top: env(safe-area-inset-top, 0px); }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .ok { background: var(--ok-soft); color: var(--ok); }
+  .warn { background: var(--warn-soft); color: var(--warn); }
+  .bad { background: var(--bad-soft); color: var(--bad); }
+  .hold { background: var(--hold-soft); color: var(--hold); }
+  .neutral { background: var(--accent-soft); color: var(--accent); }
+  .rounds { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rounds.hot { color: var(--bad); }
+  .rounds.warm { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card ul { margin: 0; padding-left: 18px; }
+  .card li { margin-bottom: 5px; }
+  .muted { color: var(--ink-2); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; outline: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 13px; color: var(--ink-2); }
+  @media (max-width: 480px) { body { font-size: 15px; } h1 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">prime-radiant-inc/evener · issue #1116 landing queue + SDK migration</div>
+    <h1>SDK Landing Queue</h1>
+    <div class="stamp">Status as of 2026-09-18 15:39 PDT (v19). Fifty-five merges since Sep 17 morning, main green at each. Stacks B and C complete; A pieces split done; D6 fold and p6a merged, chain lanes serial. Retention flake root-caused; #1921 round 3 in progress.</div>
+  </header>
+
+  <section class="tiles">
+    <div class="tile"><div class="n">55</div><div class="l">PRs merged since Sep 17 morning, main CI green at every merge</div></div>
+    <div class="tile"><div class="n">11</div><div class="l">Small PRs open (3 held)</div></div>
+    <div class="tile"><div class="n">9</div><div class="l">Product rulings answered today (all gates cleared)</div></div>
+    <div class="tile"><div class="n">2</div><div class="l">Branches held behind other PRs</div></div>
+    <div class="tile"><div class="n">23</div><div class="l">Follow-up issues filed today (one closed by #1724)</div></div>
+  </section>
+
+  <section class="callout rec">
+    <div class="eyebrow">Decided today</div>
+    <h2>Five review rounds means decompose</h2>
+    <ul>
+      <li><strong>#1705 closed.</strong> Replacement in progress: the daemon names the consumed client mutation ids on the queue push (~25 Go lines, one generated TypeScript line), the client settles them as positive evidence, the #1452 heuristic is deleted. Closes #1704; #1706 and #1717 closed as superseded. A hydrate-only backstop for missed pushes follows as its own PR.</li>
+      <li><strong>#1602 closed.</strong> Its plugin half was superseded by the hook (#1733, #1798); the three surviving mechanisms were rebuilt from main: #1834 and #1822 merged, #1810 is on its final round. ~900 lines of hand-threaded plumbing dropped.</li>
+      <li><strong>D6-core (#1549, round 24) decomposed</strong> into a chain: pieces 1 and 2 merged; 3 to 5 folded into one PR after their reviews kept flagging what the next piece fixed; 6 to 10 stacked behind it. Pieces 11 to 13 (the web adapter) follow as tiny PRs once the chain drains. #1549 closed per Jesse; branch kept at dfde92160 as the test reference.</li>
+      <li><strong>#1580 (round 20)</strong> split into F (merged), A, B, C, E, D; piece A decomposed again into A-server #1806 and TypeScript-only #1731. <strong>Correction:</strong> I reported that the live status notification never carried askPending on main; that was wrong (my grep was truncated). The server stamps it at its notification egress, proven by the end-to-end test in #1833.</li>
+      <li><strong>#1735 merged at round 5</strong> with a known break for the TestFlight build 4 phone (its strict receipt decoder rejects the new optional key). The class is #1759, your call; build 5 must carry the widened allowlist.</li>
+      <li><strong>Earlier today:</strong> D6 split from native; #1614 merged without the version bump; Lows always go to follow-up PRs.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>In flight</h2>
+    <div class="legend"><span><span class="pill ok">green</span> CI passed at head</span><span><span class="pill warn">round</span> review findings being fixed</span><span><span class="pill hold">held</span> waiting on a decision or another PR</span><span><span class="pill neutral">watch</span> CI or review pending at head</span></div>
+    <div class="scroll" style="margin-top:10px">
+    <table>
+      <thead><tr><th>PR</th><th>What</th><th>Size</th><th>Rounds</th><th>State</th><th>Next</th></tr></thead>
+      <tbody>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1808">#1808</a> | <a href="https://github.com/prime-radiant-inc/evener/pull/1900">#1900</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1902">#1902</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1904">#1904</a> | <a href="https://github.com/prime-radiant-inc/evener/pull/1792">#1792</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1841">#1841</a> | <a href="https://github.com/prime-radiant-inc/evener/pull/1844">#1844</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1845">#1845</a></td><td>D6 fold (r6), p6a/p6b/p6c, p7/p8/p9/p10 (chain lane 10, serial merge)</td><td class="num">8d8ed0d27 / ead2caba7 / r2×2 / r2×4</td><td class="rounds">— / — / 2 / 2</td><td><span class="pill ok">merged</span> + <span class="pill neutral">watch</span></td><td>Fold merged 8d8ed0d27, p6a merged ead2caba7 (byte-identical refresh, CI 15). Lane 10 on p6b r2 (must-fix: draftFieldsFrom seam + marker collision). p6c follow-up only. p7-p10 merge serially. #1918 filed (three Lows from fold/p6a).</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1892">#1892</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1893">#1893</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1894">#1894</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1895">#1895</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1732">#1732</a></td><td>#1862 decomposed: A1 ask-boundary gate + human-note exclusion; A2 bounded prune walk; A3 warning strings bounded; A4 mobile canonical compose + ids; B blank rows (web)</td><td class="num">— / — / — / 39 / 69</td><td class="rounds">— / — / — / 3 / 3</td><td><span class="pill ok">merged</span></td><td>#1892-#1895 merged; #1732 merged efbd6b0f8 (r3, web WarningItem reads fold). Lane retired with 20-item follow-up PR in a separate worktree.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1905">#1905</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1906">#1906</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1907">#1907</a></td><td>#1806 split S1/S2/S3: ask boundary (live gate, ~229 nt), restore derivation (askedThisRound flag, ~244 nt), claim-id defer/fault/kindless (10 nt, must-fix carry-overs)</td><td class="num">07eb8edf7 / ~244 / ~10</td><td class="rounds">— / 2 / 2</td><td><span class="pill ok">merged</span> + <span class="pill neutral">watch</span></td><td>#1806 closed. S1 MERGED 07eb8edf7 (r2, CI 15, seam Medium refuted + Low, opus follow-up only). S2 #1906 r2 pushed (shared: steeringAnswersAsk predicate; stale comments; drain-gate TOCTOU; live/restore state divergence; roundEntryResolvesAskBoundary skips bookkeeping; askedThisRound counter refuted by measurement; kindless-legacy unreachable). S3 #1907 r2 pushed (onRefuse seam; production fault point deleted). Watchers x2.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1889">#1889</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1890">#1890</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1897">#1897</a></td><td>#1810 split S1/S2/S3: saveMarketplaces scrub boundary, RemoveMarketplace typed-error sentinel (ErrMarketplaceUnregisteredCloneRemains), fail-path join wrapper (migrationFileSaveFailed)</td><td class="num">a81740a36 / ~24 / ~42</td><td class="rounds">— / 5 / 2</td><td><span class="pill ok">merged</span> + <span class="pill neutral">watch</span></td><td>S1 merged a81740a36 (r3, CI 15, own diff clean, opus follow-up only). S2 #1890 r5 (LAST) in progress (hub drops applied sentinel when post-removal list fails; #1923 filed). S3 #1897 rebased, watching. #1896 filed (EditMarketplace path, 11 read-side audit sites).</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1919">#1919</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1920">#1920</a></td><td>B3 (D18) split: turns merged via mergeOlderItemPage (102 nt), footer + shared label + zero-as-absent (117 nt, file-disjoint review-order stack)</td><td class="num">102 / 117</td><td class="rounds">2 / —</td><td><span class="pill neutral">watch</span></td><td>B3b #1919 r2 + simplify must-fixes pushed (turnsMatch exported; dead turnsPage removed), watching. B3a #1920 follow-up only (seam); merges behind B3b. Lane retired (660k).</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1886">#1886</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1901">#1901</a></td><td>C4/C5 stack (D25e web slices): commit feed + tripwire in the package; submission lifecycle in the package</td><td class="num">+39/−36<br>+125/−?</td><td class="rounds">1 / 1</td><td><span class="pill ok">merged</span></td><td>C4 merged b62990e80. C5 merged bb910cf95. Both CI 15, panels clean/Lows-only. Follow-ups: #1899 (C4, merged d5cad8a81), #1913 (C5, merged 872ca63f9). Stack C complete; C lane retired with state note. D25d phone half next.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1888">#1888</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1915">#1915</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1922">#1922</a></td><td>D1/D2 (D28 phone): useHubConnection hook over connection store, follow-ups (7 simplify items); D2 reconnect recovery + gating + per-hub scoping (closes #1914)</td><td class="num">02e391dc0 + 7<br>237 nt + split</td><td class="rounds">— / 3 / 2</td><td><span class="pill ok">merged</span> + <span class="pill neutral">watch</span></td><td>D1 merged 02e391dc0; follow-ups #1912 merged d4f2414f2. D2 #1915 r3 in progress (1 whenReady wrapper, readiness gating, per-hub scoping). D2a #1922 r2 queued behind #1915 r3 (useRenderClient connects + remounts before ready; MarketplaceBrowser missing connectionChanged).</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1916">#1916</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1917">#1917</a></td><td>D25d (last pending-turns slice): native MutationOutboxStorage write path (savepoint + transactions + settleReceipt + createSecureUUID, 331 nt); read path (82 nt stacked)</td><td class="num">331 nt<br>82 nt</td><td class="rounds">3 / 3</td><td><span class="pill neutral">watch</span></td><td>D25d-1 r3: #1916 (insertNew vs replace, explicit accepted record; 382 nt), #1917 (restoreProvenAbsent in savepoint; rebased). Both pushing. Lane at 423k. Retired d25d-lane-state-note.md (enqueueIntent no longer idempotent on retry).</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1879">#1879</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1921">#1921</a></td><td>Retention flake: assertRetirementEvidenceEligible never waited for session-namer goroutine; fix test-only (wait on sendersWG; deterministic regression)</td><td class="num">—<br>~20</td><td class="rounds">— / 3</td><td><span class="pill neutral">round 3</span></td><td>#1879 root-caused: session-namer goroutine not awaited. Fix #1921 r3 in progress (2 Medium + Lows: non-blocking select, child goroutine t.Fatal, unbounded channel). Covers 3 of 4 tests / 5 of 6 flakes; TestRetirementTreeSettleDrainsPendingRootAttention still unexplained.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1737">#1737</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1738">#1738</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1740">#1740</a></td><td>#1580 pieces C (native rows as a projection), E (question-set identity), D (rows read from the model, older pages attached)</td><td class="num">own +1008/−195<br>+554/−27<br>+3049/−6060</td><td class="rounds">3 / 3 / 3</td><td><span class="pill neutral">restack</span></td><td>Restack lane running (rebased onto main keeping A's landed mechanisms). Round-3 raw-panel findings (stale rows on askPending change, shared truncation helpers, question-draft signature = #1842) under review.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1549">#1549</a> <a href="https://github.com/prime-radiant-inc/evener/pull/1580">#1580</a></td><td>Test references: D6-core (closed, branch dfde92160) and D23c-2b</td><td class="num">—</td><td class="rounds">24 / 20</td><td><span class="pill hold">reference</span></td><td>#1549 closed per Jesse. #1580 tests are the reference for every piece above.</td></tr>
+        <tr><td class="mono"><a href="https://github.com/prime-radiant-inc/evener/pull/1480">#1480</a></td><td>A2: the fold names its retained entries by Seq</td><td class="num">—</td><td class="rounds">—</td><td><span class="pill hold">parked</span></td><td>Parked on Jesse's compatibility decision.</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h3>Held branches (no PR yet)</h3>
+      <ul>
+        <li><span class="mono">D6-native</span> the native rebinding onto the lifted stores, branch <span class="mono">claude/sdk-d6-native</span> @94856fc6d, zero package drift from core. Opens after D6-core and #1703.</li>
+        <li><span class="mono">#1693</span> native provider-owned local preferences controller, branch <span class="mono">claude/native-local-preferences-controller</span> @ba561960d, 12 own files. Opens after D6-native.</li>
+        <li><span class="mono">D23d</span> native pages into the model, branch <span class="mono">claude/sdk-d23d-pages-into-model</span>. Opens after #1580.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Still needs Jesse later</h3>
+      <ul>
+                <li>D24 native content levels (product change: native gets the display config's content levels).</li>
+        <li>D28 phone half (native connection lifecycle onto the lifted web core).</li>
+        <li>A2 #1480 compatibility ruling.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>SDK migration rows still to do</h2>
+    <p class="muted">Phase C (27 relocations) is complete. Of the phase D rows, D1, D2, D3, D5, D7, D8, D9, D10, D11, D12, D13, D15, D17 (re-scoped), D19', D20, D21, D22, D23a, D23b, D25a, D25b, D25c, D26 and D30 are on main; D4, D16 and D19 were withdrawn as not twins. The plan doc's status column on main still says "open" for most of these and needs one docs PR.</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Row</th><th>Work</th><th>State</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">D6</td><td>Transcript display + keybindings store core</td><td><span class="pill ok">fold + p6a merged; chain p6b-p10 landing serially; native held</span></td></tr>
+        <tr><td class="mono">D23c-2b</td><td>Native chat rows as a projection</td><td><span class="pill neutral">#1580 under review; after #1614</span></td></tr>
+        <tr><td class="mono">D23d</td><td>Native pages into the model</td><td><span class="pill hold">branch, after #1580</span></td></tr>
+        <tr><td class="mono">D27</td><td>Mutation dispatcher into the package</td><td><span class="pill ok">merged #1694</span></td></tr>
+        <tr><td class="mono">D24 (native)</td><td>Native adopts the transcript display projector and content levels; web half #1663 landed</td><td><span class="pill hold">needs Jesse's product ruling</span></td></tr>
+        <tr><td class="mono">D28 (phone)</td><td>Native connection lifecycle onto the lifted core; web lift landed</td><td><span class="pill neutral">D1 merged; D2 r3 in progress; D2a r2 queued</span></td></tr>
+        <tr><td class="mono">D25d</td><td>Last pending-turns slice (send queue core)</td><td><span class="pill neutral">#1916 + #1917 round 3 in progress (insertNew/replace, restoreProvenAbsent)</span></td></tr>
+        <tr><td class="mono">D14</td><td>Navigation store: remaining slices after D14-1</td><td><span class="pill neutral">verify remaining scope in the plan</span></td></tr>
+        <tr><td class="mono">D18</td><td>Activity counts and summary</td><td><span class="pill neutral">not started</span></td></tr>
+        <tr><td class="mono">D29</td><td>Native doc pane over a real Image</td><td><span class="pill neutral">not started (#1221 context)</span></td></tr>
+        <tr><td class="mono">D17'</td><td>Activity panel follow-on named in the queue notes</td><td><span class="pill hold">withdrawn</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h3>Merged today</h3>
+      <ul>
+        <li><span class="mono">#1502</span> D11 plugins store core</li>
+        <li><span class="mono">#1697</span> D12 launch layer store (dirs + MCP)</li>
+        <li><span class="mono">#1707</span> reconnect-predicate parity test</li>
+        <li><span class="mono">#1708</span> lifecycle recovers after a closed connection (test)</li>
+        <li><span class="mono">#1696</span> native marketplace actions through the shared plugin gate (5 rounds)</li>
+        <li><span class="mono">#1714</span> store-lifecycle test kit + #1642 case</li>
+        <li><span class="mono">#1718</span> its one-comment Low follow-up</li>
+        <li><span class="mono">#1614</span> explicit empty image list on removal, no version bump</li>
+        <li><span class="mono">#1720</span> its two-comment Lows follow-up</li>
+        <li><span class="mono">#1724</span> snapshot upload: retry, queue, freshness skip (closes #1712)</li>
+        <li><span class="mono">#1728</span> D6 piece 1: the ready-generation fence extracted</li>
+        <li><span class="mono">#1729</span> D6 piece 2: a stale client's ready callback cannot begin a generation</li>
+        <li><span class="mono">#1730</span> #1580 piece F: the thread/read snapshot keeps live input images (test)</li>
+        <li><span class="mono">#1745</span> its comment follow-up (names the real read path)</li>
+        <li><span class="mono">#1735</span> consumed queue intents named on the push and the drain receipt (closes #1704); round 5; the shipped-phone strict-decoder class is #1759, its Low is #1760</li>
+        <li><span class="mono">#1742</span> threads.ts adopts the per-store ready-callback guard</li>
+        <li><span class="mono">#1764</span> its Low follow-up: a drain receipt rejects empty consumed ids (#1760)</li>
+        <li><span class="mono">#1694</span> D27: the mutation dispatcher lives in the package</li>
+        <li><span class="mono">#1733</span> plugin store post-commit hook broadcasts every applied write (#1602 piece 1; closes #1634, #1734)</li>
+        <li><span class="mono">#1826</span> main fix: RepoLocation test uses gateSettlements (merged on local proof at Jesse's request)</li>
+        <li><span class="mono">#1798</span> plugins: one wired manager per hub, hook is the sole notifier (#1733 simplify follow-up)</li>
+        <li><span class="mono">#1834</span> hub: broadcast every applied auth/instance/launch write even when a later step fails (closes #1543)</li>
+        <li><span class="mono">#1848</span> plan landing table: D14-2, D14-3' and D28 recorded as merged</li>
+        <li><span class="mono">#1850 #1852</span> Stack B: session-usage derivation into the package; one usage summary shape for web and native (D18)</li>
+        <li><span class="mono">#1849 #1851 #1855 #1856 #1857 #1880</span> Stack C complete: queue preview label; pure queue reads; persistence port; projection fence; web adapter on the fence; one freshness predicate (D25e)</li>
+        <li><span class="mono">#1847 #1833 #1864 #1874 #1878</span> follow-ups: nil-fallback wiring test; askPending live-frame test; its cleanup; a comment; the native layout check</li>
+        <li><span class="mono">#1858</span> reasoning export (#1731 piece 1)</li>
+        <li><span class="mono">#1822</span> hub: transcript-display write applied then failed is reported as applied (#1602 piece)</li>
+        <li><span class="mono">#1859</span> D23c-2b piece 2 (image folding + warning text); simplify applied</li>
+        <li><span class="mono">#1886</span> C4 (D25e): commit feed + tripwire in the package</li>
+        <li><span class="mono">#1899</span> C4 follow-ups (simplify findings, test only)</li>
+        <li><span class="mono">#1901</span> C5 (D25e): submission lifecycle in the package</li>
+        <li><span class="mono">#1888</span> D1 (D28 phone): useHubConnection hook over connection store</li>
+        <li><span class="mono">#1892</span> A1 piece: ask resolution gate + human-note exclusion</li>
+        <li><span class="mono">#1912</span> D1 follow-ups (simplify findings)</li>
+        <li><span class="mono">#1889</span> #1810 S1: plugin store path scrub + write site helpers</li>
+        <li><span class="mono">#1913</span> C5 follow-ups (simplify findings)</li>
+        <li><span class="mono">#1893</span> A2 piece: bounded prunedForStringify walk</li>
+        <li><span class="mono">#1905</span> #1806 S1: live ask boundary (steeringCarrierClaimAnswersAsk gate)</li>
+        <li><span class="mono">#1894</span> A3 piece: warning strings bounded before any copy</li>
+        <li><span class="mono">#1895</span> A4 piece: mobile canonical compose + warning ids (P-d canonical warning rows)</li>
+        <li><span class="mono">#1732</span> B (D18): web WarningItem reads fold (blank title/hint/message render nothing)</li>
+        <li><span class="mono">#1900</span> D6 p6a: package draft read-outcome primitives</li>
+      </ul>
+      <p class="muted" style="margin-top:8px">Closed without code: #1681 (credentials store onto the shared lifecycle) after measurement showed every mechanism needs a caller-specific helper extension.</p>
+    </div>
+    <div class="card">
+      <h3>Follow-up issues filed today</h3>
+      <ul>
+        <li><span class="mono">#1698</span> fold hasLive/fence into createStoreLifecycle</li>
+        <li><span class="mono">#1699 #1700</span> plugin writers on StoreChanges; AddMarketplace path audit (close with #1602)</li>
+        <li><span class="mono">#1701 #1702</span> native kv interface ×4; nativeOrganization's twin backend</li>
+        <li><span class="mono">#1703</span> one settings-hub store core under both D6 stores</li>
+        <li><span class="mono">#1704 #1706 #1717</span> cross-tab drain loss; one reconcile entry point (closing in #1705); acceptance revision on the wire</li>
+        <li><span class="mono">#1709</span> per-delta ask_user re-parse</li>
+        <li><span class="mono">#1710 #1711</span> gated-mutation helper; hub write gate under the package stores</li>
+        <li><span class="mono">#1712</span> snapshot upload flake + rerun race</li>
+        <li><span class="mono">#1713 #1715 #1716</span> test isolation; gate helper; recovery UX note</li>
+        <li><span class="mono">#1717</span> acceptance revision on the wire (client half done in #1705)</li>
+        <li><span class="mono">#1882</span> crash window in #1810's scrub path</li>
+        <li><span class="mono">#1883</span> shared read/lock error sites in #1810</li>
+        <li><span class="mono">#1884</span> D6 fold insertIfAbsent class (filed during fold review; #1808 r5 fixes it)</li>
+        <li><span class="mono">#1891</span> tripwire/yield altitude in C4 package store (commit feed)</li>
+        <li><span class="mono">#1908</span> D6 no RTL harness (p9/p10 cherry-pick cannot test RTL-sensitive behavior)</li>
+        <li><span class="mono">#1911</span> FakeClient nicety for D1 connection store helper</li>
+        <li><span class="mono">#1914</span> Plugins reconnect recovery for D2 Connectionstatus</li>
+        <li><span class="mono">#1896</span> #1810 S1/S2/S3 residues + 11 read-side sites needing audit (install.go saveRegistry, recoverMarkedRename measurement)</li>
+        <li><span class="mono">#1918</span> D6 lane 9 Lows (three items from fold + pieces)</li>
+        <li><span class="mono">#1923</span> #1810 S2/S3 residue: no gc for orphan marketplace clones</li>
+      </ul>
+    </div>
+  </section>
+</div>

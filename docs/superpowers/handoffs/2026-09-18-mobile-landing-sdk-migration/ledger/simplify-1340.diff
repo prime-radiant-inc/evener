@@ -1,0 +1,2471 @@
+diff --git a/appwire-client/typescript/index.ts b/appwire-client/typescript/index.ts
+index 4ebc7ffdf..48dac7e30 100644
+--- a/appwire-client/typescript/index.ts
++++ b/appwire-client/typescript/index.ts
+@@ -160,7 +160,7 @@ export {
+ export type { StableDelegateState } from "./stableDelegate";
+ export { stableDelegateDisplayStatus } from "./stableDelegate";
+ export type { SteerRoute, SubmitRoute } from "./submitRouting";
+-export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
++export { canDrainQueue, canSteer, decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+ export {
+   clip,
+   clipJobID,
+diff --git a/appwire-client/typescript/reducer.ts b/appwire-client/typescript/reducer.ts
+index cdeb426a7..9f17201a9 100644
+--- a/appwire-client/typescript/reducer.ts
++++ b/appwire-client/typescript/reducer.ts
+@@ -1411,10 +1411,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now:
+         // "nobody counted": clearing it would blank a figure the hydrate
+         // legitimately gave us. Absence at HYDRATE is where unknown lives.
+         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
+-        // Capabilities are snapshot-only too, and three of them (send, steer,
+-        // queue) are defined BY this very transition: the hub gates send on
+-        // "no turn in flight" and steer/queue on "a turn in flight"
+-        // (server/appwire_runtime.go's appCapabilities). A set cut before the
++        // Capabilities are snapshot-only too, and two of them (send, queue)
++        // are defined BY this very transition: the hub gates send on "no turn
++        // in flight" and queue on "a turn in flight"
++        // (server/appwire_runtime.go's appCapabilities; steer is harness
++        // support alone). A set cut before the
+         // turn therefore describes the wrong session by the time the composer
+         // reads it back, which is how a running session came to show no Steer,
+         // no Stop and a dead Send until the page was reloaded (kata 06t8).
+diff --git a/appwire-client/typescript/scripts/qualify-package.mjs b/appwire-client/typescript/scripts/qualify-package.mjs
+index e994b3975..c883144b9 100644
+--- a/appwire-client/typescript/scripts/qualify-package.mjs
++++ b/appwire-client/typescript/scripts/qualify-package.mjs
+@@ -122,6 +122,8 @@ async function qualify() {
+     "decideSubmitRoute",
+     "decideSteerRoute",
+     "isTurnActive",
++    "canSteer",
++    "canDrainQueue",
+     "formatTokenCount",
+     "formatDurationMs",
+     "formatCharCount",
+@@ -245,7 +247,15 @@ assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running
+ assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+ assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+ assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+-assert.equal(client.isTurnActive("active", "turn_1"), true);
++assert.equal(client.isTurnActive("active"), true);
++assert.equal(client.isTurnActive("idle"), false);
++assert.equal(client.canSteer("active", { steer: true }), true);
++assert.equal(client.canSteer("idle", { steer: true }), false);
++assert.equal(client.canSteer("active", { steer: false }), false);
++assert.equal(client.canDrainQueue("active", { steer: true }, 0), true);
++assert.equal(client.canDrainQueue("idle", { steer: true }, 1), true);
++assert.equal(client.canDrainQueue("idle", { steer: true }, 0), false);
++assert.equal(client.canDrainQueue("idle", { steer: false }, 1), false);
+ assert.equal(client.formatTokenCount(41200), "41k");
+ assert.equal(client.formatDurationMs(1500), "1.5s");
+ assert.equal(client.formatCharCount(2500), "2.5k chars");
+diff --git a/appwire-client/typescript/sendQueueAvailability.ts b/appwire-client/typescript/sendQueueAvailability.ts
+index 910b1e264..68d58edee 100644
+--- a/appwire-client/typescript/sendQueueAvailability.ts
++++ b/appwire-client/typescript/sendQueueAvailability.ts
+@@ -35,21 +35,19 @@
+ // The active tier checks `statusType === "active"` ALONE - verified directly
+ // against the cited renderer.js:479-513 (updateThreadState's sendBtn
+ // branches), which key only on the `state` string and `this.liveSendCap`/
+-// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId. The
+-// stronger `state === "active" && !!activeTurnId` formula lives in a
+-// DIFFERENT, deliberately-shared predicate (thread-state.js:16-18,
+-// `EvenerThreadState.isBusy`) that gates interrupt/steer/model-switch, not
+-// send/queue - that file's own header comment lists exactly those three
+-// call sites and none of them is the composer's send/queue capability
+-// chain. Folding isBusy's activeTurnId check into THIS gate would also add
+-// a real race this store must not have: thread/status/changed (which flips
++// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId.
++// Folding an activeTurnId check into THIS gate would add a real race this
++// store must not have: thread/status/changed (which flips
+ // ThreadModel.status.type to "active") and turn/started (which populates
+ // ThreadModel.activeTurnId) are two separate notifications, so there is a
+ // window where status already reads "active" but activeTurnId hasn't
+-// arrived yet. The verbatim table queues in that window; requiring
+-// activeTurnId would instead fall through to the plain-send default and
+-// let a legitimate queue attempt bounce off the daemon as a ConflictError.
+-// This helper therefore does not take activeTurnId as an input at all.
++// arrived yet, and the projector clears the id between the turn/completed
++// and turn/started of an inline turn boundary while the status stays active.
++// The verbatim table queues in both windows; requiring activeTurnId would
++// instead fall through to the plain-send default and let a legitimate queue
++// attempt bounce off the daemon as a ConflictError. This helper therefore
++// does not take activeTurnId as an input at all, and neither does the
++// interrupt/steer predicate beside it (submitRouting.ts's isTurnActive).
+ 
+ import type { ThreadCapabilities } from "./types.gen";
+ 
+diff --git a/appwire-client/typescript/submitRouting.test.ts b/appwire-client/typescript/submitRouting.test.ts
+index c46532cae..69918d169 100644
+--- a/appwire-client/typescript/submitRouting.test.ts
++++ b/appwire-client/typescript/submitRouting.test.ts
+@@ -1,7 +1,10 @@
+ // @vitest-environment node
+ 
+ import { expect, test } from "vitest";
++import type { ThreadModel } from "./model";
++import { applyNotification, hydrateThread } from "./reducer";
+ import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
++import type { AnyNotification, Thread } from "./types.gen";
+ 
+ // --- decideSubmitRoute: send vs queue vs no-op --------------------------
+ // parity-m5-composer.md §A: submit is a no-op when the composer is empty of
+@@ -69,30 +72,103 @@ test("skill selections with a non-empty queue route to drain (anything + non-emp
+   expect(decideSteerRoute({ hasText: false, hasAttachments: false, hasSkills: true, queueDepth: 1 })).toBe("drain");
+ });
+ 
+-// --- isTurnActive: the interrupt/steer/model-switch busy predicate ------
+-// Deliberately DIFFERENT from deriveSendQueueAvailability's own gate (which
+-// checks statusType alone) - this one requires BOTH statusType==="active"
+-// AND a non-empty activeTurnId, matching thread-state.js's legacy
+-// EvenerThreadState.isBusy (the predicate interrupt/steer/model-switch share,
+-// never the composer's send/queue chain - see appwire-client/typescript/sendQueueAvailability.ts's
+-// own comment on why the two must not be folded together).
++// --- isTurnActive: the interrupt/steer busy predicate -------------------
++// The thread status is the daemon's own answer to "is this session working",
++// and the one the hub derives the steer/interrupt capabilities from
++// (server/appwire_runtime.go appCapabilitiesLocked). Nothing else feeds it: the
++// transcript's activeTurnId is cleared and re-set across an inline turn
++// boundary while the status stays active (the boundary test below).
+ 
+-test("active status with a populated activeTurnId is busy", () => {
+-  expect(isTurnActive("active", "turn_1")).toBe(true);
++test("active status is busy", () => {
++  expect(isTurnActive("active")).toBe(true);
+ });
+ 
+-test("active status with no activeTurnId yet (status arrived before turn/started) is not busy", () => {
+-  expect(isTurnActive("active", undefined)).toBe(false);
+-});
++test.each(["idle", "awaiting", "ended", "closed", "notLoaded", "restartRequired"])(
++  "%s status is not busy",
++  (statusType) => {
++    expect(isTurnActive(statusType)).toBe(false);
++  },
++);
+ 
+-test("active status with an empty-string activeTurnId is not busy", () => {
+-  expect(isTurnActive("active", "")).toBe(false);
+-});
++// --- isTurnActive across an inline turn boundary ------------------------
++// The daemon runs consecutive turns inside ONE input whenever a queued
++// message, a notification turn, a goal continuation or a drained steering
++// carrier follows a turn. The projector's openTurn
++// (internal/appprojector/appwire_projection.go) then emits turn/completed
++// (previous) + turn/started (next) + thread/status/changed(active) from one
++// session event, and the thread status never leaves active: the projector
++// publishes idle only at EventSessionEnd. The hub relays each of those as its
++// own WebSocket message and the client folds them one at a time, so the
++// predicate is evaluated between the two turn frames. Issue #1330.
++function activeThread(): ThreadModel {
++  const thread: Thread = {
++    id: "thr_t",
++    sessionId: "sess_t",
++    preview: "test",
++    ephemeral: false,
++    modelProvider: "anthropic/claude-sonnet-4-5",
++    createdAt: 1000,
++    updatedAt: 1000,
++    status: { type: "active" },
++    cwd: "/tmp/project",
++    cliVersion: "1.0.0",
++    source: "evener",
++    evener: {
++      ref: "ref_t",
++      capabilities: {
++        send: false,
++        steer: true,
++        interrupt: true,
++        compact: true,
++        clear: false,
++        forkFromTurn: false,
++        shutdown: true,
++        changeModel: true,
++        changeVisionModel: true,
++        queue: true,
++        goal: true,
++        sharedNotes: true,
++        rename: true,
++      },
++      queue: { revision: 0 },
++      activeTurnId: "turn_1",
++    },
++    turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
++  };
++  return hydrateThread({ thread }, "ref_t", 1000);
++}
+ 
+-test("a non-active status is never busy even with an activeTurnId present", () => {
+-  expect(isTurnActive("awaiting", "turn_1")).toBe(false);
+-});
++const INLINE_TURN_BOUNDARY: AnyNotification[] = [
++  {
++    method: "turn/completed",
++    params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "completed", itemsView: "" } },
++  },
++  {
++    method: "turn/started",
++    params: {
++      threadId: "thr_t",
++      ref: "ref_t",
++      turn: { id: "turn_2", status: "inProgress", itemsView: "full", startedAt: 2000 },
++    },
++  },
++  {
++    method: "thread/status/changed",
++    params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
++  },
++];
+ 
+-test("idle status with no activeTurnId is not busy", () => {
+-  expect(isTurnActive("idle", undefined)).toBe(false);
++test("a session stays busy at every step of an inline turn boundary (turn/completed, turn/started, status active as separate frames)", () => {
++  let model = activeThread();
++  expect(isTurnActive(model.status.type)).toBe(true);
++  const afterEachFrame = INLINE_TURN_BOUNDARY.map((frame) => {
++    model = applyNotification(model, frame, 2000);
++    return { method: frame.method, busy: isTurnActive(model.status.type), activeTurnId: model.activeTurnId };
++  });
++  // activeTurnId is the regression window: the reducer clears it on
++  // turn/completed and sets it again on turn/started, and busy must not follow.
++  expect(afterEachFrame).toEqual([
++    { method: "turn/completed", busy: true, activeTurnId: undefined },
++    { method: "turn/started", busy: true, activeTurnId: "turn_2" },
++    { method: "thread/status/changed", busy: true, activeTurnId: "turn_2" },
++  ]);
+ });
+diff --git a/appwire-client/typescript/submitRouting.ts b/appwire-client/typescript/submitRouting.ts
+index ea1467583..91c7cb7e9 100644
+--- a/appwire-client/typescript/submitRouting.ts
++++ b/appwire-client/typescript/submitRouting.ts
+@@ -3,6 +3,7 @@
+ // click/keydown handlers stay thin dispatchers over these, and every branch
+ // is unit-testable without mounting anything.
+ import type { SendQueueAvailability } from "./sendQueueAvailability";
++import type { ThreadCapabilities } from "./types.gen";
+ 
+ export type SubmitRoute = "send" | "queue" | "none";
+ 
+@@ -44,14 +45,59 @@ export function decideSteerRoute(opts: {
+   return "none";
+ }
+ 
+-// isTurnActive is the interrupt/steer/model-switch "busy" predicate
+-// (thread-state.js's legacy EvenerThreadState.isBusy), deliberately NOT the
+-// same gate as deriveSendQueueAvailability. That table keys on statusType
+-// plus the caller's own pending-send flag (its tier 6), and never on
+-// activeTurnId - see its own comment on why folding activeTurnId in would
+-// reintroduce a race. Interrupt and steer need exactly the check it refuses:
+-// a turn is only truly "in flight" once both the status flip AND the
+-// turn/started notification (which populates activeTurnId) have landed.
+-export function isTurnActive(statusType: string, activeTurnId: string | undefined): boolean {
+-  return statusType === "active" && !!activeTurnId;
++// isTurnActive is the interrupt/steer "busy" predicate: is this session
++// working right now. It reads the thread status and nothing else, because the
++// status is the daemon's own answer to that question and the one the hub
++// derives the steer and interrupt capabilities from (server/appwire_runtime.go
++// appCapabilitiesLocked: `active := status == active`).
++//
++// It deliberately does NOT also require ThreadModel.activeTurnId. That id is
++// the transcript's bookkeeping of which turn row is open, and the projector
++// closes one row before it opens the next: when the daemon runs consecutive
++// turns inside one input (a queued message, a notification turn, a goal
++// continuation, a drained steering carrier) openTurn emits turn/completed then
++// turn/started, the hub relays each as its own message, and the status never
++// leaves active. Between those two frames the session is as busy as it was a
++// moment before; a predicate that read the id went false there, which took
++// Steer off the composer for a frame at every inline turn boundary and passed
++// the skill guard's turn-end barrier mid-input (issue #1330). The daemon says
++// idle with a thread/status/changed frame, and that frame always follows the
++// closing turn/completed, so the status alone is never late in that direction.
++//
++// It is still not deriveSendQueueAvailability's gate: that table folds the
++// caller's own pending-send flag (its tier 6) in, which is a routing concern.
++export function isTurnActive(statusType: string): boolean {
++  return statusType === "active";
++}
++
++// canSteer gates turn/steer: the composer's Steer button and its keybinding's
++// steer route. The session is working (isTurnActive) and the harness can
++// steer. The hub's `steer` capability is harness support alone
++// (server/appwire_runtime.go appCapabilitiesLocked: it does not fold the
++// status in, so an idle client can still tell a harness that steers from one
++// that cannot); the status is the client's to apply, and for a plain steer
++// it is active, because with nothing running Send is the route.
++export function canSteer(statusType: string, capabilities: Pick<ThreadCapabilities, "steer">): boolean {
++  return isTurnActive(statusType) && capabilities.steer === true;
++}
++
++// canDrainQueue gates turn/drainAsSteer and turn/promoteQueuedAsSteer: the
++// queue strip's "Steer queue now" and per-row "Steer now", the composer
++// keybinding's drain route and the palette's /drain-as-steer. The harness can
++// steer, and either a turn is running or the queue is parked: a Stop parks
++// the daemon's queue (agent/session_client_mutation.go QueueHeld), the
++// entries stay and the session reports idle with a non-empty queue (a queue
++// that is not parked upgrades idle to active, agent/session_state.go
++// WireState), and a drain or promote is one of the runs that releases it
++// (agent/session_client_mutation_queue.go; neither has a status
++// precondition). Idle only: awaiting + a queue is the ask boundary, and that
++// queue runs next on its own. One predicate for every drain/promote
++// affordance, so a harness that cannot steer is never sent one.
++export function canDrainQueue(
++  statusType: string,
++  capabilities: Pick<ThreadCapabilities, "steer">,
++  queueDepth: number,
++): boolean {
++  if (capabilities.steer !== true) return false;
++  return isTurnActive(statusType) || (statusType === "idle" && queueDepth > 0);
+ }
+diff --git a/cmd/evener-hub/e2e_control_invariant_test.go b/cmd/evener-hub/e2e_control_invariant_test.go
+index 561484335..4b4addd6a 100644
+--- a/cmd/evener-hub/e2e_control_invariant_test.go
++++ b/cmd/evener-hub/e2e_control_invariant_test.go
+@@ -99,9 +99,10 @@ func requireStopLandsDuringPreTurnWork(ctx context.Context, t *testing.T, provid
+ // TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn is the smallest form
+ // of the defect: no queue, no turn boundary, nothing to drain. A thread whose
+ // OPENING prompt is a slash command spends the whole expansion with the wire
+-// publishing status=active and an id -- which is the entirety of the composer's
+-// gate (submitRouting.ts's isTurnActive: statusType === "active" &&
+-// !!activeTurnId) -- while the session reports itself idle and refuses Stop.
++// publishing status=active -- which is the entirety of the composer's gate
++// (submitRouting.ts's isTurnActive: statusType === "active"; the published id
++// names the transcript row) -- while the session reports itself idle and
++// refuses Stop.
+ //
+ // This case exists because the defect was first found at a turn boundary and
+ // mis-scoped there. It is not a boundary defect. Pre-turn work runs on EVERY
+@@ -433,9 +434,9 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
+ // client can observe across a boundary between two turns of one drain.
+ //
+ // The invariant is the one the composer gates on (submitRouting.ts's
+-// isTurnActive: statusType === "active" && !!activeTurnId): whenever the wire
+-// says a turn is running it must publish an id, and a Stop pressed while it
+-// says so must land. Stop carries no turn id any more -- control mutations are
++// isTurnActive: statusType === "active"), plus the id the wire publishes
++// beside it: whenever the wire says a turn is running it must publish an id
++// for the transcript row, and a Stop pressed while it says so must land. Stop carries no turn id any more -- control mutations are
+ // session-scoped since appwire v3 -- so "the published id is one the
+ // preconditions accept" is no longer the question. "Is Stop accepted at all"
+ // is.
+@@ -669,8 +670,8 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
+ 	}
+ 
+ 	// Now the Stop, in the window the samples above prove was open: the wire
+-	// says active and publishes an id, which is the whole of isTurnActive, so
+-	// the composer is showing the button. The request is session-scoped -- it
++	// says active, which is the whole of isTurnActive, so the composer is
++	// showing the button (and publishes an id for the transcript row). The request is session-scoped -- it
+ 	// names no turn, because appwire v3 removed expectedTurnId from every
+ 	// control mutation -- so the only thing that can refuse it is the daemon's
+ 	// own "is this session quiesced" precondition, and turn 2 being claimed is
+diff --git a/cmd/evener-hub/e2e_turn_control_test.go b/cmd/evener-hub/e2e_turn_control_test.go
+index d3185038b..9fa983f83 100644
+--- a/cmd/evener-hub/e2e_turn_control_test.go
++++ b/cmd/evener-hub/e2e_turn_control_test.go
+@@ -441,8 +441,9 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
+ 
+ // awaitActiveTurn waits for the thread to report an active turn whose id is
+ // not `excluding`, and returns it. The status flip and the turn/started
+-// notification that populates activeTurnId land separately, which is exactly
+-// why the composer's own isTurnActive requires both.
++// notification that populates activeTurnId land separately; the composer's
++// isTurnActive reads the status alone, and this helper waits for the id
++// because the id is what it returns.
+ func awaitActiveTurn(ctx context.Context, t *testing.T, client *appwire.Client, ref, excluding string) string {
+ 	t.Helper()
+ 	var turnID string
+diff --git a/cmd/evener-hub/frontend/scripts/overflowguard/run.mjs b/cmd/evener-hub/frontend/scripts/overflowguard/run.mjs
+index 7bd8cc69e..c708c7d3c 100644
+--- a/cmd/evener-hub/frontend/scripts/overflowguard/run.mjs
++++ b/cmd/evener-hub/frontend/scripts/overflowguard/run.mjs
+@@ -57,7 +57,10 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
+ // reading measure and STOPS growing - which is exactly where a few px of
+ // escape at the right edge shows up. A width sweep that skipped the wide end
+ // would have missed the original bug entirely.
+-const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
++// 399..699 bracket the composer card's 399px container threshold (the
++// three-verb wrap, promptcard.module.css): the container is the pane minus its
++// footer padding, so pane widths landing either side of it are measured.
++const DEFAULT_WIDTHS = [320, 390, 399, 400, 420, 480, 600, 699, 700, 899, 900, 1024, 1400];
+ const GEOMETRY_TOLERANCE = 0.5;
+ const COMPOSER_SEND_STATES = [
+   { theme: "dark", fontSize: "m" },
+@@ -1184,170 +1187,223 @@ async function main() {
+       );
+     }
+ 
+-    for (const width of sweep) {
+-      const result = await measureAt(
+-        cdpEndpoint,
+-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+-        width,
+-      );
+-      let widthFailed = false;
+-      if (
+-        result.exceptionSafety.found !== 2 ||
+-        !result.exceptionSafety.threw ||
+-        JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+-      ) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - disclosure exception safety: ` +
+-            `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
+-            `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
+-            `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
++    // The width sweep runs twice: once with the fixture advertising no steer
++    // capability (Stop + Send beside the status row, the cluster the row's
++    // narrow-pane budget was measured against) and once advertising it (Stop +
++    // Send + Steer, every busy session on a harness that can steer; at phone
++    // width the three verbs take their own line, promptcard.module.css).
++    for (const steer of [false, true]) {
++      for (const width of sweep) {
++        const label = steer ? `${width}px steer` : `${width}px`;
++        const result = await measureAt(
++          cdpEndpoint,
++          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
++          width,
+         );
+-      }
+-      if (result.disclosures.length !== 2) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+-        );
+-      }
+-      // The footer checks below are only worth what the predicate behind them
+-      // is worth, so the predicate is exercised against its own fixture first
+-      // (kata bsq9). A fact under a display:none ancestor must read as missing;
+-      // an intentionally visually-hidden one must not.
+-      // One expectation per clause of the shared predicate
+-      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+-      // no fixture of its own, so this is the only place either guard proves
+-      // what "visible" means.
+-      const probe = result.visibility;
+-      const expected = {
+-        rendered: true,
+-        ancestorHidden: false,
+-        visuallyHidden: true,
+-        visibilityHiddenAncestor: false,
+-        zeroArea: false,
+-      };
+-      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+-      if (wrong.length > 0) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+-            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
+-        );
+-      }
+-      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - pressured footer facts missing: ` +
+-            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+-        );
+-      }
+-      if (result.footer.queueLabel !== "12 queued") {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+-        );
+-      }
+-      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - footer status facts are internally clipped: ` +
+-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+-        );
+-      }
+-      if (result.footer.modelClientWidth <= 0) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+-            JSON.stringify(result.footer.geometry),
+-        );
+-      }
+-      if (
+-        !result.currentWork.found ||
+-        !result.currentWork.composerCardFound ||
+-        !result.currentWork.controlsFound ||
+-        !result.currentWork.controlsContained ||
+-        !result.currentWork.controlsDoNotOverlap ||
+-        !result.currentWork.sharedPaneWithoutOverflow ||
+-        !result.currentWork.orderedAboveComposer
+-      ) {
+-        widthFailed = true;
+-        console.log(
+-          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
+-        );
+-      }
+-      if (
+-        width === 390 &&
+-        (!result.subagentCard.found ||
+-          !result.subagentCard.contained ||
+-          !result.subagentCard.quoteWrapped ||
+-          !result.subagentCard.statsContained)
+-      ) {
+-        widthFailed = true;
+-        console.log(`${width}px ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
+-      }
+-      for (const disclosure of result.disclosures) {
+-        if (!disclosure.openDuringOverflowScan) {
+-          widthFailed = true;
+-          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+-        }
+-        if (disclosure.restoredOpen !== disclosure.originalOpen) {
+-          widthFailed = true;
+-          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+-        }
+-        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+-          widthFailed = true;
+-          console.log(
+-            `${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
+-          );
+-        }
+-        const fullWidth =
+-          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+-          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+-        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+-        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
++        let widthFailed = false;
+         if (
+-          disclosure.summaryDisplay !== "list-item" ||
+-          disclosure.markerDisplay === "none" ||
+-          !fullWidth ||
+-          !stacked ||
+-          !aligned
++          result.exceptionSafety.found !== 2 ||
++          !result.exceptionSafety.threw ||
++          JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+         ) {
+           widthFailed = true;
+           console.log(
+-            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+-              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+-              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+-              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
++            `${label} ... FAIL - disclosure exception safety: ` +
++              `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
++              `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
++              `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
+           );
+         }
+-      }
+-      // Never silent about what was excluded: a 1px-wide box is a
+-      // visually-hidden clip container (the standard screen-reader recipe),
+-      // not a pane anyone can scroll - but it is reported, not dropped.
+-      if (result.ignored.length > 0) {
+-        console.log(
+-          `${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
+-        );
+-      }
+-      if (result.scrollers.length === 0) {
+-        if (!widthFailed)
+-          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+-      } else {
+-        widthFailed = true;
+-        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+-        for (const s of result.scrollers) {
++        if (result.disclosures.length !== 2) {
++          widthFailed = true;
+           console.log(
+-            `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
++            `${label} ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+           );
+-          // Deepest first: the innermost escapee is the element actually too
+-          // wide; its ancestors are only carrying that width upward.
+-          for (const e of s.escapees) {
+-            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
++        }
++        // The footer checks below are only worth what the predicate behind them
++        // is worth, so the predicate is exercised against its own fixture first
++        // (kata bsq9). A fact under a display:none ancestor must read as missing;
++        // an intentionally visually-hidden one must not.
++        // One expectation per clause of the shared predicate
++        // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
++        // no fixture of its own, so this is the only place either guard proves
++        // what "visible" means.
++        const probe = result.visibility;
++        const expected = {
++          rendered: true,
++          ancestorHidden: false,
++          visuallyHidden: true,
++          visibilityHiddenAncestor: false,
++          zeroArea: false,
++        };
++        const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
++        if (wrong.length > 0) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
++              wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
++          );
++        }
++        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - pressured footer facts missing: ` +
++              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
++          );
++        }
++        if (result.footer.queueLabel !== "12 queued") {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
++          );
++        }
++        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - footer status facts are internally clipped: ` +
++              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
++          );
++        }
++        if (result.footer.modelClientWidth <= 0) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - pressured footer model has zero visible width: ` +
++              JSON.stringify(result.footer.geometry),
++          );
++        }
++        if (
++          !result.currentWork.found ||
++          !result.currentWork.composerCardFound ||
++          !result.currentWork.controlsFound ||
++          !result.currentWork.controlsContained ||
++          !result.currentWork.controlsDoNotOverlap ||
++          !result.currentWork.sharedPaneWithoutOverflow ||
++          !result.currentWork.orderedAboveComposer
++        ) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
++          );
++        }
++        // The wrap rule itself (promptcard.module.css): at a card container of
++        // 399px or less a three-verb cluster sits below the status row; two
++        // verbs stay inline there, and three stay inline above it. The
++        // threshold is the container's, measured by the harness, not the pane's.
++        const cluster = result.currentWork.verbCluster;
++        const expectedVerbs = steer ? 3 : 2;
++        // The expectation is meaningless without the container's measured
++        // width: a missing container (the harness found no inline-size
++        // ancestor) is a guard defect, not a pass.
++        if (!Number.isFinite(cluster.containerWidth)) {
++          widthFailed = true;
++          console.log(`${label} ... FAIL - verb cluster: card container width unmeasured (${cluster.containerWidth})`);
++        }
++        const expectWrapped =
++          Number.isFinite(cluster.containerWidth) && cluster.containerWidth <= 399 && expectedVerbs === 3;
++        const wrapped =
++          cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
++        if (cluster.controls !== expectedVerbs || wrapped !== expectWrapped) {
++          widthFailed = true;
++          console.log(
++            `${label} ... FAIL - verb cluster: expected ${expectedVerbs} verbs ${expectWrapped ? "below" : "beside"} the status row ` +
++              `(card container ${cluster.containerWidth}px), got ${cluster.controls} verbs at top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
++          );
++        } else {
++          console.log(
++            `${label} verbs ... PASS - ${cluster.controls} verbs ${wrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
++          );
++        }
++        if (
++          width === 390 &&
++          (!result.subagentCard.found ||
++            !result.subagentCard.contained ||
++            !result.subagentCard.quoteWrapped ||
++            !result.subagentCard.statsContained)
++        ) {
++          widthFailed = true;
++          console.log(`${label} ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
++        }
++        for (const disclosure of result.disclosures) {
++          if (!disclosure.openDuringOverflowScan) {
++            widthFailed = true;
++            console.log(`${label} ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
++          }
++          if (disclosure.restoredOpen !== disclosure.originalOpen) {
++            widthFailed = true;
++            console.log(`${label} ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
++          }
++          if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
++            widthFailed = true;
++            console.log(
++              `${label} ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
++            );
++          }
++          const fullWidth =
++            disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
++            disclosure.bodyWidth >= disclosure.expectedWidth - 1;
++          const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
++          const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
++          if (
++            disclosure.summaryDisplay !== "list-item" ||
++            disclosure.markerDisplay === "none" ||
++            !fullWidth ||
++            !stacked ||
++            !aligned
++          ) {
++            widthFailed = true;
++            console.log(
++              `${label} ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
++                `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
++                `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
++                `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
++            );
+           }
+         }
+-      }
+-      if (widthFailed) failed++;
++        // Never silent about what was excluded: a 1px-wide box is a
++        // visually-hidden clip container (the standard screen-reader recipe),
++        // not a pane anyone can scroll - but it is reported, not dropped.
++        if (result.ignored.length > 0) {
++          console.log(
++            `${label} ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
++          );
++        }
++        if (result.scrollers.length === 0) {
++          if (!widthFailed)
++            console.log(`${label} ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
++        } else {
++          widthFailed = true;
++          console.log(`${label} ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
++          for (const s of result.scrollers) {
++            console.log(
++              `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
++            );
++            // Deepest first: the innermost escapee is the element actually too
++            // wide; its ancestors are only carrying that width upward.
++            for (const e of s.escapees) {
++              console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
++            }
++          }
++        }
++        if (widthFailed) failed++;
+ 
++        const detailFailures = assertDetail(result, width);
++        if (detailFailures.length > 0) {
++          failed++;
++          console.log(`${label} Verbosity ... FAIL - ${detailFailures.join("; ")}`);
++        } else {
++          console.log(
++            `${label} Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
++              `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
++              `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
++              `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
++              `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
++          );
++        }
++      }
++    }
++    // The settings page has no composer, so it is measured once per width,
++    // outside the steer sweep above.
++    for (const width of sweep) {
+       const settings = await measureAt(
+         cdpEndpoint,
+         `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
+@@ -1360,20 +1416,6 @@ async function main() {
+       } else {
+         console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
+       }
+-
+-      const detailFailures = assertDetail(result, width);
+-      if (detailFailures.length > 0) {
+-        failed++;
+-        console.log(`${width}px Verbosity ... FAIL - ${detailFailures.join("; ")}`);
+-      } else {
+-        console.log(
+-          `${width}px Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
+-            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
+-            `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
+-            `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
+-            `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
+-        );
+-      }
+     }
+   } finally {
+     // A rejecting teardown is a FAILING RUN, not a warning: cleanup only
+diff --git a/cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx b/cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx
+index 099549703..4661380c8 100644
+--- a/cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx
++++ b/cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx
+@@ -54,13 +54,18 @@ const theme = params.get("theme");
+ const settingsMode = params.get("settings") === "1";
+ const pagingMode = params.get("paging") === "1";
+ const intentTailMode = params.get("intenttail") === "1";
++// steer=1 advertises the steer capability, so the busy fixture draws Stop +
++// Send + Steer (every busy session on a harness that can steer); without it
++// the cluster is Stop + Send, the one the status row's narrow-pane budget was
++// measured against (statusrow.module.css). The guard sweeps both.
++const steerMode = params.get("steer") === "1";
+ if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+ 
+ const REF = "overflowharness";
+ 
+ const CAPABILITIES: ThreadCapabilities = {
+   send: true,
+-  steer: true,
++  steer: steerMode,
+   interrupt: true,
+   compact: true,
+   clear: true,
+@@ -1456,13 +1461,17 @@ function measure() {
+   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
+   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
+   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+-  // The fixture has active status and interrupt capability, but no active turn
+-  // ID, so Composer correctly renders Stop but not the busy-only Steer. These
+-  // are the actual controls it must render at every width. The card alone is
+-  // not a controls check: each control is measured below.
+-  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
++  // The fixture is active with the interrupt capability, and with the steer
++  // capability only in steer mode (see CAPABILITIES), so Composer renders
++  // Stop and Send, plus Steer in that mode. These are the actual controls it
++  // must render at every width. The card alone is not a controls check: each
++  // control is measured below. Steer is measured in both modes and expected
++  // only in steer mode, so a Steer drawn for a harness that advertises no
++  // steer fails the guard the same way a missing Stop does.
++  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
+   const composeControls = controlTestIds.map((testId) => ({
+     testId,
++    expected: testId !== "composer-steer" || steerMode,
+     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
+   }));
+   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
+@@ -1494,10 +1503,11 @@ function measure() {
+     box.right <= composerCardBox.right + 1 &&
+     box.top >= composerCardBox.top - 1 &&
+     box.bottom <= composerCardBox.bottom + 1;
+-  const controls = composeControls.map(({ testId, element }) => {
++  const controls = composeControls.map(({ testId, expected, element }) => {
+     const box = element?.getBoundingClientRect();
+     return {
+       testId,
++      expected,
+       present: visible(element),
+       containedInCard: containedInCard(box),
+       containedInPane: containedInPane(box),
+@@ -1506,6 +1516,7 @@ function measure() {
+   });
+   const controlsDoNotOverlap = controls.every((control, index) =>
+     controls.slice(index + 1).every((other) => {
++      if (!control.expected || !other.expected) return true;
+       if (!control.box || !other.box) return false;
+       return (
+         control.box.right <= other.box.left + 1 ||
+@@ -1573,10 +1584,40 @@ function measure() {
+     currentWork: {
+       found: visible(currentWork),
+       composerCardFound: visible(composerCard),
+-      controlsFound: controls.every((control) => control.present),
+-      controlsContained: controls.every((control) => control.containedInCard && control.containedInPane),
++      controlsFound: controls.every((control) => control.present === control.expected),
++      controlsContained: controls.every(
++        (control) => !control.expected || (control.containedInCard && control.containedInPane),
++      ),
+       controlsDoNotOverlap,
+       controls: controls.map(({ box: _box, ...control }) => control),
++      // The verb cluster (Stop, Send, Steer) against the status row it shares
++      // the control row with: promptcard.module.css drops a three-verb cluster
++      // below the row at phone width, and the guard asserts that geometry
++      // (wrapped exactly when three verbs meet a phone-width card, inline
++      // otherwise) rather than only that each verb is present and contained.
++      verbCluster: (() => {
++        const verbs = controls.filter(
++          (control) => control.testId !== "composer-attach" && control.present && control.box,
++        );
++        // The width the card's @container query resolves against: the content
++        // box of the nearest ancestor with inline-size containment (the
++        // composer root), which the pane's footer padding leaves narrower than
++        // the pane itself.
++        let container = composerCard?.parentElement ?? null;
++        while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
++          container = container.parentElement;
++        }
++        const containerStyle = container ? getComputedStyle(container) : null;
++        return {
++          controls: verbs.length,
++          top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
++          statusRowBottom: status ? status.getBoundingClientRect().bottom : null,
++          containerWidth:
++            container && containerStyle
++              ? container.clientWidth - parseFloat(containerStyle.paddingLeft) - parseFloat(containerStyle.paddingRight)
++              : null,
++        };
++      })(),
+       sharedPaneWithoutOverflow:
+         !!currentWork &&
+         !!composerCard &&
+diff --git a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.liveCapabilities.test.tsx b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.liveCapabilities.test.tsx
+index 291123c53..e04867152 100644
+--- a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.liveCapabilities.test.tsx
++++ b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.liveCapabilities.test.tsx
+@@ -6,10 +6,11 @@
+ //   showSteer = busy && capabilities.steer
+ //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
+ //
+-// Three of the hub's capabilities are themselves defined by whether a turn is
++// Two of the hub's capabilities are themselves defined by whether a turn is
+ // in flight (server/appwire_runtime.go's appCapabilities: Send is !active,
+-// Steer and Queue are active), so a snapshot cut before the turn says
+-// steer=false/queue=false about the turn that follows. Reading it back once
++// Queue is active; Steer is harness support alone and the composer applies
++// the status), so a snapshot cut before the turn says queue=false about the
++// turn that follows. Reading it back once
+ // the status has moved on produced kata 06t8's report exactly: submit a reply,
+ // and the session it KNOWS is running shows no Steer, no Stop, and a Send that
+ // stays grey however much you type — until a reload re-reads the snapshot from
+@@ -27,7 +28,7 @@
+ // stampClosedThreadCapabilities). Without it a session that shut down mid-turn
+ // keeps send=false, and an ended composer is a follow-up card gated on exactly
+ // that bit — so the whole composer disappears.
+-import { act, cleanup, render, screen } from "@testing-library/react";
++import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+ import userEvent from "@testing-library/user-event";
+ import { IDBFactory } from "fake-indexeddb";
+ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+@@ -103,11 +104,11 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
+ // What a LIVE daemon with every callback wired advertises, verbatim from
+ // server/appwire_runtime.go's appCapabilities. `active` is the whole
+ // difference, and it is the reason a snapshot cannot be reused across a
+-// status change.
++// status change. Steer is harness support and does not move with it.
+ function daemonCapabilities(active: boolean): ThreadCapabilities {
+   return {
+     send: !active,
+-    steer: active,
++    steer: true,
+     interrupt: true,
+     compact: true,
+     clear: false,
+@@ -255,24 +256,24 @@ test("a live idle session's controls follow the turn its own send starts", async
+   expect(submitButton().disabled).toBe(false);
+ });
+ 
+-// Stop is SESSION-scoped, so its gate cannot be "a turn has told us its name".
++// Both verbs are SESSION-scoped, so neither gate can be "a turn has told us
++// its name".
+ //
+-// turn/interrupt carries no turn id (appwire v3 dropped expectedTurnId from
+-// every control mutation) and the daemon decides on the session's own
+-// quiescence. But the composer gated Stop on `busy`, which is isTurnActive:
+-// `statusType === "active" && !!activeTurnId` -- gating the BUTTON on an id the
+-// REQUEST does not carry, which can only ever withhold a Stop the daemon would
+-// have accepted.
++// turn/interrupt and turn/steer carry no turn id (appwire v3 dropped
++// expectedTurnId from every control mutation) and the daemon decides each on
++// the session's own state. The composer once gated both on an activeTurnId the
++// REQUEST does not carry, which can only ever withhold a control the daemon
++// would have accepted. The status alone gates either verb now (isTurnActive:
++// `statusType === "active"`), and the capability gates them independently, so
++// the pair drawn is the pair the daemon advertised beside that status.
+ //
+ // Active-with-no-id is a state the wire really reaches: a session holding queued
+-// work reports active with no turn running. (An earlier version of this comment
+-// blamed a turn reservation taken at turn/start. That reservation has no
+-// production callers; it is not how this state is reached, and the gate is wrong
+-// for the reason above regardless.)
+-//
+-// Steer stays behind `busy`: it needs a turn to redirect, and Send already
+-// covers "say something now" for a session between turns.
+-test("a working session offers Stop before its turn has announced a name", async () => {
++// work reports active with no turn running, and the id is cleared between the
++// turn/completed and turn/started of an inline turn boundary (issue #1330).
++// (An earlier version of this comment blamed a turn reservation taken at
++// turn/start. That reservation has no production callers; it is not how this
++// state is reached, and the gate was wrong for the reason above regardless.)
++test("a working session offers Stop and Steer before its turn has announced a name", async () => {
+   const fake = await mountComposer("idle", daemonCapabilities(false));
+ 
+   act(() => {
+@@ -288,6 +289,7 @@ test("a working session offers Stop before its turn has announced a name", async
+     activeTurnId: undefined,
+   });
+   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
++  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+ });
+ 
+ // The breadcrumb for kata 5gdv, wired end to end rather than unit-tested in
+@@ -339,8 +341,10 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
+               activeTurnId: undefined,
+               capabilities: { ...daemonCapabilities(true), interrupt: false },
+               capabilitySource: "statusFrame",
+-              // This frame names no in-flight turn, so there is nothing to steer.
+-              showSteer: false,
++              // The frame advertised steer for this status, and the composer
++              // draws what the status says (isTurnActive): Steer present with
++              // Stop gone is the shape the report named.
++              showSteer: true,
+               ended: false,
+             },
+           ],
+@@ -465,3 +469,92 @@ test("the follow-up to a session that ended mid-turn can be sent", async () => {
+   expect(screen.queryByTestId("composer-steer")).toBeNull();
+   expect(screen.queryByTestId("composer-stop")).toBeNull();
+ });
++
++// The frames the projector's openTurn emits when the daemon runs the next
++// turn inline behind the one that just ended (a queued message, a notification
++// turn, a goal continuation, a drained steering carrier): the previous turn
++// closes, the next opens, the status is republished active. The thread status
++// never leaves active, and the hub relays each frame as its own WebSocket
++// message, so the composer renders between them. Issue #1330: Steer must not
++// blink out at that boundary, because the skill guard's turn-end barrier reads
++// exactly that button and the daemon is still mid-input.
++function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnId: string): void {
++  act(() => {
++    fake.emitNotification({
++      method: "turn/completed",
++      params: {
++        threadId: `thr_${REF}`,
++        ref: REF,
++        turn: { id: endedTurnId, status: "completed", itemsView: "" },
++      },
++    });
++  });
++  expect(screen.queryByTestId("composer-steer"), "Steer after turn/completed of the previous turn").not.toBeNull();
++  expect(screen.queryByTestId("composer-stop"), "Stop after turn/completed of the previous turn").not.toBeNull();
++  act(() => {
++    fake.emitNotification({
++      method: "turn/started",
++      params: {
++        threadId: `thr_${REF}`,
++        ref: REF,
++        turn: { id: nextTurnId, status: "inProgress", itemsView: "full", startedAt: 6000 },
++      },
++    });
++  });
++  expect(screen.queryByTestId("composer-steer"), "Steer after turn/started of the next turn").not.toBeNull();
++  expect(screen.queryByTestId("composer-stop"), "Stop after turn/started of the next turn").not.toBeNull();
++  act(() => {
++    fake.emitNotification({
++      method: "thread/status/changed",
++      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities: daemonCapabilities(true) },
++    });
++  });
++  expect(screen.queryByTestId("composer-steer"), "Steer after the status frame").not.toBeNull();
++  expect(screen.queryByTestId("composer-stop"), "Stop after the status frame").not.toBeNull();
++}
++
++// The click follows the same rule as the button. Between the two turn frames
++// the model has no activeTurnId, and the handler used to refuse there with a
++// "no active turn" toast (issue #1341); the daemon is mid-input and its v3
++// turn/steer names no turn, so the steer is sent.
++test("a Steer clicked between turn/completed and turn/started sends turn/steer, with no toast", async () => {
++  const fake = await mountComposer("idle", daemonCapabilities(false));
++  fake.on("turn/steer", (params) => ({
++    receipt: {
++      clientMutationId: params.clientMutationId,
++      disposition: "applied",
++      threadId: `thr_${REF}`,
++      projectionState: "reflected",
++    },
++  }));
++  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
++  await type("go left");
++
++  act(() => {
++    fake.emitNotification({
++      method: "turn/completed",
++      params: { threadId: `thr_${REF}`, ref: REF, turn: { id: "turn_5", status: "completed", itemsView: "" } },
++    });
++  });
++  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
++
++  await userEvent.click(screen.getByTestId("composer-steer"));
++  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
++  expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
++    ref: REF,
++    input: [{ type: "text", text: "go left" }],
++  });
++  expect(screen.queryByText(/no active turn/i)).toBeNull();
++});
++
++test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
++  const fake = await mountComposer("idle", daemonCapabilities(false));
++  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
++  await type("another thought");
++  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
++
++  emitInlineTurnBoundary(fake, "turn_5", "turn_6");
++
++  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
++  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBe("turn_6");
++});
+diff --git a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx
+index 68b49df0b..fee2c2601 100644
+--- a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx
++++ b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx
+@@ -90,13 +90,14 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
+ 
+ // What a real daemon publishes for an IDLE thread, read off
+ // server/appwire_runtime.go's appCapabilities: `active` is false there, and
+-// both Steer and Queue are gated on it, so an idle thread advertises
+-// queue:false. Clear and ForkFromTurn are hardcoded false. This is the set the
+-// client is actually holding in the window kata 8c65 describes, and it is not
++// Queue is gated on it, so an idle thread advertises queue:false; Steer is
++// harness support and stays true (the composer applies the status itself).
++// Clear and ForkFromTurn are hardcoded false. This is the set the client is
++// actually holding in the window kata 8c65 describes, and it is not
+ // FULL_CAPABILITIES.
+ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
+   send: true,
+-  steer: false,
++  steer: true,
+   interrupt: true,
+   compact: true,
+   clear: false,
+@@ -1256,10 +1257,9 @@ test("the timing caption is absent when nothing is running", async () => {
+ // caption claiming it queues would be a lie; this pins the caption to
+ // availability.canQueue, not to `busy` alone.
+ // status can read "active" before turn/started has populated activeTurnId
+-// (isTurnActive's own doc comment on that race window) - Stop/Steer stay
+-// hidden there since neither is meaningful without a real turn to act on,
+-// and the caption follows the same rule: nothing to explain the timing of
+-// until Send/Steer's own ambiguity actually exists.
++// (a hydrate cut inside that window, or a session holding queued work) -
++// Stop/Steer follow the status there (isTurnActive), and the caption stays
++// absent all the same.
+ test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
+   await mountComposer("ref_a", {
+     status: { type: "active" },
+@@ -1978,17 +1978,20 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
+   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
+ });
+ 
+-// The window after status flips "active" and before activeTurnId arrives is
+-// where the two controls part company.
++// The window after status flips "active" and before activeTurnId arrives:
++// both controls follow the status, because both requests name no turn.
+ //
+-// Steer redirects a turn in flight and its handler needs the id, so it stays
+-// behind isTurnActive. Stop does not: threadsStore.interrupt sends turn/interrupt
+-// with the ref alone ("Stop is session-scoped, always"), and the daemon decides
+-// on the session's own quiescence. Gating the BUTTON on an id the REQUEST does
+-// not carry took Stop away from a session the user can see working, and
+-// active-with-no-id is a state the wire really reaches: a session holding queued
+-// work reports active with no turn running (kata vewa/5gdv).
+-test("stop renders during the window after status flips active but before activeTurnId arrives, and steer does not", async () => {
++// threadsStore.interrupt sends turn/interrupt with the ref alone ("Stop is
++// session-scoped, always") and turn/steer carries ref and input; the daemon
++// decides each on the session's own state. Gating a BUTTON on an id the
++// REQUEST does not carry took Stop away from a session the user can see
++// working (kata vewa/5gdv: a session holding queued work reports active with
++// no turn running) and took Steer away for a frame at every inline turn
++// boundary, where the projector closes one turn row before it opens the next
++// while the status never leaves active (issue #1330). The click follows the
++// same rule as the button (issue #1341): the daemon's v3 turn/steer takes no
++// turn id and has no active-turn precondition, so the steer is sent.
++test("stop and steer both render and both work during the window after status flips active but before activeTurnId arrives", async () => {
+   const user = userEvent.setup();
+   const fake = await mountComposer("ref_a", {
+     status: { type: "active" },
+@@ -2004,10 +2007,12 @@ test("stop renders during the window after status flips active but before active
+   }));
+ 
+   await user.type(textarea(), "hi");
+-  expect(screen.queryByTestId("composer-steer")).toBeNull();
++  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+ 
+-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
++  await user.click(screen.getByTestId("composer-steer"));
++  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
++  expect(screen.queryByText(/no active turn/i)).toBeNull();
+ 
+   // And it is a working button, not a decoration: the request it sends names
+   // the ref and nothing else, which is why it needs no id to exist.
+@@ -2027,10 +2032,14 @@ test("stop renders during the window after status flips active but before active
+ // it works whether or not the Steer BUTTON is on screen at all - exactly
+ // mirroring legacy's own "keyboard equivalent of clicking the steer button"
+ // (the SAME function, not a separately-gated path). The handler's own
+-// internal activeTurnId check is therefore the only thing standing between
+-// the keyboard and a doomed steer, and these two cases are where it earns
+-// its keep: no turn is in flight, so no Steer button is rendered to gate on.
+-test("Shift+Enter with no active turn id shows a 'no active turn' toast rather than attempting a doomed steer", async () => {
++// readiness check is therefore the only thing standing between the keyboard
++// and a steer on an idle session, and it is the button's own rule: the thread
++// status. An active session with no open turn row (a hydrate cut inside the
++// window, or the gap between turn/completed and turn/started of an inline
++// turn boundary) is working, and the daemon's v3 turn/steer names no turn and
++// has no active-turn precondition (agent/session_client_mutation_queue.go
++// clientMutationSteer), so the keybinding sends it.
++test("Shift+Enter while active with no active turn id sends the steer", async () => {
+   const user = userEvent.setup();
+   const fake = await mountComposer("ref_a", {
+     status: { type: "active" },
+@@ -2048,23 +2057,21 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
+   await user.type(textarea(), "hi");
+   await user.keyboard("{Shift>}{Enter}{/Shift}");
+ 
+-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
++  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
++  expect(screen.queryByText(/no active turn/i)).toBeNull();
+ });
+ 
+-// The drain route has the same doomed-without-a-turn shape as steer, but the
+-// handler only guarded the steer branch, so a Steer-click that routed to drain
+-// (non-empty queue, or staged attachments) minted a durable poison intent
+-// instead of a toast. That is the exact first stuck message of the kata-wr3s
+-// incident.
+-//
+-// The guard is still right; only its reason moved. The hub's empty-
+-// expectedTurnId rejection is gone with the field (appwire v3 dropped it from
+-// drain too, and handleAppTurnDrainAsSteer now validates nothing but ref,
+-// input and clientMutationId). What refuses a turnless drain now is the agent:
+-// "drain: no active turn to steer" at agent/session_queue.go:396, pinned by
+-// agent/session_lifecycle_test.go's DrainAsSteerWithInput-while-idle case.
+-test("Shift+Enter routing to drain with no active turn id toasts rather than minting a doomed drain", async () => {
++// The drain route follows the same rule. It used to be guarded on the turn id
++// because an unguarded Steer-click routing to drain (non-empty queue, or
++// staged attachments) once minted a durable intent the hub rejected forever
++// (kata wr3s, the empty-expectedTurnId rejection). That field is gone with
++// appwire v3, and the daemon's v3 drain (agent/session_client_mutation_queue.go
++// clientMutationDrain, reached through the hub's retrySafeTurns.Drain) refuses
++// only an interrupt fence, a stale queue revision, an empty queue or a reserved
++// entry. The "drain: no active turn to steer" refusal is the legacy
++// DrainAsSteerWithInput's, which turn/drainAsSteer never reaches. So a drain
++// on an active session with no open turn row is sent, not toasted.
++test("Shift+Enter routing to drain while active with no active turn id sends the drain", async () => {
+   const user = userEvent.setup();
+   const fake = await mountComposer("ref_a", {
+     status: { type: "active" },
+@@ -2086,8 +2093,41 @@ test("Shift+Enter routing to drain with no active turn id toasts rather than min
+   await user.type(textarea(), "hi");
+   await user.keyboard("{Shift>}{Enter}{/Shift}");
+ 
+-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+-  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
++  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1));
++  expect(screen.queryByText(/no active turn/i)).toBeNull();
++});
++
++// The keybinding shares the button's whole rule, capability included: a busy
++// session on a harness that advertises no steer draws no Steer button, and
++// Shift+Enter there must not send a turn/steer (or a drain) the daemon would
++// answer Unavailable. The feedback is the composer's existing "not available
++// for this session" toast, the one Send uses.
++test("Shift+Enter on a busy session whose harness advertises no steer sends nothing and says steer is unavailable", async () => {
++  const user = userEvent.setup();
++  const fake = await mountComposer("ref_a", {
++    status: { type: "active" },
++    evener: {
++      ref: "ref_a",
++      capabilities: { ...FULL_CAPABILITIES, steer: false },
++      queue: { revision: 0 },
++      activeTurnId: "turn_1",
++    },
++  });
++  fake.on("turn/steer", (params) => ({
++    receipt: {
++      clientMutationId: params.clientMutationId,
++      disposition: "applied",
++      threadId: "thread_a",
++      projectionState: "reflected",
++    },
++  }));
++
++  await user.type(textarea(), "hi");
++  expect(screen.queryByTestId("composer-steer")).toBeNull();
++  await user.keyboard("{Shift>}{Enter}{/Shift}");
++
++  await waitFor(() => expect(screen.getByText(/steer is not available for this session/i)).toBeTruthy());
++  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+ });
+ 
+ test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
+@@ -3431,13 +3471,15 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
+ 
+   // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
+   // built-ins first), not just the two catalog entries. Fuzzy matching also
+-  // finds the command labels whose "r" and "e" are separated.
++  // finds the command labels whose "r" and "e" are separated. /drain-as-steer
++  // would match too, but the session is idle with nothing queued, so the
++  // menu hides it the way it hides any unavailable built-in (scopeCommand's
++  // canDrainQueue rule).
+   expect(slashOptions().map((el) => el.textContent)).toEqual([
+     expect.stringContaining("/reasoning-effort"),
+     expect.stringContaining("/review"),
+     expect.stringContaining("/release"),
+     expect.stringContaining("/project"),
+-    expect.stringContaining("/drain-as-steer"),
+   ]);
+ });
+ 
+@@ -3493,7 +3535,6 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
+   expect(slashOptions().map((el) => el.textContent)).toEqual([
+     expect.stringContaining("/reasoning-effort"),
+     expect.stringContaining("/project"),
+-    expect.stringContaining("/drain-as-steer"),
+   ]);
+ });
+ 
+@@ -3636,7 +3677,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
+   const user = userEvent.setup();
+   await mountComposer("ref_slash7");
+   await user.type(textarea(), "hi /re");
+-  // Five matches: three contiguous beginnings, then two fuzzy matches.
++  // Four matches: three contiguous beginnings, then one fuzzy match
++  // (/drain-as-steer would be a second, but it is unavailable on an idle
++  // session with nothing queued and the menu hides it).
++  expect(slashOptions()).toHaveLength(4);
+ 
+   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+   await user.keyboard("{ArrowDown}");
+@@ -3645,12 +3689,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
+   expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+   await user.keyboard("{ArrowDown}");
+   expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+-  await user.keyboard("{ArrowDown}");
+-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
+   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
++  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+ });
+ 
+ test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
+@@ -3849,14 +3891,19 @@ test("an argless built-in invocation (/compact) runs and clears the draft", asyn
+   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+ });
+ 
+-test("a no-active-turn built-in (/steer) is blocked with the floor's message, draft preserved", async () => {
++// /steer on an idle session is unavailable (scopeCommand applies the
++// running-turn rule the handler uses, since the hub's steer capability is
++// harness support alone), and a typed invocation for an unavailable built-in
++// gets the honest "not available right now" rather than the handler's floor
++// message or a plain-message send.
++test("an unavailable built-in (/steer while idle) is refused with the unavailable message, draft preserved", async () => {
+   const user = userEvent.setup();
+   const fake = await mountComposer("ref_builtin_steer", { status: { type: "idle" } });
+ 
+   await user.type(textarea(), "/steer go left");
+   await user.click(submitButton());
+ 
+-  await waitFor(() => expect(screen.getByText(/steer failed: no active turn/i)).toBeTruthy());
++  await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
+   expect(textarea().value).toBe("/steer go left");
+   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+ });
+diff --git a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx
+index b03ec4c8b..08cf9cd42 100644
+--- a/cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx
++++ b/cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx
+@@ -40,7 +40,13 @@ import {
+   type SlashToken,
+   spliceSlashCommand,
+ } from "../../../protocol/slashCompletion";
+-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
++import {
++  canDrainQueue,
++  canSteer,
++  decideSteerRoute,
++  decideSubmitRoute,
++  isTurnActive,
++} from "../../../protocol/submitRouting";
+ import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
+ import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+ import { useIsMobile } from "../../../shell/useIsMobile";
+@@ -857,35 +863,32 @@ export function Composer({ ref, focused }: ComposerProps) {
+     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
+       ? { canSend: true, canQueue: false }
+       : tableAvailability;
+-  const busy = isTurnActive(model.status.type, activeTurnId);
++  // "Is this session working" is the thread status alone (isTurnActive's own
++  // comment on why activeTurnId is not part of it). turn/interrupt and
++  // turn/steer both name no turn (appwire v3 dropped expectedTurnId from every
++  // control mutation) and the daemon answers each on the session's own state,
++  // so neither button is gated on an id the request does not carry: that could
++  // only withhold a control the daemon would have accepted, and did, for a
++  // frame at every inline turn boundary (issue #1330).
++  const busy = isTurnActive(model.status.type);
+   const queueDepth = model.queue?.depth ?? 0;
+   const hasText = text.trim() !== "";
+   const hasAttachments = attachments.items.length > 0;
+   const hasContent = hasText || hasAttachments || skillNames.length > 0;
+ 
+-  // Stop is SESSION-scoped and Steer is not, so they do not share a gate.
+-  //
+-  // Stop asks the session to stop working. turn/interrupt names no turn
+-  // (appwire v3 dropped expectedTurnId from every control mutation) and the
+-  // daemon answers on the session's own quiescence, so the only question the
+-  // composer has to answer is "is this session working" -- which is the status
+-  // alone. It deliberately does NOT use `busy`: isTurnActive additionally
+-  // requires activeTurnId, and gating the BUTTON on an id the REQUEST does not
+-  // carry can only ever withhold a Stop the daemon would have accepted.
+-  //
+-  // Active-with-no-id is a state the wire really reaches -- a session holding
+-  // queued work reports active with no turn running, for one. (An earlier
+-  // version of this comment attributed it to a turn reservation the daemon
+-  // takes at turn/start; that reservation has no production callers and is not
+-  // the cause. The gate is wrong for the reason above, which does not depend on
+-  // how the state is reached.)
+-  //
+-  // Steer keeps `busy`. It redirects a turn in flight, and with none running
+-  // Send already covers "say something now" -- a presentation choice rather
+-  // than a precondition, since an idle session would accept a steer and land
+-  // it in the next turn.
+-  const showStop = model.status.type === "active" && model.capabilities.interrupt;
+-  const showSteer = busy && model.capabilities.steer;
++  // Stop and Steer share the status gate and part on capability alone. The
++  // hub's `interrupt` folds the active status in; its `steer` is harness
++  // support alone (server/appwire_runtime.go appCapabilitiesLocked), and
++  // canSteer applies the status for turn/steer. The queue strip's drain and
++  // promote affordances read canDrainQueue, which also admits a queue a Stop
++  // parked.
++  const showStop = busy && model.capabilities.interrupt;
++  const showSteer = canSteer(model.status.type, model.capabilities);
++  // Read here for the keybinding handler below, which closes over `model`
++  // outside this component's narrowing (see the block at the top on why every
++  // handler reads a pre-narrowed local).
++  const steerSupported = model.capabilities.steer === true;
++  const drainReady = canDrainQueue(model.status.type, model.capabilities, queueDepth);
+   // The one state kata 5gdv is about, described by the only code that can see
+   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
+   // rather than another attempt to provoke it.
+@@ -1324,12 +1327,29 @@ export function Composer({ ref, focused }: ComposerProps) {
+       textareaRef.current?.focus();
+       return;
+     }
+-    // Both routes steer the ACTIVE turn; without one the daemon rejects them
+-    // ("no active turn to steer"). Drain needs this guard as much as steer:
+-    // unguarded, a Steer-click routing to drain (non-empty queue or staged
+-    // attachments) minted a durable intent the hub rejects forever (kata wr3s).
+-    if ((route === "steer" || route === "drain") && !activeTurnId) {
+-      toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
++    // The same readiness rule as the buttons: the session's status and the
++    // harness's capability, not "the transcript has an open turn row". Neither
++    // request names a turn (appwire v3), and the daemon's v3 mutation path
++    // accepts both without one: turn/steer adds pending steering for the
++    // carrier turn (agent/session_client_mutation_queue.go clientMutationSteer)
++    // and turn/drainAsSteer (clientMutationDrain, reached through the hub's
++    // retrySafeTurns.Drain) refuses only an interrupt fence, a stale queue
++    // revision, an empty queue or a reserved entry. The "drain: no active turn
++    // to steer" refusal lives in the legacy DrainAsSteerWithInput, which this
++    // route never reaches. Gating on activeTurnId here refused a click landing
++    // between the turn/completed and turn/started of an inline turn boundary,
++    // where the daemon is mid-input (issue #1341). Shift+Enter reaches this
++    // handler with no button on screen, so the capability is checked here too:
++    // a harness that advertises no steer must not be sent a request it answers
++    // Unavailable. The steer route needs a running turn (idle means Send is the
++    // route); the drain route also runs a queue a Stop parked (canDrainQueue).
++    const ready = route === "drain" ? drainReady : showSteer;
++    if (!ready) {
++      const verb = route === "drain" ? "Drain" : "Steer";
++      toasts.push(
++        "error",
++        steerSupported ? `${verb} failed: no active turn` : `${verb} is not available for this session`,
++      );
+       return;
+     }
+     void submitAction(route);
+diff --git a/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx b/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx
+index 5d83386df..ceffa4135 100644
+--- a/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx
++++ b/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx
+@@ -1219,6 +1219,80 @@ describe("drain-as-steer affordance", () => {
+     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+   });
+ 
++  // A Stop parks the queue (agent/session_client_mutation.go QueueHeld): the
++  // entries stay, the daemon reports idle with a non-empty queue (a queue that
++  // is not parked upgrades idle to active, session_state.go WireState), and a
++  // drain or promote sent while idle releases it (both are accepted with no
++  // turn in flight and wake a steering carrier). The hub advertises steer as
++  // harness support, so the strip offers both for a parked queue.
++  test("a parked queue on a harness that can steer offers Steer queue now and Steer now, and they dispatch", async () => {
++    const fake = connectFakeClient();
++    await hydrate(fake, "ref_a", {
++      status: { type: "idle" },
++      evener: {
++        ref: "ref_a",
++        capabilities: { ...CAPABILITIES, send: true, queue: false },
++        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
++      },
++    });
++    fake.on("turn/drainAsSteer", (params) => ({
++      receipt: {
++        clientMutationId: params.clientMutationId,
++        disposition: "applied",
++        threadId: "thread_a",
++        projectionState: "reflected",
++      },
++    }));
++    fake.on("turn/promoteQueuedAsSteer", (params) => ({
++      receipt: {
++        clientMutationId: params.clientMutationId,
++        disposition: "applied",
++        threadId: "thread_a",
++        projectionState: "reflected",
++      },
++    }));
++    renderStrip(defaultProps({ getComposerText: () => ({ text: "", hasPending: false }) }));
++
++    expect(await screen.findByText("queued")).toBeTruthy();
++    const steerNow = screen.getByRole("button", { name: "Steer now" });
++    expect(isDisabled(steerNow)).toBe(false);
++    await act(async () => {
++      fireEvent.click(steerNow);
++    });
++    await waitFor(() => {
++      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
++      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
++    });
++
++    const drainButton = screen.getByRole("button", { name: "Steer queue now" });
++    await act(async () => {
++      fireEvent.click(drainButton);
++      await flushPendingTurnsProjectionForTests();
++    });
++    await waitFor(() => {
++      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
++      expect(call?.params).toMatchObject({ ref: "ref_a" });
++    });
++  });
++
++  test("a parked queue on a harness that cannot steer offers no steering affordance", async () => {
++    const fake = connectFakeClient();
++    await hydrate(fake, "ref_a", {
++      status: { type: "idle" },
++      evener: {
++        ref: "ref_a",
++        capabilities: { ...CAPABILITIES, steer: false, send: true, queue: false },
++        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
++      },
++    });
++    renderStrip(defaultProps());
++
++    expect(await screen.findByText("queued")).toBeTruthy();
++    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
++    expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
++    expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
++  });
++
+   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
+     const fake = connectFakeClient();
+     await hydrate(fake, "ref_a", {
+@@ -1256,6 +1330,51 @@ describe("drain-as-steer affordance", () => {
+     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
+   });
+ 
++  // The strip's steering affordances share the composer's Steer gate (the
++  // daemon's steer capability beside an active status): a harness that
++  // advertises no steer draws no "Steer queue now" and no live "Steer now",
++  // and nothing here sends a drain or promote it would answer Unavailable.
++  test("a queued session whose harness advertises no steer offers no steering affordance and sends no drain", async () => {
++    const fake = connectFakeClient();
++    await hydrate(fake, "ref_a", {
++      evener: {
++        ref: "ref_a",
++        capabilities: { ...CAPABILITIES, steer: false },
++        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
++      },
++    });
++    fake.on("turn/drainAsSteer", (params) => ({
++      receipt: {
++        clientMutationId: params.clientMutationId,
++        disposition: "applied",
++        threadId: "thread_a",
++        projectionState: "reflected",
++      },
++    }));
++    fake.on("turn/promoteQueuedAsSteer", (params) => ({
++      receipt: {
++        clientMutationId: params.clientMutationId,
++        disposition: "applied",
++        threadId: "thread_a",
++        projectionState: "reflected",
++      },
++    }));
++    renderStrip(defaultProps());
++
++    expect(await screen.findByText("queued")).toBeTruthy();
++    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
++    const steerNow = screen.getByRole("button", { name: "Steer now" });
++    expect(isDisabled(steerNow)).toBe(true);
++    await act(async () => {
++      fireEvent.click(steerNow);
++      await flushPendingTurnsProjectionForTests();
++    });
++    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
++    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
++    // Edit and remove stay available: only steering needs the capability.
++    expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
++  });
++
+   test("a lost drain response never produces a timeout warning or reload instruction", async () => {
+     const fake = connectFakeClient();
+     await hydrate(fake, "ref_a", {
+diff --git a/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx b/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx
+index 021c62271..2d023a63d 100644
+--- a/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx
++++ b/cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx
+@@ -10,6 +10,7 @@
+ import { type ReactNode, useState } from "react";
+ import { canonicalSkillNames } from "../../../../protocol/composerInput";
+ import { errorText, sessionActionError } from "../../../../protocol/errors";
++import { canDrainQueue } from "../../../../protocol/submitRouting";
+ import type { InputItem } from "../../../../protocol/types.gen";
+ import { copyToClipboard } from "../../../../shell/palette/commands";
+ import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+@@ -113,6 +114,7 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
+ }
+ 
+ const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
++const STEER_UNAVAILABLE_REASON = "Steer is not available for this session";
+ 
+ function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
+   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
+@@ -193,6 +195,15 @@ export function QueueStrip({
+ 
+   if (!model || !visible) return null;
+ 
++  // Every steering affordance here (a drain or a promote) shares one gate,
++  // canDrainQueue: the harness can steer (the hub's capability is harness
++  // support alone) and either a turn is running or the queue is one a Stop
++  // parked -- idle with a non-empty queue, which an unparked queue never
++  // reports, and which a drain or promote releases. A harness that cannot
++  // steer gets no "Steer queue now" and a disabled "Steer now", never a
++  // request it would answer Unavailable. Edit and remove need no such gate.
++  const steerOffered = canDrainQueue(model.status.type, model.capabilities, depth);
++
+   const ids = queue?.ids;
+   const texts = queue?.texts;
+   const preview = queue?.preview;
+@@ -210,6 +221,10 @@ export function QueueStrip({
+   }
+ 
+   async function handlePromote(index: number, entryId: string): Promise<void> {
++    if (!steerOffered) {
++      toasts.push("error", STEER_UNAVAILABLE_REASON);
++      return;
++    }
+     setRowBusy(entryId, true);
+     try {
+       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
+@@ -265,6 +280,10 @@ export function QueueStrip({
+   }
+ 
+   async function handleDrain(): Promise<void> {
++    if (!steerOffered) {
++      toasts.push("error", STEER_UNAVAILABLE_REASON);
++      return;
++    }
+     const { text, attachments, hasPending, skillNames } = getComposerText();
+     if (hasPending) {
+       toasts.push("error", "Image attachment is still processing");
+@@ -362,7 +381,7 @@ export function QueueStrip({
+     <section className={CLASS.strip}>
+       <div className={CLASS.header}>
+         <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
+-        {hasQueuedWork && (
++        {hasQueuedWork && steerOffered && (
+           <Tooltip label="Send your message and everything queued into the current turn">
+             <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
+               Steer queue now
+@@ -410,8 +429,10 @@ export function QueueStrip({
+                   label="Steer now"
+                   icon={<span aria-hidden="true">⇧</span>}
+                   size="sm"
+-                  disabled={!actionsAvailable || busy}
+-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
++                  disabled={!actionsAvailable || !steerOffered || busy}
++                  disabledReason={
++                    !actionsAvailable ? ACTIONS_UNAVAILABLE_REASON : steerOffered ? undefined : STEER_UNAVAILABLE_REASON
++                  }
+                   onClick={() => {
+                     if (entryId !== undefined) void handlePromote(index, entryId);
+                   }}
+diff --git a/cmd/evener-hub/frontend/src/shell/palette/commands.test.ts b/cmd/evener-hub/frontend/src/shell/palette/commands.test.ts
+index 3562f78ad..de9858822 100644
+--- a/cmd/evener-hub/frontend/src/shell/palette/commands.test.ts
++++ b/cmd/evener-hub/frontend/src/shell/palette/commands.test.ts
+@@ -561,6 +561,87 @@ test("/steer sends turn/steer when a turn is active", async () => {
+   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
+ });
+ 
++test("/steer sends turn/steer while the session is active with no open turn row yet", async () => {
++  const fake = connectFake();
++  fake.on("turn/steer", (params) => ({
++    receipt: {
++      clientMutationId: params.clientMutationId,
++      disposition: "applied",
++      threadId: "thread_a",
++      projectionState: "reflected",
++    },
++  }));
++  focusSession("ref_a");
++  seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
++  const c = cmd("steer");
++  if (c.args?.kind !== "free") throw new Error("expected free args");
++  await c.args.run(runContext(), "go left");
++  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
++});
++
++// The handler applies the same rule the menu does: a busy session on a
++// harness that advertises no steer (or no queue) is refused here, never sent
++// a request the daemon answers Unavailable.
++test("/steer on a busy session whose harness advertises no steer is blocked and sends nothing", () => {
++  const fake = connectFake();
++  focusSession("ref_a");
++  seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, steer: false } });
++  const c = cmd("steer");
++  if (c.args?.kind !== "free") throw new Error("expected free args");
++  const result = c.args.run(runContext(), "go left");
++  expect(isBlocked(result)).toBe(true);
++  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(false);
++});
++
++test("/queue on a busy session whose harness advertises no queue is blocked and sends nothing", () => {
++  const fake = connectFake();
++  focusSession("ref_a");
++  seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, queue: false } });
++  const q = cmd("queue");
++  if (q.args?.kind !== "free") throw new Error("expected free args");
++  const result = q.args.run(runContext(), "later");
++  expect(isBlocked(result)).toBe(true);
++  expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(false);
++});
++
++// The hub advertises steer as harness support (it no longer folds the active
++// status in), so an idle steering harness carries steer:true. The menu's
++// available set must equal the handler's rule: /steer needs a running turn,
++// /drain-as-steer needs a running turn or a queue a Stop parked (idle with
++// depth > 0), the same canDrainQueue the composer and queue strip read.
++test("on an idle steering harness the menu lists /steer unavailable and /drain-as-steer only with a parked queue", () => {
++  focusSession("ref_a");
++  seedModel("ref_a", {
++    status: { type: "idle" },
++    activeTurnId: undefined,
++    capabilities: CAPS,
++    queue: { revision: 0, depth: 0 },
++  });
++  let byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
++  expect(byId.get("steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
++  expect(byId.get("drain-as-steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
++
++  seedModel("ref_a", {
++    status: { type: "idle" },
++    activeTurnId: undefined,
++    capabilities: CAPS,
++    queue: { revision: 0, depth: 1 },
++  });
++  byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
++  expect(byId.get("steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
++  expect(byId.get("drain-as-steer")?.unavailableReason).toBeUndefined();
++
++  seedModel("ref_a", {
++    status: { type: "active" },
++    activeTurnId: "t1",
++    capabilities: CAPS,
++    queue: { revision: 0, depth: 0 },
++  });
++  byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
++  expect(byId.get("steer")?.unavailableReason).toBeUndefined();
++  expect(byId.get("drain-as-steer")?.unavailableReason).toBeUndefined();
++});
++
+ test("/queue and /drain-as-steer each block with their own no-active-turn message", () => {
+   focusSession("ref_a");
+   seedModel("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
+diff --git a/cmd/evener-hub/frontend/src/shell/palette/commands.ts b/cmd/evener-hub/frontend/src/shell/palette/commands.ts
+index 72d897be1..2175de0a1 100644
+--- a/cmd/evener-hub/frontend/src/shell/palette/commands.ts
++++ b/cmd/evener-hub/frontend/src/shell/palette/commands.ts
+@@ -12,6 +12,7 @@
+ import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
+ import type { ThreadModel } from "../../protocol/model";
+ import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
++import { canDrainQueue, canSteer } from "../../protocol/submitRouting";
+ import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
+ import { useCommandCatalog } from "../../stores/commandCatalog";
+ import { connectionStore } from "../../stores/connection";
+@@ -28,7 +29,7 @@ import { navigate } from "../routing";
+ import { workspaceStore } from "../workspace";
+ import { blocked } from "./blocked";
+ import { commandScore } from "./commandScore";
+-import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
++import { focusedModel, isSessionBusy, type OnPage, type PaletteContext } from "./paletteContext";
+ import { readRecentCommandIds } from "./recentCommands";
+ 
+ // A command is either global (no session needed) or session-scoped (a session
+@@ -348,7 +349,7 @@ export function buildCommands(): Command[] {
+       keywords: ["cancel", "stop"],
+       scope: "session",
+       capability: "interrupt",
+-      // No hasActiveTurn gate, for the same reason /model has no busy gate
++      // No isSessionBusy gate, for the same reason /model has no busy gate
+       // below: only the daemon knows. turn/interrupt names no turn (appwire v3)
+       // and its precondition is the session's own quiescence, so answering "is
+       // a turn in flight" here can only refuse a Stop the daemon would have
+@@ -507,7 +508,14 @@ export function buildCommands(): Command[] {
+         placeholder: "steer text…",
+         run: (ctx, text) => {
+           const model = focusedModel(ctx.sessionRef);
+-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("steer failed: no active turn");
++          if (!ctx.sessionRef || !model) return blocked("steer failed: no active turn");
++          // The menu's rule (scopeCommand) and this one are the same
++          // predicate: a running turn on a harness that steers.
++          if (!canSteer(model.status.type, model.capabilities)) {
++            return blocked(
++              isSessionBusy(model) ? `steer failed: ${UNAVAILABLE_REASON}` : "steer failed: no active turn",
++            );
++          }
+           return threadsStore.getState().steer(ctx.sessionRef, text);
+         },
+       },
+@@ -524,7 +532,8 @@ export function buildCommands(): Command[] {
+         placeholder: "queue text…",
+         run: (ctx, text) => {
+           const model = focusedModel(ctx.sessionRef);
+-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("queue failed: no active turn");
++          if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("queue failed: no active turn");
++          if (model.capabilities.queue !== true) return blocked(`queue failed: ${UNAVAILABLE_REASON}`);
+           return threadsStore.getState().queue(ctx.sessionRef, text);
+         },
+       },
+@@ -556,7 +565,8 @@ export function buildCommands(): Command[] {
+       capability: "steer",
+       run: (ctx) => {
+         const model = focusedModel(ctx.sessionRef);
+-        if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("drain failed: no active turn");
++        if (!ctx.sessionRef || !model || !canDrainQueue(model.status.type, model.capabilities, model.queue?.depth ?? 0))
++          return blocked("drain failed: no active turn");
+         return threadsStore.getState().drainAsSteer(ctx.sessionRef, "");
+       },
+     },
+@@ -705,8 +715,23 @@ function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedC
+   if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
+     return { ...command, unavailableReason: UNAVAILABLE_REASON };
+   }
+-  if (!capability || !model || model.capabilities[capability]) return command;
+-  return { ...command, unavailableReason: UNAVAILABLE_REASON };
++  if (!capability || !model) return command;
++  if (!model.capabilities[capability]) return { ...command, unavailableReason: UNAVAILABLE_REASON };
++  // The steer capability is harness support alone (the hub no longer folds
++  // the active status in), so the two commands it gates apply the status
++  // here, with the same predicates their handlers use: /steer needs a running
++  // turn, /drain-as-steer a running turn or a queue a Stop parked. The
++  // available set the menu shows therefore equals what the handler accepts.
++  if (command.id === "steer" && !isSessionBusy(model)) {
++    return { ...command, unavailableReason: UNAVAILABLE_REASON };
++  }
++  if (
++    command.id === "drain-as-steer" &&
++    !canDrainQueue(model.status.type, model.capabilities, model.queue?.depth ?? 0)
++  ) {
++    return { ...command, unavailableReason: UNAVAILABLE_REASON };
++  }
++  return command;
+ }
+ 
+ export interface FilteredCommands {
+diff --git a/cmd/evener-hub/frontend/src/shell/palette/paletteContext.test.ts b/cmd/evener-hub/frontend/src/shell/palette/paletteContext.test.ts
+index b542c6692..dee7d7a21 100644
+--- a/cmd/evener-hub/frontend/src/shell/palette/paletteContext.test.ts
++++ b/cmd/evener-hub/frontend/src/shell/palette/paletteContext.test.ts
+@@ -3,7 +3,7 @@
+ import { afterEach, beforeEach, expect, test } from "vitest";
+ import type { ThreadModel } from "../../protocol/model";
+ import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+-import { buildPaletteContext, hasActiveTurn } from "./paletteContext";
++import { buildPaletteContext, isSessionBusy } from "./paletteContext";
+ 
+ beforeEach(() => {
+   resetWorkspaceStoreForTests();
+@@ -55,9 +55,13 @@ function model(overrides: Partial<ThreadModel>): ThreadModel {
+   } as ThreadModel;
+ }
+ 
+-test("hasActiveTurn is the turn-id-only guard", () => {
+-  expect(hasActiveTurn(model({ activeTurnId: "t1" }))).toBe(true);
+-  expect(hasActiveTurn(model({ activeTurnId: undefined }))).toBe(false);
+-  // awaiting-with-a-turn (mid-ask) still counts as having an active turn.
+-  expect(hasActiveTurn(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(true);
++test("isSessionBusy reads the thread status, not the transcript's open turn row", () => {
++  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: "t1" }))).toBe(true);
++  // Between turn/completed and turn/started of an inline turn boundary the
++  // id is gone while the session is still working.
++  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
++  expect(isSessionBusy(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
++  // Mid-ask nothing is running: the hub's queue capability is off and
++  // turn/steer needs a turn to redirect, so the palette says not busy.
++  expect(isSessionBusy(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
+ });
+diff --git a/cmd/evener-hub/frontend/src/shell/palette/paletteContext.ts b/cmd/evener-hub/frontend/src/shell/palette/paletteContext.ts
+index 210950060..5afdfedf4 100644
+--- a/cmd/evener-hub/frontend/src/shell/palette/paletteContext.ts
++++ b/cmd/evener-hub/frontend/src/shell/palette/paletteContext.ts
+@@ -7,6 +7,7 @@
+ // (capabilities), and whether a turn is in flight to act on.
+ 
+ import type { ThreadModel } from "../../protocol/model";
++import { isTurnActive } from "../../protocol/submitRouting";
+ import { threadsStore } from "../../stores/threads";
+ import { workspaceStore } from "../workspace";
+ 
+@@ -67,10 +68,14 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
+   return sessionRef ? threadsStore.getState().threads.get(sessionRef) : undefined;
+ }
+ 
+-// hasActiveTurn is the palette's ONE model-derived predicate, and it answers
+-// exactly one question: is there a turn to act on right now. It belongs to
+-// /interrupt, /steer, /queue and /drain, which are meaningless without one
+-// (the legacy's plain `!activeTurnId()` check).
++// isSessionBusy is the palette's ONE model-derived predicate, and it answers
++// exactly one question: is the session working right now. It belongs to
++// /steer, /queue and /drain, which are meaningless while nothing runs.
++// It reads the thread status, the same rule as the composer's Steer button
++// (isTurnActive) and the hub's steer/queue capabilities, never
++// model.activeTurnId: the transcript clears that id between the
++// turn/completed and turn/started of an inline turn boundary while the
++// session is still mid-input (issue #1341).
+ //
+ // It is deliberately the only one left. A "session is busy" and a "session has
+ // ended" predicate used to live here too, gating /model and the whole
+@@ -79,6 +84,6 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
+ // configured is the hub's answer, not this module's: it advertises a
+ // per-action capability for every thread, cold ones included, and resumes
+ // behind the call. commands.ts reads those flags instead.
+-export function hasActiveTurn(model: ThreadModel): boolean {
+-  return !!model.activeTurnId;
++export function isSessionBusy(model: ThreadModel): boolean {
++  return isTurnActive(model.status.type);
+ }
+diff --git a/cmd/evener-hub/frontend/src/widgets/promptcard/promptcard.module.css b/cmd/evener-hub/frontend/src/widgets/promptcard/promptcard.module.css
+index 74f42ad47..741f0e473 100644
+--- a/cmd/evener-hub/frontend/src/widgets/promptcard/promptcard.module.css
++++ b/cmd/evener-hub/frontend/src/widgets/promptcard/promptcard.module.css
+@@ -51,3 +51,28 @@
+   gap: var(--space-1);
+   margin-left: auto;
+ }
++
++/* Three verbs (Stop, Send, Steer: every busy session on a harness that can
++ * steer) do not fit beside the status row at phone width. The row is the only
++ * shrinkable thing on the line, so it absorbed the third verb whole: measured
++ * at 320px, 13px for 60px of facts (issue #1339). Two verbs fit exactly, which
++ * is the budget statusrow.module.css's narrow-pane block was measured against,
++ * so only a three-verb cluster takes its own line, right-aligned like the
++ * cluster it was. The threshold is the status row's own phone-width one.
++ * Each control contributes exactly one direct child (Tooltip's wrapper span),
++ * so :nth-child(3) means three controls. */
++@container (max-width: 399px) {
++  /* Wrapping is enabled only for the row that holds three controls. A row
++   * that may wrap breaks lines on its items' intrinsic widths before any
++   * shrinking, so a content-sized leading slot could push a two-verb cluster
++   * onto a second line; with the wrap scoped to this cluster no other row can
++   * wrap at all. */
++  .controls:has(> .actions > :nth-child(3)) {
++    flex-wrap: wrap;
++  }
++
++  .actions:has(> :nth-child(3)) {
++    flex-basis: 100%;
++    justify-content: flex-end;
++  }
++}
+diff --git a/cmd/evener-tui/composer_panel.go b/cmd/evener-tui/composer_panel.go
+index 29c1c3bba..65b42ca64 100644
+--- a/cmd/evener-tui/composer_panel.go
++++ b/cmd/evener-tui/composer_panel.go
+@@ -54,6 +54,14 @@ const (
+ 	hubComposerModeQueue
+ 	hubComposerModeFork
+ 	hubComposerModeReadOnly
++	// hubComposerModeParkedQueue is send mode with a queue a Stop parked:
++	// the session is idle, the queue is non-empty (the daemon reports that
++	// only for a held queue -- an unparked queue upgrades idle to active),
++	// and the harness steers. Enter sends as usual, which runs the new
++	// message first and then the parked messages; Ctrl+S drains the parked
++	// queue as steering now, the same turn/drainAsSteer the daemon accepts
++	// with nothing running. The rule is the web's canDrainQueue.
++	hubComposerModeParkedQueue
+ )
+ 
+ func (m hubModel) sessionComposerMode() hubComposerMode {
+@@ -70,11 +78,21 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
+ 		return hubComposerModeReadOnly
+ 	}
+ 	if m.sessionCanStartTurn() {
++		if m.sessionQueueParked() {
++			return hubComposerModeParkedQueue
++		}
+ 		return hubComposerModeSend
+ 	}
+ 	return hubComposerModeReadOnly
+ }
+ 
++// sessionQueueParked reports a queue a Stop parked: idle with queued work on
++// a harness that steers. Only a held queue reports that way (see
++// hubComposerModeParkedQueue).
++func (m hubModel) sessionQueueParked() bool {
++	return stateLabel(m.detail.State) == "idle" && len(m.sessionQueue) > 0 && m.detail.Capabilities.Steer
++}
++
+ func (m hubModel) sessionComposerReadOnlyReason() string {
+ 	if m.sessionTurnActionState() {
+ 		if !m.detail.Capabilities.Queue {
+@@ -173,6 +191,12 @@ func (m hubModel) sessionComposerPanel() composerPanel {
+ 	case hubComposerModeReadOnly:
+ 		panel.Label = "read-only"
+ 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
++	case hubComposerModeParkedQueue:
++		// Send mode's chrome plus the one extra binding: Ctrl+S runs the
++		// parked queue as steering now.
++		panel.Keys = append([]string{"enter: send", "ctrl+s: run queue as steer"}, keys...)
++		panel.CanSteer = true
++		panel.ChipContext.Mode = "PARKED " + itoa(len(m.sessionQueue))
+ 	default:
+ 		// No section label in default compose mode — the chip strip
+ 		// already carries all the live context; an extra "message" line
+diff --git a/cmd/evener-tui/hub_model_test.go b/cmd/evener-tui/hub_model_test.go
+index 73e049d56..5428506ca 100644
+--- a/cmd/evener-tui/hub_model_test.go
++++ b/cmd/evener-tui/hub_model_test.go
+@@ -2127,6 +2127,139 @@ func TestHubModelNotificationClosedIsNotError(t *testing.T) {
+ 	}
+ }
+ 
++// The hub advertises steer as harness support, not as "a turn is running"
++// (server/appwire_runtime.go appCapabilitiesLocked; #1363): an idle session on
++// a harness that steers reads steer=true on the wire. The TUI applies the
++// state itself -- its composer is in send mode at idle, so the ctrl+s hint is
++// not offered and the binding is a silent no-op -- and keeps the capability
++// so the hint appears the moment the session goes busy.
++func TestHubModelIdleSessionWithSteerSupportAdvertisesSteer(t *testing.T) {
++	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
++		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
++			if params.Ref != "local:01SEND" {
++				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
++			}
++			thread := appwireThread(hubTreeNode{
++				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
++			}, "/tmp/evener")
++			// The hub's idle set: send on, queue off, steer on (harness support).
++			thread.Evener.Capabilities.Send = true
++			thread.Evener.Capabilities.Queue = false
++			thread.Evener.Capabilities.Steer = true
++			return appwire.ThreadReadResponse{Thread: thread}, nil
++		})
++	})
++	defer cleanup()
++
++	m := newSessionHubModel(client)
++	m.detail.State = appwire.ThreadStatusActive
++	m.detail.Capabilities.Steer = false
++	m.session.processing = true
++	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
++		ThreadID: "01SEND",
++		Ref:      "local:01SEND",
++		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
++	})
++
++	cmd := m.applyHubNotification(*notification.Notification)
++	if cmd == nil {
++		t.Fatal("idle status notification should refresh session detail")
++	}
++	updated, _ := m.Update(cmd())
++	got := updated.(hubModel)
++	if !got.detail.Capabilities.Steer {
++		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
++	}
++	if got.session.processing {
++		t.Fatal("session stayed processing after idle status refresh")
++	}
++	view := got.sessionView()
++	if strings.Contains(view, "ctrl+s") {
++		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
++	}
++	if !strings.Contains(view, "send: ready") {
++		t.Fatalf("idle composer is not in send mode:\n%s", view)
++	}
++	steered, steerCmd := got.handleSessionForceSteer()
++	if steerCmd != nil {
++		t.Fatal("ctrl+s at idle produced a command; it must be a silent no-op outside queue mode")
++	}
++	after := steered.(hubModel)
++	if afterView := after.sessionView(); afterView != view {
++		t.Fatalf("ctrl+s at idle changed the session view:\n%s", afterView)
++	}
++}
++
++// A Stop parks the daemon's queue: the session reports idle with queued
++// work (only a held queue does; an unparked one upgrades idle to active),
++// and a turn/drainAsSteer sent while idle is one of the runs that releases
++// it. With the hub advertising steer as harness support, the composer enters
++// the parked-queue mode and Ctrl+S drains the queue as steering.
++func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
++	var drained []appwire.TurnDrainAsSteerParams
++	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
++		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
++			drained = append(drained, params)
++			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
++		})
++	})
++	defer cleanup()
++
++	m := newSessionHubModel(client)
++	m.detail.State = appwire.ThreadStatusIdle
++	m.detail.Capabilities.Send = true
++	m.detail.Capabilities.Queue = false
++	m.detail.Capabilities.Steer = true
++	m.session.processing = false
++	m.sessionQueue = []string{"parked follow-up"}
++
++	if got := m.sessionComposerMode(); got != hubComposerModeParkedQueue {
++		t.Fatalf("composer mode=%v, want parked queue", got)
++	}
++	view := m.sessionView()
++	for _, want := range []string{"ctrl+s: run queue as steer", "enter: send"} {
++		if !strings.Contains(view, want) {
++			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
++		}
++	}
++
++	_, cmd := m.handleSessionForceSteer()
++	if cmd == nil {
++		t.Fatal("ctrl+s on a parked queue produced no command")
++	}
++	cmd()
++	if len(drained) != 1 {
++		t.Fatalf("turn/drainAsSteer calls = %d, want 1", len(drained))
++	}
++	if drained[0].Ref != "local:01SEND" || len(drained[0].Input) != 0 {
++		t.Fatalf("drain params = %+v, want the parked queue of 01SEND with no composer text", drained[0])
++	}
++}
++
++// The same parked queue on a harness that advertises no steer: plain send
++// mode, no Ctrl+S hint, and the binding is a silent no-op.
++func TestHubModelParkedQueueWithoutSteerOffersNoDrain(t *testing.T) {
++	m := newSessionHubModel(nil)
++	m.detail.State = appwire.ThreadStatusIdle
++	m.detail.Capabilities.Send = true
++	m.detail.Capabilities.Queue = false
++	m.detail.Capabilities.Steer = false
++	m.session.processing = false
++	m.sessionQueue = []string{"parked follow-up"}
++
++	if got := m.sessionComposerMode(); got != hubComposerModeSend {
++		t.Fatalf("composer mode=%v, want send", got)
++	}
++	view := m.sessionView()
++	if strings.Contains(view, "ctrl+s") {
++		t.Fatalf("composer without steer offered ctrl+s:\n%s", view)
++	}
++	_, cmd := m.handleSessionForceSteer()
++	if cmd != nil {
++		t.Fatal("ctrl+s without steer produced a command; it must be a silent no-op")
++	}
++}
++
+ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
+ 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+ 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+diff --git a/cmd/evener-tui/hub_session_keys.go b/cmd/evener-tui/hub_session_keys.go
+index 2123a1b5b..c7c555abb 100644
+--- a/cmd/evener-tui/hub_session_keys.go
++++ b/cmd/evener-tui/hub_session_keys.go
+@@ -528,7 +528,9 @@ func (m hubModel) restoreInstructionMessage() string {
+ // the drain request so the daemon appends and drains atomically. With nothing
+ // to steer, the binding fires a transient banner instead of calling the hub.
+ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
+-	if m.sessionComposerMode() != hubComposerModeQueue {
++	switch m.sessionComposerMode() {
++	case hubComposerModeQueue, hubComposerModeParkedQueue:
++	default:
+ 		// Not in a queue-able state; nothing to do. Silently no-op so the
+ 		// keybind doesn't fight with idle-state composing.
+ 		return m, nil
+diff --git a/docs/developing-evener/agentic-testing.md b/docs/developing-evener/agentic-testing.md
+index 8450177b0..94fb6850f 100644
+--- a/docs/developing-evener/agentic-testing.md
++++ b/docs/developing-evener/agentic-testing.md
+@@ -320,9 +320,11 @@ authenticated AppWire socket:
+ Read `result.thread.status.type`; repeat until it reaches the state the
+ scenario needs. The same response carries
+ `result.thread.evener.capabilities` and
+-`result.thread.evener.activeTurnId`. A turn is only truly in flight once
+-both the `active` status and the active turn id have landed
+-(`submitRouting.ts:48-50`'s `isTurnActive`).
++`result.thread.evener.activeTurnId`. The `active` status alone says the
++session is working (`appwire-client/typescript/submitRouting.ts`'s
++`isTurnActive`); the turn id names the open transcript row and is briefly
++absent between the `turn/completed` and `turn/started` of back-to-back
++turns, so do not wait on it to decide idleness.
+ 
+ ### Session operations
+ 
+@@ -727,8 +729,9 @@ JSON.stringify({
+ ```
+ 
+ `steerRendered` is the closest thing left to the old `activeTurnId`
+-probe: Steer renders only while the turn is genuinely in flight
+-(`Composer.tsx:382`). If it never appears while
++probe: Steer renders while `status.type` is `active` and the daemon advertises
++steer (`Composer.tsx`'s `showSteer`; `activeTurnId` is transcript-row metadata,
++not the gate). If it never appears while
+ `thread/read` reports `result.thread.status.type=active`, the AppWire socket
+ did not hydrate — check `$run/hub.log`, and confirm the page is really
+ the one you think it is via the `location.port` assertion above.
+diff --git a/server/appwire_capabilities_push_test.go b/server/appwire_capabilities_push_test.go
+index 5609e0718..0434dd422 100644
+--- a/server/appwire_capabilities_push_test.go
++++ b/server/appwire_capabilities_push_test.go
+@@ -8,9 +8,10 @@ import (
+ )
+ 
+ // A client holds ThreadCapabilities as a snapshot from its last thread/read,
+-// and three of them — Send, Steer, Queue — are defined by whether a turn is in
+-// flight. So a client that read the thread while it was idle holds
+-// steer=false/queue=false, and nothing on the wire ever corrects that: the
++// and two of them — Send, Queue — are defined by whether a turn is in flight
++// (Steer advertises harness support alone; the client applies the status). So
++// a client that read the thread while it was idle holds queue=false, and
++// nothing on the wire ever corrects that: the
+ // composer then renders a session it KNOWS is active (it has the status change
+ // and the turn) with no Steer, no Stop, and a dead Send, until a reload
+ // (kata 06t8). A status transition is exactly the moment those flip, so the
+@@ -53,8 +54,11 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
+ 	if idle.Capabilities == nil {
+ 		t.Fatal("idle thread/status/changed carried no capabilities, want the set that goes with no turn")
+ 	}
+-	if idle.Capabilities.Steer || idle.Capabilities.Queue {
+-		t.Fatalf("idle capabilities = %+v, want steer/queue false with no turn in flight", *idle.Capabilities)
++	if idle.Capabilities.Queue {
++		t.Fatalf("idle capabilities = %+v, want queue false with no turn in flight", *idle.Capabilities)
++	}
++	if !idle.Capabilities.Steer {
++		t.Fatalf("idle capabilities = %+v, want steer true: it advertises harness support, and a queue parked by Stop is released by a drain or promote sent while idle", *idle.Capabilities)
+ 	}
+ 	if !idle.Capabilities.Send {
+ 		t.Fatal("idle capabilities Send = false, want true with no turn in flight")
+diff --git a/server/appwire_runtime.go b/server/appwire_runtime.go
+index 001c2a175..33d238865 100644
+--- a/server/appwire_runtime.go
++++ b/server/appwire_runtime.go
+@@ -1078,13 +1078,15 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any
+ // stampCapabilitiesOnStatusChange rides the action set that goes with the
+ // announced status along on every thread/status/changed (kata 06t8).
+ //
+-// The set is otherwise snapshot-only, refreshed by thread/read — and Send,
+-// Steer and Queue are all defined by whether a turn is in flight
+-// (appCapabilities). So a client that hydrated while the session was idle, or
+-// while it was a cold exited session the hub answered from the past index,
+-// holds steer=false/queue=false for the whole turn its own send starts: the
+-// composer knows the turn is live (it has the status change and turn/started)
+-// and still renders no Steer, no Stop and a disabled Send until a reload.
++// The set is otherwise snapshot-only, refreshed by thread/read — and Send
++// and Queue are defined by whether a turn is in flight (appCapabilities;
++// Steer is harness support alone and the client applies the status). So a
++// client that hydrated while the session was idle, or while it was a cold
++// exited session the hub answered from the past index, holds queue=false
++// (and, from the past index, steer=false) for the whole turn its own send
++// starts: the composer knows the turn is live (it has the status change and
++// turn/started) and still renders no Steer, no Stop and a disabled Send until
++// a reload.
+ // Every capability change is a status transition, so this refreshes them
+ // exactly when they can have moved and never polls — the same shape
+ // stampFailureCountOnStatusChange already uses for the failure count.
+@@ -2756,10 +2758,18 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
+ 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
+ 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
+ 	return appwire.ThreadCapabilities{
+-		Send:  !active && !closed,
+-		Steer: steerAvailable && active && !closed,
++		Send: !active && !closed,
++		// Steer answers "can this harness steer", not "is there a turn to steer
++		// right now": clients apply the status themselves (the web's canSteer
++		// requires active for turn/steer), and the daemon accepts
++		// turn/drainAsSteer and turn/promoteQueuedAsSteer with no turn in
++		// flight -- they are two of the runs that release a queue a Stop parked
++		// (agent/session_client_mutation_queue.go). Folding `active` in here
++		// left an idle client unable to tell a harness that cannot steer from
++		// one that can, so a parked queue had no affordance to run it (#1363).
++		Steer: steerAvailable && !closed,
+ 		// Interrupt answers "is there work to stop", which is the same `active`
+-		// Steer is derived from -- deliberately NOT the ambient cancelFunc.
++		// Send is the complement of -- deliberately NOT the ambient cancelFunc.
+ 		//
+ 		// That field is armed and cleared once per turn by the session loop, on
+ 		// a different goroutine and a different clock from the reservation the
+@@ -2785,8 +2795,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
+ 		ChangeModel:       s.modelFunc != nil && !closed,
+ 		ChangeVisionModel: s.visionModelFunc != nil && !closed,
+ 		Rename:            s.nameFunc != nil && !closed,
+-		// Queue mirrors Steer's "active turn" gate: only meaningful while
+-		// a turn is in flight or reserved by turn/start (kata 111a).
++		// Queue keeps the "active turn" gate: only meaningful while a turn is
++		// in flight or reserved by turn/start (kata 111a).
+ 		Queue: s.queueFunc != nil && active && !closed,
+ 		// Goal is available whenever the engine is wired and the session is
+ 		// open. It is intentionally NOT gated on !active: a goal may be set
+diff --git a/server/appwire_runtime_test.go b/server/appwire_runtime_test.go
+index b02df25f2..d79906874 100644
+--- a/server/appwire_runtime_test.go
++++ b/server/appwire_runtime_test.go
+@@ -30,7 +30,11 @@ func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
+ 	}
+ }
+ 
+-func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
++// Steer advertises harness support, not a turn in flight: the daemon accepts
++// turn/drainAsSteer and turn/promoteQueuedAsSteer with nothing running (they
++// release a queue a Stop parked), and clients apply the status themselves for
++// turn/steer. Only a closed thread withholds it (#1363).
++func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
+ 	t.Parallel()
+ 	cases := []struct {
+ 		name       string
+@@ -43,11 +47,12 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
+ 	}{
+ 		{"processing with steerFunc", "active", true, false, false, true, true},
+ 		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
+-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, false},
+-		{"idle with steerFunc", "idle", false, false, false, true, false},
+-		{"awaiting with steerFunc", "awaiting", false, false, false, true, false},
++		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
++		{"idle with steerFunc", "idle", false, false, false, true, true},
++		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
+ 		{"closed with steerFunc", "closed", false, false, false, true, false},
+ 		{"processing without steerFunc", "active", true, false, false, false, false},
++		{"idle without steerFunc", "idle", false, false, false, false, false},
+ 	}
+ 	for _, tc := range cases {
+ 		t.Run(tc.name, func(t *testing.T) {
+@@ -150,8 +155,11 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
+ 			if caps.Interrupt != working {
+ 				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
+ 			}
+-			if caps.Steer != working {
+-				t.Fatalf("status=%q (working=%v) but steer=%v: one frame, two threads", status, working, caps.Steer)
++			// Steer is harness support, withheld only by closed: it does not
++			// follow `working` (see TestAppCapabilities_SteerAdvertisesHarnessSupport).
++			wantSteer := status != appwire.ThreadStatusClosed
++			if caps.Steer != wantSteer {
++				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
+ 			}
+ 			// Send is the complement, and closed removes it outright.
+ 			wantSend := !working && status != appwire.ThreadStatusClosed
+diff --git a/server/appwire_server_test.go b/server/appwire_server_test.go
+index cc3c6e99c..78fcc1cd8 100644
+--- a/server/appwire_server_test.go
++++ b/server/appwire_server_test.go
+@@ -125,7 +125,7 @@ func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
+ 	// non-empty id rather than a specific one - the value is the projector's
+ 	// to choose, and pinning it here would just restate ReserveTurnID.
+ 	if data.Thread.Evener.ActiveTurnID == "" {
+-		t.Fatal("activeTurnId is empty while status reads active: the composer's isTurnActive gate needs both, and offers idle controls for a working session when they disagree")
++		t.Fatal("activeTurnId is empty while status reads active: the composer gates on the status alone (isTurnActive) and names the transcript row by this id, so a working session must publish one")
+ 	}
+ }
+ 
+@@ -2810,8 +2810,8 @@ func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
+ // empty when RecordAppEvent reads it back and writes it over the server's
+ // published identity. The published identity must survive that: a client
+ // polling thread/read in the gap would otherwise see a session reading active
+-// with no active turn, which is the pair the composer's isTurnActive gate needs
+-// to agree on.
++// with no active turn: the composer gates on the status alone (isTurnActive)
++// and would name a transcript row the wire had not published.
+ func TestServerAppWireEnvironmentEventKeepsTheProcessingReservation(t *testing.T) {
+ 	srv := NewServer(ServerConfig{})
+ 	srv.SetAppIdentity("local", "th_1")
+diff --git a/test/scenarios/enter-to-send-toggle-composer.md b/test/scenarios/enter-to-send-toggle-composer.md
+index 69d6d8c06..120322450 100644
+--- a/test/scenarios/enter-to-send-toggle-composer.md
++++ b/test/scenarios/enter-to-send-toggle-composer.md
+@@ -8,8 +8,9 @@ Shift+Enter/steer keybind collision (commit `4510a984`).
+ ## Pre-state
+ 
+ - Hub running, browser authenticated, a session open with an active or
+-  recently-active turn (steer only enables with `activeTurnId` set, per
+-  `web-steer-live-turn.md`'s pattern) — or just a session where you only need
++  recently-active turn (Steer renders while `status.type === "active"`, per
++  `web-steer-live-turn.md`'s pattern; `activeTurnId` is transcript-row
++  metadata, not the gate) — or just a session where you only need
+   to check newline-vs-send, which works regardless of turn state.
+ 
+ ## Steps
+diff --git a/test/scenarios/web-notes-human-interrupts.md b/test/scenarios/web-notes-human-interrupts.md
+index 9c46afb3b..2ca32b778 100644
+--- a/test/scenarios/web-notes-human-interrupts.md
++++ b/test/scenarios/web-notes-human-interrupts.md
+@@ -92,10 +92,10 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
+    ```json
+    {"id":3,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
+    ```
+-   **Expected:** `result.thread.status.type` is `active` with a non-empty
+-   `result.thread.evener.activeTurnId` (both must be present —
+-   `submitRouting.ts:48-50`'s `isTurnActive` requires the pair, and this card's
+-   browser steps key off the same condition), and
++   **Expected:** `result.thread.status.type` is `active` (the status alone is
++   what `appwire-client/typescript/submitRouting.ts`'s `isTurnActive` and this
++   card's browser steps key off; `result.thread.evener.activeTurnId` names the
++   open transcript row and is normally non-empty here too), and
+    `result.thread.evener.capabilities.sharedNotes` is `true`. Note it is the
+    **appwire** `ThreadCapabilities` that carries the bit (which the hub's
+    `shared-notes` pre-flight gate reads,
+diff --git a/test/scenarios/web-queue-then-completes.md b/test/scenarios/web-queue-then-completes.md
+index 5a1f885c3..0d1ddceb6 100644
+--- a/test/scenarios/web-queue-then-completes.md
++++ b/test/scenarios/web-queue-then-completes.md
+@@ -125,10 +125,11 @@ rm -rf "$tmpdir"
+   hovering. The strip's depth is what shows the effect.
+ - **The queue window opens on the status flip alone.** Send/queue
+   availability keys on `statusType === "active"` and deliberately does *not*
+-  wait for `activeTurnId` (`appwire-client/typescript/sendQueueAvailability.ts` header) —
+-  unlike steer/interrupt, which need both. So a message typed in the gap
+-  between `thread/status/changed` and `turn/started` queues correctly instead
+-  of bouncing off the daemon as a conflict. Do not "fix" a card that queues
++  wait for `activeTurnId` (`appwire-client/typescript/sendQueueAvailability.ts` header);
++  steer/interrupt key on the same status (`submitRouting.ts`'s `isTurnActive`),
++  and `activeTurnId` is transcript-row metadata for all of them. So a message
++  typed in the gap between `thread/status/changed` and `turn/started` queues
++  correctly instead of bouncing off the daemon as a conflict. Do not "fix" a card that queues
+   in that window.
+ - **Queued and steered messages render differently on purpose.** Queued text
+   becomes a real user turn (attribute present); a steer is mid-turn and
+diff --git a/test/scenarios/web-steer-live-turn.md b/test/scenarios/web-steer-live-turn.md
+index 755730900..f61ce4c34 100644
+--- a/test/scenarios/web-steer-live-turn.md
++++ b/test/scenarios/web-steer-live-turn.md
+@@ -4,9 +4,10 @@
+ repurposing. The web UI exposes two paths that inject a steering message into
+ a running model loop — the composer's **Steer** button (and its Shift+Enter
+ chord), and the command palette's `/steer` command. Both land on the AppWire
+-`turn/steer` method, both require a live `activeTurnId`, and both must reach
+-the model: the transcript grows a `STEERING` entry and the model's next
+-output visibly follows the new instruction.
++`turn/steer` method, both are gated on `status.type === "active"` (the
++`activeTurnId` beside it is transcript-row metadata, not a control gate), and
++both must reach the model: the transcript grows a `STEERING` entry and the
++model's next output visibly follows the new instruction.
+ 
+ This is the **classic single-text steer path**: the queue is empty and there
+ are no staged attachments, so `decideSteerRoute` takes the `"steer"` branch
+@@ -181,11 +182,12 @@ rm -rf "$tmpdir"
+ - **The first turn usually races to idle before you can steer it.** The model
+   does not reliably read `AGENTS.md` on the very first prompt. Send a second
+   turn that cites the pacing rules explicitly, as step 2 does.
+-- **Steer needs the turn id, not just the status.** `isTurnActive` requires
+-  both `statusType === "active"` and a populated `activeTurnId`
+-  (`submitRouting.ts:48-50`), which is why the Steer button can lag the
+-  server's `state=active` by one notification. Wait for the button, not for
+-  the clock.
++- **The Steer button follows the status.** `isTurnActive`
++  (`appwire-client/typescript/submitRouting.ts`) reads `statusType ===
++  "active"` alone; `activeTurnId` names the open transcript row and is not part
++  of the gate. The button can still lag the server's `state=active` by the one
++  `thread/status/changed` notification that carries it. Wait for the button,
++  not for the clock.
+ - **Shift+Enter is the same action as the button**, but only while the
+   `evener.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
+ - **An empty queue is part of the premise.** Any queued message, or any

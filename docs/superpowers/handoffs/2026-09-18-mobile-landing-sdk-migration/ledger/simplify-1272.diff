@@ -1,0 +1,3397 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 8c2c664e6..249fc3710 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -151,7 +151,7 @@ jobs:
+       - name: Lint repository structure, generated output, formatting, and secrets
+         env:
+           EVENER_GITLEAKS_REQUIRED: "1"
+-        run: make lint-generated lint-naming lint-gofmt lint-internal secret-scan
++        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports secret-scan
+ 
+   # Both fuzz consistency checks are fast, static AST analyses over the same
+   # target manifest and registry inputs; running them in one lane pays a
+diff --git a/appwire-client/typescript/scripts/consumer-value-imports.mjs b/appwire-client/typescript/scripts/consumer-value-imports.mjs
+new file mode 100644
+index 000000000..86ee8bee4
+--- /dev/null
++++ b/appwire-client/typescript/scripts/consumer-value-imports.mjs
+@@ -0,0 +1,177 @@
++// The runtime values every in-repo consumer takes from this package, read off
++// their import graph. resolve-check.mjs restates that list as real imports so
++// a bare Node consumer can prove the installed tarball provides all of them;
++// this derivation is what keeps the restatement honest.
++//
++// All three app trees count, not just the native two. Metro's resolveRequest
++// treats cmd/evener-hub/frontend/src as shared headless source and bundles it
++// into the native app, so a value only the web tree imports -- errorText, by
++// way of panes/spawn/usePluginPreview.ts -- is still a value the tarball has
++// to provide. Over-inclusion only strengthens the check: every name here is
++// something some consumer imports.
++import { readdirSync, readFileSync } from "node:fs";
++import { extname, join, relative } from "node:path";
++import ts from "typescript";
++import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
++import { isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
++
++export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
++
++export function parse(file, text) {
++  return parseSource(ts, file, text);
++}
++
++// The runtime values a source file takes from each of this package's published
++// specifiers, as a Map of specifier to the EXPORTED names it names (the left
++// half of `X as Y`, since that is what the package has to provide).
++//
++// Re-exports count: `export { graftContinuationTree } from "@evener/appwire-client"`
++// is a consumer taking a value, exactly like an import. Type-only statements
++// and inline `type` members do not: they are erased before anything runs.
++//
++// Only a site that NAMES what it takes can be accounted for, so the two kinds
++// that do are an allowlist and every other kind is a problem. Naming the
++// refused kinds instead left require, dynamic import, side-effect import,
++// mock call and star re-export falling through in silence -- each of them a
++// module taken whole, which is exactly what this derivation cannot enumerate.
++// Type-only sites are the one silent skip, because they are erased before
++// anything runs.
++const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
++
++// `export * as ns from "pkg"` takes the module, not any value out of it, so
++// there is nothing for this derivation to add -- and nothing it cannot
++// account for either. Refusing it would fail a re-export that is perfectly
++// resolvable against the tarball.
++const NAMES_NO_VALUE_KINDS = new Set(["export-namespace-from"]);
++
++// What resolve-check.mjs may do that a consumer may not. Taking a module whole
++// is how the fixture proves a specifier nobody names a value from resolves at
++// all, so those kinds are the point there rather than a gap. The ones left out
++// stay reported even in the fixture: a default import of a package that
++// publishes none, a require in an ESM file, a bare `export *` naming nothing.
++const FIXTURE_ACCEPTS = new Set([...NAMES_NO_VALUE_KINDS, "import-namespace", "import-side-effect", "dynamic-import"]);
++
++export function packageValuesIn(source, file, problems, accept = NAMES_NO_VALUE_KINDS) {
++  const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
++  for (const site of moduleSpecifierSites(ts, source)) {
++    const names = bySpecifier.get(site.text);
++    if (!names) continue;
++    if (site.typeOnly) continue;
++    if (accept.has(site.kind)) continue;
++    if (!ACCOUNTABLE_KINDS.has(site.kind)) {
++      problems?.push(`${file}: ${site.kind} of ${site.text} names no binding this check can account for`);
++      continue;
++    }
++    for (const binding of site.bindings) {
++      if (!binding.typeOnly) names.add(binding.imported);
++    }
++  }
++  return bySpecifier;
++}
++
++const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
++// Tests are not shipped and are not consumers of the tarball, which the
++// isTestFile filter below handles. Directory names are not the place to say so:
++// skipping every directory called `testing` also skipped the app's own
++// src/stores/testing and src/panes/session/testing, which are ordinary source
++// that happens to serve tests -- and the package's own testing/ tree is not
++// under any of these directories to begin with.
++function sources(dir, found = []) {
++  for (const entry of readdirSync(dir, { withFileTypes: true })) {
++    const full = join(dir, entry.name);
++    if (entry.isDirectory()) {
++      if (!SKIPPED_DIRS.has(entry.name)) sources(full, found);
++    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !isTestFile(entry.name)) {
++      found.push(full);
++    }
++  }
++  return found;
++}
++
++// What this repository's consumers do with each published specifier: the
++// runtime VALUES they name, and whether they reach the module at all.
++//
++// The two are different questions. A consumer whose only use is
++// `export * as ns from "pkg"`, or a type-only import, names no runtime value
++// and still needs the module to resolve -- so a specifier can be legitimately
++// used with an empty value list, and requiring a non-empty one failed
++// qualification over a consumer that was doing nothing wrong.
++export function consumerPackageUsage(repoRoot) {
++  const usage = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, { values: new Set(), used: false }]));
++  const problems = [];
++  for (const tree of CONSUMER_TREES) {
++    for (const file of sources(join(repoRoot, tree))) {
++      const source = parse(file, readFileSync(file, "utf8"));
++      for (const site of moduleSpecifierSites(ts, source)) {
++        const entry = usage.get(site.text);
++        if (entry) entry.used = true;
++      }
++      const found = packageValuesIn(source, relative(repoRoot, file), problems);
++      for (const [specifier, names] of found) {
++        for (const name of names) usage.get(specifier).values.add(name);
++      }
++    }
++  }
++  if (problems.length > 0) {
++    throw new Error(
++      [
++        "these consumers take the package as a whole, so what the tarball must provide cannot be derived from them:",
++        ...problems.map((problem) => `  ${problem}`),
++        "Import the names you use instead.",
++      ].join("\n"),
++    );
++  }
++  return new Map(
++    [...usage].map(([specifier, entry]) => [specifier, { values: [...entry.values].sort(), used: entry.used }]),
++  );
++}
++
++// The value lists alone, for callers that only ask what the tarball must
++// provide.
++export function consumerValueImports(repoRoot) {
++  return new Map([...consumerPackageUsage(repoRoot)].map(([specifier, entry]) => [specifier, entry.values]));
++}
++
++// Whether resolve-check.mjs still says what the consumers do. A specifier the
++// consumers name values from must be imported by name, every one of them; a
++// specifier they only reach as a module must still be imported some way, so
++// running the fixture proves it resolves; and one nothing uses must still be
++// proved, since the package publishes it either way.
++export function describeResolveCheckDrift(fixtureSource, fixtureName, usage) {
++  const problems = [];
++  // The fixture is held to the same rule as a consumer: a site this check
++  // cannot account for is reported, not dropped on the floor.
++  const declaredValues = packageValuesIn(fixtureSource, fixtureName, problems, FIXTURE_ACCEPTS);
++  // isLoadedAtRuntime, not `!site.typeOnly`: the statement-level flag is false
++  // for `import { type Foo } from "pkg"`, which is erased all the same, so a
++  // fixture whose only use of a specifier was inline-type would have "proved"
++  // a resolution that never happens. The sibling walk and the package-test
++  // gate read it through the same predicate.
++  const reached = new Set(
++    moduleSpecifierSites(ts, fixtureSource)
++      .filter(isLoadedAtRuntime)
++      .map((site) => site.text),
++  );
++  for (const [specifier, entry] of usage) {
++    const declared = [...declaredValues.get(specifier)].sort();
++    if (entry.values.length > 0) {
++      if (declared.join("\u0000") !== entry.values.join("\u0000")) {
++        problems.push(
++          `${fixtureName}'s imports from ${specifier} have drifted from what this repository's consumers import: it names ${JSON.stringify(declared)}, they import ${JSON.stringify(entry.values)}`,
++        );
++      }
++      continue;
++    }
++    if (declared.length > 0) {
++      problems.push(
++        `${fixtureName} imports ${JSON.stringify(declared)} from ${specifier}, which no consumer takes a value from`,
++      );
++    }
++    if (!reached.has(specifier)) {
++      problems.push(
++        `${fixtureName} does not load ${specifier} at runtime, so running it proves nothing about that specifier`,
++      );
++    }
++  }
++  return problems.join("\n");
++}
+diff --git a/appwire-client/typescript/scripts/consumer-value-imports.test.mjs b/appwire-client/typescript/scripts/consumer-value-imports.test.mjs
+new file mode 100644
+index 000000000..edad87063
+--- /dev/null
++++ b/appwire-client/typescript/scripts/consumer-value-imports.test.mjs
+@@ -0,0 +1,237 @@
++// packageValuesIn reads two different things with one reader: what the repo's
++// consumers take from this package, and what resolve-check.mjs says they take.
++// Both readings decide whether `make test-api-package` passes, so the shapes a
++// hand-written regex used to miss are the ones worth pinning.
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { expect, test } from "vitest";
++import { consumerPackageUsage, describeResolveCheckDrift, packageValuesIn, parse } from "./consumer-value-imports.mjs";
++
++const ROOT = "@evener/appwire-client";
++const DOC_CONTENT = "@evener/appwire-client/docContent";
++
++function valuesIn(source) {
++  return packageValuesIn(parse("fixture.ts", source), "fixture.ts", []);
++}
++
++function problemsFor(source) {
++  const problems = [];
++  packageValuesIn(parse("fixture.ts", source), "fixture.ts", problems);
++  return problems;
++}
++
++test("collects every statement naming one specifier, not just the first", () => {
++  const found = valuesIn(
++    [
++      'import { errorText } from "@evener/appwire-client";',
++      'import { formatElapsed, splitMandate } from "@evener/appwire-client";',
++      "",
++    ].join("\n"),
++  );
++  expect([...found.get(ROOT)].sort()).toEqual(["errorText", "formatElapsed", "splitMandate"]);
++});
++
++test("reads either quote style", () => {
++  const found = valuesIn("import { errorText } from '@evener/appwire-client';\n");
++  expect([...found.get(ROOT)]).toEqual(["errorText"]);
++});
++
++test("keeps the value half when a consumer splits its type imports off", () => {
++  const found = valuesIn(
++    [
++      'import type { ThreadModel } from "@evener/appwire-client";',
++      'import { hydrateThread, type TurnModel } from "@evener/appwire-client";',
++      "",
++    ].join("\n"),
++  );
++  expect([...found.get(ROOT)]).toEqual(["hydrateThread"]);
++});
++
++test("a re-export is a consumer taking a value", () => {
++  const found = valuesIn(
++    [
++      'export { graftContinuationTree } from "@evener/appwire-client";',
++      'export type { ActivityTree } from "@evener/appwire-client";',
++      'export * from "@evener/appwire-client";',
++      "",
++    ].join("\n"),
++  );
++  expect([...found.get(ROOT)]).toEqual(["graftContinuationTree"]);
++});
++
++test("an alias reports the name the package exports, not the local one", () => {
++  const found = valuesIn('import { docImageURL as atSubpath } from "@evener/appwire-client/docContent";\n');
++  expect([...found.get(DOC_CONTENT)]).toEqual(["docImageURL"]);
++});
++
++test("specifiers this package does not publish are not collected", () => {
++  const found = valuesIn(
++    [
++      'import { FakeClient } from "@evener/appwire-client/testing/fakeClient";',
++      'import { readFileSync } from "node:fs";',
++      "",
++    ].join("\n"),
++  );
++  expect([...found.get(ROOT)]).toEqual([]);
++  expect([...found.get(DOC_CONTENT)]).toEqual([]);
++});
++
++test.each([
++  ["import-namespace", `import * as everything from "${ROOT}";\nvoid everything;\n`],
++  ["import-default", `import theDefault from "${ROOT}";\nvoid theDefault;\n`],
++  ["import-side-effect", `import "${ROOT}";\n`],
++  ["export-star-from", `export * from "${ROOT}";\n`],
++  ["dynamic-import", `const loaded = await import("${ROOT}");\nvoid loaded;\n`],
++  ["require", `const loaded = require("${ROOT}");\nvoid loaded;\n`],
++  ["mock-call", `vi.mock("${ROOT}", () => ({}));\n`],
++])("%s of the package is reported, not skipped", (kind, source) => {
++  // This derivation says what the tarball must provide. It cannot answer that
++  // for a module taken whole, and answering nothing looked identical to a file
++  // that imports nothing.
++  expect(problemsFor(source)).toEqual([`fixture.ts: ${kind} of ${ROOT} names no binding this check can account for`]);
++  expect([...valuesIn(source).get(ROOT)]).toEqual([]);
++});
++
++test("the two forms that name what they take are still accepted", () => {
++  expect(problemsFor(`import { errorText } from "${ROOT}";\nvoid errorText;\n`)).toEqual([]);
++  expect(problemsFor(`export { errorText } from "${ROOT}";\n`)).toEqual([]);
++  expect(problemsFor(`import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`)).toEqual([]);
++});
++
++test("a namespace re-export of the package is accounted for, not refused", () => {
++  // `export * as ns from "pkg"` takes the module, not a value out of it: there
++  // is nothing to add to the list and nothing this derivation cannot answer.
++  // Refusing it failed a re-export that resolves against the tarball perfectly.
++  expect(problemsFor(`export * as everything from "${ROOT}";\n`)).toEqual([]);
++  expect([...valuesIn(`export * as everything from "${ROOT}";\n`).get(ROOT)]).toEqual([]);
++  // A bare `export *` still is refused: it names nothing at all.
++  expect(problemsFor(`export * from "${ROOT}";\n`)).toEqual([
++    `fixture.ts: export-star-from of ${ROOT} names no binding this check can account for`,
++  ]);
++});
++
++// A consumer tree, as consumerPackageUsage walks one.
++function consumerTree(files) {
++  const root = mkdtempSync(path.join(os.tmpdir(), "evener-consumer-usage-"));
++  for (const [relative, contents] of Object.entries(files)) {
++    const full = path.join(root, relative);
++    mkdirSync(path.dirname(full), { recursive: true });
++    writeFileSync(full, contents);
++  }
++  for (const tree of ["mobile-native", "mobile/src", "cmd/evener-hub/frontend/src"]) {
++    mkdirSync(path.join(root, tree), { recursive: true });
++  }
++  return root;
++}
++
++test("a consumer that only re-exports the module names no value but does use it", () => {
++  const root = consumerTree({
++    "mobile/src/state.ts": `export * as everything from "${ROOT}";\n`,
++  });
++  try {
++    const usage = consumerPackageUsage(root);
++    expect(usage.get(ROOT)).toEqual({ values: [], used: true });
++    expect(usage.get(DOC_CONTENT)).toEqual({ values: [], used: false });
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a value a JavaScript consumer imports is collected like a TypeScript one's", () => {
++  // Metro and Vite resolve .js beside .ts, so a value only a .js file imports
++  // is still one the tarball has to provide. Sweeping .ts/.tsx/.mts alone left
++  // it out of the derivation, and resolve-check.mjs would not be held to it.
++  const root = consumerTree({
++    "mobile-native/src/legacyScreen.js": `import { errorText } from "${ROOT}";\nerrorText();\n`,
++  });
++  try {
++    expect(consumerPackageUsage(root).get(ROOT)).toEqual({ values: ["errorText"], used: true });
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a consumer whose only use is type-only names no value but does use it", () => {
++  const root = consumerTree({
++    "mobile/src/state.ts": `import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`,
++  });
++  try {
++    expect(consumerPackageUsage(root).get(ROOT)).toEqual({ values: [], used: true });
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a specifier no consumer takes a value from qualifies as long as the fixture loads it", () => {
++  const usage = new Map([
++    [ROOT, { values: ["errorText"], used: true }],
++    [DOC_CONTENT, { values: [], used: true }],
++  ]);
++  const loaded = parse(
++    "resolve-check.mjs",
++    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
++  );
++  expect(describeResolveCheckDrift(loaded, "resolve-check.mjs", usage)).toEqual("");
++
++  // ... but it has to load it somehow, or running the fixture proves nothing.
++  const missing = parse("resolve-check.mjs", `import { errorText } from "${ROOT}";\nvoid errorText;\n`);
++  expect(describeResolveCheckDrift(missing, "resolve-check.mjs", usage)).toMatch(
++    /does not load .*docContent at runtime/,
++  );
++});
++
++test("a specifier consumers DO name values from still has to name every one", () => {
++  const usage = new Map([
++    [ROOT, { values: ["errorText", "formatElapsed"], used: true }],
++    [DOC_CONTENT, { values: [], used: true }],
++  ]);
++  const short = parse(
++    "resolve-check.mjs",
++    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
++  );
++  expect(describeResolveCheckDrift(short, "resolve-check.mjs", usage)).toMatch(/have drifted/);
++
++  const extra = parse(
++    "resolve-check.mjs",
++    `import { errorText } from "${ROOT}";\nimport { readDocFile } from "${DOC_CONTENT}";\nvoid errorText;\nvoid readDocFile;\n`,
++  );
++  expect(describeResolveCheckDrift(extra, "resolve-check.mjs", usage)).toMatch(/no consumer takes a value from/);
++});
++
++test("an inline-type import proves no resolution", () => {
++  // `import { type X } from "pkg"` is erased exactly as `import type` is, and
++  // the statement-level flag does not say so -- a fixture resting on one
++  // would claim a resolution that never happens.
++  const usage = new Map([
++    [ROOT, { values: ["errorText"], used: true }],
++    [DOC_CONTENT, { values: [], used: true }],
++  ]);
++  const erased = parse(
++    "resolve-check.mjs",
++    `import { errorText } from "${ROOT}";\nimport { type DocFileContent } from "${DOC_CONTENT}";\nvoid errorText;\nexport type A = DocFileContent;\n`,
++  );
++  expect(describeResolveCheckDrift(erased, "resolve-check.mjs", usage)).toMatch(
++    /does not load .*docContent at runtime/,
++  );
++
++  const loaded = parse(
++    "resolve-check.mjs",
++    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
++  );
++  expect(describeResolveCheckDrift(loaded, "resolve-check.mjs", usage)).toEqual("");
++});
++
++test("a fixture that takes a specifier as a whole module is reported, not swallowed", () => {
++  const usage = new Map([
++    [ROOT, { values: [], used: true }],
++    [DOC_CONTENT, { values: [], used: true }],
++  ]);
++  const whole = parse(
++    "resolve-check.mjs",
++    `const everything = require("${ROOT}");\nimport * as doc from "${DOC_CONTENT}";\nvoid everything;\nvoid doc;\n`,
++  );
++  expect(describeResolveCheckDrift(whole, "resolve-check.mjs", usage)).toMatch(
++    /require of @evener\/appwire-client names no binding this check can account for/,
++  );
++});
+diff --git a/appwire-client/typescript/scripts/qualify-package.mjs b/appwire-client/typescript/scripts/qualify-package.mjs
+index e994b3975..40f5f281e 100644
+--- a/appwire-client/typescript/scripts/qualify-package.mjs
++++ b/appwire-client/typescript/scripts/qualify-package.mjs
+@@ -1,12 +1,13 @@
+ import assert from "node:assert/strict";
+ import { execFile, execFileSync } from "node:child_process";
+ import { once } from "node:events";
+-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { dirname, join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { promisify } from "node:util";
+ import { WebSocketServer } from "ws";
++import { consumerPackageUsage, describeResolveCheckDrift, parse } from "./consumer-value-imports.mjs";
+ import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
+ 
+ const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+@@ -71,6 +72,7 @@ async function qualify() {
+     "translateAttachmentMarkers",
+     "buildInput",
+     "buildComposerInput",
++    "canonicalSkillNames",
+     "METHOD_NAMES",
+     "NOTIFICATION_NAMES",
+     "STEERING_KINDS",
+@@ -443,6 +445,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
+     consumerDir,
+   );
+   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
++  runConsumerResolveCheck();
+   const listing = run("tar", ["-tzf", tarball], consumerDir);
+   for (const expected of [
+     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
+@@ -594,6 +597,30 @@ ${presenceLoop}${surface.smoke ?? ""}`,
+   console.log(`qualified ${packed.name}@${packed.version}: installed imports, declarations and read-only example`);
+ }
+ 
++// Every app tree imports this package by name but declares no dependency on
++// it: each resolves the name through a repo alias onto TypeScript source, so
++// `make test-web` and `make test-native` can be green while the installed
++// tarball is missing an export. resolve-check.mjs answers that question in the
++// one place it can be answered - a real consumer with the tarball in
++// node_modules - and this is where it runs. What it imports is checked against
++// what the consumers import first, so the fixture cannot quietly fall behind.
++function runConsumerResolveCheck() {
++  const fixture = "resolve-check.mjs";
++  const fixturePath = join(packageDir, "scripts", fixture);
++  // Parsed, not matched: the fixture may take one specifier across several
++  // statements, in either quote style, with the type-only members split off,
++  // and a regex that reads only the first clause would quietly check half a
++  // list. The comparison lives beside the derivation it compares against.
++  const drift = describeResolveCheckDrift(
++    parse(fixturePath, readFileSync(fixturePath, "utf8")),
++    fixture,
++    consumerPackageUsage(resolve(packageDir, "..", "..")),
++  );
++  assert(drift === "", `${drift}\nUpdate ${fixture} to say what the consumers do.`);
++  copyFileSync(fixturePath, join(consumerDir, fixture));
++  run(process.execPath, [join(consumerDir, fixture)], consumerDir);
++}
++
+ try {
+   await qualify();
+   // Only this invocation's privately created consumer is reclaimed.
+diff --git a/appwire-client/typescript/scripts/resolve-check.mjs b/appwire-client/typescript/scripts/resolve-check.mjs
+new file mode 100644
+index 000000000..6128f8a16
+--- /dev/null
++++ b/appwire-client/typescript/scripts/resolve-check.mjs
+@@ -0,0 +1,268 @@
++// Runtime resolution proof for this repository's consumers, run inside the
++// qualification runner's packed consumer.
++//
++// The web app, mobile-native and mobile/src all import this package by name,
++// and none of them declares a dependency on it: each resolves the name through
++// a repo alias (tsconfig paths, the Vite and vitest configs, Metro's
++// resolveRequest) onto TypeScript source. So `make test-web` and
++// `make test-native` prove the aliases agree with the source tree and prove
++// nothing about the package a consumer actually installs. This file runs where
++// that question can be answered: against the tarball, unpacked into
++// node_modules, loaded by plain Node.
++//
++// The import statements below ARE the list, and the only one: Node throws a
++// SyntaxError for a named import the installed CommonJS build does not export,
++// before a line of this runs. qualify-package.mjs parses these two clauses and
++// checks them against every value an in-repo consumer imports, so a value one
++// of them starts importing cannot slip past this check. Types are out of
++// scope -- they are erased before anything runs.
++import assert from "node:assert/strict";
++import {
++  ActivityList,
++  AppwireClient,
++  activityDelegateBranch,
++  activityDelegateDiagnostics,
++  activityDelegateState,
++  activityNodeID,
++  answeredAskUserSuffix,
++  applyNotification,
++  asJsonObject,
++  boolField,
++  buildActivityRows,
++  buildComposerInput,
++  buildEntityView,
++  buildInput,
++  buildWatchRows,
++  ClientNotReadyError,
++  ConnectionClosedError,
++  canonicalSkillNames,
++  canReadSharedNotes,
++  clip,
++  clipJobID,
++  collectAuthoritativeMutationIds,
++  composeAskAnswers,
++  conditionSpec,
++  decideSteerRoute,
++  decideSubmitRoute,
++  defaultExpandedIDs,
++  deriveSendQueueAvailability,
++  docFileRawURL,
++  docImageURL,
++  entityOpenTarget,
++  errorKind,
++  errorText,
++  fenceRootSession,
++  filterSlashMenuItems,
++  findEntityIds,
++  firstLine,
++  formatByteCount,
++  formatCharCount,
++  formatClockTime,
++  formatDurationMs,
++  formatElapsed,
++  formatTokenCount,
++  friendlyErrorMessage,
++  friendlyLaunchErrorMessage,
++  graftContinuationTree,
++  hasErrorText,
++  hasFailureStatus,
++  hasItemFailure,
++  humanizeInterval,
++  humanizeSeconds,
++  hydrateThread,
++  isActionUnavailable,
++  isActivityFailure,
++  isHubLaunchError,
++  isInProgressStatus,
++  isNonZeroExit,
++  isStaleCursorError,
++  isThreadNotFound,
++  isTurnActive,
++  jobIsFailed,
++  lineCount,
++  liveAskQuestions,
++  mergeOlderItemPage,
++  mergeSlashCommands,
++  mutationErrorData,
++  normalizeRow,
++  notificationRoutingKey,
++  numField,
++  parseActivityTree,
++  parseArgs,
++  parseAskUserQuestions,
++  parseConditionText,
++  parseJobLogTail,
++  parseJSONObject,
++  parseSlashToken,
++  pendingTextJoined,
++  plainQuoteLine,
++  reconcileActivityState,
++  reconcileBatches,
++  resolvePendingEscalation,
++  rpcURLFromLocation,
++  SYSTEM_PRELUDE_TURN_ID,
++  sessionActionError,
++  sessionActionHeadline,
++  slashCommandInvocation,
++  sourceLabel,
++  spliceSlashCommand,
++  splitMandate,
++  stableDelegateDisplayStatus,
++  str,
++  strArrayField,
++  strField,
++  tailFold,
++  tailSlice,
++  trailingBracketFooter,
++  translateAttachmentMarkers,
++  visibleCatalogCommands,
++  WireError,
++  watchArmedLabel,
++  watchCadenceLabel,
++  watchDeliveryInstants,
++  watchDisplayState,
++  watchDurationLabel,
++  watchFacts,
++  watchFoldKey,
++  watchGloss,
++  watchIsScheduled,
++  watchMeta,
++  watchName,
++  watchTitle,
++} from "@evener/appwire-client";
++import {
++  DOC_FILE_MAX_BYTES,
++  DocFileError,
++  docImageURL as docImageURLAtSubpath,
++  readDocFile,
++} from "@evener/appwire-client/docContent";
++
++// Naming every binding keeps the two clauses above load-bearing rather than
++// decorative: a name imported and not listed here is an unused import Biome
++// rejects, and a name listed and not imported is a ReferenceError. So the
++// lists cannot drift from each other, only from the consumers -- which is
++// what the runner checks.
++const arrived = {
++  ActivityList,
++  AppwireClient,
++  ClientNotReadyError,
++  ConnectionClosedError,
++  SYSTEM_PRELUDE_TURN_ID,
++  WireError,
++  activityDelegateBranch,
++  activityDelegateDiagnostics,
++  activityDelegateState,
++  activityNodeID,
++  answeredAskUserSuffix,
++  applyNotification,
++  asJsonObject,
++  boolField,
++  buildActivityRows,
++  buildComposerInput,
++  buildEntityView,
++  buildInput,
++  buildWatchRows,
++  canReadSharedNotes,
++  canonicalSkillNames,
++  clip,
++  clipJobID,
++  collectAuthoritativeMutationIds,
++  composeAskAnswers,
++  conditionSpec,
++  decideSteerRoute,
++  decideSubmitRoute,
++  defaultExpandedIDs,
++  deriveSendQueueAvailability,
++  docFileRawURL,
++  docImageURL,
++  entityOpenTarget,
++  errorKind,
++  errorText,
++  fenceRootSession,
++  filterSlashMenuItems,
++  findEntityIds,
++  firstLine,
++  formatByteCount,
++  formatCharCount,
++  formatClockTime,
++  formatDurationMs,
++  formatElapsed,
++  formatTokenCount,
++  friendlyErrorMessage,
++  friendlyLaunchErrorMessage,
++  graftContinuationTree,
++  hasErrorText,
++  hasFailureStatus,
++  hasItemFailure,
++  humanizeInterval,
++  humanizeSeconds,
++  hydrateThread,
++  isActionUnavailable,
++  isActivityFailure,
++  isHubLaunchError,
++  isInProgressStatus,
++  isNonZeroExit,
++  isStaleCursorError,
++  isThreadNotFound,
++  isTurnActive,
++  jobIsFailed,
++  lineCount,
++  liveAskQuestions,
++  mergeOlderItemPage,
++  mergeSlashCommands,
++  mutationErrorData,
++  normalizeRow,
++  notificationRoutingKey,
++  numField,
++  parseActivityTree,
++  parseArgs,
++  parseAskUserQuestions,
++  parseConditionText,
++  parseJSONObject,
++  parseJobLogTail,
++  parseSlashToken,
++  pendingTextJoined,
++  plainQuoteLine,
++  reconcileActivityState,
++  reconcileBatches,
++  resolvePendingEscalation,
++  rpcURLFromLocation,
++  sessionActionError,
++  sessionActionHeadline,
++  slashCommandInvocation,
++  sourceLabel,
++  spliceSlashCommand,
++  splitMandate,
++  stableDelegateDisplayStatus,
++  str,
++  strArrayField,
++  strField,
++  tailFold,
++  tailSlice,
++  trailingBracketFooter,
++  translateAttachmentMarkers,
++  visibleCatalogCommands,
++  watchArmedLabel,
++  watchCadenceLabel,
++  watchDeliveryInstants,
++  watchDisplayState,
++  watchDurationLabel,
++  watchFacts,
++  watchFoldKey,
++  watchGloss,
++  watchIsScheduled,
++  watchMeta,
++  watchName,
++  watchTitle,
++  DOC_FILE_MAX_BYTES,
++  DocFileError,
++  docImageURLAtSubpath,
++  readDocFile,
++};
++for (const [name, value] of Object.entries(arrived)) {
++  assert(value !== undefined, `${name} resolves from the installed package but arrived undefined`);
++}
++
++// readDocFile needs a DocPort from the host and is deliberately not called.
++assert.equal(docImageURL("", "s 1", "a b.png"), "/doc/image?session=s%201&path=a%20b.png");
++assert.equal(formatElapsed(0), "0s");
+diff --git a/cmd/evener-hub/frontend/scripts/module-specifiers.test.mjs b/cmd/evener-hub/frontend/scripts/module-specifiers.test.mjs
+new file mode 100644
+index 000000000..5d90fca7b
+--- /dev/null
++++ b/cmd/evener-hub/frontend/scripts/module-specifiers.test.mjs
+@@ -0,0 +1,140 @@
++// The shared module-specifier reader, one case per form it claims to read.
++//
++// The form list is a checked-in file, not a literal here, because the grep
++// gate's audit test builds its fixtures from the same list: the two readers
++// answer the same question in different languages, and this is what stops them
++// drifting apart form by form, which is how they drifted in the first place.
++//
++// It lives under the frontend's scripts/ for the reason the rewriter's test
++// does: this is the only runner in the repo with the node_modules these tools
++// parse with.
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import path from "node:path";
++import test from "node:test";
++import { fileURLToPath } from "node:url";
++import ts from "typescript";
++import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
++
++const sdkDir = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk");
++const forms = JSON.parse(readFileSync(path.join(sdkDir, "module-specifier-forms.json"), "utf8"));
++
++const SPECIFIER = "../../appwire-client/typescript/errors";
++
++function sitesFor(source) {
++  return moduleSpecifierSites(ts, parseSource(ts, "fixture.ts", source));
++}
++
++test("the form list is not empty and every entry is complete", () => {
++  assert.ok(forms.length > 0);
++  for (const form of forms) {
++    assert.ok(form.name && form.kind && form.source.includes("@@SPEC@@"), `incomplete form: ${form.name}`);
++  }
++});
++
++for (const form of forms) {
++  test(`reads ${form.name} as ${form.kind}`, () => {
++    const sites = sitesFor(form.source.replaceAll("@@SPEC@@", SPECIFIER));
++    assert.equal(sites.length, 1, `expected exactly one site, got ${sites.map((site) => site.kind).join(", ")}`);
++    assert.equal(sites[0].kind, form.kind);
++    assert.equal(sites[0].text, SPECIFIER);
++  });
++}
++
++test("named members carry their imported name, local name and type-only flag", () => {
++  const [site] = sitesFor(`import { a, b as c, type d } from "${SPECIFIER}";\nvoid a;\nvoid c;\n`);
++  assert.deepEqual(site.bindings, [
++    { imported: "a", local: "a", typeOnly: false },
++    { imported: "b", local: "c", typeOnly: false },
++    { imported: "d", local: "d", typeOnly: true },
++  ]);
++});
++
++test("a default import with named members beside it is reported as the default", () => {
++  const [site] = sitesFor(`import theDefault, { errorText } from "${SPECIFIER}";\nvoid theDefault;\nvoid errorText;\n`);
++  assert.equal(site.kind, "import-default");
++  assert.deepEqual(site.bindings, [
++    { imported: "default", local: "theDefault", typeOnly: false },
++    { imported: "errorText", local: "errorText", typeOnly: false },
++  ]);
++});
++
++test("a default binding keeps an import loaded even when every named member is a type", () => {
++  const [mixed] = sitesFor(`import theDefault, { type WireError } from "${SPECIFIER}";\nvoid theDefault;\nexport type A = WireError;\n`);
++  assert.equal(isLoadedAtRuntime(mixed), true);
++
++  const [erased] = sitesFor(`import type theDefault from "${SPECIFIER}";\nexport type A = theDefault;\n`);
++  assert.equal(isLoadedAtRuntime(erased), false);
++});
++
++test("an import-equals yields one site, not a nested require as well", () => {
++  // `import X = require("./x")` parses its reference as an
++  // ExternalModuleReference, not a call, so the require branch never sees it.
++  const sites = sitesFor(`import loaded = require("${SPECIFIER}");\nvoid loaded;\n`);
++  assert.deepEqual(
++    sites.map((site) => site.kind),
++    ["require-equals"],
++  );
++});
++
++test("a statement-level type-only import is marked erased", () => {
++  const [typed] = sitesFor(`import type { WireError } from "${SPECIFIER}";\nexport type A = WireError;\n`);
++  assert.equal(typed.typeOnly, true);
++  assert.equal(isLoadedAtRuntime(typed), false);
++  const [value] = sitesFor(`import { errorText } from "${SPECIFIER}";\nvoid errorText;\n`);
++  assert.equal(isLoadedAtRuntime(value), true);
++});
++
++test("a star re-export is loaded at run time even though it names no binding", () => {
++  // A graph walk has to follow it; a "which values must the package provide"
++  // question cannot use it. Those are different questions, and conflating
++  // them stopped the native script walk one hop short of the package.
++  const [site] = sitesFor(`export * from "${SPECIFIER}";\n`);
++  assert.equal(isLoadedAtRuntime(site), true);
++  assert.deepEqual(site.bindings, []);
++});
++
++test("a call that is not an import, a require or a mock is not a specifier site", () => {
++  assert.deepEqual(sitesFor(`describe("${SPECIFIER}", () => {});\n`), []);
++  assert.deepEqual(sitesFor(`expect(x).toThrow("${SPECIFIER}");\n`), []);
++});
++
++test("every site points at the literal node, so a caller can rewrite it in place", () => {
++  const source = `import { errorText } from "${SPECIFIER}";\nvoid errorText;\n`;
++  const [site] = sitesFor(source);
++  assert.equal(source.slice(site.node.getStart(site.node.getSourceFile()), site.node.getEnd()), `"${SPECIFIER}"`);
++});
++
++test("an import whose every member is inline-type is erased, mixed is not", () => {
++  // The statement carries no type-only flag; only the members say so.
++  const [allType] = sitesFor(`import { type WireError } from "${SPECIFIER}";\nexport type A = WireError;\n`);
++  assert.equal(allType.typeOnly, false);
++  assert.equal(isLoadedAtRuntime(allType), false);
++
++  const [mixed] = sitesFor(`import { errorText, type WireError } from "${SPECIFIER}";\nvoid errorText;\nexport type A = WireError;\n`);
++  assert.equal(isLoadedAtRuntime(mixed), true);
++
++  const [reexport] = sitesFor(`export { type WireError } from "${SPECIFIER}";\n`);
++  assert.equal(isLoadedAtRuntime(reexport), false);
++});
++
++test("a site that names no binding is loaded whatever it does with what it finds", () => {
++  for (const source of [`export * from "${SPECIFIER}";\n`, `import "${SPECIFIER}";\n`, `require("${SPECIFIER}");\n`]) {
++    const [site] = sitesFor(source);
++    assert.equal(isLoadedAtRuntime(site), true, source);
++  }
++});
++
++test("a .jsx file with a specifier inside its JSX still yields it", () => {
++  // Parsed as TS, the `<View>` opens a type assertion, not an element, and the
++  // dynamic import nested in the markup is lost -- the whole subtree is. A
++  // .jsx file is JSX, and React Native writes JSX in .js too, so both parse as
++  // JSX and the lazy load surfaces.
++  const source = `export const Screen = () => <View>{import("${SPECIFIER}")}</View>;\n`;
++  for (const name of ["screen.jsx", "screen.js"]) {
++    const sites = moduleSpecifierSites(ts, parseSource(ts, name, source));
++    assert.equal(sites.length, 1, `${name}: expected one site, got ${sites.map((site) => site.kind).join(", ")}`);
++    assert.equal(sites[0].kind, "dynamic-import");
++    assert.equal(sites[0].text, SPECIFIER);
++  }
++});
+diff --git a/cmd/evener-hub/frontend/scripts/package-test-files.mjs b/cmd/evener-hub/frontend/scripts/package-test-files.mjs
+index edf53f3f4..2597475f7 100644
+--- a/cmd/evener-hub/frontend/scripts/package-test-files.mjs
++++ b/cmd/evener-hub/frontend/scripts/package-test-files.mjs
+@@ -16,12 +16,20 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSyn
+ import os from "node:os";
+ import path from "node:path";
+ import { fileURLToPath, pathToFileURL } from "node:url";
++import ts from "typescript";
++import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
++import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
++import { isTestFile } from "../../../../scripts/sdk/source-files.mjs";
+ 
+ const frontend = fileURLToPath(new URL("../", import.meta.url));
+ const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
+ 
+-// Same shape as Vitest's default test glob, applied to the package tree.
+-const isTestFile = (name) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
++// Shared with the package's own value-import derivation, which needs the same
++// answer: see scripts/sdk/source-files.mjs.
++
++// Vitest resolves this one itself; it is the only bare specifier a package
++// file may name without an alias.
++const SELF_RESOLVING = new Set(["vitest"]);
+ 
+ // Every source file under the package, test or not - the no-app-import sweep
+ // has to see the whole tree, not only its tests.
+@@ -97,6 +105,168 @@ export function describeAppImports(files, read, dir) {
+   ].join("\n");
+ }
+ 
++// vite.config.ts's `resolve.alias`, read off its AST rather than matched: this
++// is the list the package's bare imports are held against, and a regex that
++// missed an entry would fail the gate over an alias that is there.
++//
++// Each key maps to whether that alias can serve a SUBPATH, which is decided by
++// its target: a directory can, a file cannot. `@evener/appwire-client` points
++// at index.ts, so it answers `@evener/appwire-client` and nothing below it --
++// Vite would build index.ts/testing/fakeClient, which is not a path. The
++// target is classified from the last string literal of its expression, since
++// the expressions are path.join calls this file cannot evaluate.
++const TARGET_IS_A_FILE = /\.[cm]?[jt]sx?$|\.json$/;
++
++export function aliasesFrom(configText) {
++  const source = ts.createSourceFile("vite.config.ts", configText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
++  const aliases = new Map();
++  const lastLiteral = (node) => {
++    let found = null;
++    const walk = (child) => {
++      if (ts.isStringLiteralLike(child)) found = child.text;
++      ts.forEachChild(child, walk);
++    };
++    walk(node);
++    return found;
++  };
++  const visit = (node) => {
++    if (
++      ts.isPropertyAssignment(node) &&
++      !ts.isComputedPropertyName(node.name) &&
++      node.name.text === "alias" &&
++      ts.isObjectLiteralExpression(node.initializer)
++    ) {
++      for (const property of node.initializer.properties) {
++        if (!ts.isPropertyAssignment(property)) continue;
++        const name = property.name;
++        if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
++        const target = lastLiteral(property.initializer);
++        aliases.set(name.text, { servesSubpaths: target !== null && !TARGET_IS_A_FILE.test(target) });
++      }
++    }
++    ts.forEachChild(node, visit);
++  };
++  visit(source);
++  return aliases;
++}
++
++// Whether `key` can stand in for a specifier BELOW it. With the config's
++// targets in hand that is a fact; given a bare Set of keys -- which is all a
++// caller has when it is testing the matching itself -- it is assumed of a key
++// that already carries a subpath and denied of a bare package name, whose
++// alias in this config is an entry-point file.
++function servesSubpaths(key, aliases) {
++  const entry = aliases instanceof Map ? aliases.get(key) : undefined;
++  if (entry) return entry.servesSubpaths;
++  const segments = key.startsWith("@") ? key.split("/").slice(2) : key.split("/").slice(1);
++  return segments.length > 0;
++}
++
++// Every module this file LOADS, by any form: a vi.mock or a require reaches a
++// dependency exactly as an import does, and an alias it needs is needed just
++// as much. An erased one reaches nothing -- `import type X from "pkg"` is gone
++// before Vite resolves anything -- so counting it would demand an alias for a
++// dependency no run has.
++function loadedSpecifiersIn(file, text) {
++  return moduleSpecifierSites(ts, parseSource(ts, file, text))
++    .filter(isLoadedAtRuntime)
++    .map((site) => site.text);
++}
++
++// The package's own files are TypeScript, plus the .mjs tooling its tests
++// reach. Extension probing and the directory/index.ts rule are the rewriter's,
++// shared rather than restated: an `existsSync` that says yes to a directory
++// returns the directory, and the caller reads it as a file.
++export const resolvePackageImport = (from, specifier) =>
++  resolveSourceFile(from, specifier, [".ts", ".tsx", ".mjs", ".js"]);
++
++// Every bare specifier reachable from the package's test files, mapped to the
++// package-relative files that name it. The walk stops at the first bare
++// specifier: what is inside node_modules is not this gate's business, and the
++// package's own scripts that Vitest never loads (qualify-package.mjs and its
++// `ws`) are not reachable from a test, so they are not held to this rule.
++export function reachableBareImports(testFiles, read, resolveRelative, dir) {
++  const walked = new Set();
++  const bare = new Map();
++  const walk = (file) => {
++    if (walked.has(file)) return;
++    walked.add(file);
++    for (const specifier of loadedSpecifiersIn(file, read(file))) {
++      if (specifier.startsWith("node:")) continue;
++      if (specifier.startsWith(".")) {
++        const resolved = resolveRelative(file, specifier);
++        if (resolved) walk(resolved);
++        continue;
++      }
++      if (!bare.has(specifier)) bare.set(specifier, []);
++      bare.get(specifier).push(path.relative(dir, file));
++    }
++  };
++  for (const file of testFiles) walk(file);
++  return bare;
++}
++
++// The alias Vite would use for a specifier: the FIRST key in config order that
++// matches, which is how Rollup's alias plugin resolves -- not the longest one.
++// The difference only shows when a general key precedes a specific one, which
++// is what describeAliasOrder refuses.
++export function firstAliasMatch(specifier, aliases) {
++  for (const key of aliases.keys?.() ?? aliases) {
++    if (specifier === key) return key;
++    // A prefix match answers only if that alias serves subpaths at all.
++    if (specifier.startsWith(`${key}/`) && servesSubpaths(key, aliases)) return key;
++  }
++  return null;
++}
++
++// First-match means order carries meaning: a key that is a path prefix of a
++// later one swallows it, and `@evener/appwire-client` placed before
++// `@evener/appwire-client/testing` would answer for every testing specifier
++// with index.ts. vite.config.ts says as much in a comment; this is the same
++// rule, enforced.
++export function describeAliasOrder(aliases) {
++  const keys = [...(aliases.keys?.() ?? aliases)];
++  const offenders = [];
++  for (let i = 0; i < keys.length; i++) {
++    for (let j = i + 1; j < keys.length; j++) {
++      if (keys[j].startsWith(`${keys[i]}/`)) offenders.push(`${keys[i]} precedes ${keys[j]}, which it swallows`);
++    }
++  }
++  if (offenders.length === 0) return "";
++  return [
++    "vite.config.ts's resolve.alias is ordered so a general key answers before a specific one:",
++    ...offenders.map((line) => `  ${line}`),
++    "Vite takes the FIRST matching alias, so the specific entries have to come first.",
++  ].join("\n");
++}
++
++// A bare specifier with no alias resolves from the importer, which is inside
++// the package. That works on any machine where `npm ci --prefix
++// appwire-client/typescript` has run for make test-api-package, and fails in
++// CI's web job, which installs only this app - a green local gate over an
++// import CI cannot resolve. This is the check that stops the two diverging.
++export function describeUnaliasedImports(bare, aliases) {
++  const offenders = [];
++  for (const [specifier, files] of [...bare].sort()) {
++    if (SELF_RESOLVING.has(specifier)) continue;
++    // The first alias that matches, in config order, which is how Rollup's
++    // alias plugin resolves. A package root entry does not stand in for the
++    // subpath entry beside it -- it maps at index.ts and cannot serve one --
++    // and describeAliasOrder refuses an ordering where it would be reached
++    // first anyway.
++    if (firstAliasMatch(specifier, aliases) !== null) continue;
++    offenders.push(`${specifier}, imported by ${files.join(", ")}`);
++  }
++  if (offenders.length === 0) return "";
++  return [
++    "the AppWire package's test graph names bare specifiers that vite.config.ts does not alias:",
++    ...offenders.map((line) => `  ${line}`),
++    "Vite resolves those from the package directory, which has node_modules only where",
++    "`npm ci --prefix appwire-client/typescript` has run - not in CI's web job. Add an alias",
++    "in cmd/evener-hub/frontend/vite.config.ts pointing at this app's copy.",
++  ].join("\n");
++}
++
+ export function testFilesOnDisk(dir) {
+   const found = [];
+   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+@@ -192,10 +362,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+     process.exit(1);
+   }
+   const readFile = (file) => readFileSync(file, "utf8");
++  const viteAliases = aliasesFrom(readFileSync(path.join(frontend, "vite.config.ts"), "utf8"));
+   const packageSources = sourceFilesOnDisk(packageDir);
+   for (const problem of [
+     describeAppImports(packageSources, readFile, packageDir),
+     describeCwdRelativeReads(packageSources, readFile, packageDir),
++    describeAliasOrder(viteAliases),
++    describeUnaliasedImports(
++      reachableBareImports(testFilesOnDisk(packageDir), readFile, resolvePackageImport, packageDir),
++      viteAliases,
++    ),
+   ]) {
+     if (problem) {
+       console.error(problem);
+diff --git a/cmd/evener-hub/frontend/scripts/package-test-files.test.mjs b/cmd/evener-hub/frontend/scripts/package-test-files.test.mjs
+index 7198cf6ac..e94a0deaa 100644
+--- a/cmd/evener-hub/frontend/scripts/package-test-files.test.mjs
++++ b/cmd/evener-hub/frontend/scripts/package-test-files.test.mjs
+@@ -1,16 +1,22 @@
+ import assert from "node:assert/strict";
+-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
++import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+ import os from "node:os";
+ import path from "node:path";
+ import test from "node:test";
+ import { fileURLToPath } from "node:url";
+ import {
++  aliasesFrom,
+   collectedUnder,
+   describeAppImports,
+   describeCwdRelativeReads,
+   describeDifference,
+   describeProofRun,
++  firstAliasMatch,
++  describeAliasOrder,
++  describeUnaliasedImports,
+   pickProofFile,
++  reachableBareImports,
++  resolvePackageImport,
+   sourceFilesOnDisk,
+   testFilesOnDisk,
+ } from "./package-test-files.mjs";
+@@ -298,3 +304,186 @@ test("describeProofRun matches when one side reaches the file through a symlink"
+   assert.equal(describeProofRun(report, realFile, realDir), "");
+   assert.equal(describeProofRun({ ...report, testResults: [{ name: realFile }] }, viaLink, linkDir), "");
+ });
++
++test("aliasesFrom reads every key of the resolve.alias block, and what it serves", () => {
++  const config = [
++    "export default defineConfig({",
++    "  resolve: {",
++    '    alias: {',
++    '      "@evener/appwire-client/docContent": path.join(dir, "docContent.ts"),',
++    '      react: path.join(__dirname, "node_modules", "react"),',
++    "      // a comment between entries",
++    '      typescript: path.join(__dirname, "node_modules", "typescript"),',
++    "    },",
++    "  },",
++    "});",
++  ].join("\n");
++  const aliases = aliasesFrom(config);
++  assert.deepEqual([...aliases.keys()].sort(), ["@evener/appwire-client/docContent", "react", "typescript"]);
++  // A file target answers its own specifier and nothing below it; a directory
++  // target answers both.
++  assert.equal(aliases.get("@evener/appwire-client/docContent").servesSubpaths, false);
++  assert.equal(aliases.get("react").servesSubpaths, true);
++  assert.equal(aliases.get("typescript").servesSubpaths, true);
++});
++
++test("the package root does not stand in for a specifier below it", () => {
++  // The root alias points at index.ts. Vite would build
++  // index.ts/testing/fakeClient, which is not a path, so accepting the root
++  // as a prefix match said an unresolvable import was aliased.
++  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
++  assert.match(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client"])), /does not alias/);
++  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing"])), "");
++  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing/fakeClient"])), "");
++});
++
++test("with the config's targets in hand, a directory alias serves subpaths and a file alias does not", () => {
++  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
++  const asFile = new Map([["@evener/appwire-client", { servesSubpaths: false }]]);
++  const asDirectory = new Map([["@evener/appwire-client", { servesSubpaths: true }]]);
++  assert.match(describeUnaliasedImports(subpath, asFile), /does not alias/);
++  assert.equal(describeUnaliasedImports(subpath, asDirectory), "");
++});
++
++test("reachableBareImports follows relative imports and stops at bare ones", () => {
++  const files = {
++    "/pkg/a.test.ts": 'import { helper } from "./helper";\nimport { expect } from "vitest";\n',
++    "/pkg/helper.ts": 'import ts from "typescript";\nimport { readFileSync } from "node:fs";\n',
++    // Not reachable from any test: the runner's own tooling.
++    "/pkg/scripts/qualify.mjs": 'import { WebSocketServer } from "ws";\n',
++  };
++  const bare = reachableBareImports(
++    ["/pkg/a.test.ts"],
++    (file) => files[file],
++    (from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
++    "/pkg",
++  );
++  assert.deepEqual([...bare.keys()].sort(), ["typescript", "vitest"]);
++  assert.deepEqual(bare.get("typescript"), ["helper.ts"]);
++});
++
++test("describeUnaliasedImports excuses vitest and anything the config aliases", () => {
++  const bare = new Map([
++    ["vitest", ["a.test.ts"]],
++    ["react", ["b.test.tsx"]],
++    ["@testing-library/react", ["b.test.tsx"]],
++  ]);
++  assert.equal(describeUnaliasedImports(bare, new Set(["react", "@testing-library/react"])), "");
++});
++
++test("describeUnaliasedImports names the specifier and the file that imports it", () => {
++  const bare = new Map([["typescript", ["scripts/consumer-value-imports.mjs"]]]);
++  const problem = describeUnaliasedImports(bare, new Set(["react"]));
++  assert.match(problem, /typescript, imported by scripts\/consumer-value-imports\.mjs/);
++  assert.match(problem, /CI's web job/);
++});
++
++test("describeUnaliasedImports matches a subpath against a package alias that serves one", () => {
++  const bare = new Map([["@testing-library/react/pure", ["b.test.tsx"]]]);
++  assert.equal(describeUnaliasedImports(bare, new Map([["@testing-library/react", { servesSubpaths: true }]])), "");
++});
++
++test("resolvePackageImport answers a directory import with its index, not the directory", () => {
++  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-imports-"));
++  try {
++    mkdirSync(path.join(root, "helpers"));
++    writeFileSync(path.join(root, "helpers", "index.ts"), 'import ts from "typescript";\n');
++    writeFileSync(path.join(root, "a.test.ts"), 'import { helper } from "./helpers";\n');
++    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./helpers"), path.join(root, "helpers", "index.ts"));
++
++    // The crash this guards: the walk reads whatever the resolver hands back.
++    const bare = reachableBareImports(
++      [path.join(root, "a.test.ts")],
++      (file) => readFileSync(file, "utf8"),
++      resolvePackageImport,
++      root,
++    );
++    assert.deepEqual([...bare.keys()], ["typescript"]);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("resolvePackageImport probes index for every extension it was asked about", () => {
++  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-index-"));
++  try {
++    mkdirSync(path.join(root, "tools"));
++    writeFileSync(path.join(root, "tools", "index.mjs"), "export const x = 1;\n");
++    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./tools"), path.join(root, "tools", "index.mjs"));
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a subpath alias satisfies its own specifier without the root being aliased too", () => {
++  // Reading only the first two segments looked for "@evener/appwire-client",
++  // so a tree aliasing just the testing subpath reported a false offender.
++  const bare = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
++  assert.equal(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/testing"])), "");
++  assert.match(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/other"])), /does not alias/);
++});
++
++test("an erased import does not demand an alias", () => {
++  // `import type X from "pkg"` is gone before Vite resolves anything, so a
++  // package test that only names a dependency that way needs no alias entry.
++  const files = {
++    "/pkg/a.test.ts": 'import type { Program } from "typescript";\nexport type P = Program;\n',
++  };
++  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
++  assert.deepEqual([...bare.keys()], []);
++});
++
++test("an import that mixes a value member with a type one still demands its alias", () => {
++  const files = {
++    "/pkg/a.test.ts": 'import ts, { type Program } from "typescript";\nvoid ts;\nexport type P = Program;\n',
++  };
++  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
++  assert.deepEqual([...bare.keys()], ["typescript"]);
++});
++
++test("the walk does not follow an erased relative import either", () => {
++  const files = {
++    "/pkg/a.test.ts": 'import type { Helper } from "./helper";\nexport type H = Helper;\n',
++    "/pkg/helper.ts": 'import ts from "typescript";\nvoid ts;\n',
++  };
++  const bare = reachableBareImports(
++    ["/pkg/a.test.ts"],
++    (file) => files[file],
++    (_from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
++    "/pkg",
++  );
++  assert.deepEqual([...bare.keys()], []);
++});
++
++test("the alias Vite uses is the first that matches, in config order", () => {
++  const ordered = new Map([
++    ["@evener/appwire-client/docContent", { servesSubpaths: false }],
++    ["@evener/appwire-client/testing", { servesSubpaths: true }],
++    ["@evener/appwire-client", { servesSubpaths: false }],
++  ]);
++  assert.equal(firstAliasMatch("@evener/appwire-client/docContent", ordered), "@evener/appwire-client/docContent");
++  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", ordered), "@evener/appwire-client/testing");
++  assert.equal(firstAliasMatch("@evener/appwire-client", ordered), "@evener/appwire-client");
++});
++
++test("a general key placed before a specific one is refused by name", () => {
++  const reordered = new Map([
++    ["@evener/appwire-client", { servesSubpaths: true }],
++    ["@evener/appwire-client/testing", { servesSubpaths: true }],
++  ]);
++  const problem = describeAliasOrder(reordered);
++  assert.match(problem, /@evener\/appwire-client precedes @evener\/appwire-client\/testing, which it swallows/);
++  assert.match(problem, /takes the FIRST matching alias/);
++  // And with that root entry serving subpaths, first-match really does answer
++  // the testing specifier with the root -- which is the harm the order rule
++  // exists to prevent.
++  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", reordered), "@evener/appwire-client");
++});
++
++test("the real config is ordered specific before general", () => {
++  const config = readFileSync(
++    path.resolve(fileURLToPath(import.meta.url), "../../vite.config.ts"),
++    "utf8",
++  );
++  assert.equal(describeAliasOrder(aliasesFrom(config)), "");
++});
+diff --git a/cmd/evener-hub/frontend/scripts/rewrite-package-imports.test.mjs b/cmd/evener-hub/frontend/scripts/rewrite-package-imports.test.mjs
+new file mode 100644
+index 000000000..24cf24388
+--- /dev/null
++++ b/cmd/evener-hub/frontend/scripts/rewrite-package-imports.test.mjs
+@@ -0,0 +1,400 @@
++// Tests for ../../../../scripts/sdk/rewrite-package-imports.mjs, the SDK
++// migration's import rewriter.
++//
++// It lives here, not beside the script, because it is the only test runner in
++// the repo that has what the script needs: the rewriter parses with TypeScript
++// out of this app's node_modules, and the root Go suite's CI lane installs no
++// dependency tree at all. `npm test` here already runs `node --test
++// scripts/*.test.mjs`, so this file needs no new gate wiring.
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import test from "node:test";
++import { fileURLToPath } from "node:url";
++
++const script = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk/rewrite-package-imports.mjs");
++
++// A minimal repo-shaped tree: the package with one root export and one
++// docContent export, plus whatever consumer files the case needs.
++function fixture(files) {
++  const root = mkdtempSync(path.join(os.tmpdir(), "evener-rewrite-imports-"));
++  const written = {
++    "appwire-client/typescript/index.ts":
++      'export { errorText } from "./errors";\nexport { alpha, beta, Thing } from "./model";\n',
++    "appwire-client/typescript/errors.ts":
++      "export function errorText() {\n  return '';\n}\nexport function internalOnly() {}\n",
++    // Thing is a class so one import can take it as a type and another as a
++    // value, which is how the same local name arrives spelled two ways.
++    "appwire-client/typescript/model.ts":
++      "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
++    "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
++    "appwire-client/typescript/testing/fakeClient.ts": "export class FakeClient {}\n",
++    ...files,
++  };
++  for (const [relative, contents] of Object.entries(written)) {
++    const full = path.join(root, relative);
++    mkdirSync(path.dirname(full), { recursive: true });
++    writeFileSync(full, contents);
++  }
++  return root;
++}
++
++function rewrite(root) {
++  try {
++    return { status: 0, output: execFileSync(process.execPath, [script, "--root", root], { encoding: "utf8" }) };
++  } catch (error) {
++    return { status: error.status, output: `${error.stdout ?? ""}${error.stderr ?? ""}` };
++  }
++}
++
++test("rewrites a relative import of the package onto the package name", () => {
++  const root = fixture({
++    "mobile/src/state.ts": 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /from "@evener\/appwire-client"/);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a symbol the package does not publish leaves every file untouched", () => {
++  // The refusal is in the LAST tree the sweep walks, behind a file in the
++  // first that rewrites cleanly. Writing as it went left that first file
++  // migrated and the run reporting "nothing was written".
++  const clean = 'import { errorText } from "../../../../appwire-client/typescript/errors";\nerrorText();\n';
++  const refused = 'import { internalOnly } from "../../appwire-client/typescript/errors";\ninternalOnly();\n';
++  const root = fixture({
++    "cmd/evener-hub/frontend/src/app.ts": clean,
++    "mobile/src/state.ts": refused,
++  });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /internalOnly/);
++    assert.match(run.output, /nothing was written/);
++    // This one resolves and would have been rewritten; it is the file a
++    // write-as-you-go sweep left migrated behind the refusal.
++    assert.equal(readFileSync(path.join(root, "cmd/evener-hub/frontend/src/app.ts"), "utf8"), clean);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), refused);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("the mobile-native/scripts tools are rewritten like every other consumer", () => {
++  // They were carved out while the premise held that tsx reads no tsconfig
++  // paths. It reads mobile-native/tsconfig.json, which simply had none.
++  const root = fixture({
++    "mobile-native/scripts/check-hub.mts":
++      'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(
++      readFileSync(path.join(root, "mobile-native/scripts/check-hub.mts"), "utf8"),
++      /from "@evener\/appwire-client"/,
++    );
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("--check reports what is left and writes nothing", () => {
++  const before = 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n';
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    let status = 0;
++    let output = "";
++    try {
++      output = execFileSync(process.execPath, [script, "--root", root, "--check"], { encoding: "utf8" });
++    } catch (error) {
++      status = error.status;
++      output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
++    }
++    assert.equal(status, 1);
++    assert.match(output, /still name a path/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("an inline type member and a value member of the same export merge to the value form", () => {
++  // Two statements that both land on the package root, naming one export two
++  // ways. Keyed by rendered text these survived as `{ type Thing, Thing }` --
++  // a duplicate identifier the tool itself introduced.
++  const root = fixture({
++    "mobile/src/state.ts": [
++      'import { type Thing } from "../../appwire-client/typescript/model";',
++      'import { Thing } from "../../appwire-client/typescript/model";',
++      "export const made: Thing = new Thing();",
++      "",
++    ].join("\n"),
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    const merged = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
++    assert.match(merged, /^import \{ Thing \} from "@evener\/appwire-client";$/m);
++    assert.doesNotMatch(merged, /type Thing/);
++    assert.equal(merged.match(/@evener\/appwire-client/g).length, 1);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("two exports behind one local alias are refused, not merged", () => {
++  const before = [
++    'import { alpha as shared } from "../../appwire-client/typescript/model";',
++    'import { beta as shared } from "../../appwire-client/typescript/model";',
++    "shared();",
++    "",
++  ].join("\n");
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /both imported as shared/);
++    assert.match(run.output, /nothing was written/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a backtick specifier is rewritten like a quoted one", () => {
++  // A specifier with nothing to interpolate is a different node kind carrying
++  // the same string, and a reader that only knows string literals skips it in
++  // silence -- leaving a path import behind the rewrite it was meant to make.
++  const root = fixture({
++    "mobile/src/state.ts": "const doc = await import(`../../appwire-client/typescript/docContent`);\nvoid doc;\n",
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(
++      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
++      /import\("@evener\/appwire-client\/docContent"\)/,
++    );
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a namespace import of a module the package does not publish is refused", () => {
++  const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /import-namespace of "errors"/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a namespace import of the one published subpath is rewritten", () => {
++  const root = fixture({
++    "mobile/src/state.ts": 'import * as doc from "../../appwire-client/typescript/docContent";\nvoid doc;\n',
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(
++      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
++      /from "@evener\/appwire-client\/docContent"/,
++    );
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("an import-equals require of the package is refused like any other whole-module site", () => {
++  const before = 'import errors = require("../../appwire-client/typescript/errors");\nvoid errors;\n';
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /require-equals of "errors"/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a whole-module site naming the package root is rewritten to the package name", () => {
++  // Both spellings resolve to index.ts, and the root is published: refusing
++  // them said otherwise.
++  for (const specifier of ["../../appwire-client/typescript", "../../appwire-client/typescript/index"]) {
++    const root = fixture({ "mobile/src/state.ts": `import * as pkg from "${specifier}";\nvoid pkg;\n` });
++    try {
++      const run = rewrite(root);
++      assert.equal(run.status, 0, `${specifier}: ${run.output}`);
++      assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /from "@evener\/appwire-client";/);
++    } finally {
++      rmSync(root, { recursive: true, force: true });
++    }
++  }
++});
++
++test("a whole-module site naming a module the package does not publish is still refused", () => {
++  const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /import-namespace of "errors"/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("an empty named import binds nothing, so it is refused", () => {
++  const before = 'import {} from "../../appwire-client/typescript/errors";\n';
++  const root = fixture({ "mobile/src/state.ts": before });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /empty named import of "errors"/);
++    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("export * as ns publishes the namespace, not the module's members", () => {
++  // Recursing into it said the root publishes alpha, beta and Thing, none of
++  // which a consumer can import from the root -- only `ns` can.
++  const index = 'export { errorText } from "./errors";\nexport * as ns from "./model";\n';
++
++  const named = fixture({
++    "appwire-client/typescript/index.ts": index,
++    "mobile/src/state.ts": 'import { alpha } from "../../appwire-client/typescript/model";\nalpha();\n',
++  });
++  try {
++    const run = rewrite(named);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /exports alpha, which @evener\/appwire-client does not publish/);
++  } finally {
++    rmSync(named, { recursive: true, force: true });
++  }
++
++  const namespace = fixture({
++    "appwire-client/typescript/index.ts": index,
++    "mobile/src/state.ts": 'import { ns } from "../../appwire-client/typescript/index";\nvoid ns;\n',
++  });
++  try {
++    assert.equal(rewrite(namespace).status, 0);
++    assert.match(
++      readFileSync(path.join(namespace, "mobile/src/state.ts"), "utf8"),
++      /import \{ ns \} from "@evener\/appwire-client";/,
++    );
++  } finally {
++    rmSync(namespace, { recursive: true, force: true });
++  }
++});
++
++test("a side-effect import of a published module is migrated, not refused", () => {
++  const root = fixture({
++    "mobile/src/state.ts": [
++      'import "../../appwire-client/typescript/index";',
++      'import "../../appwire-client/typescript/docContent";',
++      "",
++    ].join("\n"),
++  });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 0, run.output);
++    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
++    assert.match(after, /^import "@evener\/appwire-client";$/m);
++    assert.match(after, /^import "@evener\/appwire-client\/docContent";$/m);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a side-effect import of a module the package does not publish is still refused", () => {
++  const root = fixture({ "mobile/src/state.ts": 'import "../../appwire-client/typescript/errors";\n' });
++  try {
++    const run = rewrite(root);
++    assert.equal(run.status, 2);
++    assert.match(run.output, /import-side-effect of "errors"/);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a comment above a removed duplicate goes with it", () => {
++  const root = fixture({
++    "mobile/src/state.ts": [
++      'import { errorText } from "../../appwire-client/typescript/errors";',
++      "// about the second import, which is about to be merged away",
++      'import { alpha } from "../../appwire-client/typescript/model";',
++      "// about the code below, which stays",
++      "export const used = [errorText, alpha];",
++      "",
++    ].join("\n"),
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
++    assert.doesNotMatch(after, /about the second import/);
++    assert.match(after, /\/\/ about the code below, which stays\nexport const used/);
++    assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++// The bundlers resolve JavaScript beside TypeScript, so a .js consumer reaches
++// the package by the same relative path a .ts one does. The sweep walked only
++// the TypeScript extensions, which left such a file behind on every run.
++test("a JavaScript consumer is swept like a TypeScript one", () => {
++  const root = fixture({
++    "mobile-native/src/legacyScreen.js":
++      'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(
++      readFileSync(path.join(root, "mobile-native/src/legacyScreen.js"), "utf8"),
++      /from "@evener\/appwire-client"/,
++    );
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a testing import is validated against the testing module's exports, like the root", () => {
++  const root = fixture({
++    "mobile/src/state.ts":
++      'import { FakeClient } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClient();\n',
++  });
++  try {
++    assert.equal(rewrite(root).status, 0);
++    assert.match(
++      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
++      /from "@evener\/appwire-client\/testing\/fakeClient"/,
++    );
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test("a symbol the testing module does not publish is reported, not rewritten", () => {
++  const root = fixture({
++    "mobile/src/state.ts":
++      'import { FakeClientz } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClientz();\n',
++  });
++  try {
++    const result = rewrite(root);
++    assert.equal(result.status, 2);
++    assert.match(result.output, /FakeClientz/);
++    assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /typescript\/testing\/fakeClient/);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
+diff --git a/cmd/evener-hub/frontend/vite.config.ts b/cmd/evener-hub/frontend/vite.config.ts
+index e6e8e38d0..ee0113e8a 100644
+--- a/cmd/evener-hub/frontend/vite.config.ts
++++ b/cmd/evener-hub/frontend/vite.config.ts
+@@ -63,6 +63,13 @@ export default defineConfig({
+       // one fails loudly here rather than resolving to a second copy.
+       "@testing-library/react": path.join(__dirname, "node_modules", "@testing-library", "react"),
+       react: path.join(__dirname, "node_modules", "react"),
++      // The package has its own node_modules once `npm ci --prefix
++      // appwire-client/typescript` has run for `make test-api-package`, and
++      // typescript is one of its devDependencies - so locally this alias looks
++      // redundant and CI's web job, which installs only this app, fails
++      // without it. scripts/package-test-files.mjs now holds every bare
++      // specifier in the package's test graph against the keys of this block.
++      typescript: path.join(__dirname, "node_modules", "typescript"),
+     },
+   },
+   server: {
+diff --git a/docs/developing-evener/linting.md b/docs/developing-evener/linting.md
+index 01daab0ac..5ec0c9b80 100644
+--- a/docs/developing-evener/linting.md
++++ b/docs/developing-evener/linting.md
+@@ -3,8 +3,8 @@
+ Static checks that gate merges without running tests: formatting, generated-
+ output freshness, compile floors, and the repo secret scan. `make lint` is
+ `LINT_TARGETS`: `lint-naming`, `lint-gofmt`, `lint-evenerfuzz`, `lint-eval`,
+-`lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`, and
+-`secret-scan`. Every one of them is required CI.
++`lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`,
++`lint-package-imports`, and `secret-scan`. Every one of them is required CI.
+ 
+ `golangci-lint` and `gitleaks` are the only external tools the gate needs;
+ `make tools` installs the CI-pinned versions from `.tool-versions`. They
+@@ -138,5 +138,6 @@ user's global golangci-lint cache or sibling worktrees.
+ | `make lint-gofmt` | Keep every tracked Go source formatter-clean, including the tagged evenerfuzz/eval files golangci-lint's own gofmt pass never compiles. | `gofmt -l` reports nothing for any tracked .go file, tagged or not. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | Any tracked .go file is not gofmt-clean. |
+ | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs and the six docs/developing-evener/ target tables. | docs/appwire-protocol.md, the generated TypeScript protocol types, and the marked target-table regions in docs/developing-evener/'s six family docs all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
+ | `make lint-fuzz-registry` | Wrap `make fuzz-registry-check` so a fuzz target that lands without its registry row fails the required gate instead of sitting undetected. | Every native/Rapid fuzz target in the manifest (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace declarations. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond the Go toolchain; static AST analysis only. | A discovered fuzz target has no registry row, or a registry row has no discovered target. |
+-| `make lint` | Go lint, formatting, tagged floors, generated outputs, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks. | Any member of LINT_TARGETS exits nonzero. |
++| `make lint-package-imports` | Fail if a web or native import names the AppWire TypeScript package by path instead of by its package name. | Every import specifier under cmd/evener-hub/frontend/src, mobile-native and mobile/src spells the package @evener/appwire-client (or one of its two in-repo subpaths), with no file exempt but the resolver configs, which are named one by one. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond a POSIX shell and grep. | Any import specifier in those trees names the package directory or the protocol/ directory it moved out of, or a swept tree is missing. |
++| `make lint` | Go lint, formatting, tagged floors, generated outputs, imports, and secrets. | TOML naming; gofmt over every tracked .go file; the evenerfuzz and eval compile floors; the internal-type check; golangci-lint across every workspace module; generated-output freshness; the fuzz registry check; that no web or native import names the AppWire TypeScript package by path; and the repo secret scan. | Required CI; local pre-merge. | golangci-lint, gitleaks. | Any member of LINT_TARGETS exits nonzero. |
+ <!-- END GENERATED -->
+diff --git a/docs/developing-evener/testing.md b/docs/developing-evener/testing.md
+index b69e54448..608f0b33c 100644
+--- a/docs/developing-evener/testing.md
++++ b/docs/developing-evener/testing.md
+@@ -1079,7 +1079,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for
+ | --- | --- | --- | --- | --- | --- |
+ | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
+ | `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, and the real transcript scroll/jump-to-latest path; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. The skill guard also needs the Go toolchain and the built frontend (built automatically when dist is missing). | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+-| `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, and the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider. | Bundling, native tests, shared-session tests or native typechecking fail. |
++| `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, shared-session tests, native typechecking, or script module resolution fail. |
+ | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
+ | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
+ | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
+diff --git a/make/linting.mk b/make/linting.mk
+index 4c8c20093..da72f7bcf 100644
+--- a/make/linting.mk
++++ b/make/linting.mk
+@@ -1,4 +1,4 @@
+-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-cache-clean secret-scan
++.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-cache-clean secret-scan
+ 
+ # secret-scan runs gitleaks over the whole working tree using the committed
+ # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
+@@ -209,13 +209,33 @@ lint-generated:
+ lint-fuzz-registry:
+ 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
+ 
+-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
++# lint-package-imports keeps the AppWire TypeScript package addressed by its
++# package name. A relative path into appwire-client/typescript/ typechecks and
++# bundles exactly as well as @evener/appwire-client, so nothing else in the
++# tree notices one reappearing - and each one is a line that has to be
++# rewritten again the next time the package moves, which is the coupling the
++# SDK migration exists to remove.
++## Fail if a web or native import names the AppWire TypeScript package by
++## path instead of by its package name.
++## proves: Every import specifier under cmd/evener-hub/frontend/src,
++##   mobile-native and mobile/src spells the package @evener/appwire-client
++##   (or one of its two in-repo subpaths), with no file exempt but the
++##   resolver configs, which are named one by one.
++## trigger: Required CI (via make lint); local pre-merge. Well under a second.
++## requires: None beyond a POSIX shell and grep.
++## fails-when: Any import specifier in those trees names the package directory
++##   or the protocol/ directory it moved out of, or a swept tree is missing.
++lint-package-imports:
++	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
+ 
+-## Go lint, formatting, tagged floors, generated outputs, and secrets.
++LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports secret-scan
++
++## Go lint, formatting, tagged floors, generated outputs, imports, and secrets.
+ ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
+ ##   eval compile floors; the internal-type check; golangci-lint across every
+ ##   workspace module; generated-output freshness; the fuzz registry check;
+-##   and the repo secret scan.
++##   that no web or native import names the AppWire TypeScript package by
++##   path; and the repo secret scan.
+ ## trigger: Required CI; local pre-merge.
+ ## requires: golangci-lint, gitleaks.
+ ## fails-when: Any member of LINT_TARGETS exits nonzero.
+diff --git a/make/testing.mk b/make/testing.mk
+index ed5ad28a1..7073e560d 100644
+--- a/make/testing.mk
++++ b/make/testing.mk
+@@ -40,17 +40,26 @@ test-web: web-preflight
+ test-web-browser: web-preflight
+ 	@scripts/web/test-web-browser.sh
+ 
++# check:scripts is separate from check because they answer different questions
++# with different resolvers. `tsc --noEmit` reads tsconfig.check.json and proves
++# the types line up; check:scripts asks Node's own resolver, through tsx, the
++# only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
++# can still load their module graph. The scripts run under no gate, so nothing
++# noticed when they stopped resolving.
+ ## The native iPhone app and its shared session core gate.
+-## proves: Metro bundles the real iOS entry point, and the native and
++## proves: Metro bundles the real iOS entry point, the native and
+ ##   shared-session Vitest suites plus strict native TypeScript compilation
+-##   pass against the checked-in Expo/React Native sources.
++##   pass against the checked-in Expo/React Native sources, and the hand-run
++##   scripts/*.mts tools still resolve their module graph under tsx.
+ ## trigger: Native CI; local pre-merge when native or shared mobile sources change.
+ ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
+-##   does not contact a hub or provider.
+-## fails-when: Bundling, native tests, shared-session tests or native
+-##   typechecking fail.
++##   does not contact a hub or provider - script resolution is checked without
++##   loading anything, since every one of those scripts opens a socket the
++##   moment its body runs.
++## fails-when: Bundling, native tests, shared-session tests, native
++##   typechecking, or script module resolution fail.
+ test-native: test-native-bundle
+-	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check
++	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
+ 
+ # The only gate that runs Metro. Vitest resolves through Vite and `tsc` through
+ # TypeScript's own resolver; neither reads metro.config.js, so a resolver
+diff --git a/mobile-native/metro.config.js b/mobile-native/metro.config.js
+index edb6893fe..ee0a17fc0 100644
+--- a/mobile-native/metro.config.js
++++ b/mobile-native/metro.config.js
+@@ -1,3 +1,4 @@
++const fs = require("node:fs");
+ const path = require("node:path");
+ const { getDefaultConfig } = require("expo/metro-config");
+ const config = getDefaultConfig(__dirname);
+@@ -21,16 +22,22 @@ config.resolver.resolveRequest = (context, name, platform) => {
+ 			path.join(root, "cmd", "evener-hub", "frontend", "src"),
+ 		) ||
+ 		context.originModulePath.startsWith(appwirePackage);
+-	// src/connection.ts imports by this name, so the exported graph reaches this
+-	// branch and `make test-native-bundle` fails when it breaks. SDK A4 rewrites
+-	// the rest of the native tree's relative paths to the same name; that one
+-	// site is here so the gate is not proving a branch nothing uses.
++	// Every native import of the package comes through here -- the whole tree
++	// spells it by name now -- and `make test-native-bundle` is what exercises
++	// it: vitest resolves the name through this app's vitest config and `tsc`
++	// through tsconfig.check.json's paths, so a break in this branch passes
++	// both and would otherwise surface first on a device.
+ 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
+ 		const subpath = name.slice(appwireName.length).replace(/^\//, "");
+-		return {
+-			type: "sourceFile",
+-			filePath: path.join(appwirePackage, `${subpath || "index"}.ts`),
+-		};
++		const filePath = path.join(appwirePackage, `${subpath || "index"}.ts`);
++		// A subpath the package does not have falls through rather than
++		// resolving to a file that is not there: Metro's own "unable to
++		// resolve" names the specifier and the import stack, where a missing
++		// sourceFile surfaces later as a read error against a path the author
++		// never wrote.
++		if (fs.existsSync(filePath)) {
++			return { type: "sourceFile", filePath };
++		}
+ 	}
+ 	const originModulePath =
+ 		shared && !name.startsWith(".") && !path.isAbsolute(name)
+diff --git a/packageimportpaths_audit_test.go b/packageimportpaths_audit_test.go
+new file mode 100644
+index 000000000..ce718bf8f
+--- /dev/null
++++ b/packageimportpaths_audit_test.go
+@@ -0,0 +1,465 @@
++package evener_test
++
++import (
++	"encoding/json"
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"runtime"
++	"slices"
++	"sort"
++	"strings"
++	"testing"
++)
++
++// scripts/sdk/package-import-paths-check.sh is the gate that keeps the AppWire
++// TypeScript package addressed by name. Its whole job is a negative -- finding
++// a spelling nothing else in the tree would notice -- so it needs fixtures
++// that carry each spelling, or it is a gate that could not fail.
++//
++// The fixtures are trees, not strings: the script sweeps three directories
++// whole, and the only thing it does not read is a resolver config named by
++// filename, so where a line sits decides the verdict as much as what it says.
++
++// packageImportFixture writes files (repo-relative path -> contents) into a new
++// temporary tree and returns its root.
++func packageImportFixture(t *testing.T, files map[string]string) string {
++	t.Helper()
++	root := t.TempDir()
++	for path, contents := range files {
++		full := filepath.Join(root, filepath.FromSlash(path))
++		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
++			t.Fatalf("mkdir for %s: %v", path, err)
++		}
++		if err := os.WriteFile(full, []byte(contents), 0o644); err != nil {
++			t.Fatalf("write %s: %v", path, err)
++		}
++	}
++	return root
++}
++
++// runPackageImportCheck runs the gate against root and reports whether it
++// passed, along with everything it printed.
++func runPackageImportCheck(t *testing.T, root string) (bool, string) {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("scripts/sdk/package-import-paths-check.sh requires a Unix shell")
++	}
++	for _, tool := range []string{"bash", "grep"} {
++		if _, err := exec.LookPath(tool); err != nil {
++			t.Skipf("%s is not on PATH: %v", tool, err)
++		}
++	}
++	wd, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("getwd: %v", err)
++	}
++	script := filepath.Join(wd, "scripts", "sdk", "package-import-paths-check.sh")
++	output, err := exec.Command("bash", script, "--root", root).CombinedOutput()
++	if err != nil {
++		exitErr := &exec.ExitError{}
++		if !errors.As(err, &exitErr) {
++			t.Fatalf("running %s: %v", script, err)
++		}
++		return false, string(output)
++	}
++	return true, string(output)
++}
++
++// A tree where nothing names the package by path -- the scripts/*.mts tools
++// included -- alongside the one spelling that is allowed to: the resolver
++// config that maps the name onto the path in the first place.
++func cleanPackageImportTree() map[string]string {
++	return map[string]string{
++		"cmd/evener-hub/frontend/src/app.ts":  "import { WireError } from \"@evener/appwire-client\";\n",
++		"mobile-native/src/screen.tsx":        "import { AppwireClient } from \"@evener/appwire-client\";\n",
++		"mobile/src/state.ts":                 "import { hasItemFailure } from \"@evener/appwire-client\";\n",
++		"mobile-native/scripts/check-hub.mts": "import type { WebSocketLike } from \"@evener/appwire-client\";\n",
++		"mobile-native/vitest.config.mts":     "const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n",
++	}
++}
++
++func TestPackageImportPathsCheckPassesACleanTree(t *testing.T) {
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, cleanPackageImportTree()))
++	if !passed {
++		t.Fatalf("the clean fixture must pass; the gate said:\n%s", output)
++	}
++}
++
++// Each case is one spelling that reaches the package by path. Four of them --
++// the vitest mocking helpers, single quotes, and the package directory named
++// without a trailing slash -- bypassed the gate's first implementation, which
++// matched only double-quoted specifiers after from/import/require.
++func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
++	for _, testCase := range []struct {
++		name    string
++		path    string
++		line    string
++		expects string
++	}{
++		{
++			name:    "relative import of the package directory",
++			path:    "mobile/src/state.ts",
++			line:    "import type { WireError } from \"../../appwire-client/typescript/errors\";\n",
++			expects: "by path",
++		},
++		{
++			name:    "the old relative protocol specifier inside the web tree",
++			path:    "cmd/evener-hub/frontend/src/app.ts",
++			line:    "import type { WireError } from \"./protocol/errors\";\n",
++			expects: "by path",
++		},
++		{
++			name:    "the directory the package moved out of",
++			path:    "mobile-native/scripts/check-hub.mts",
++			line:    "import type { W } from \"../../cmd/evener-hub/frontend/src/protocol/transport\";\n",
++			expects: "no longer exists",
++		},
++		{
++			name:    "vi.mock naming the seam",
++			path:    "cmd/evener-hub/frontend/src/app.test.ts",
++			line:    "vi.mock(\"../../protocol/reducer\", () => ({}));\n",
++			expects: "by path",
++		},
++		{
++			name:    "vi.importActual naming the seam",
++			path:    "cmd/evener-hub/frontend/src/app.test.ts",
++			line:    "const actual = await vi.importActual(\"../../protocol/reducer\");\n",
++			expects: "by path",
++		},
++		{
++			name:    "a specifier on the line after the call that opens it",
++			path:    "cmd/evener-hub/frontend/src/app.test.ts",
++			line:    "vi.mock(\n\t\"../../protocol/reducer\",\n\t() => ({}),\n);\n",
++			expects: "by path",
++		},
++		{
++			name:    "a backtick specifier with nothing to interpolate",
++			path:    "cmd/evener-hub/frontend/src/app.test.ts",
++			line:    "vi.mock(`../../protocol/reducer`, () => ({}));\n",
++			expects: "by path",
++		},
++		{
++			name:    "a single-quoted specifier",
++			path:    "cmd/evener-hub/frontend/src/app.ts",
++			line:    "import { errorText } from '../../protocol/errors';\n",
++			expects: "by path",
++		},
++		{
++			name:    "the package directory with no trailing slash",
++			path:    "mobile-native/src/screen.tsx",
++			line:    "import { AppwireClient } from \"../../appwire-client/typescript\";\n",
++			expects: "by path",
++		},
++		{
++			name:    "the seam directory itself, with the quote right after it",
++			path:    "cmd/evener-hub/frontend/src/app.ts",
++			line:    "import { errorText } from \"../protocol\";\n",
++			expects: "by path",
++		},
++	} {
++		t.Run(testCase.name, func(t *testing.T) {
++			files := cleanPackageImportTree()
++			files[testCase.path] = testCase.line
++			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++			if passed {
++				t.Fatalf("the gate passed a tree containing %s\n  %s", testCase.path, testCase.line)
++			}
++			if !strings.Contains(output, testCase.expects) {
++				t.Fatalf("the gate failed for the wrong reason; wanted %q in:\n%s", testCase.expects, output)
++			}
++			if !strings.Contains(output, testCase.path) {
++				t.Fatalf("the gate named no offending file; wanted %q in:\n%s", testCase.path, output)
++			}
++		})
++	}
++}
++
++// The word "protocol" appears in this app as a terminal-reason literal and
++// inside @modelcontextprotocol specifiers. Matching it there would make the
++// gate fire on code that has nothing to do with the package.
++func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
++	files := cleanPackageImportTree()
++	files["cmd/evener-hub/frontend/src/banner.ts"] = strings.Join([]string{
++		"import { spawn } from \"@modelcontextprotocol/server-everything\";",
++		"setClosedReason(\"protocol\");",
++		"// The moved profile lives in appwire-client/typescript/tokenFlood.bench.ts.",
++		"",
++	}, "\n")
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if !passed {
++		t.Fatalf("the gate fired on a tree that never names the package by path:\n%s", output)
++	}
++}
++
++// A tree that is not there sweeps nothing and says nothing, which reads as a
++// pass. The gate has to refuse to run instead.
++func TestPackageImportPathsCheckRefusesAMissingTree(t *testing.T) {
++	for _, missing := range []string{"cmd/evener-hub/frontend/src", "mobile-native", "mobile/src"} {
++		t.Run(missing, func(t *testing.T) {
++			files := cleanPackageImportTree()
++			for path := range files {
++				if strings.HasPrefix(path, missing+"/") {
++					delete(files, path)
++				}
++			}
++			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++			if passed {
++				t.Fatalf("the gate passed a tree with no %s:\n%s", missing, output)
++			}
++			if !strings.Contains(output, "does not exist") {
++				t.Fatalf("the gate failed for the wrong reason; wanted a missing-tree message in:\n%s", output)
++			}
++		})
++	}
++}
++
++// `cd ""` succeeds and changes nothing, so an empty --root once swept whatever
++// directory the caller was in and reported on a tree nobody asked about.
++func TestPackageImportPathsCheckRefusesAnUnusableRoot(t *testing.T) {
++	for name, root := range map[string]string{"empty": "", "missing": filepath.Join(t.TempDir(), "absent")} {
++		t.Run(name, func(t *testing.T) {
++			passed, output := runPackageImportCheck(t, root)
++			if passed {
++				t.Fatalf("the gate passed with a %s --root:\n%s", name, output)
++			}
++		})
++	}
++}
++
++// The resolver-config exemption is by filename. Matching *.config.* instead
++// would excuse any app module someone happened to call something.config.ts.
++func TestPackageImportPathsCheckExemptsResolverConfigsByName(t *testing.T) {
++	files := cleanPackageImportTree()
++	files["cmd/evener-hub/frontend/src/panes/spawn/launch.config.ts"] =
++		"import { errorText } from \"../../../protocol/errors\";\n"
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if passed {
++		t.Fatalf("the gate excused an app module for being named like a config:\n%s", output)
++	}
++	if !strings.Contains(output, "launch.config.ts") {
++		t.Fatalf("the gate named no offending file; wanted launch.config.ts in:\n%s", output)
++	}
++}
++
++// specifierForm is one way a source file can name a module, as
++// scripts/sdk/module-specifier-forms.json spells it. The AST reader's own
++// tests walk the same file.
++type specifierForm struct {
++	Name   string `json:"name"`
++	Kind   string `json:"kind"`
++	Source string `json:"source"`
++}
++
++func loadSpecifierForms(t *testing.T) []specifierForm {
++	t.Helper()
++	wd, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("getwd: %v", err)
++	}
++	raw, err := os.ReadFile(filepath.Join(wd, "scripts", "sdk", "module-specifier-forms.json"))
++	if err != nil {
++		t.Fatalf("reading the shared form list: %v", err)
++	}
++	var forms []specifierForm
++	if err := json.Unmarshal(raw, &forms); err != nil {
++		t.Fatalf("parsing the shared form list: %v", err)
++	}
++	if len(forms) == 0 {
++		t.Fatal("the shared form list is empty; this audit would be measuring nothing")
++	}
++	return forms
++}
++
++// The gate is a grep and the rewriter is a TypeScript AST reader, so they
++// answer the same question in two languages and drifted apart form by form --
++// a backtick specifier, a vi.mock, a specifier on the line after its call.
++// They read one list of forms now, and this is the half that holds the grep to
++// it: every form the AST reader recognizes must also be a form the gate
++// catches, or a path import can be rewritten-but-unguarded again.
++func TestPackageImportPathsCheckCatchesEveryFormTheReaderKnows(t *testing.T) {
++	for _, form := range loadSpecifierForms(t) {
++		t.Run(form.Name, func(t *testing.T) {
++			files := cleanPackageImportTree()
++			files["mobile/src/probe.ts"] = strings.ReplaceAll(form.Source, "@@SPEC@@", "../../appwire-client/typescript/errors")
++			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++			if passed {
++				t.Fatalf("the gate passed a %s naming the package by path:\n%s", form.Name, form.Source)
++			}
++			if !strings.Contains(output, "mobile/src/probe.ts") {
++				t.Fatalf("the gate named no offending file:\n%s", output)
++			}
++		})
++	}
++}
++
++// The resolver-config exemption is by exact filename: a glob over
++// vitest.config.* also excused a vitest.config.extra.ts, which is not one.
++func TestPackageImportPathsCheckExemptsOnlyTheResolverConfigsThatExist(t *testing.T) {
++	files := cleanPackageImportTree()
++	// A real import, not a new URL(): the sweep reads module loaders only, so
++	// the fixture has to be one for this to be about the exemption.
++	files["mobile-native/vitest.config.extra.ts"] =
++		"import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if passed {
++		t.Fatalf("the gate excused a file for being named like a resolver config:\n%s", output)
++	}
++	if !strings.Contains(output, "vitest.config.extra.ts") {
++		t.Fatalf("the gate named no offending file:\n%s", output)
++	}
++}
++
++// Metro and Vite resolve JavaScript beside TypeScript, so a .js module in
++// these trees reaches the package by path exactly as a .ts one does and
++// bundles the same. The sweep's --include list named only the TypeScript
++// extensions, which left every one of these invisible to it.
++func TestPackageImportPathsCheckSweepsEveryExtensionTheBundlersResolve(t *testing.T) {
++	for _, file := range []string{
++		"mobile-native/src/legacyScreen.js",
++		"mobile-native/src/legacyScreen.jsx",
++		"mobile-native/scripts/seed.cjs",
++		"mobile-native/scripts/seed.mjs",
++		"mobile/src/legacyState.cts",
++		"cmd/evener-hub/frontend/src/legacyBridge.js",
++	} {
++		t.Run(file, func(t *testing.T) {
++			files := cleanPackageImportTree()
++			files[file] = "import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
++			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++			if passed {
++				t.Fatalf("the gate never read %s, so a path import there is free:\n%s", file, output)
++			}
++			if !strings.Contains(output, filepath.Base(file)) {
++				t.Fatalf("the gate named no offending file; wanted %s in:\n%s", file, output)
++			}
++		})
++	}
++}
++
++// Widening the sweep to JavaScript brings metro.config.js inside it. Mapping
++// the package name onto its path is the whole job of a resolver config, so the
++// exemption has to still hold for the one file the wider sweep newly reaches.
++func TestPackageImportPathsCheckStillExemptsTheJavaScriptResolverConfig(t *testing.T) {
++	files := cleanPackageImportTree()
++	files["mobile-native/metro.config.js"] =
++		"const appwire = require(\"../appwire-client/typescript/index.ts\");\nmodule.exports = appwire;\n"
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if !passed {
++		t.Fatalf("the gate faulted the resolver config for naming the path it exists to map:\n%s", output)
++	}
++}
++
++// The exemption is by the exact path grep prints, not the basename. A basename
++// match excused every metro.config.js anywhere -- including an app file a tree
++// happened to name that way in a subdirectory, which is ordinary source that
++// must not reach the package by path.
++func TestPackageImportPathsCheckExemptsResolverConfigsByPathNotBasename(t *testing.T) {
++	files := cleanPackageImportTree()
++	files["cmd/evener-hub/frontend/src/metro.config.js"] =
++		"const appwire = require(\"../../appwire-client/typescript/index.ts\");\nmodule.exports = appwire;\n"
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if passed {
++		t.Fatalf("the gate excused an app file for sharing a resolver config's basename:\n%s", output)
++	}
++	if !strings.Contains(output, "src/metro.config.js") {
++		t.Fatalf("the gate named no offending file; wanted src/metro.config.js in:\n%s", output)
++	}
++}
++
++// The sweep reads module LOADERS. An earlier pattern accepted any identifier
++// before a parenthesis, which made an ordinary call carrying the package path
++// -- reading a fixture file, building a URL -- a failure of a gate about
++// imports.
++func TestPackageImportPathsCheckIgnoresCallsThatLoadNothing(t *testing.T) {
++	files := cleanPackageImportTree()
++	files["mobile-native/src/fixtures.ts"] = strings.Join([]string{
++		`const raw = readFileSync("../../appwire-client/typescript/fixtures/thread.jsonl", "utf8");`,
++		`const url = new URL("../../appwire-client/typescript/docContent.ts", import.meta.url);`,
++		`expect(thing).toThrow("../../appwire-client/typescript/errors");`,
++		"",
++	}, "\n")
++	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
++	if !passed {
++		t.Fatalf("the gate fired on calls that load nothing:\n%s", output)
++	}
++}
++
++// The gate is a grep and the reader is a TypeScript AST walk, and each carries
++// its own list of the calls that take a module specifier. They are compared
++// here rather than trusted to stay equal: a loader added to one and not the
++// other is either a form the gate stops catching or a call it starts flagging.
++func TestPackageImportPathsCheckKnowsTheSameLoaderCallsAsTheReader(t *testing.T) {
++	wd, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("getwd: %v", err)
++	}
++	read := func(rel string) string {
++		raw, readErr := os.ReadFile(filepath.Join(wd, rel))
++		if readErr != nil {
++			t.Fatalf("reading %s: %v", rel, readErr)
++		}
++		return string(raw)
++	}
++	names := func(source, pattern string) []string {
++		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
++		if match == nil {
++			t.Fatalf("no loader-call list found with %q", pattern)
++		}
++		found := regexp.MustCompile(`[A-Za-z]+`).FindAllString(match[1], -1)
++		sort.Strings(found)
++		return found
++	}
++	gate := names(read(filepath.Join("scripts", "sdk", "package-import-paths-check.sh")), `(?m)^mock_calls='([^']*)'`)
++	reader := names(read(filepath.Join("scripts", "sdk", "module-specifiers.mjs")), `MOCK_CALLS = new Set\(\[([^\]]*)\]`)
++	if !slices.Equal(gate, reader) {
++		t.Fatalf("the gate knows %v and the reader knows %v; they have to be the same calls", gate, reader)
++	}
++}
++
++// The grep gate is a shell script, so it cannot import the shared extension and
++// skipped-directory lists the rewriter and the value-import derivation read
++// from scripts/sdk/source-files.mjs -- it carries its own copy in bash arrays.
++// An extension one sweeps and the other skips, or a directory one descends and
++// the other does not, is a file that reaches the package by path in one of
++// them silently, so the two encodings are asserted equal here.
++func TestPackageImportPathsCheckSweepsTheSharedExtensionsAndSkipsTheSharedDirs(t *testing.T) {
++	wd, err := os.Getwd()
++	if err != nil {
++		t.Fatalf("getwd: %v", err)
++	}
++	read := func(rel string) string {
++		raw, readErr := os.ReadFile(filepath.Join(wd, rel))
++		if readErr != nil {
++			t.Fatalf("reading %s: %v", rel, readErr)
++		}
++		return string(raw)
++	}
++	tokens := func(source, pattern string) []string {
++		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
++		if match == nil {
++			t.Fatalf("no list found with %q", pattern)
++		}
++		found := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`).FindAllString(match[1], -1)
++		sort.Strings(found)
++		return found
++	}
++	gate := read(filepath.Join("scripts", "sdk", "package-import-paths-check.sh"))
++	shared := read(filepath.Join("scripts", "sdk", "source-files.mjs"))
++
++	// The shell writes extensions without the leading dot; the JS list has it.
++	// Tokenizing to word characters drops the dot and the quotes from both.
++	gateExts := tokens(gate, `(?m)^extensions=\(([^)]*)\)`)
++	sharedExts := tokens(shared, `SOURCE_EXTENSIONS = \[([^\]]*)\]`)
++	if !slices.Equal(gateExts, sharedExts) {
++		t.Fatalf("the gate sweeps %v and the shared list is %v; they have to be the same extensions", gateExts, sharedExts)
++	}
++
++	gateDirs := tokens(gate, `(?m)^skip_dirs=\(([^)]*)\)`)
++	sharedDirs := tokens(shared, `SKIPPED_DIRS = new Set\(\[([^\]]*)\]`)
++	if !slices.Equal(gateDirs, sharedDirs) {
++		t.Fatalf("the gate skips %v and the shared list is %v; they have to be the same directories", gateDirs, sharedDirs)
++	}
++}
+diff --git a/scripts/sdk/module-specifier-forms.json b/scripts/sdk/module-specifier-forms.json
+new file mode 100644
+index 000000000..27445b6c7
+--- /dev/null
++++ b/scripts/sdk/module-specifier-forms.json
+@@ -0,0 +1,97 @@
++[
++  {
++    "name": "static named import",
++    "kind": "import-named",
++    "source": "import { errorText } from \"@@SPEC@@\";\nvoid errorText;\n"
++  },
++  {
++    "name": "static named import, single-quoted",
++    "kind": "import-named",
++    "source": "import { errorText } from '@@SPEC@@';\nvoid errorText;\n"
++  },
++  {
++    "name": "static named import, specifier on the next line",
++    "kind": "import-named",
++    "source": "import { errorText } from\n\t\"@@SPEC@@\";\nvoid errorText;\n"
++  },
++  {
++    "name": "namespace import",
++    "kind": "import-namespace",
++    "source": "import * as everything from \"@@SPEC@@\";\nvoid everything;\n"
++  },
++  {
++    "name": "default import",
++    "kind": "import-default",
++    "source": "import theDefault from \"@@SPEC@@\";\nvoid theDefault;\n"
++  },
++  {
++    "name": "side-effect import",
++    "kind": "import-side-effect",
++    "source": "import \"@@SPEC@@\";\n"
++  },
++  {
++    "name": "type-only import",
++    "kind": "import-named",
++    "source": "import type { WireError } from \"@@SPEC@@\";\nexport type Alias = WireError;\n"
++  },
++  {
++    "name": "named re-export",
++    "kind": "export-from",
++    "source": "export { errorText } from \"@@SPEC@@\";\n"
++  },
++  {
++    "name": "star re-export",
++    "kind": "export-star-from",
++    "source": "export * from \"@@SPEC@@\";\n"
++  },
++  {
++    "name": "dynamic import with a backtick specifier",
++    "kind": "dynamic-import",
++    "source": "const loaded = await import(`@@SPEC@@`);\nvoid loaded;\n"
++  },
++  {
++    "name": "require call",
++    "kind": "require",
++    "source": "const loaded = require(\"@@SPEC@@\");\nvoid loaded;\n"
++  },
++  {
++    "name": "vi.mock with the specifier on the next line",
++    "kind": "mock-call",
++    "source": "vi.mock(\n\t\"@@SPEC@@\",\n\t() => ({}),\n);\n"
++  },
++  {
++    "name": "vi.importActual call",
++    "kind": "mock-call",
++    "source": "const actual = await vi.importActual(\"@@SPEC@@\");\nvoid actual;\n"
++  },
++  {
++    "name": "inline import type node",
++    "kind": "import-named",
++    "source": "export type Alias = import(\"@@SPEC@@\").WireError;\n"
++  },
++  {
++    "name": "TypeScript import-equals require",
++    "kind": "require-equals",
++    "source": "import loaded = require(\"@@SPEC@@\");\nvoid loaded;\n"
++  },
++  {
++    "name": "side-effect import with no space before the specifier",
++    "kind": "import-side-effect",
++    "source": "import\"@@SPEC@@\";\n"
++  },
++  {
++    "name": "named import with no whitespace at all",
++    "kind": "import-named",
++    "source": "import{errorText}from\"@@SPEC@@\";\nvoid errorText;\n"
++  },
++  {
++    "name": "named re-export with no whitespace at all",
++    "kind": "export-from",
++    "source": "export{errorText}from\"@@SPEC@@\";\n"
++  },
++  {
++    "name": "namespace re-export",
++    "kind": "export-namespace-from",
++    "source": "export * as everything from \"@@SPEC@@\";\n"
++  }
++]
+diff --git a/scripts/sdk/module-specifiers.mjs b/scripts/sdk/module-specifiers.mjs
+new file mode 100644
+index 000000000..3247fe958
+--- /dev/null
++++ b/scripts/sdk/module-specifiers.mjs
+@@ -0,0 +1,179 @@
++// One reader for "where does this file name a module, and how".
++//
++// Five tools in this repo answer that question -- the SDK import rewriter, the
++// value-import derivation behind resolve-check.mjs, the package-test gate's
++// graph walk, the native scripts' resolution check, and (in its own way) the
++// grep gate. Each grew its own AST sweep, and each missed a different form: a
++// no-substitution template literal, a require(), a vi.mock(), a specifier on
++// the line after the call that opens it. A form nobody reads is a form that
++// slips past every one of them in silence, so they read from here instead.
++//
++// `ts` is a parameter rather than an import: these callers resolve TypeScript
++// from four different places (the frontend's node_modules, the package's own,
++// mobile-native's, and the frontend's again by Vite alias), and a bare import
++// here would pick the wrong one or none.
++
++// The call names that take a module specifier as their first argument and are
++// not `import`/`require`: vitest's and jest's mocking family.
++const MOCK_CALLS = new Set(["mock", "doMock", "unmock", "importActual", "importMock"]);
++
++// The ScriptKind the parser needs for each extension. It decides two things
++// that matter here: whether `<X>` opens JSX or a type assertion, and whether
++// TypeScript-only syntax is allowed at all. Guessing TS for everything but
++// .tsx dropped the specifiers nested in any .jsx file's JSX -- `<View>` read
++// as a type assertion, and the dynamic import in the markup went with the
++// derailed subtree. .tsx is TSX (JSX plus TypeScript); .jsx and the .js React
++// Native writes are JSX (JSX plus plain JavaScript, no type assertions to
++// collide with); .mjs/.cjs are plain JS; the rest is TypeScript.
++function scriptKindOf(ts, file) {
++  const extension = file.slice(file.lastIndexOf("."));
++  switch (extension) {
++    case ".tsx":
++      return ts.ScriptKind.TSX;
++    case ".jsx":
++    case ".js":
++      return ts.ScriptKind.JSX;
++    case ".mjs":
++    case ".cjs":
++      return ts.ScriptKind.JS;
++    default:
++      return ts.ScriptKind.TS;
++  }
++}
++
++export function parseSource(ts, file, text) {
++  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKindOf(ts, file));
++}
++
++function namedBindings(ts, elements) {
++  return elements.map((element) => ({
++    imported: (element.propertyName ?? element.name).text,
++    local: element.name.text,
++    typeOnly: Boolean(element.isTypeOnly),
++  }));
++}
++
++// Every site in `source` that names a module, in source order. Each carries:
++//
++//   node      the string-literal-like node holding the specifier, for edits
++//   text      the specifier itself
++//   kind      import-named | import-namespace | import-default | import-side-effect
++//             | export-from | export-namespace-from | export-star-from
++//             | dynamic-import | require
++//             | require-equals | mock-call
++//   typeOnly  the statement was `import type` / `export type`, so it is erased
++//   bindings  {imported, local, typeOnly} per named member; empty otherwise
++//
++// A default import that also has named members is reported as import-default,
++// with the default itself first in `bindings` under the name `default`: it is
++// the part nothing here can map, and a caller that refuses the kind never
++// reaches the rest.
++export function moduleSpecifierSites(ts, source) {
++  const sites = [];
++  const literal = (node) => (node && ts.isStringLiteralLike(node) ? node : null);
++  const visit = (node) => {
++    if (ts.isImportDeclaration(node)) {
++      const specifier = literal(node.moduleSpecifier);
++      if (specifier) {
++        const clause = node.importClause;
++        let kind = "import-side-effect";
++        let bindings = [];
++        if (clause) {
++          if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) kind = "import-namespace";
++          else if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
++            kind = "import-named";
++            bindings = namedBindings(ts, clause.namedBindings.elements);
++          }
++          if (clause.name) {
++            kind = "import-default";
++            // The default is a binding like any other, recorded rather than
++            // implied by the kind: `import def, { type T } from "x"` binds a
++            // runtime value, and a rule reading only the named members would
++            // call the whole statement erased.
++            bindings = [
++              { imported: "default", local: clause.name.text, typeOnly: Boolean(clause.isTypeOnly) },
++              ...bindings,
++            ];
++          }
++        }
++        sites.push({ node: specifier, text: specifier.text, kind, typeOnly: Boolean(clause?.isTypeOnly), bindings });
++      }
++    } else if (ts.isExportDeclaration(node)) {
++      const specifier = literal(node.moduleSpecifier);
++      if (specifier) {
++        const clause = node.exportClause;
++        // Three shapes, and they answer different questions: a named list
++        // names what it takes, `export * as ns` names one binding and needs
++        // the module to exist, and a bare `export *` names nothing at all.
++        let kind = "export-star-from";
++        let bindings = [];
++        if (clause && ts.isNamedExports(clause)) {
++          kind = "export-from";
++          bindings = namedBindings(ts, clause.elements);
++        } else if (clause && ts.isNamespaceExport(clause)) {
++          kind = "export-namespace-from";
++        }
++        sites.push({ node: specifier, text: specifier.text, kind, typeOnly: Boolean(node.isTypeOnly), bindings });
++      }
++    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
++      // `import X = require("./x")`: TypeScript's own CommonJS import, binding
++      // the whole module under one name.
++      const specifier = literal(node.moduleReference.expression);
++      if (specifier) {
++        sites.push({
++          node: specifier,
++          text: specifier.text,
++          kind: "require-equals",
++          typeOnly: Boolean(node.isTypeOnly),
++          bindings: [],
++        });
++      }
++    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
++      // `import("./x").Name` in a type position: erased, but it still names a
++      // module, and a rewrite has to reach it.
++      const specifier = literal(node.argument.literal);
++      if (specifier) {
++        let qualifier = node.qualifier;
++        while (qualifier && ts.isQualifiedName(qualifier)) qualifier = qualifier.left;
++        sites.push({
++          node: specifier,
++          text: specifier.text,
++          kind: qualifier ? "import-named" : "import-namespace",
++          typeOnly: true,
++          bindings: qualifier ? [{ imported: qualifier.text, local: qualifier.text, typeOnly: true }] : [],
++        });
++      }
++    } else if (ts.isCallExpression(node)) {
++      const specifier = literal(node.arguments[0]);
++      if (specifier) {
++        let kind = null;
++        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) kind = "dynamic-import";
++        else if (ts.isIdentifier(node.expression) && node.expression.text === "require") kind = "require";
++        else if (ts.isPropertyAccessExpression(node.expression) && MOCK_CALLS.has(node.expression.name.text)) {
++          kind = "mock-call";
++        }
++        if (kind) sites.push({ node: specifier, text: specifier.text, kind, typeOnly: false, bindings: [] });
++      }
++    }
++    ts.forEachChild(node, visit);
++  };
++  visit(source);
++  return sites;
++}
++
++// Whether a site is loaded when the program runs, as opposed to erased by the
++// compiler. A star re-export is loaded like any other: it names no binding, so
++// a caller asking "which values must the package provide" cannot use it, but a
++// caller walking a module graph has to follow it or it stops one hop short of
++// whatever the chain reaches.
++//
++// `import { type Foo } from "x"` is erased just as surely as `import type
++// { Foo }`, and only the binding shapes say so: the statement carries no
++// type-only flag. A site that names NO binding -- a star re-export, a
++// side-effect import, a bare require -- is loaded whatever it does with what
++// it finds, so the emptiness has to be checked before the every().
++export function isLoadedAtRuntime(site) {
++  if (site.typeOnly) return false;
++  if (site.bindings.length === 0) return true;
++  return site.bindings.some((binding) => !binding.typeOnly);
++}
+diff --git a/scripts/sdk/package-import-paths-check.sh b/scripts/sdk/package-import-paths-check.sh
+new file mode 100755
+index 000000000..474584621
+--- /dev/null
++++ b/scripts/sdk/package-import-paths-check.sh
+@@ -0,0 +1,167 @@
++#!/usr/bin/env bash
++# package-import-paths-check.sh fails if any app-tree module specifier reaches
++# the AppWire TypeScript package by path instead of by its package name.
++#
++# Both halves of the sweep are load-bearing. The mobile half catches a stale
++# `cmd/evener-hub/frontend/src/protocol/` specifier, which resolves to nothing
++# now that the directory is gone. The web half catches the old relative
++# `protocol/<module>` spelling, which is the form a rebased branch or a copied
++# import line reintroduces -- silently, because a path import typechecks just
++# as well as the package name and nothing else in the tree would notice.
++#
++# Every file in the three trees is swept; nothing is exempt but the resolver
++# configs named below.
++#
++# On --include/--exclude/--exclude-dir being GNU-only: measured 2026-09-14 on
++# macOS 26 against `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD`, the /usr/bin
++# grep this script invokes -- all three are accepted and filter correctly, and
++# CI's ubuntu runners use GNU grep, where they originate.
++#
++# Usage:
++#   scripts/sdk/package-import-paths-check.sh [--root DIR]
++#
++# --root points the sweep at a tree other than this checkout. It exists so the
++# gate's own test can hold it against fixtures; nothing else passes it.
++set -euo pipefail
++
++root="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
++while [ "$#" -gt 0 ]; do
++	case "$1" in
++	--root)
++		# An empty value is rejected rather than defaulted: `cd ""` succeeds and
++		# changes nothing, so the sweep would silently run against whatever
++		# directory the caller happened to be in.
++		[ "$#" -ge 2 ] && [ -n "$2" ] || { printf 'package-import-paths-check.sh: --root needs a directory\n' >&2; exit 2; }
++		root="$2"
++		shift 2
++		;;
++	*)
++		printf 'package-import-paths-check.sh: unknown argument %s (usage: [--root DIR])\n' "$1" >&2
++		exit 2
++		;;
++	esac
++done
++cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
++
++trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
++
++# The extensions swept and the directories skipped are the resolvers' lists,
++# not the ones that happen to exist today: the file this gate exists to catch
++# is one nobody has written yet. They are kept byte-for-byte equal to the
++# shared SOURCE_EXTENSIONS and SKIPPED_DIRS in scripts/sdk/source-files.mjs by
++# a Go audit -- the same way the loader-call set below is -- because a file the
++# rewriter sweeps and this gate skips (or the reverse) reaches the package by
++# path in one of them silently.
++extensions=(ts tsx mts cts js jsx mjs cjs)
++skip_dirs=(node_modules dist build ios android __snapshots__ .git)
++sources=()
++for extension in "${extensions[@]}"; do sources+=(--include="*.${extension}"); done
++for dir in "${skip_dirs[@]}"; do sources+=(--exclude-dir="${dir}"); done
++
++# The resolver configs are exempt, and only they: mapping the package name onto
++# its path is what a resolver config is for, so a path there is the fix rather
++# than the defect. By exact relative path, not basename -- grep's --exclude
++# matches a basename anywhere, which would also excuse a src/metro.config.js an
++# app happened to write. So the exemption is a post-sweep filter instead, keyed
++# on the path grep prints. These are the configs inside the swept trees today;
++# the frontend's vite and browser-guard configs sit beside src/, not in it. A
++# new resolver config has to be added here, which is the point.
++exempt_configs=(
++	mobile-native/vitest.config.mts
++	mobile-native/metro.config.js
++)
++
++# A module specifier, not a mention in prose. Three positions carry one:
++# `from "x"`, a bare `import "x"`, and a call taking the path as its first
++# argument -- `import("x")`, `require("x")`, `vi.mock("x")`, and the rest of
++# vitest's mocking family, which is why the call form is an identifier chain
++# rather than a fixed list of names. Any of the three quotes: a specifier with
++# nothing to interpolate is as spellable in backticks as in quotes. And the
++# whitespace after a keyword is optional, because `import"./x"` and
++# `import{a}from"./x"` are what the language accepts, not what a formatter
++# happens to emit.
++# The last alternative is the specifier that opens its own line, which is what
++# a call or an import broken across lines leaves behind:
++#
++#     vi.mock(
++#       "../../protocol/reducer",
++#
++# grep is line-oriented and the portable flags it has cannot see the line
++# above, so the continuation is matched on its own shape instead. In these
++# trees a line that begins with a quoted path IS a module specifier; the sweep
++# finds none today that is not.
++# The calls that LOAD a module, and only those. An earlier pattern accepted any
++# identifier before the parenthesis, which made readFileSync("…/typescript/x")
++# and new URL("…/typescript/…", import.meta.url) failures of a gate about
++# imports. These are the same names scripts/sdk/module-specifiers.mjs reads --
++# MOCK_CALLS there, matched on the property regardless of the object, so a
++# jest.mock is caught as readily as a vi.mock -- and the Go audit compares the
++# two sets so neither can gain a loader the other does not know.
++mock_calls='mock|doMock|unmock|importActual|importMock'
++loader_call='(require|import|[A-Za-z_$][A-Za-z0-9_$.]*\.('"$mock_calls"'))[[:space:]]*\([[:space:]]*'
++opener='(from[[:space:]]*|import[[:space:]]*|'"$loader_call"'|^[[:space:]]*)'
++# `/protocol/` rather than `protocol`: the seam is only ever reached through a
++# relative path, and a bare `protocol` substring matches @modelcontextprotocol
++# and the "protocol" terminal-reason literal the app really does use. The
++# closing quote is an alternative to the slash so that a specifier naming the
++# directory itself -- `"../../protocol"` -- is caught too, and for the same
++# reason the package directory needs no trailing slash.
++seam='/protocol(/|["'"'"'`])'
++package='appwire-client/typescript'
++
++status=0
++
++report() {
++	printf '%s\n' "$2" >&2
++	printf '%s\n' "$1" >&2
++	status=1
++}
++
++# A tree that is not there sweeps nothing and says so silently, which reads as
++# a pass. Every tree this gate claims to cover has to exist.
++for tree in "${trees[@]}"; do
++	if [ ! -d "$tree" ]; then
++		printf 'package-import-paths-check.sh: %s does not exist under %s; this gate claims to sweep it\n' "$tree" "$root" >&2
++		exit 2
++	fi
++done
++
++# grep exits 1 for "no matches" and 2 or more for a real error -- an unreadable
++# file, a bad pattern. Swallowing everything with `|| true` turned a broken
++# sweep into a pass, which is the one verdict this gate must never invent.
++# Written inline rather than through a helper, because a helper runs inside a
++# command substitution, where `exit` leaves only the subshell and the failure
++# reads as "no matches" again.
++#
++# The option arrays come before the pattern and the operands: BSD and GNU grep
++# both accept options after operands, but only by permuting them, and a file
++# named like an option would be read as one.
++#
++# One sweep, two verdicts. A specifier still naming the directory the package
++# moved out of is a subset of "names the package by path" -- it matches the
++# same pattern -- but it earns its own message, because the fix is not "import
++# it by name" so much as "that directory is gone".
++old_seam=cmd/evener-hub/frontend/src/protocol/
++# The exempt configs are dropped by the exact path grep prints, anchored at the
++# line start so an app file of the same basename in a subdirectory is not.
++exempt_pattern=""
++for config in "${exempt_configs[@]}"; do
++	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
++	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
++done
++if found="$(grep "${sources[@]}" -rnE "${opener}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
++	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
++	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
++	if [ -n "$old_path" ]; then
++		report "$old_path" "these imports name the protocol directory the package moved out of; it no longer exists:"
++	fi
++	by_path="$(printf '%s\n' "$found" | grep -vF "$old_seam" || true)"
++	if [ -n "$by_path" ]; then
++		report "$by_path" "these imports name the AppWire package by path; import it as @evener/appwire-client, @evener/appwire-client/docContent, or @evener/appwire-client/testing/<module>:"
++	fi
++elif [ "$?" -ne 1 ]; then
++	printf 'package-import-paths-check.sh: the sweep over %s failed\n' "${trees[*]}" >&2
++	exit 2
++fi
++
++exit "$status"
+diff --git a/scripts/sdk/resolve-source.mjs b/scripts/sdk/resolve-source.mjs
+new file mode 100644
+index 000000000..516882fa9
+--- /dev/null
++++ b/scripts/sdk/resolve-source.mjs
+@@ -0,0 +1,29 @@
++// One relative-specifier resolver for the repo's node-side tooling.
++//
++// Shared because the interesting part is a rule that is easy to get wrong and
++// fails loudly one caller at a time: `existsSync` is true for a directory, so
++// a bare `./helpers` resolves to the directory itself, the `index` candidate
++// below never runs, and the caller reads a directory as a file (EISDIR). The
++// extension list is a parameter because the callers probe different ones --
++// the SDK rewriter only ever resolves TypeScript, the package-test gate also
++// reaches .mjs tooling -- and widening either one to match the other would
++// change what it resolves.
++import { existsSync, statSync } from "node:fs";
++import path from "node:path";
++
++// Returns the file `specifier` names when read from `fromFile`, or null.
++// Relative specifiers only; a bare one belongs to Node's own resolver.
++export function resolveSourceFile(fromFile, specifier, extensions) {
++  const base = path.resolve(path.dirname(fromFile), specifier);
++  const candidates = [
++    base,
++    ...extensions.map((extension) => `${base}${extension}`),
++    // The directory fallback probes the same extensions: a caller that asks
++    // about .mjs means it for ./dir/index.mjs too.
++    ...extensions.map((extension) => path.join(base, `index${extension}`)),
++  ];
++  for (const candidate of candidates) {
++    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
++  }
++  return null;
++}
+diff --git a/scripts/sdk/rewrite-package-imports.mjs b/scripts/sdk/rewrite-package-imports.mjs
+new file mode 100755
+index 000000000..4edfc6a69
+--- /dev/null
++++ b/scripts/sdk/rewrite-package-imports.mjs
+@@ -0,0 +1,454 @@
++#!/usr/bin/env node
++// Rewrite deep relative imports of the AppWire TypeScript package onto the
++// package name, for SDK migration row A4.
++//
++// When to use it: a tree still spells the package as a path
++// (`../../protocol/errors`, `../../appwire-client/typescript/errors`) and
++// should spell it as a name (`@evener/appwire-client`). Run it once per
++// migration step, read the per-specifier counts it prints, commit the result.
++// `--check` makes no edit and exits nonzero if anything is left to rewrite.
++// `make lint-package-imports` asserts the same thing with a grep, because the
++// lint lane installs no dependency tree and this script needs TypeScript.
++//
++// Why a script instead of sed: the target specifier depends on the SYMBOLS an
++// import names, not on its path prefix. `readDocFile` is published only at
++// `@evener/appwire-client/docContent`; `FakeClient` only at the in-repo
++// `@evener/appwire-client/testing/fakeClient`; everything else comes from the
++// root. So each statement is parsed, its module resolved on disk, and its
++// bindings checked against what the package actually publishes. A symbol the
++// package does not publish is reported and nothing is written — that is a
++// missing export, not something to paper over with a deep path.
++
++import { createRequire } from "node:module";
++import { readFileSync, writeFileSync, readdirSync } from "node:fs";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import { moduleSpecifierSites, parseSource } from "./module-specifiers.mjs";
++import { resolveSourceFile } from "./resolve-source.mjs";
++import { SKIPPED_DIRS, SOURCE_EXTENSIONS } from "./source-files.mjs";
++
++const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
++
++const PACKAGE_NAME = "@evener/appwire-client";
++const DOC_CONTENT_SUBPATH = `${PACKAGE_NAME}/docContent`;
++const TESTING_PREFIX = `${PACKAGE_NAME}/testing/`;
++
++// TypeScript always comes from this checkout's frontend, never from --root: a
++// fixture tree has no dependency tree of its own.
++const require = createRequire(path.join(checkoutRoot, "cmd", "evener-hub", "frontend", "package.json"));
++const ts = require("typescript");
++
++// Where the package, the A3 seam and the trees to sweep sit under a given root.
++// Every stub in the seam re-exports the package module of the same name, so a
++// resolved seam path maps to a package module by basename.
++function layoutOf(root) {
++  const frontendDir = path.join(root, "cmd", "evener-hub", "frontend");
++  return {
++    root,
++    packageDir: path.join(root, "appwire-client", "typescript"),
++    seamDir: path.join(frontendDir, "src", "protocol"),
++    trees: [
++      { label: "web", dir: path.join(frontendDir, "src") },
++      { label: "mobile-native", dir: path.join(root, "mobile-native") },
++      { label: "mobile/src", dir: path.join(root, "mobile", "src") },
++    ],
++  };
++}
++
++function usage() {
++  console.log(`Usage: node scripts/sdk/rewrite-package-imports.mjs [--root DIR] [--check]
++
++Rewrites every import of the AppWire TypeScript package in the web and native
++trees from a relative path to the package name, choosing the specifier the
++package publishes the named symbols at:
++
++  ${PACKAGE_NAME}                  root exports (index.ts)
++  ${DOC_CONTENT_SUBPATH}       the one published subpath
++  ${TESTING_PREFIX}<module>   in-repo test support, never a runtime import
++
++After rewriting, statements that collapsed onto one specifier are merged: a
++file ends up with at most one value import and one type import per specifier,
++rather than the three identical lines three deep paths turn into.
++
++Options:
++  --root DIR sweep DIR instead of this checkout (for this script's own test)
++  --check    report only; exit 1 if any import still names a path
++  --help     this text
++
++Exits 2, writing nothing, if an import names a symbol the package does not
++publish — fix the package's exports first.`);
++}
++
++function walk(dir, layout, out) {
++  let entries;
++  try {
++    entries = readdirSync(dir, { withFileTypes: true });
++  } catch {
++    return out;
++  }
++  for (const entry of entries) {
++    const full = path.join(dir, entry.name);
++    if (entry.isDirectory()) {
++      if (SKIPPED_DIRS.has(entry.name)) continue;
++      if (full === layout.seamDir) continue;
++      walk(full, layout, out);
++    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(path.extname(entry.name))) {
++      out.push(full);
++    }
++  }
++  return out;
++}
++
++// Resolve a relative specifier the way the bundlers do, enough to tell whether
++// it lands inside the package or the seam. TypeScript only: this tool never
++// resolves a .js or .mjs import into the package.
++function resolveSpecifier(fromFile, specifier) {
++  return resolveSourceFile(fromFile, specifier, [".ts", ".tsx"]);
++}
++
++// The package module a resolved path names: "errors", "testing/fakeClient",
++// "types.gen". Returns null for anything outside the package and the seam.
++function packageModuleOf(resolved, layout) {
++  for (const root of [layout.packageDir, layout.seamDir]) {
++    const relative = path.relative(root, resolved);
++    if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
++    return relative.replace(/\.(ts|tsx)$/, "").split(path.sep).join("/");
++  }
++  return null;
++}
++
++function parse(file) {
++  return parseSource(ts, file, readFileSync(file, "utf8"));
++}
++
++// Names a module exports, by parsing it. Handles the two forms index.ts uses:
++// explicit named exports, and `export type * from "./types.gen"`.
++function exportedNames(file, seen = new Set()) {
++  const names = new Set();
++  if (seen.has(file)) return names;
++  seen.add(file);
++  const source = parse(file);
++  for (const statement of source.statements) {
++    if (ts.isExportDeclaration(statement)) {
++      if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
++        for (const element of statement.exportClause.elements) names.add(element.name.text);
++        continue;
++      }
++      if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
++        // `export * as ns from "./x"` publishes ONE name, the namespace. Its
++        // members are reachable through that name and are not exports of this
++        // module, so recursing here would have said the root publishes each
++        // of them.
++        names.add(statement.exportClause.name.text);
++        continue;
++      }
++      // `export * from "./x"` / `export type * from "./x"`: every name x
++      // exports becomes a name this module exports.
++      if (!statement.moduleSpecifier) continue;
++      const target = resolveSpecifier(file, statement.moduleSpecifier.text);
++      if (!target) continue;
++      for (const name of exportedNames(target, seen)) names.add(name);
++      continue;
++    }
++    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) ?? [] : [];
++    if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
++    if (ts.isVariableStatement(statement)) {
++      for (const declaration of statement.declarationList.declarations) {
++        if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
++      }
++    } else if (statement.name && ts.isIdentifier(statement.name)) {
++      names.add(statement.name.text);
++    }
++  }
++  return names;
++}
++
++// Every module-specifier node in a file that could name the package, with the
++// bindings it brings in. `kind` drives the error messages and the namespace
++// rule: a namespace object cannot come from a root re-export.
++// Biome sorts named members case-insensitively; match it so the native trees,
++// which no formatter gate reaches, come out looking like the web tree.
++function compareMembers(a, b) {
++  const left = a.replace(/^type /, "").toLowerCase();
++  const right = b.replace(/^type /, "").toLowerCase();
++  return left < right ? -1 : left > right ? 1 : a < b ? -1 : a > b ? 1 : 0;
++}
++
++function indentUnitOf(text) {
++  const match = text.match(/\n(\t+| +)\S/);
++  if (!match) return "  ";
++  return match[1].startsWith("\t") ? "\t" : " ".repeat(Math.min(match[1].length, 4));
++}
++
++function renderImport(members, specifier, typeOnly, indent) {
++  const keyword = typeOnly ? "import type" : "import";
++  const oneLine = `${keyword} { ${members.join(", ")} } from "${specifier}";`;
++  if (oneLine.length <= 120) return oneLine;
++  return `${keyword} {\n${members.map((member) => `${indent}${member},`).join("\n")}\n} from "${specifier}";`;
++}
++
++function renderMember(member) {
++  const base = member.imported === member.local ? member.local : `${member.imported} as ${member.local}`;
++  return member.typeOnly ? `type ${base}` : base;
++}
++
++// What a file's merged import of one specifier should name, keyed by the LOCAL
++// binding each member introduces. Keying by rendered text instead produced
++// duplicate identifiers two ways: `{ type Thing }` and `{ Thing }` render
++// differently but bind one name, and `{ A as X }` and `{ B as X }` bind the
++// same name from different exports.
++//
++// Same export, one side inline-`type`: the value form wins, since it satisfies
++// both uses. Different exports behind one local name is a real conflict — a
++// name cannot mean two things — so it is reported and nothing is merged.
++function mergedMembers(entries, where, conflicts) {
++  const byLocal = new Map();
++  for (const member of entries.flatMap((entry) => entry.members)) {
++    const seen = byLocal.get(member.local);
++    if (!seen) {
++      byLocal.set(member.local, { ...member });
++      continue;
++    }
++    if (seen.imported !== member.imported) {
++      conflicts.push(
++        `${where}: ${seen.imported} and ${member.imported} are both imported as ${member.local}; rename one before merging`,
++      );
++      continue;
++    }
++    seen.typeOnly = seen.typeOnly && member.typeOnly;
++  }
++  return [...byLocal.values()].map(renderMember).sort(compareMembers);
++}
++
++// Collapse the duplicate statements the rewrite creates: several deep paths
++// that all resolved to one specifier become several imports of that specifier.
++// Only plain named-binding imports are merged — a namespace or default import
++// keeps its own statement, and nothing is merged across the type-only line.
++//
++// Pure: it takes the file's text and returns the merged text, so a conflict
++// found in the last file leaves the first one unwritten, the same way a
++// refused import does.
++function mergeDuplicateImports(file, text, conflicts) {
++  const source = parseSource(ts, file, text);
++  const groups = new Map();
++  for (const statement of source.statements) {
++    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
++    const specifier = statement.moduleSpecifier.text;
++    if (!specifier.startsWith(PACKAGE_NAME)) continue;
++    const clause = statement.importClause;
++    if (!clause || clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
++    const key = `${specifier}\t${clause.isTypeOnly ? "type" : "value"}`;
++    const members = clause.namedBindings.elements.map((element) => ({
++      local: element.name.text,
++      imported: (element.propertyName ?? element.name).text,
++      typeOnly: Boolean(element.isTypeOnly),
++    }));
++    if (!groups.has(key)) groups.set(key, []);
++    groups.get(key).push({ statement, members, typeOnly: Boolean(clause.isTypeOnly), specifier });
++  }
++
++  const indent = indentUnitOf(text);
++  const edits = [];
++  for (const group of groups.values()) {
++    if (group.length < 2) continue;
++    const [first, ...rest] = group;
++    const where = `${file}:${source.getLineAndCharacterOfPosition(first.statement.getStart(source)).line + 1}`;
++    const before = conflicts.length;
++    const members = mergedMembers(group, where, conflicts);
++    if (conflicts.length > before) continue;
++    edits.push({
++      start: first.statement.getStart(source),
++      end: first.statement.getEnd(),
++      text: renderImport(members, first.specifier, first.typeOnly, indent),
++    });
++    for (const entry of rest) {
++      // From the full start, so the comment ABOVE a removed duplicate goes
++      // with it. Starting at the statement left that comment behind, where it
++      // reattached to whatever line followed and read as documenting it.
++      // Trailing newline included, so no blank line is left either.
++      // getFullStart() sits immediately after the PREVIOUS statement, before
++      // the newline that ends its line. Advance to the start of the first line
++      // this statement's trivia occupies, so the line above keeps its
++      // terminator and only whole lines are removed.
++      let start = entry.statement.getFullStart();
++      for (let scan = start; scan < text.length && /\s/.test(text[scan]); ) {
++        scan += 1;
++        if (text[scan - 1] === "\n") start = scan;
++      }
++      let end = entry.statement.getEnd();
++      if (text[end] === "\n") end += 1;
++      edits.push({ start, end, text: "" });
++    }
++  }
++  if (edits.length === 0) return null;
++  let updated = text;
++  for (const edit of edits.sort((a, b) => b.start - a.start)) {
++    updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
++  }
++  return updated;
++}
++
++function main() {
++  const args = process.argv.slice(2);
++  if (args.includes("--help") || args.includes("-h")) {
++    usage();
++    return 0;
++  }
++  const checkOnly = args.includes("--check");
++  const rest = args.filter((arg) => !["--check", "--help", "-h"].includes(arg));
++  let root = checkoutRoot;
++  if (rest[0] === "--root") {
++    if (rest.length < 2) {
++      console.error("--root needs a directory");
++      return 2;
++    }
++    root = path.resolve(rest[1]);
++    rest.splice(0, 2);
++  }
++  if (rest.length > 0) {
++    console.error(`unknown argument: ${rest.join(" ")}`);
++    usage();
++    return 2;
++  }
++  const layout = layoutOf(root);
++
++  const rootExports = exportedNames(path.join(layout.packageDir, "index.ts"));
++  const docContentExports = exportedNames(path.join(layout.packageDir, "docContent.ts"));
++
++  const counts = new Map(); // `${tree}\t${specifier}` -> count
++  const problems = [];
++  // Rewritten contents are held here until the whole sweep has come back
++  // clean. A refusal is a missing export, and the fix for it is a change to
++  // the package -- so the tree this runs against has to be the one the last
++  // run left, not a half-migrated mix of both.
++  const pending = new Map();
++  let statementsRewritten = 0;
++
++  for (const tree of layout.trees) {
++    for (const file of walk(tree.dir, layout, [])) {
++      const original = readFileSync(file, "utf8");
++      const source = parse(file);
++      const edits = [];
++      for (const site of moduleSpecifierSites(ts, source)) {
++        const specifier = site.text;
++        if (!specifier.startsWith(".")) continue;
++        const resolved = resolveSpecifier(file, specifier);
++        if (!resolved) continue;
++        const moduleID = packageModuleOf(resolved, layout);
++        if (moduleID === null) continue;
++
++        const where = `${path.relative(root, file)}:${source.getLineAndCharacterOfPosition(site.node.getStart(source)).line + 1}`;
++        // A site that names no binding cannot be mapped onto the root: there
++        // is nothing to look up, and `@evener/appwire-client` is a different
++        // module from the one the author wrote. Only the published subpath can
++        // stand in for a whole module.
++        const wholeModule = [
++          "import-namespace",
++          "import-side-effect",
++          "export-namespace-from",
++          "export-star-from",
++          "dynamic-import",
++          "require",
++          "require-equals",
++          "mock-call",
++        ].includes(
++          site.kind,
++        );
++        const named = site.bindings.map((binding) => binding.imported);
++        let target = null;
++        if (moduleID.startsWith("testing/")) {
++          // The testing subpath serves its own module, so a name it brings in
++          // has to be an export of that module -- validated the same way the
++          // root and docContent named imports are, against the file the
++          // specifier actually resolved to. A whole-module site names nothing
++          // to check; the subpath is the module.
++          const subpath = TESTING_PREFIX + moduleID.slice("testing/".length);
++          if (site.kind === "import-default") {
++            problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
++          } else if (wholeModule) {
++            target = subpath;
++          } else if (named.length === 0) {
++            problems.push(
++              `${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${subpath}`,
++            );
++          } else {
++            const testingExports = exportedNames(resolved);
++            if (named.every((binding) => testingExports.has(binding))) target = subpath;
++            else {
++              const missing = named.filter((binding) => !testingExports.has(binding));
++              problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${subpath} does not publish`);
++            }
++          }
++        } else if (site.kind === "import-default") {
++          problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
++        } else if (wholeModule) {
++          // A namespace object, a re-export of everything, or a runtime load of
++          // one module: all of them need the module itself, and the package
++          // publishes two -- the root and ./docContent. `index` is the root
++          // under another name: both `.../typescript` and `.../typescript/index`
++          // resolve to index.ts, and refusing them said the root was not
++          // published.
++          if (moduleID === "index") target = PACKAGE_NAME;
++          else if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
++          else problems.push(`${where}: ${site.kind} of "${moduleID}", which the package does not publish as a subpath`);
++        } else if (named.length === 0) {
++          // `import {} from "./errors"` binds nothing: it has the semantics of
++          // a side-effect import, and every() over no members would have said
++          // the root satisfies it.
++          problems.push(`${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${PACKAGE_NAME}`);
++        } else if (named.every((binding) => rootExports.has(binding))) {
++          target = PACKAGE_NAME;
++        } else if (moduleID === "docContent" && named.every((binding) => docContentExports.has(binding))) {
++          target = DOC_CONTENT_SUBPATH;
++        } else {
++          const missing = named.filter((binding) => !rootExports.has(binding));
++          problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${PACKAGE_NAME} does not publish`);
++        }
++        if (target === null) continue;
++        edits.push({ start: site.node.getStart(source), end: site.node.getEnd(), target });
++        counts.set(`${tree.label}\t${target}`, (counts.get(`${tree.label}\t${target}`) ?? 0) + 1);
++        statementsRewritten += 1;
++      }
++      if (edits.length === 0) continue;
++      let updated = original;
++      for (const edit of edits.sort((a, b) => b.start - a.start)) {
++        updated = `${updated.slice(0, edit.start)}"${edit.target}"${updated.slice(edit.end)}`;
++      }
++      pending.set(file, updated);
++    }
++  }
++
++  if (problems.length > 0) {
++    console.error(`${problems.length} import(s) name a symbol the package does not publish; nothing was written:`);
++    for (const problem of problems) console.error(`  ${problem}`);
++    return 2;
++  }
++
++  if (!checkOnly) {
++    const conflicts = [];
++    let mergedFiles = 0;
++    for (const tree of layout.trees) {
++      for (const file of walk(tree.dir, layout, [])) {
++        const merged = mergeDuplicateImports(file, pending.get(file) ?? readFileSync(file, "utf8"), conflicts);
++        if (merged === null) continue;
++        pending.set(file, merged);
++        mergedFiles += 1;
++      }
++    }
++    if (conflicts.length > 0) {
++      console.error(`${conflicts.length} import(s) cannot be merged; nothing was written:`);
++      for (const conflict of conflicts) console.error(`  ${conflict}`);
++      return 2;
++    }
++    for (const [file, contents] of pending) writeFileSync(file, contents);
++    if (mergedFiles > 0) console.log(`merged duplicate package imports in ${mergedFiles} file(s)`);
++  }
++
++  const rows = [...counts.entries()].map(([key, count]) => [...key.split("\t"), count]);
++  rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
++  for (const [tree, specifier, count] of rows) console.log(`${String(count).padStart(4)}  ${tree.padEnd(14)} ${specifier}`);
++  console.log(`${statementsRewritten} import statement(s) across ${pending.size} file(s)${checkOnly ? " still name a path" : " rewritten"}`);
++  return checkOnly && statementsRewritten > 0 ? 1 : 0;
++}
++
++process.exit(main());
+diff --git a/scripts/sdk/source-files.mjs b/scripts/sdk/source-files.mjs
+new file mode 100644
+index 000000000..5f82b35ae
+--- /dev/null
++++ b/scripts/sdk/source-files.mjs
+@@ -0,0 +1,27 @@
++// What counts as a test file, in one place.
++//
++// The package-test gate and the value-import derivation both need the answer,
++// and they had two: one matched Vitest's own default glob, the other looked
++// for the substring ".test." and so missed every .spec. file. A file that one
++// tool treats as a test and the other as ordinary source is a gap in whichever
++// is stricter, so the predicate is shared rather than restated.
++
++// The same shape as Vitest's default test glob.
++const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
++
++export function isTestFile(name) {
++  return TEST_FILE.test(name);
++}
++
++// Every extension Metro and Vite resolve as a source module, and the directory
++// names none of these tools should descend into. Both lists are shared for the
++// same reason the loader-call set is: the rewriter, the value-import derivation
++// and the grep gate each sweep the app trees, and a file one of them reads and
++// another skips is a file that reaches the package by path in silence. The
++// grep gate is a shell script, so it carries its own copy of both, and a Go
++// audit asserts the two stay equal (like it does for the loader calls).
++export const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
++
++// A JavaScript module reaches the package by the same relative path a
++// TypeScript one does; the target it lands on is still TypeScript.
++export const SKIPPED_DIRS = new Set(["node_modules", "dist", "build", "ios", "android", "__snapshots__", ".git"]);
