@@ -109,6 +109,10 @@ export function discardStoredDraft<Checkpoint>(
 export interface DraftRepository<Checkpoint> {
   createId(): string;
   load(): Checkpoint | null;
+  /** Reloads the classified record and reports whether its storage identity
+   * is unchanged. Equal decoded fields are insufficient: a replacement can
+   * carry the same draft content while belonging to another writer. */
+  reload(): { checkpoint: Checkpoint | null; sameIdentity: boolean };
   /** Persists `checkpoint`, atomically against whatever this repository most
    * recently classified (via load() or an earlier save()) - not a blind
    * overwrite. Reports whether it did; a refusal means another writer
@@ -177,18 +181,31 @@ export function createDraftRepository<Checkpoint extends object>(
   // classified the store as empty, one it never classified), or the raw
   // bytes classified from a non-empty store.
   let classification: null | "absent" | { raw: unknown } = null;
+  function loadClassified(): { checkpoint: Checkpoint | null; sameIdentity: boolean } {
+    const previous = classification;
+    const value = storage.load();
+    const sameIdentity =
+      previous !== null &&
+      previous !== "absent" &&
+      value !== null &&
+      value !== undefined &&
+      canonicalJson(previous.raw) === canonicalJson(value);
+    if (value === null || value === undefined) {
+      classification = "absent";
+      return { checkpoint: null, sameIdentity: false };
+    }
+    classification = { raw: value };
+    const checkpoint = decode(value);
+    rawFrom.set(checkpoint as object, value);
+    return { checkpoint, sameIdentity };
+  }
   return {
     createId: () => storage.createId(),
     load(): Checkpoint | null {
-      const value = storage.load();
-      if (value === null || value === undefined) {
-        classification = "absent";
-        return null;
-      }
-      classification = { raw: value };
-      const checkpoint = decode(value);
-      rawFrom.set(checkpoint as object, value);
-      return checkpoint;
+      return loadClassified().checkpoint;
+    },
+    reload() {
+      return loadClassified();
     },
     save(checkpoint: Checkpoint): boolean {
       const decoded = decode(checkpoint);

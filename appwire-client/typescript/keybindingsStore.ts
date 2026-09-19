@@ -730,11 +730,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   /** The fields a restored checkpoint (or its absence, or a failed restore)
    * sets; `confirmed` is passed in because the creation-time restore runs
-   * before there is any state to read. */
-  function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
+   * before there is any state to read. `generation` is only supplied by the
+   * identity-aware recovery path; an ordinary restore always uses null. */
+  function restoreDraft(
+    confirmed: { loaded: boolean; revision: number },
+    generation: number | null = null,
+    checkpointOverride?: KeybindingDraftCheckpoint | null,
+  ): Partial<KeybindingsStoreFields> {
     try {
-      const checkpoint = drafts.load();
-      const { draft, writeUncertain } = draftFieldsFrom(checkpoint);
+      const checkpoint = checkpointOverride === undefined ? drafts.load() : checkpointOverride;
+      const { draft, writeUncertain } = draftFieldsFrom(checkpoint, generation);
       return {
         draft,
         writeUncertain,
@@ -763,6 +768,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // whether an earlier unreadable classification still holds, so it
         // is omitted rather than reset to false, which would silently hide
         // the one recovery (discard) an unreadable record allows.
+        ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
+      };
+    }
+  }
+
+  /** Re-reads after a port failure without laundering a stale generation:
+   * only the same classified checkpoint identity may carry forward the
+   * in-memory stamp. A replacement with equal fields is still a new record
+   * and takes the ordinary null-generation restore path. */
+  function reloadDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
+    try {
+      const { checkpoint, sameIdentity } = drafts.reload();
+      const generation = sameIdentity ? (getState().draft?.generation ?? null) : null;
+      return restoreDraft(confirmed, generation, checkpoint);
+    } catch (error) {
+      const unreadable = error instanceof UnreadableDraftError;
+      return {
+        storageUnavailable: true,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
         ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
       };
     }
@@ -1147,7 +1171,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // the section's shortcuts hostage to it would lock a user out of settings
     // they never edited.
     if (getState().storageUnavailable) {
-      setState(restoreDraft(getState()));
+      setState(reloadDraft(getState()));
       if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;
