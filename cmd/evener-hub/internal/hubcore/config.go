@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
@@ -96,6 +97,26 @@ type WebConfig struct {
 	// config order. newHubSourceRegistry registers one
 	// appsource.RemoteHubSource per entry.
 	RemoteHosts []hostreg.Host
+	// RemoteHostRegistry is the controller's live host registry: the one
+	// *hostreg.Registry the SSH manager dials through (sshconn.New), the
+	// attach handler validates against, and the host-management surface
+	// (evener/host/add|list|status|remove) mutates — one shared instance, so
+	// a host added at runtime is attachable without a restart. nil (tests,
+	// embedders) makes the constructors' fallback build one registry and
+	// share it across every surface: the SSH manager's own registry when a
+	// manager is threaded (the instance its dial paths and AddHost/RemoveHost
+	// mutate), else a fresh one built from RemoteHosts.
+	RemoteHostRegistry *hostreg.Registry
+	// RemoteHostSSHManager owns the live SSH channels for the configured
+	// hosts. The host-management surface wires it in so Remove tears the
+	// removed host's channel down through the manager's atomic RemoveHost
+	// rather than leaving a supervisor or channel behind. nil leaves
+	// host-management removal without channel teardown (tests).
+	RemoteHostSSHManager *sshconn.Manager
+	// RemoteHostConfigPath is the selected hub.toml path. The host-management
+	// surface persists its UI-added hosts in a sidecar beside this file; empty
+	// disables sidecar persistence (the surface stays memory-only).
+	RemoteHostConfigPath string
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).

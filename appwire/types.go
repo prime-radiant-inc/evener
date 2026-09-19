@@ -149,6 +149,24 @@ const (
 	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
 	// seam; every other remote path is attached-only. See HostAttachParams.
 	MethodEvenerHostAttach = "evener/host/attach"
+	// MethodEvenerHostAdd registers one sidecar host entry (component 08 slice
+	// 1: name + SSH address + key path). hub.toml stays authoritative for its
+	// own names; a duplicate of a live name is refused. See HostAddParams.
+	MethodEvenerHostAdd = "evener/host/add"
+	// MethodEvenerHostList returns every known host with truthful online state
+	// (component 08 slice 1). Attached rows report live channel facts; rows
+	// without a live channel render last-known state as offline. See
+	// HostListResponse.
+	MethodEvenerHostList = "evener/host/list"
+	// MethodEvenerHostStatus returns one host's row (component 08 slice 1): the
+	// same HostRow evener/host/list serves, for a single named host. Never
+	// dials. See HostStatusParams.
+	MethodEvenerHostStatus = "evener/host/status"
+	// MethodEvenerHostRemove deregisters one sidecar host entry (component 08
+	// slice 1): its supervisor stops, its channel drops, and the name is gone
+	// until re-added. hub.toml-declared names cannot be removed here. See
+	// HostRemoveParams.
+	MethodEvenerHostRemove = "evener/host/remove"
 )
 
 const (
@@ -3917,6 +3935,77 @@ type HostAttachResponse struct {
 	OS              string      `json:"os,omitempty"`
 	Arch            string      `json:"arch,omitempty"`
 	Features        *FeatureSet `json:"features,omitempty"`
+}
+
+// HostAddParams is the evener/host/add payload (component 08 slice 1): one
+// sidecar host entry. Name is the component-03 source ID; Address is the SSH
+// destination (user@host or host, as hostreg accepts); KeyPath is the SSH
+// private-key path the dial uses, resolved the way the operator's ssh_config
+// resolves it when empty. The handler validates exactly like hub.toml loading
+// (component-03 rules) and refuses a name hub.toml or the live set already
+// holds.
+type HostAddParams struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	KeyPath string `json:"keyPath,omitempty"`
+}
+
+// HostRow is one host as evener/host/list and evener/host/status render it
+// (component 08 slice 1): the effective entry fields plus live state. Origin
+// names the entry's source: "hub.toml" for file-declared entries, "sidecar"
+// for UI-added ones. Attached reports a live channel right now; offline rows
+// carry the last-known facts below when any were recorded. Optional facts
+// stay absent — never null — when unknown.
+type HostRow struct {
+	Name          string `json:"name"`
+	Address       string `json:"address,omitempty"`
+	KeyPath       string `json:"keyPath,omitempty"`
+	Origin        string `json:"origin"`
+	Attached      bool   `json:"attached"`
+	ServerName    string `json:"serverName,omitempty"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	HubVersion    string `json:"hubVersion,omitempty"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	LastAttachErr string `json:"lastAttachError,omitempty"`
+	MidAttach     bool   `json:"midAttach"`
+	Removed       bool   `json:"removed"`
+}
+
+// HostListResponse is evener/host/list's result (component 08 slice 1): every
+// known host in name-sorted order — the registry's own order; the origin field
+// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// rows read the live channel, offline rows render last-known state.
+type HostListResponse struct {
+	Hosts []HostRow `json:"hosts"`
+}
+
+// HostStatusParams is the evener/host/status payload (component 08 slice 1):
+// the component-03 source ID of one known host. Unknown names are
+// InvalidParams. Never dials.
+type HostStatusParams struct {
+	Name string `json:"name"`
+}
+
+// HostStatusResponse is evener/host/status's result (component 08 slice 1):
+// the host's list row.
+type HostStatusResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
+// the component-03 source ID of one sidecar host. hub.toml-declared names are
+// refused (edit the file); unknown names are InvalidParams. Removing an
+// attached host stops its supervisor and drops its channel.
+type HostRemoveParams struct {
+	Name string `json:"name"`
+}
+
+// HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
+// the removed row, rendered detached. Removed stays removed: the name is gone
+// until re-added.
+type HostRemoveResponse struct {
+	Host HostRow `json:"host"`
 }
 
 // HostNotificationParams is the evener/host/notification payload (component

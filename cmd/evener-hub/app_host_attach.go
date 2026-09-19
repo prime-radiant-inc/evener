@@ -28,18 +28,50 @@ import (
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from remoteHostAdminMethods (see app_host_admin.go).
-func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	hosts, err := hostreg.New(cfg.RemoteHosts)
-	if err != nil {
-		// Config loading already validated every entry (main.go builds the same
-		// registry from the same entries), so this cannot fail in production.
-		// Fall back to an empty registry rather than a nil one, so a
-		// hypothetical duplicate refuses every host instead of panicking.
-		hosts, _ = hostreg.New(nil)
-	}
+func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
+	// hosts is the one live registry the server constructor resolved — in
+	// production the same *hostreg.Registry the SSH manager dials through and
+	// the host-management surface mutates, so a host added at runtime
+	// validates here without a restart. The constructor builds the fallback
+	// from the configured entries once (tests, embedders) and hands the same
+	// instance to every host handler, so add and attach can never validate
+	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 		return hubHostAttach(ctx, cfg, sources, hosts, params)
 	})
+}
+
+// hostRegistryFromConfig returns the cfg's live host registry when one was
+// threaded through WebConfig, else the fallback the server constructors
+// (newWebServer and newHubAppServerWithNavigationAndTrace) build ONCE and
+// share with every host-dependent handler. With a threaded SSH manager the
+// fallback is the MANAGER's registry (sshconn.Manager.Registry) — the instance
+// Ensure validates against and AddHost/RemoveHost mutate — never a fresh copy
+// from the configured entries: a fresh copy alongside a manager would split
+// the surfaces, because the host-management surface commits runtime adds and
+// removals through the manager while boot sidecar entries load into whatever
+// registry it was handed (the round-4 M2 finding: sidecar entries would land
+// where the manager never dials, Ensure answering ErrHostNotFound, and a
+// runtime Add would insert where host/list and host/attach never read).
+// A manager with no registry keeps the fresh copy: its AddHost and RemoveHost
+// both refuse loudly, so neither an add nor a removal can silently diverge
+// from it.
+//
+// Without a manager, config loading already validated the entries (main.go
+// builds the same registry from the same entries), so the error path is the
+// impossible-duplicate fallback; an empty registry keeps the surface serving
+// refusals instead of panicking.
+func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
+	if cfg.RemoteHostSSHManager != nil {
+		if reg := cfg.RemoteHostSSHManager.Registry(); reg != nil {
+			return reg
+		}
+	}
+	hosts, err := hostreg.New(cfg.RemoteHosts)
+	if err != nil {
+		hosts, _ = hostreg.New(nil)
+	}
+	return hosts
 }
 
 // hubHostAttach attaches one configured remote host and reports its post-attach

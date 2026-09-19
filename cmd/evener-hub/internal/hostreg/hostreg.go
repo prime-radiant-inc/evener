@@ -58,6 +58,22 @@ type Host struct {
 	ConfigPath string
 	Addr       string
 	Roots      []string
+	// KeyPath is the SSH private-key file the controller dials with. A
+	// [[hosts]] entry never sets it (hub.toml's schema has no key field, so a
+	// file-declared host resolves its identity the way the operator's ssh_config
+	// does); a UI-added sidecar host carries its key here so the one live dial
+	// path — the registry entry this package stores — sees it.
+	KeyPath string
+	// Generation is the registry-wide insert generation: a counter the
+	// registry advances on every insert and never reuses, so a name's
+	// re-added entry — even with byte-identical content — is a different
+	// entry from the one an earlier Get handed out. It carries the 08 spec
+	// series' generation semantics for attach identity: callers construct
+	// Hosts with it zero, Add (AddWithUpstreams) overwrites whatever they
+	// set, and an attach that captured an entry pins itself to the
+	// generation as much as to the content — content equality alone cannot
+	// tell a removed entry from its re-added twin (see Equal).
+	Generation uint64
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
@@ -104,11 +120,24 @@ func Normalize(entry Host) Host {
 	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
 	entry.ConfigPath = strings.TrimSpace(entry.ConfigPath)
 	entry.Addr = strings.TrimSpace(entry.Addr)
+	entry.KeyPath = strings.TrimSpace(entry.KeyPath)
 	entry.Roots = slices.Clone(entry.Roots)
 	for i, root := range entry.Roots {
 		entry.Roots[i] = strings.TrimSpace(root)
 	}
 	return entry
+}
+
+// Equal reports whether h and other carry the same configured content: every
+// field equal, with Roots compared by content. Generation is deliberately
+// excluded — content equality cannot tell a removed entry from a byte-identical
+// re-add — so an identity recheck compares the generation alongside this
+// (sshconn's Ensure and reconnectOnce), never this alone.
+func (h Host) Equal(other Host) bool {
+	return h.Name == other.Name && h.SSH == other.SSH && h.User == other.User &&
+		h.EvenerPath == other.EvenerPath && h.ConfigPath == other.ConfigPath &&
+		h.Addr == other.Addr && h.KeyPath == other.KeyPath &&
+		slices.Equal(h.Roots, other.Roots)
 }
 
 // cloneHost deep-copies the one field a caller could otherwise mutate through a
@@ -144,6 +173,17 @@ type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]Host
 	edges map[string][]string // host name -> names of its upstream hosts
+	// gen is the registry-wide insert generation: one monotonic counter,
+	// advanced by every Add and never reused, that AddWithUpstreams stamps
+	// on each inserted entry. It replaces the per-name counters round 3 used
+	// (one map entry per name ever added — unbounded growth under churn,
+	// and unprunable: dropping a name's count would let a byte-identical
+	// re-add reuse the removed entry's generation). Every Host.Generation
+	// consumer compares a captured entry with the live entry of the same
+	// name, so a registry-wide counter preserves those semantics exactly —
+	// a remove/re-add of any name still always advances past the removed
+	// entry's generation — while the retained state stays one integer.
+	gen uint64
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -194,6 +234,12 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
 		return err
 	}
+	// The generation is assigned under the lock, from the registry-wide
+	// counter: a re-add of the same name — byte-identical or not, interleaved
+	// with other hosts' churn or not — always carries a generation the
+	// removed entry never had.
+	entry.Generation = r.gen + 1
+	r.gen = entry.Generation
 	r.hosts[entry.Name] = entry
 	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
 	return nil
@@ -302,6 +348,35 @@ func (r *Registry) Get(name string) (Host, bool) {
 		return Host{}, false
 	}
 	return cloneHost(host), true
+}
+
+// Remove deletes the host registered under name along with its upstream edges.
+// A removed host stays removed: Get and All no longer report it, and a later
+// Add of the same name starts clean rather than inheriting the old edges (a
+// stale edges entry under the re-added name would false-positive the cycle
+// check against upstreams that no longer apply). The registry-wide generation
+// counter needs no cleanup here — it only advances, so the re-add's Add
+// assigns the next generation and the re-added entry stays distinguishable
+// from the one Remove deleted even when every configured byte matches.
+//
+// Edges recorded on other hosts that name the removed host are left alone: the
+// cycle walk already treats an unknown upstream as a leaf, so they dangle
+// harmlessly until the target is re-added or the dependent is removed.
+func (r *Registry) Remove(name string) error {
+	// Trimmed like every other name, so a padded spelling removes its host
+	// instead of failing as unknown while the host stays registered.
+	name = strings.TrimSpace(name)
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	delete(r.hosts, name)
+	delete(r.edges, name)
+	return nil
 }
 
 // All returns every registered host sorted by name, mirroring

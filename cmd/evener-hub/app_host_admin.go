@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -259,8 +258,10 @@ type hostNotificationBroadcaster interface {
 // Local execution never happens for a remote host request.
 type hubHostAdminController struct {
 	broadcaster hostNotificationBroadcaster
-	// hosts is the component-03 registry of validated [[hosts]] entries. Its
-	// Get is the unknown-host authority.
+	// hosts is the controller's live host registry — the one shared instance
+	// the attach and host-management handlers also validate against, so a
+	// host added at runtime is administrable without a restart. Its Get is
+	// the unknown-host authority.
 	hosts *hostreg.Registry
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
@@ -270,10 +271,15 @@ type hubHostAdminController struct {
 	// host's fresh client immediately instead of waiting out the delay.
 	attachWakeMu sync.Mutex
 	attachWake   map[string]chan struct{}
+	// fanOutMu guards fanOuts, the live per-host fan-out handles, so a
+	// re-added host's fresh source replaces the removed entry's loop instead
+	// of running beside it and double-delivering every notification.
+	fanOutMu sync.Mutex
+	fanOuts  map[string]context.CancelFunc
 }
 
 func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
-	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources, attachWake: map[string]chan struct{}{}}
+	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources, attachWake: map[string]chan struct{}{}, fanOuts: map[string]context.CancelFunc{}}
 }
 
 // registerHostAdminHandlers installs the proxy handler and starts one
@@ -287,15 +293,12 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
 // backoff, which may then wait up to hostNotificationRetryMax before
 // subscribing while the new client's notification buffer fills.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) *hubHostAdminController {
-	hosts, err := hostreg.New(cfg.RemoteHosts)
-	if err != nil {
-		// Config loading already validated every entry (main.go builds the
-		// same registry from the same entries), so this cannot fail in
-		// production. Fall back to an empty registry rather than a nil one, so
-		// a hypothetical duplicate refuses every host instead of panicking.
-		hosts, _ = hostreg.New(nil)
-	}
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
+	// hosts is the one live registry the server constructor resolved — the
+	// same instance the attach and host-management handlers share — so the
+	// proxy's unknown-host authority covers a host added at runtime instead
+	// of refusing it as unknown against a static copy of the configured
+	// entries.
 	controller := newHubHostAdminController(server, hosts, sources)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRequest, controller.Request)
 	controller.start(ctx)
@@ -361,22 +364,132 @@ func (c *hubHostAdminController) remoteSourceFor(host string) (*appsource.Remote
 	return remote, nil
 }
 
-// start launches one fan-out goroutine per remote host source.
+// start launches one fan-out goroutine per remote host source, and keeps
+// launching for sources registered later: the shared source registry is
+// authoritative for which hosts exist, so a host the management surface adds
+// at runtime gains its notification fan-out the moment its source registers,
+// rather than never (a one-shot enumeration here would miss every host added
+// after construction).
 func (c *hubHostAdminController) start(ctx context.Context) {
 	if c.sources == nil {
 		return
 	}
+	// The removal hook is installed before the add hook and the enumeration so
+	// no interleaving can launch a fan-out whose removal nobody hears: from
+	// here on, every source the registry observes being added is paired with a
+	// visible removal notification.
+	c.sources.SetOnRemove(func(source appsource.Source) { c.stopFanOut(source.ID()) })
+	c.sources.SetOnAdd(func(source appsource.Source) { c.launchFanOut(ctx, source) })
 	for _, source := range c.sources.All() {
-		remote, ok := source.(*appsource.RemoteHubSource)
-		if !ok {
-			continue
-		}
-		// Filter at publish time, before the notification reaches the bounded
-		// per-subscription buffer, so a thread-notification burst cannot evict the
-		// rare config update the fan-out exists to deliver.
-		remote.SetHostNotificationFilter(isRemoteHostConfigNotification)
-		go c.fanOut(ctx, remote)
+		c.launchFanOut(ctx, source)
 	}
+}
+
+// launchFanOut starts source's host notification fan-out, replacing any loop
+// already running under the same name: a remove/re-add registers a fresh
+// source, and the previous loop running beside the new one would
+// double-deliver every notification. The cancelled predecessor stands down on
+// its next wakeup, or as soon as its current relay ends.
+//
+// The replacement's wake channel is registered here, synchronously under the
+// same lifecycle lock that swaps the cancel handle, and handed to the loop:
+// registration used to happen inside the fanOut goroutine, so during
+// remove/re-add churn a cancelled predecessor whose body first ran after the
+// replacement registered could overwrite the replacement's channel and then
+// delete the map entry on exit, leaving the replacement parked on an orphaned
+// channel that missed the host's next attach wakeup and slept through its
+// full backoff (the round-6 M1 finding).
+func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsource.Source) {
+	remote, ok := source.(*appsource.RemoteHubSource)
+	if !ok {
+		return
+	}
+	// Filter at publish time, before the notification reaches the bounded
+	// per-subscription buffer, so a thread-notification burst cannot evict the
+	// rare config update the fan-out exists to deliver.
+	remote.SetHostNotificationFilter(isRemoteHostConfigNotification)
+	fanCtx, cancel := context.WithCancel(ctx)
+	c.fanOutMu.Lock()
+	if stop, ok := c.fanOuts[remote.ID()]; ok {
+		stop()
+	}
+	wake := c.takeAttachWakeOwnership(remote.ID())
+	c.fanOuts[remote.ID()] = cancel
+	c.fanOutMu.Unlock()
+	go c.fanOut(fanCtx, remote, wake)
+}
+
+// stopFanOut ends host's notification fan-out and drops its per-host state:
+// the shared source registry just removed the host, so its goroutine must not
+// keep polling Online() until shutdown, and churn must not leave one fanOuts
+// slot and one attachWake channel behind per removed name. Mirrors
+// launchFanOut's replace half: the cancelled loop stands down on its next
+// wakeup, or as soon as its current subscription ends.
+//
+// The wake entry drops inside the same fanOutMu critical section as the
+// cancel handle: launchFanOut registers a replacement generation's entry
+// under that lock too, so the drop is ordered against every launch — an entry
+// a same-name re-add registers after this removal's critical section
+// survives, while the entry the removal finds (the removed generation's, or
+// an orphan an attach parked for a fan-out that never launched) goes.
+// Dropping it after the unlock let a re-add's launch register in the gap and
+// lose its entry to the teardown's delete: the replacement parked on an
+// orphaned channel, missed the host's next EventAttached wakeup, and slept
+// out its full backoff (the low-A finding).
+func (c *hubHostAdminController) stopFanOut(host string) {
+	c.fanOutMu.Lock()
+	stop, ok := c.fanOuts[host]
+	delete(c.fanOuts, host)
+	c.clearAttachWake(host)
+	c.fanOutMu.Unlock()
+	if ok {
+		stop()
+	}
+}
+
+// clearAttachWake drops host's attach wakeup entry unconditionally. That the
+// drop cannot take a live generation's entry is the caller's guarantee, not
+// this function's: stopFanOut calls it inside its fanOutMu critical section —
+// the same lock launchFanOut registers a generation's entry under — so the
+// drop is ordered against every launch, while the fan-out loops themselves
+// use clearAttachWakeIfOwned, which spares an entry a replacement generation
+// registered.
+func (c *hubHostAdminController) clearAttachWake(host string) {
+	c.attachWakeMu.Lock()
+	delete(c.attachWake, host)
+	c.attachWakeMu.Unlock()
+}
+
+// takeAttachWakeOwnership registers a fresh wake channel under host for one
+// fan-out generation and returns it. launchFanOut calls it synchronously under
+// the lifecycle lock, before the generation's goroutine exists, so a
+// predecessor scheduled late cannot overwrite the entry (the round-6 M1
+// finding); the goroutine receives the channel and never re-registers. The
+// previous entry — a cancelled predecessor's, or an orphan an earlier
+// hostAttached parked for a fan-out that never launched — is replaced: a
+// freshly launched generation checks Online() on its first loop iteration
+// before any backoff, so a wakeup parked before it existed is never needed.
+func (c *hubHostAdminController) takeAttachWakeOwnership(host string) chan struct{} {
+	ch := make(chan struct{}, 1)
+	c.attachWakeMu.Lock()
+	c.attachWake[host] = ch
+	c.attachWakeMu.Unlock()
+	return ch
+}
+
+// clearAttachWakeIfOwned drops host's wake entry only when it is still ch —
+// the channel this goroutine registered. Remove/re-add churn can launch a
+// replacement that registers its own channel before the cancelled predecessor
+// exits, and an unconditional delete from the exiting loop would remove the
+// replacement's entry: the replacement's next EventAttached would park its
+// wakeup on a channel nobody waits on, and the fan-out would sleep its backoff
+// out (the round-4 M5 finding).
+func (c *hubHostAdminController) clearAttachWakeIfOwned(host string, ch chan struct{}) {
+	c.attachWakeMu.Lock()
+	if c.attachWake[host] == ch {
+		delete(c.attachWake, host)
+	}
+	c.attachWakeMu.Unlock()
 }
 
 // fanOut re-emits remote, a host's config notifications to the controller's
@@ -395,6 +508,17 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // exponential backoff, so a permanently-down host costs one in-memory check per
 // interval rather than an SSH preflight every second.
 //
+// Each fan-out generation owns its wake channel for its whole lifetime: the
+// channel is registered under the host synchronously by the launch
+// (launchFanOut, under the lifecycle lock, replacing a cancelled
+// predecessor's) and handed to the loop here, passed to every backoff wait
+// below, and cleared on exit only when the entry is still the loop's own (see
+// clearAttachWakeIfOwned). The round-4 M5 defect cleared whatever entry the
+// host had on exit, which during remove/re-add churn deleted the channel the
+// REPLACEMENT was parked on; the round-6 M1 fix moved registration out of the
+// goroutine entirely, so a predecessor scheduled late can no longer overwrite
+// its replacement's entry in the first place.
+//
 // hostAttached wakes this host's fan-out out of backoff: the sshconn
 // EventAttached path calls it once the fresh channel is installed, so the
 // fan-out re-checks Online() and subscribes through ClientIfAttached
@@ -404,12 +528,19 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // resolves the fresh client through the source's attached-only lookup, so the
 // r6 liveness refusal stands — a host that dropped between the event and the
 // wakeup resolves to SessionUnavailable and the loop backs off again.
-func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
+func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource, wake chan struct{}) {
 	host := remote.ID()
+	// The loop's own wake channel — registered by the launch under the
+	// lifecycle lock — owned for the loop's whole lifetime. The exit clear is
+	// ownership-checked: cancellation is asynchronous, so a cancelled loop
+	// (replaced by a re-add, or ended by a removal's stopFanOut) can exit long
+	// after its replacement registered a fresh channel, and only an entry this
+	// loop still owns may go.
+	defer c.clearAttachWakeIfOwned(host, wake)
 	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {
 		if !remote.Online() {
-			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -419,7 +550,7 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		notifications, err := remote.SubscribeHostNotifications(subCtx)
 		if err != nil {
 			cancel()
-			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -428,7 +559,7 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		delay = hostNotificationRetryBase
 		c.relayHostNotifications(ctx, host, notifications)
 		cancel()
-		if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
+		if !c.hostNotificationBackoffOrAttach(ctx, wake, delay) {
 			return
 		}
 		delay = nextHostNotificationBackoff(delay)
@@ -440,9 +571,12 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 // same transition already pokes the remote-thread refresher (main.go's
 // onAttach) and invalidates the navigation snapshot, and this rides that same
 // event rather than inventing a second one. The signal is a buffered wakeup
-// per host, created on demand: an attach with no running fan-out (an unknown
-// host, or a host whose fan-out already subscribed) parks one pending wakeup
-// the next backoff takes immediately, which is harmless — the fan-out still
+// resolved through the host's current map entry: a running fan-out's own
+// channel, or a fresh orphan an attach with no live fan-out parks. A parked
+// orphan goes unread by design — the next fan-out generation registers its own
+// channel and checks Online() on its first iteration before any backoff, so
+// the transition the wakeup records is already observed — and a generation
+// already subscribed ignores one the same way: harmless — the fan-out still
 // re-checks Online() and the attached-only lookup before subscribing.
 func (c *hubHostAdminController) hostAttached(host string) {
 	host = strings.TrimSpace(host)
@@ -463,18 +597,14 @@ func (c *hubHostAdminController) hostAttached(host string) {
 }
 
 // hostNotificationBackoffOrAttach waits delay but returns true early when
-// the host's attach wakeup fires, reporting false only
-// when ctx ended first. The caller re-checks Online() and re-resolves the
-// client through the attached-only lookup, so a stale or spurious wakeup
-// cannot subscribe a dead generation: it just shortens one sleep.
-func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Context, host string, delay time.Duration) bool {
-	c.attachWakeMu.Lock()
-	ch, ok := c.attachWake[host]
-	if !ok {
-		ch = make(chan struct{}, 1)
-		c.attachWake[host] = ch
-	}
-	c.attachWakeMu.Unlock()
+// the caller's attach wakeup fires, reporting false only when ctx ended
+// first. wake is the calling fan-out generation's own channel — the one its
+// deferred exit clear is ownership-checked against — so a wakeup can never
+// land on a channel from a different generation of the same host's fan-out.
+// The caller re-checks Online() and re-resolves the client through the
+// attached-only lookup, so a stale or spurious wakeup cannot subscribe a dead
+// generation: it just shortens one sleep.
+func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Context, wake <-chan struct{}, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -482,7 +612,7 @@ func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Con
 		return false
 	case <-timer.C:
 		return true
-	case <-ch:
+	case <-wake:
 		return true
 	}
 }

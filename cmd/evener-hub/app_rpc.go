@@ -59,6 +59,20 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				source.SetHostOnline(func() bool {
 					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
 				})
+				// The identity generation is assigned before the source
+				// becomes registry-visible, the same discipline the host
+				// manager's runtime add follows: a refresh walk may enumerate
+				// the source the moment it is added, and the walk captures
+				// the source's generation immediately before it reads it
+				// (round 10) — so every enumerable source must carry a
+				// generation from the instant it is enumerable, or the
+				// publish drops its rows as unowned.
+				// Configured hosts never pass through the manager, so theirs
+				// is assigned here; the local source needs none — the walk
+				// skips it, so it can never own walk-published rows.
+				if cfg.RemoteThreadCache != nil {
+					cfg.RemoteThreadCache.RegisterSource(host.Name)
+				}
 				registry.Add(source)
 			}
 		}
@@ -366,7 +380,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -378,7 +392,17 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager) {
+	// One fallback registry when cfg carries no live one, built once here so
+	// every host surface below — attach, management, and the admin proxy —
+	// validates against the same instance: a host added at runtime must be
+	// attachable and administrable, never "unknown" to a sibling handler
+	// that built its own copy from the configured entries. main.go always
+	// threads the live registry; the fallback is the embedder/test shape
+	// (newWebServer nil-defaults its own cfg copy the same way).
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
+	}
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -547,7 +571,17 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
-	registerHostAttachHandler(server, cfg, sources)
+	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
+	// Component 08 slice 1: the host registry surface (add/list/status/
+	// remove). Controller-local, never dials; add/remove invalidate the
+	// manifest's sources so the picker converges without a refresh tick.
+	// The manager, the live host registry, and the selected hub.toml path all
+	// come from cfg — main.go threads the real sshconn.Manager, the one
+	// registry shared with the attach handler, and the config path whose
+	// sidecar persists UI-added hosts, so the surface is wired, not a
+	// placeholder. It returns the manager so newWebServer can expose it
+	// (main.go binds its event recorder to the SSH manager's lifecycle).
+	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
@@ -575,8 +609,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server, hostAdmin
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources)
+	return server, hostAdmin, hostManage
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
