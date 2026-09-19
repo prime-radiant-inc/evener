@@ -12,7 +12,12 @@ export interface HumanNoteDraft {
   dirty: boolean;
   saved: boolean;
   error: string | null;
-  submitted?: { generation: number; id: string; text: string; state: "submitting" | "blockedUnknown" | "rejected" };
+  submitted?: {
+    generation: number;
+    id: string;
+    text: string;
+    state: "submitting" | "blockedUnknown" | "canceled" | "rejected";
+  };
   timer?: ReturnType<typeof setTimeout>;
   release?: () => void;
   // flush runs the pending delayed save immediately; teardown uses it so a
@@ -41,13 +46,15 @@ const SETTLED_ELSEWHERE_STATUS =
 function submittedStatusFor(
   record: MutationOutboxRecord,
   refused: MutationRecoveryRecord | undefined,
-): { state: "submitting" | "blockedUnknown" | "rejected"; error: string | null } {
+): { state: "submitting" | "blockedUnknown" | "canceled" | "rejected"; error: string | null } {
   const state = refused ? "rejected" : record.state;
   const error = refused
     ? (refused.recoveryReason ?? "Note could not be saved")
     : state === "blockedUnknown"
       ? "Note save is blocked pending session recovery"
-      : null;
+      : state === "canceled"
+        ? "Note save was canceled by Stop"
+        : null;
   return { state, error };
 }
 let unsubscribePersistence: (() => void) | undefined;

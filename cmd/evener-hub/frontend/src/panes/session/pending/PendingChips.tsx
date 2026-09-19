@@ -24,7 +24,10 @@ type OptimisticMethod = Exclude<PendingMethod, "queue">;
 type OptimisticEntry = PendingTurnEntry & { method: OptimisticMethod };
 
 function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
-  return entry.method !== "queue" && entry.state !== "blockedUnknown";
+  // blockedUnknown and canceled rows are QueueStrip's durable rows, never
+  // in-flight chips: a canceled row would otherwise read as still Sending
+  // here while QueueStrip simultaneously reports it as canceled.
+  return entry.method !== "queue" && entry.state !== "blockedUnknown" && entry.state !== "canceled";
 }
 
 const CLASS = {

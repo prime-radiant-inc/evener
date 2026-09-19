@@ -151,6 +151,26 @@ async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<vo
   await refreshPendingTurnsProjection("ref_a");
 }
 
+// The durable Stop cancellation, seeded through the same real write every
+// Stop path makes (storage cancelUnattempted - stop-cancellation-outbox §4/§5:
+// the ref's non-attempted rows turn "canceled" at the user's click). Mirrors
+// seedBlockedUnknown's bare-storage-handle seeding.
+async function seedCanceled(text: string, input?: InputItem[]): Promise<void> {
+  const storage = new MutationOutboxIndexedDB();
+  const items = input ?? [{ type: "text", text }];
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: items },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: items },
+  });
+  await storage.cancelUnattempted("ref_a");
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+}
+
 // applied registers a fake handler for a mutation that answers with an
 // applied receipt, the response every accepted control mutation carries.
 function applied(fake: FakeClient, method: "turn/drainAsSteer" | "turn/promoteQueuedAsSteer"): void {
@@ -209,9 +229,10 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
   override async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
     const record = await super.getOutbox(clientMutationId);
     // retryBlockedMutation reads a still-blocked record exactly twice when it
-    // proceeds: the extant-state recheck ahead of handleReady, and the final
-    // lookup after its reconciliation. The second read is the boundary between
-    // the retry's machinery and handleRetry's own reads.
+    // proceeds: the click-time capture read ahead of every check (counted in
+    // the getOutboxWithStopEpoch override below), and the final lookup after
+    // its reconciliation. The second read is the boundary between the retry's
+    // machinery and handleRetry's own reads.
     if (this.#onSettle && record?.state === "blockedUnknown") {
       this.#blockedLookups += 1;
       if (this.#blockedLookups === 2) {
@@ -220,6 +241,23 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
       }
     }
     return record;
+  }
+
+  override async getOutboxWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+    const capture = await super.getOutboxWithStopEpoch(clientMutationId);
+    // The retry's first read of a still-blocked record is the click-time
+    // capture (§4's release barrier), so it takes the first blocked-lookup
+    // slot; the final getOutbox lookup stays the second, where the arm lands.
+    if (this.#onSettle && capture.record?.state === "blockedUnknown") {
+      this.#blockedLookups += 1;
+      if (this.#blockedLookups === 2) {
+        this.#armed = true;
+        this.#listReadsSinceArm = 0;
+      }
+    }
+    return capture;
   }
 
   override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
@@ -687,6 +725,166 @@ describe("durable recovery rows", () => {
     const row = status.closest("li");
     if (!row) throw new Error("missing blocked row");
     expect(within(row).getByText("uncertain with skills [skill: pkg:probe]")).toBeTruthy();
+  });
+});
+
+// Stop-cancellation-outbox §6 Display: canceled rows surface in the same
+// durable-rows slot as blocked ones, with "Canceled by Stop" copy and the same
+// explicit-retry affordance. Every test here mirrors its blocked counterpart
+// above; the two states share the slot because both mean "your message is
+// sitting in durable storage, undelivered", and differ only in whether
+// delivery is uncertain (blockedUnknown) or settled by the user's own Stop
+// (canceled).
+describe("canceled rows", () => {
+  test("a canceled row renders beside the queue as Canceled by Stop with Retry and no sendable action", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedCanceled("stopped by user");
+    renderStrip(defaultProps());
+
+    const status = await screen.findByText("Canceled by Stop");
+    const row = status.closest("li");
+    if (!row) throw new Error("missing canceled row");
+    expect(within(row).getByText("stopped by user")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+    // The header counts it like any other durable row, same as a blocked one.
+    expect(screen.getByText("Queued messages (1)")).toBeTruthy();
+  });
+
+  test("clicking Retry releases the canceled row and dispatches it", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    await seedCanceled("stopped send");
+    renderStrip(defaultProps());
+
+    const status = await screen.findByText("Canceled by Stop");
+    const row = status.closest("li");
+    if (!row) throw new Error("missing canceled row");
+    await user.click(within(row).getByRole("button", { name: "Retry" }));
+    const storage = new MutationOutboxIndexedDB();
+    await waitFor(async () => {
+      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
+    });
+    storage.close();
+  });
+
+  test.each(["restartRequired", "notLoaded"] as const)("canceled Retry stays blocked for %s sessions", async (type) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type } });
+    await seedCanceled("stopped input");
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
+  // Mirrors the notes visibility rule of the blocked/recovery rows above: the
+  // note editor owns a canceled note save (humanNoteDrafts reports "Note save
+  // was canceled by Stop"), so it must not also surface here as a message row.
+  test("a canceled note save stays out of the strip", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "note sentinel" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+    renderStrip(defaultProps());
+    expect(screen.queryByText(/queued messages/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  // Mirrors "visible Retry treats an other-tab settled/reopened row as a
+  // benign no-op": another tab's user Retry releases the row durably before
+  // this tab's press, so the press must neither report a failure nor touch
+  // storage - the row simply leaves the canceled slot.
+  test("a visible Retry on a row another tab already released is a benign no-op", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedCanceled("other-tab stopped input");
+    render(
+      <>
+        <QueueStrip {...defaultProps()} />
+        <PendingChips sessionRef="ref_a" />
+        <Toast />
+      </>,
+    );
+    await flushPendingTurnsProjectionForTests();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    const otherTab = new MutationOutboxIndexedDB();
+    onTestFinished(() => otherTab.close());
+    const original = (await otherTab.listOutbox("ref_a"))[0];
+    if (!original) throw new Error("missing seeded canceled mutation");
+    // Another tab's explicit user Retry: the same durable release this tab's
+    // button would have performed.
+    expect(await otherTab.releaseCanceled(original.clientMutationId)).toBe(true);
+    const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
+    expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
+    await userEvent.setup().click(retry);
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText(/Retry failed|Still canceled by Stop/)).toBeNull();
+    expect(getToasts()).toEqual([]);
+    expect(await otherTab.getOutbox(original.clientMutationId)).toEqual(afterOtherTab);
+    // Released to submitting, the row is an ordinary pending send again: the
+    // chip owns it (this tab dispatched nothing - its press was a no-op).
+    expect(screen.getByText("other-tab stopped input")).toBeTruthy();
+    expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+  });
+
+  // The canceled counterpart of "a genuinely blocked Retry reports one inline
+  // error without a duplicate toast". For a canceled row the refusal that can
+  // leave it unchanged happens BEFORE the durable release: retryBlockedMutation
+  // refuses a target whose reconciliation is still pending, so a Retry pressed
+  // mid-hydration must say so rather than silently doing nothing (the kata 2f41
+  // rule - a refused control has to say so).
+  test("a Retry refused while a hydration is pending reports one inline error, keeping the row canceled", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedCanceled("refused retry input");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const storage = new MutationOutboxIndexedDB();
+    onTestFinished(() => storage.close());
+    const before = await storage.listOutbox("ref_a");
+    // Park a thread hydration mid-flight: refreshTrackedThread registers the
+    // pending hydration before its thread/read request, so once the read is
+    // parked the press's refusal is guaranteed, not raced.
+    let resolveRead: (() => void) | undefined;
+    let markReadInFlight: (() => void) | undefined;
+    const readInFlight = new Promise<void>((resolve) => {
+      markReadInFlight = resolve;
+    });
+    fake.on("thread/read", () => {
+      markReadInFlight?.();
+      return new Promise((resolve) => {
+        resolveRead = () => resolve(readResponse("ref_a"));
+      });
+    });
+    const refreshed = threadsStore.getState().refreshThread("ref_a");
+    await readInFlight;
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await flushPendingTurnsProjectionForTests();
+    const row = screen.getByText("refused retry input").closest("li");
+    if (!row) throw new Error("missing canceled row after Retry");
+    await within(row).findByRole("button", { name: "Retry" });
+    expect(within(row).getAllByRole("alert")).toHaveLength(1);
+    expect(within(row).getByRole("alert").textContent).toContain("Retry failed");
+    expect(getToasts()).toEqual([]);
+    expect(await storage.listOutbox("ref_a")).toEqual(before);
+    expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
+    resolveRead?.();
+    await refreshed;
   });
 });
 

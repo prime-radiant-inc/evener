@@ -876,7 +876,13 @@ export function Composer({ ref, focused }: ComposerProps) {
   // lost, so the turn may already be running. Dropping it dropped tier 6 for
   // exactly the uncertain window, and the next message bounced on the turn
   // that send had applied.
-  const ownPendingSend = (entries: readonly PendingTurnEntry[]) => entries.some((entry) => entry.fromThisClient);
+  //
+  // A canceled row does not count: Stop wrote its cancellation before dispatch
+  // (stop-cancellation-outbox §4), so it is provably not in flight and no turn
+  // can be running because of it. Counting it parked the next message in queue
+  // mode behind a turn that never started.
+  const ownPendingSend = (entries: readonly PendingTurnEntry[]) =>
+    entries.some((entry) => entry.fromThisClient && entry.state !== "canceled");
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send: read
   // at render for the button and its tooltip, and again at submit from the
