@@ -770,6 +770,103 @@ func TestHostAuthorityTombstoneLostAcknowledgmentReplaysAfterOwnedRestart(t *tes
 	}
 }
 
+func TestHostAuthorityEnsureLostAcknowledgmentReplaysStableNamespaceAfterOwnedRestart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := authority.Installation()
+	association, err := authority.PrepareRoot(t.Context(), RootRequest{SessionID: identifier.MustNewSessionID(), ProjectID: "project-0123456789", RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventRead, eventWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeRead, resumeWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = eventRead.Close()
+		_ = eventWrite.Close()
+		_ = resumeRead.Close()
+		_ = resumeWrite.Close()
+	})
+	waitStarted := make(chan struct{})
+	s := NewSupervisor(root, SupervisorOptions{
+		Policy:     func(context.Context) ([]NamespacePolicy, error) { return nil, nil },
+		extraFiles: []*os.File{eventWrite, resumeRead},
+		command:    []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process-ensure-barrier"},
+		Wait: func(ctx context.Context, _ time.Duration) error {
+			close(waitStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	readiness, err := s.Ensure(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- s.ApplyNamespace(t.Context(), NamespacePolicy{NamespaceID: association.NamespaceID, RealmID: association.RealmID, OwnerThreadID: association.SessionID})
+	}()
+	var reached [1]byte
+	if _, err := io.ReadFull(eventRead, reached[:]); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	child := s.child
+	s.mu.Unlock()
+	if child == nil {
+		t.Fatal("ensure barrier reached without an owned child")
+	}
+	if err := child.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-applyDone; err == nil {
+		t.Fatal("lost ensure acknowledgment was reported as success")
+	}
+	<-waitStarted
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted := processSupervisor(t, root, reopened.Policy)
+	grant, err := restarted.Grant(t.Context(), testScopeForAssociation(association))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Readiness.ServiceID != readiness.ServiceID {
+		t.Fatalf("restart changed durable service identity: first=%s restarted=%s", readiness.ServiceID, grant.Readiness.ServiceID)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(root, "artifacts.sqlite"), StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var namespaces int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_namespaces").Scan(&namespaces); err != nil {
+		t.Fatal(err)
+	}
+	if namespaces != 1 {
+		t.Fatalf("lost ensure acknowledgment created %d namespaces", namespaces)
+	}
+}
+
 func testScopeForAssociation(association RootAssociation) Scope {
 	scope := testScope()
 	scope.RealmID = association.RealmID

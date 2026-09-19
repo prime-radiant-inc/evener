@@ -22,7 +22,7 @@ import (
 
 func TestArtifactServiceProcess(t *testing.T) {
 	mode := os.Args[len(os.Args)-1]
-	if mode != "artifact-process" && mode != "artifact-process-barrier" && mode != "artifact-process-namespace-barrier" && mode != "artifact-process-environment" {
+	if mode != "artifact-process" && mode != "artifact-process-barrier" && mode != "artifact-process-namespace-barrier" && mode != "artifact-process-ensure-barrier" && mode != "artifact-process-environment" {
 		return
 	}
 	options := StoreOptions{}
@@ -56,6 +56,19 @@ func TestArtifactServiceProcess(t *testing.T) {
 		var once sync.Once
 		options.hooks.afterNamespaceCommit = func(tombstone bool) {
 			if !tombstone {
+				return
+			}
+			once.Do(func() { _, _ = events.Write([]byte{1}); var signal [1]byte; _, _ = io.ReadFull(resume, signal[:]) })
+		}
+	}
+	if mode == "artifact-process-ensure-barrier" {
+		syscall.CloseOnExec(5)
+		syscall.CloseOnExec(6)
+		events := os.NewFile(5, "namespace-ensure-events")
+		resume := os.NewFile(6, "namespace-ensure-resume")
+		var once sync.Once
+		options.hooks.afterNamespaceCommit = func(tombstone bool) {
+			if tombstone {
 				return
 			}
 			once.Do(func() { _, _ = events.Write([]byte{1}); var signal [1]byte; _, _ = io.ReadFull(resume, signal[:]) })
