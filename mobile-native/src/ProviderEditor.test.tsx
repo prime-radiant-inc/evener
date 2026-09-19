@@ -44,6 +44,7 @@ it("stays open and does not report success when the save is unconfirmed", async 
       onEdit={async () => false}
       disabled={false}
       onSaved={onSaved}
+      onEndpointConflict={() => {}}
       onCancel={() => {}}
     />,
   );
@@ -63,6 +64,7 @@ it("reports success when the save is confirmed", async () => {
       onEdit={async () => true}
       disabled={false}
       onSaved={onSaved}
+      onEndpointConflict={() => {}}
       onCancel={() => {}}
     />,
   );

@@ -63,16 +63,14 @@ type WebConfig struct {
 	// PluginManager, when set, is the hub's own already-wired *plugins.Manager
 	// for PluginRoot — constructed once per server by newWebServer, so the
 	// appRPC server and every consumer reached through it (the plugin CRUD
-	// handlers and a launch's plugin-inventory resolution via
-	// hubResolvePlugins) reaches the same Manager instead of a second,
-	// unwired one. Each WebConfig value carries its own — never a package
-	// global — so two servers in one process never answer for each other.
-	// nil falls back to a fresh plugins.NewManager(PluginRoot); every test
-	// that never builds a server leaves this nil and gets that fallback. The
-	// three background maintenance paths in main_background.go
-	// (hubStartUpgrade, seedHubMarketplaces, startHubPluginMaintenance's GC)
-	// build their own wired manager over the default plugin root rather than
-	// reusing this field; #1780 tracks unifying them.
+	// handlers, a launch's plugin-inventory resolution via hubResolvePlugins,
+	// and the three background maintenance paths in main_background.go:
+	// hubStartUpgrade, seedHubMarketplaces, startHubPluginMaintenance's GC)
+	// reaches the same Manager instead of a second, unwired one over a
+	// possibly different root. Each WebConfig value carries its own — never a
+	// package global — so two servers in one process never answer for each
+	// other. nil falls back to a fresh plugins.NewManager(PluginRoot); every
+	// test that never builds a server leaves this nil and gets that fallback.
 	PluginManager       *plugins.Manager
 	MCPConfigPath       string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
 	Registry            *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
@@ -189,6 +187,12 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+
+	// CompletionOwned is set only by explicit thread/resume. Automatic resume
+	// retains the configured startup budget; explicit restore awaits readiness,
+	// child exit, or caller/Stop cancellation instead of guessing its duration.
+	CompletionOwned bool
+	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

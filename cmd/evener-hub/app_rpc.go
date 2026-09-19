@@ -628,7 +628,7 @@ func registerThreadHandlers(
 				}
 			}
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.ThreadReadResponse{}, err
@@ -809,7 +809,7 @@ func registerThreadHandlers(
 		}
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
-		source, srcErr := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
+		source, srcErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if isTargetDeletedError(srcErr) {
 			return appwire.ThreadTurnsListResponse{}, srcErr
 		}
@@ -855,7 +855,7 @@ func registerThreadHandlers(
 		if ref == "" {
 			return appwire.EvenerSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, "")
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, "")
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
@@ -1193,6 +1193,35 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 }
 
+// instanceRenameError is what the Edit handler returns to the client. A rename
+// that stood but could not carry the instance's credentials carries
+// ErrorInstanceRenamePersisted, so the client reports the standing rename and
+// steers to the new name - the old name is gone and re-issuing the rename can
+// only fail on a missing instance - instead of a failed save. Every other
+// failure is returned unchanged. The bool says whether the rename stood, which
+// is also what the handler broadcasts on.
+func instanceRenameError(err error) (bool, error) {
+	if _, persisted := errors.AsType[renamePersistedError](err); persisted {
+		return true, appwire.InstanceRenamePersisted(err.Error())
+	}
+	return false, err
+}
+
+// instanceRemoveError is what the Remove handler returns to the client. A
+// removal whose credential deletion applied before a later step failed carries
+// ErrorInstanceRemoveApplied, so the client reconciles the standing removal -
+// closing the confirmation, re-reading the listing, and dropping what it
+// retained for the name - instead of presenting a failed remove whose retry
+// targets an instance that is already gone. Every other failure is returned
+// unchanged. The bool says whether the removal stood, which is also what the
+// handler broadcasts on.
+func instanceRemoveError(err error) (bool, error) {
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		return true, appwire.InstanceRemoveApplied(err.Error())
+	}
+	return false, err
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1214,8 +1243,12 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// one, because the issuing client cannot treat an errored mutation's echo as
 	// its own success - the broadcast can beat the failing reply, and consuming
 	// the marker then would suppress the invalidation a failed operation owes.
-	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
-		err := apply()
+	// apply performs the mutation and returns the listing to answer with, so
+	// the notify-and-answer block below is shared by every instance write. An
+	// edit passes its lock-scoped capture (see edit); the rest answer with a
+	// fresh List() via listAfter.
+	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
+		list, err := apply()
 		if writeDidApply(err) {
 			if err != nil {
 				notifyInstanceUpdated(server, "")
@@ -1226,25 +1259,63 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		return instancesController.List(), nil
+		return list, nil
+	}
+	listAfter := func(mutate func() error) func() (appwire.InstanceListResponse, error) {
+		return func() (appwire.InstanceListResponse, error) {
+			if err := mutate(); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Create(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Edit(params) })
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			var list appwire.InstanceListResponse
+			err := instancesController.edit(params, &list)
+			if err == nil {
+				return list, nil
+			}
+			// A rename that persisted before it failed is a write that stands,
+			// so it is announced (writeApplied, which instanceWrite broadcasts
+			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
+			// so the client that asked reports the standing rename rather than
+			// a failed save.
+			persisted, wireErr := instanceRenameError(err)
+			if persisted {
+				return list, writeApplied(wireErr)
+			}
+			return list, wireErr
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Remove(params) })
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			// A removal whose credential deletion applied before it failed is a
+			// write that stands, so it is announced (writeApplied, which
+			// instanceWrite broadcasts on) and the error goes back carrying
+			// ErrorInstanceRemoveApplied, so the client that asked reconciles the
+			// standing removal rather than a failed remove it would retry.
+			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
+			if applied {
+				return appwire.InstanceListResponse{}, writeApplied(wireErr)
+			}
+			if wireErr != nil {
+				return appwire.InstanceListResponse{}, wireErr
+			}
+			return instancesController.List(), nil
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetDefault(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetDefault(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetModelDisabled(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetModelDisabled(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.RefreshModels(ctx, params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
 	})
 }
 
@@ -1362,18 +1433,6 @@ func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroad
 			notifyPluginUpdated(server)
 		}
 	})
-}
-
-// newWiredPluginManager constructs a *plugins.Manager rooted at root and
-// wires it to broadcaster in one step, for a caller that already has a live
-// broadcaster to hand it (main_background.go's three background-maintenance
-// sites, each with web.appRPC in hand): the construct-then-wire pair
-// wirePluginStoreBroadcast's own doc comment describes, without repeating it
-// at every call site.
-func newWiredPluginManager(root string, broadcaster hostNotificationBroadcaster) *plugins.Manager {
-	mgr := plugins.NewManager(root)
-	wirePluginStoreBroadcast(mgr, broadcaster)
-	return mgr
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option

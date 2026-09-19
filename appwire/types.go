@@ -3110,8 +3110,14 @@ type InstanceEntry struct {
 	// ahead of them, and the entry omits any header it refuses.
 	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string `json:"credentialHeader,omitempty"`
-	// Implicit is true for an instance that exists from the environment
-	// alone: it has no entry in providers.toml, so it cannot be removed.
+	// Implicit is true for an instance with no authored entry in
+	// providers.toml: a curated provider that exists because the environment
+	// supplies it (an API-key variable, the ADC file) or because the user
+	// filed a credential for it through the UI (a stored key, a signed-in
+	// Codex record). It says nothing by itself about removal: an instance the
+	// environment supplies comes back with it, while one holding the user's
+	// credential is taken away by deleting that credential
+	// (cmd/evener-hub/app_instances.go's environmentBacked).
 	Implicit bool `json:"implicit"`
 	// Hidden marks a provider with no resolvable base URL in this
 	// environment (its *_BASE_URL variable is unset).
@@ -3127,7 +3133,16 @@ type InstanceEntry struct {
 	// store, spec §10); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
-	StoredEmail    string `json:"storedEmail,omitempty"`
+	// RenameLeavesRow is true when renaming this instance leaves an instance
+	// resolving under its old name, because the environment re-supplies what
+	// the rename moves: the row is environment-backed as the removal refusal
+	// computes it, or the old name is a curated provider id that re-derives
+	// without the user's moved credential (a set variable, the ADC file, or a
+	// keyless scheme). The hub computes it (renameLeavesRow) because a client
+	// cannot see ADC availability or the curated set; the rename note keys on
+	// it.
+	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
+	StoredEmail     string `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the
@@ -3258,6 +3273,13 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// InstanceRemoveParams's is. The edit is applied to the row the client
+	// listed, so a name another client has re-pointed since - or replaced with a
+	// different instance - must not have its replacement edited or renamed.
+	// Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 	// OriginClientId is the client identity the hub echoes into the
 	// evener/auth/updated broadcast this edit triggers, so the originator
 	// recognizes its own echo by id instead of refetching as if another client

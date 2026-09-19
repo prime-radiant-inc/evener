@@ -29,6 +29,28 @@ const (
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
 	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
+	// ErrorInstanceRenamePersisted marks a provider-instance rename that
+	// APPLIED (providers.toml carries the new name) before the follow-up
+	// credential move or reload failed; the message names what was left behind.
+	// The rename is on disk, so clients must report it as the standing write it
+	// was and steer to the new name rather than report a failed save - the old
+	// name is gone and re-issuing the rename can only fail on a missing
+	// instance.
+	ErrorInstanceRenamePersisted ErrorInfo = "instanceRenamePersisted"
+	// ErrorInstanceRemoveApplied marks a provider-instance removal whose
+	// credential deletion APPLIED (the instance's stored key or OAuth record is
+	// gone, or its config entry is) before a later step failed; the message
+	// names what was left behind. The removal stands, so clients reconcile it
+	// - dropping the confirmation and any state retained for the name - rather
+	// than report a failed remove whose retry targets a missing instance.
+	ErrorInstanceRemoveApplied ErrorInfo = "instanceRemoveApplied"
+	// ErrorEndpointConflict marks the hub's refusal of an asserted destination:
+	// the name no longer resolves to the endpoint the client showed the user (an
+	// edit or removal assertion, a credential write or test, or a sign-in flow's
+	// captured endpoint). It shares CodeConflict with genuine conflicts (a name
+	// collision, an expired flow), so clients must match this discriminant, never
+	// the code - otherwise a create collision reads as a moved endpoint.
+	ErrorEndpointConflict ErrorInfo = "endpointConflict"
 	// ErrorTranscriptDisplayPostApply marks a transcript-display patch that
 	// APPLIED (the rename published the new revision) before a follow-up
 	// durable step failed; the error's data carries the applied canonical
@@ -196,5 +218,42 @@ func QueuedDrainPartial(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorQueuedDrainPartial},
+	}
+}
+
+// InstanceRenamePersisted reports a provider-instance rename that stood but
+// could not carry the instance's credentials cleanly: the config carries the
+// new name while a stored key or OAuth record was left behind. The message
+// names what was left; the instance itself is renamed.
+func InstanceRenamePersisted(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRenamePersisted},
+	}
+}
+
+// InstanceRemoveApplied reports a provider-instance removal that stood but
+// could not put back what it deleted: the config entry is gone, or a credential
+// it removed stayed deleted, so the instance no longer resolves. The message
+// names what was left; the removal itself is not a failure the caller can
+// retry.
+func InstanceRemoveApplied(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemoveApplied},
+	}
+}
+
+// EndpointConflict reports a refusal of an asserted destination: the name does
+// not resolve where the client asserted it does. Distinct from Conflict so a
+// client can tell a moved endpoint from a genuine conflict such as a name
+// collision, which must keep its own message and the form the user typed.
+func EndpointConflict(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
 	}
 }

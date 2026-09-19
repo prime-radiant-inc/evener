@@ -101,7 +101,50 @@ func (m hubModel) handleInstanceList(msg launchconfig.InstanceListResultMsg) (te
 
 func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
+		switch instanceAppliedErrorInfo(msg.Err) {
+		case appwire.ErrorInstanceRemoveApplied:
+			// The removal stands: the hub deleted the instance's credential
+			// (or its config entry) before a later step failed, and answered
+			// with no listing. Reconcile it - refresh the list the mutation
+			// could not answer with, let the panel clamp its selection as a
+			// removal does, and warn - rather than report a failed remove
+			// whose retry targets a missing instance while waiting on the
+			// passive evener/auth/updated notification.
+			m.err = nil
+			m.addInstanceWriteAppliedNotice(
+				"Instance removal applied",
+				"The instance was removed on the hub before a later step failed; the removal stands.",
+				msg.Err,
+			)
+			return m, m.refreshInstanceListAfterMutation()
+		case appwire.ErrorInstanceRenamePersisted:
+			// providers.toml carries the new name, so the save is not a
+			// failure. Follow the instance to the name the edit submitted -
+			// the hub's refreshed registry can still omit the new row, so the
+			// follow must not be gated on one listing - and warn.
+			m.err = nil
+			newName := strings.TrimSpace(msg.RenameTo)
+			if m.credentialsPanel != nil && newName != "" {
+				m.credentialsPanel.FollowInstance(newName)
+			}
+			summary := "The instance was renamed on the hub before a later step failed; the rename stands."
+			if newName != "" {
+				summary = fmt.Sprintf("The instance is now %q on the hub; a later step failed, but the rename stands.", newName)
+			}
+			m.addInstanceWriteAppliedNotice("Instance rename applied", summary, msg.Err)
+			return m, m.refreshInstanceListAfterMutation()
+		}
 		m.err = msg.Err
+		if instanceEndpointConflict(msg.Err) {
+			// The hub refused the asserted destination: the name no longer
+			// resolves where the row the form was opened on pointed, so the
+			// write did not happen. The refusal is the hub's own clear account
+			// of it; re-read the listing as well, so the retry asserts the
+			// destination now on screen instead of repeating the stale
+			// assertion. Without the re-read this is a plain failure whose
+			// retry cannot succeed.
+			return m, m.refreshInstanceListAfterMutation()
+		}
 		return m, nil
 	}
 	m.err = nil
@@ -115,6 +158,78 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 	return m, nil
 }
 
+// wireErrorInfo returns the appwire.ErrorInfo discriminator an error carries,
+// or "" when it is not a wire error or carries none. A wire error decoded by
+// the client holds its ErrorData as a map, while one built in-process holds the
+// typed struct, so both shapes are read - the same classification
+// isQueuedDrainPartial performs for its own discriminator.
+func wireErrorInfo(err error) appwire.ErrorInfo {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return ""
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.EvenerErrorInfo
+	case map[string]any:
+		if raw, ok := data["evenerErrorInfo"].(string); ok {
+			return appwire.ErrorInfo(raw)
+		}
+	}
+	return ""
+}
+
+// instanceAppliedErrorInfo returns the provider-instance applied-write
+// discriminator err carries (ErrorInstanceRemoveApplied or
+// ErrorInstanceRenamePersisted), or "" for an ordinary failure.
+func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
+	info := wireErrorInfo(err)
+	switch info {
+	case appwire.ErrorInstanceRemoveApplied, appwire.ErrorInstanceRenamePersisted:
+		return info
+	}
+	return ""
+}
+
+// instanceEndpointConflict reports whether err is the hub's refusal of an
+// asserted endpoint (appwire.Conflict, evenerErrorInfo "endpointConflict"): the
+// name no longer resolves to the destination the client showed the user. The
+// discriminator is the wire string, never the code - siblings share
+// CodeConflict, and a genuine conflict (a rename onto an occupied name) must
+// keep its own refusal rather than be reconciled as a moved endpoint.
+func instanceEndpointConflict(err error) bool {
+	return wireErrorInfo(err) == appwire.ErrorEndpointConflict
+}
+
+// refreshInstanceListAfterMutation re-reads the instance list after a mutation
+// the hub could not answer with a listing: an applied write answered with a
+// discriminator, or an endpoint-conflict refusal - both leave the panel's rows
+// describing the destination the write was decided against. The panel owns the
+// rows, so a model without one has nothing to refresh.
+func (m hubModel) refreshInstanceListAfterMutation() tea.Cmd {
+	if m.credentialsPanel != nil && m.client != nil {
+		return launchconfig.CmdInstanceList(m.client)
+	}
+	return nil
+}
+
+// addInstanceWriteAppliedNotice reports a provider-instance write that stood
+// before a later step failed. The hub answers such a write with an applied
+// discriminator, so it is not a failure the user can retry; the notice wears
+// the warning tone rather than the error line's plain failure, and repeats the
+// hub's own account of what was left behind.
+func (m *hubModel) addInstanceWriteAppliedNotice(title, summary string, err error) {
+	m.addNotice(noticePanel{
+		Title:      title,
+		Category:   "instance",
+		Summary:    summary,
+		Source:     m.sourceLabelForNotice(),
+		Reason:     err.Error(),
+		NextAction: "The provider list was refreshed; reopen it to check the standing write.",
+		State:      "warning",
+	})
+}
+
 func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
 		return m, launchconfig.CmdInstanceSetDefault(m.client, msg.Name)
@@ -124,7 +239,7 @@ func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMs
 
 func (m hubModel) handleInstanceRemove(msg launchconfig.InstanceRemoveMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name)
+		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name, msg.EndpointFingerprint)
 	}
 	return m, nil
 }

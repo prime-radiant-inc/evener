@@ -51,7 +51,7 @@ func TestAutomaticResumePreservesRecoveryMutationError(t *testing.T) {
 			}()
 			<-attempted
 			finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
-			finish(true)
+			finish.Finish(true)
 			close(failAttempt)
 			err := <-result
 			if !isSessionRecoveryAdmissionError(err) {

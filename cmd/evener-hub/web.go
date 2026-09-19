@@ -125,15 +125,12 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
 		}
 	}
-	// The one *plugins.Manager the appRPC server and every consumer reached
-	// through cfg.PluginManager share: the plugin CRUD handlers and a
-	// launch's plugin-inventory resolution (thread/start,
-	// evener/spawn/slashCatalog) all reach this same instance instead of
-	// each minting its own, unwired one. The three background maintenance
-	// paths in main_background.go (hubStartUpgrade, seedHubMarketplaces,
-	// startHubPluginMaintenance's GC) build their own wired manager over the
-	// default plugin root instead of reusing this field; #1780 tracks
-	// unifying them.
+	// The one *plugins.Manager every plugin surface shares: the plugin CRUD
+	// handlers, a launch's plugin-inventory resolution (thread/start,
+	// evener/spawn/slashCatalog), and the three background maintenance paths
+	// in main_background.go (hubStartUpgrade, seedHubMarketplaces,
+	// startHubPluginMaintenance's GC) all reach this same instance instead of
+	// each minting its own over a possibly different root (#1780).
 	if cfg.PluginManager == nil {
 		cfg.PluginManager = plugins.NewManager(cfg.PluginRoot)
 	}
@@ -176,7 +173,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 // serializing concurrent resume requests on the same session_id. It shares the
 // registry the RPC auto-resume path uses (cfg.ResumeLocks) so the two paths
 // serialize against each other.
-func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
+func (s *WebServer) lockForSession(sessionID string) *hubcore.ResumeMutex {
 	if s.cfg.ResumeLocks == nil {
 		s.cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}

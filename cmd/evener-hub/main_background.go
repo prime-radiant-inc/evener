@@ -21,10 +21,18 @@ var (
 		_, err := mgr.SeedDefaultMarketplaces(ctx)
 		return err
 	}
-	hubPluginGC     = func(ctx context.Context, mgr *plugins.Manager) ([]string, error) { return mgr.Gc(ctx) }
+	hubPluginGC           = func(ctx context.Context, mgr *plugins.Manager) ([]string, error) { return mgr.Gc(ctx) }
+	hubStartUpgradeDaemon = func(ctx context.Context, mgr *plugins.Manager, interval time.Duration) {
+		startPluginAutoUpgradeDaemon(ctx, mgr, interval)
+	}
+	// Every background path below runs on web.cfg.PluginManager — the one wired
+	// Manager the server's plugin surfaces also use — so the store they
+	// maintain is the store the server serves (#1780). A Manager minted here
+	// over plugins.DefaultRoot() would be a different root whenever the caller
+	// pointed cfg.PluginRoot inside a sandbox/test temp root.
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
-		mgr := newWiredPluginManager("", web.appRPC)
-		startPluginAutoUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval)
+		mgr := web.cfg.PluginManager
+		hubStartUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval)
 	}
 )
 
@@ -70,13 +78,12 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go
 // binds hubListener but does not Serve it until well after this call), so no
-// client could be connected when it runs — but it is wired to web's server
-// anyway, on the same reasoning as every other Manager construction in this
-// package: a write no caller has to remember to pair with a broadcast is the
-// point of OnStoreChanged (#1634), and that only holds if nothing gets to
-// stay a documented exception.
+// client could be connected when it runs — but it runs on web.cfg.PluginManager
+// regardless: that Manager is wired to web's server, and a write no caller has
+// to remember to pair with a broadcast is the point of OnStoreChanged (#1634),
+// which only holds if nothing gets to stay a documented exception.
 func seedHubMarketplaces(ctx context.Context, web *WebServer) {
-	mgr := newWiredPluginManager("", web.appRPC)
+	mgr := web.cfg.PluginManager
 	if err := hubSeedDefaults(ctx, mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
 	}
@@ -86,11 +93,11 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	if cfg.PluginAutoUpgrade {
 		startBackground(func() { hubStartUpgrade(ctx, cfg, web) })
 	}
-	// Also runs before ListenAndServe (see seedHubMarketplaces), and wired
-	// for the same reason: Gc's own lockStore acquisition can run
+	// Also runs before ListenAndServe (see seedHubMarketplaces), on the same
+	// shared Manager for the same reason: Gc's own lockStore acquisition can run
 	// migrateMarketplaceNames, which writes both store files finishing a
 	// rename an earlier run left half done.
-	gcMgr := newWiredPluginManager("", web.appRPC)
+	gcMgr := web.cfg.PluginManager
 	if removed, err := hubPluginGC(ctx, gcMgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
 	} else if len(removed) > 0 {

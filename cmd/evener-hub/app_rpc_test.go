@@ -935,7 +935,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(t.Context(), cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -12038,6 +12038,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
+	// The discriminator the web sheet keys on: the message alone is identical
+	// whether or not the error is wrapped in the evenerErrorInfo payload, so
+	// decode the wire data the client reads and pin it here.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	// The file is the new name either way, which is what the other clients
 	// are now out of date against.
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
@@ -12099,6 +12117,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
 		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
 	}
+	// Same discriminator as the credential-move sibling, on the reload-failed
+	// half: the rename stood, so the client is told so through the wire data,
+	// not inferred from a message it shares with a plain failure.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
 		t.Fatal("the rename did not reach providers.toml")
 	}
@@ -12114,6 +12150,55 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
 	}
+}
+
+// The third rename half: writeAndReload's own reload fails and the rollback
+// write that follows it fails too, so providers.toml carries the new name with
+// no rollback to undo it. The rename is as persisted as the two cases above and
+// the client must be steered to the new name, not told a plain failed save -
+// the same ErrorInstanceRenamePersisted discriminator. The seam is
+// newInstanceRollbackFixture: setting failReload makes the next registry reload
+// fail and blocks the providers.toml temp path, which is exactly the double
+// failure writeAndReload reports as write-applied.
+func TestHubRPCInstanceEditRenamePersistsWhenTheInitialReloadAndRollbackFail(t *testing.T) {
+	f := newInstanceRollbackFixture(t)
+	client := dialHubRPC(t, f.hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	f.failReload.Store(true)
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit,
+		appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
+		t.Fatalf("evener/instance/edit = %v, want the reload-and-rollback double failure", err)
+	}
+	// The rename stood in providers.toml, so the client gets the discriminator
+	// rather than a plain failed save it would present as nothing happened.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
+	// The file is the new name: the rollback never landed, which is what makes
+	// this the persisted-rename case and not the ordinary refusal.
+	if _, ok := readConfigProviders(t, f.tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	waitForAuthUpdatedBroadcast(t, client, "a rename whose initial reload and rollback both failed")
 }
 
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove

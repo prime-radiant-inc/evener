@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification } from "@evener/appwire-client";
 import {
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorEndpointConflict,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
@@ -373,7 +374,7 @@ it("clears a stale probe error when a new probe starts", async () => {
         probes += 1;
         if (probes === 1)
           throw new WireError("conflict", -32013, {
-            evenerErrorInfo: "conflict",
+            evenerErrorInfo: ErrorEndpointConflict,
           });
         return { provider: "alpha", status: "success", message: "" };
       }
@@ -455,7 +456,7 @@ it("names a changed endpoint and re-reads when a credential save is refused", as
       }
       if (method === "evener/auth/apiKey/set")
         throw new WireError("conflict", -32013, {
-          evenerErrorInfo: "conflict",
+          evenerErrorInfo: ErrorEndpointConflict,
         });
       return listing;
     },

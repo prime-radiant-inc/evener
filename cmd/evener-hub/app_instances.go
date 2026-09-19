@@ -40,6 +40,13 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
+	// just before it takes auth.credMu. A race test uses it as a barrier: the
+	// test holds the credential lock, waits for this signal, and only then
+	// releases it, so the removal is provably parked at the lock with its
+	// pre-lock classification already made instead of the test sleeping and
+	// guessing it got there. Nil in production.
+	beforeCredentialLock func()
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
@@ -78,6 +85,15 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		c.auth.credMu.RLock()
 		defer c.auth.credMu.RUnlock()
 	}
+	return c.listLocked(key, keyErr)
+}
+
+// listLocked builds the listing from state the caller has ALREADY locked, using
+// a fingerprint key resolved before that lock. A mutation that captured its
+// answer under its own write lock uses this so the answer is the state that
+// mutation produced, not a second read a concurrent edit can slip into (see
+// Edit).
+func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.InstanceListResponse {
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
 	userLayer := ""
@@ -226,8 +242,9 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		HasStoredOAuth:      status.HasStoredOAuth,
 		EnvVar:              status.EnvVar,
 		ShadowedEnvVar:      status.ShadowedEnvVar,
+		RenameLeavesRow:     c.renameLeavesRow(r, inst),
 		StoredEmail:         status.StoredEmail,
-		CredentialRequired:  inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
+		CredentialRequired:  !keylessScheme(inst.Auth),
 		Warnings:            inst.Warnings,
 		Models:              instanceModels(r, inst.Name),
 	}
@@ -895,8 +912,16 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 //
 // A NewName re-keys the entry, follows the default pointer, and then moves
 // the stored key and OAuth record (moveCredentials); it is refused for an
-// implicit instance, an invalid name, a name any instance already has, and a
-// name still holding a credential of its own (credentialsUnder).
+// invalid name, a name any instance already has, and a name still holding a
+// credential of its own (credentialsUnder).
+//
+// An instance with no authored entry renames like any other: the rename
+// authors the entry under the new name, pinning the base it was resolving
+// against. For an instance a UI credential created (a signed-in Codex record,
+// a stored key) that moves the whole instance, because the credential is a
+// file under the old name. For one the environment supplies it does not:
+// nothing in the rename can move a shell variable or the ADC file, so the old
+// row stays alongside the new one.
 //
 // Refusals follow Create's convention (#717/#748): the ones that blame the
 // fields the caller sent — an unknown name, an invalid vars key, an edit
@@ -904,6 +929,14 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // appwire.InvalidParams; the hub's own faults (the registry not loaded, a
 // read, write, or restore failure) stay plain errors.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
+	return c.edit(params, nil)
+}
+
+// edit applies an edit. When out is non-nil it receives the listing captured
+// while this edit's write lock is still held, so the answer describes the state
+// this edit produced rather than a later List() a concurrent write can slip
+// into; the RPC handler uses it that way for its response.
+func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -937,6 +970,14 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 	}
 
+	// Resolved before the locks, as Remove resolves its own (see the file's note
+	// on resolving the fingerprint key before the locks): resolving can repair
+	// the key file - an inter-process lock and a write - so doing it while c.mu
+	// and credMu are held would hold every listing and credential op behind it.
+	// This edit's own endpoint assertion needs it, and so does the listing the
+	// edit captures under its write locks (listLocked), so it is resolved for
+	// every caller rather than only the captured-listing one.
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Held for the rest of the call, so the providers.toml write and the
@@ -965,12 +1006,25 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 		p = registry.Provider{ID: name}
 	}
+	// The edit is applied to the row the client listed, so the endpoint that row
+	// was served with is asserted before anything is written: a name another
+	// client has re-pointed since - or replaced with a different instance - must
+	// not have its replacement edited or renamed. Asked here, under the lock
+	// that holds the write, so it describes the instance this edit lands on.
+	// Empty asserts nothing (the contract InstanceRemoveParams documents), and
+	// an edit lands no secret, so it has nothing to fail closed for: a hub whose
+	// state root cannot yield the key (the listing then omits every fingerprint,
+	// which is why the client sent no assertion) still edits and renames. A
+	// caller that DID assert an endpoint is still refused, because the hub
+	// cannot say the name resolves where the caller was told it does.
+	if params.ExpectedEndpointFingerprint != "" {
+		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
+	}
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name
 	if renaming {
-		if !authored {
-			return appwire.InvalidParams(fmt.Sprintf("instance %q comes from the environment and cannot be renamed", name))
-		}
 		if !registry.ValidInstanceName(newName) {
 			return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
 		}
@@ -1081,6 +1135,15 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+		// A rename whose reload failed and whose rollback write also failed
+		// comes back as a write-applied error: providers.toml carries the new
+		// name, so the rename is as persisted as one that ended cleanly and
+		// gets the same discriminator (instanceRenameError) the handler maps
+		// to ErrorInstanceRenamePersisted. A non-rename edit has no rename to
+		// report, so it keeps the error as it came.
+		if renaming && writeDidApply(err) {
+			return writeApplied(renamePersistedError{err})
+		}
 		return err
 	}
 	if renaming {
@@ -1092,13 +1155,39 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		// Conflict. Remove clears credentials before its reload; a rename
 		// cannot, because a failed reload restores the file and the
 		// credentials would already have moved.
-		if err := c.reg.Reload(); err != nil && moveErr == nil {
+		reloadErr := c.reg.Reload()
+		switch {
+		case reloadErr == nil:
+			if moveErr != nil {
+				return moveErr
+			}
+			// Both halves landed, so this is a clean rename: fall through to the
+			// listing captured below rather than returning nil here, so the RPC
+			// handler's answer still describes the state this edit produced.
+		case moveErr == nil:
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
-			// way.
-			return writeApplied(err)
+			// way: renamePersistedError is what the RPC handler reads to
+			// broadcast and to hand the client the discriminator.
+			return writeApplied(renamePersistedError{reloadErr})
+		default:
+			// Both halves failed, and the caller has to hear both: the move
+			// report says what credential was left behind, and the reload
+			// failure says the hub's own view may still list the old name
+			// (and refuse instance writes) until it loads again. The move
+			// report already carries the applied marker and the
+			// renamePersistedError discriminator (moveCredentials marks its
+			// own failure), so folding the reload error around it preserves
+			// both without a second writeApplied and without losing the
+			// move's message or wire class.
+			return fmt.Errorf("%w; the registry could not be reloaded either, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, reloadErr)
 		}
-		return moveErr
+	}
+	if out != nil {
+		// Still under this edit's write locks, so no concurrent edit can land
+		// between the write and this read. Reached for a plain edit AND a clean
+		// rename (the rename branch above only returns on an applied error).
+		*out = c.listLocked(key, keyErr)
 	}
 	return nil
 }
@@ -1120,14 +1209,51 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	return held
 }
 
+// renamePersistedError is a rename that reached the file: providers.toml
+// carries the new name, and what is unfinished is either the credential move
+// or the reload that would refresh the hub's own view of what the move
+// changed. Every other client's instance list is stale by exactly as much as
+// it would be after a clean rename, so the RPC handler broadcasts on it and
+// still returns it, leaving the client that asked with the leftover to deal
+// with.
+type renamePersistedError struct{ err error }
+
+func (e renamePersistedError) Error() string { return e.err.Error() }
+
+func (e renamePersistedError) Unwrap() error { return e.err }
+
+// removeAppliedError is a removal whose credential deletion reached the store
+// (or whose config entry left it) before a later step failed: the instance's
+// stored key or OAuth record is gone, so the removal stands even though the
+// call returns an error. Every other client's list is stale by exactly as much
+// as after a clean removal, so the RPC handler broadcasts on it and still
+// returns it, leaving the client that asked with what was left behind to
+// reconcile rather than retry against a missing instance.
+type removeAppliedError struct{ err error }
+
+func (e removeAppliedError) Error() string { return e.err.Error() }
+
+func (e removeAppliedError) Unwrap() error { return e.err }
+
+// removeApplied wraps err as a standing removal unless it already carries the
+// discriminator - restoreFailedRemoval marks its own result, and the config
+// rollback path wraps that result again.
+func removeApplied(err error) error {
+	if _, ok := errors.AsType[removeAppliedError](err); ok {
+		return err
+	}
+	return removeAppliedError{err}
+}
+
 // moveCredentials carries an instance's stored key and OAuth record to its
 // new name after a rename. It runs once providers.toml is written and
 // reloaded, with credMu held by the caller: the config is already renamed, so
 // a failure here is reported as what was left behind rather than undone — the
 // list stays consistent with the file, and a leftover stays reachable under
 // the old name through evener/auth/apiKey/clear or the state directory. That
-// report is an applied write, which is what tells the RPC handler the rename
-// is on disk however this call ends.
+// report is a renamePersistedError, which is what tells the RPC handler the
+// rename is on disk however this call ends (it broadcasts and hands the client
+// the discriminator).
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
@@ -1153,17 +1279,94 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		}
 	}
 	if len(problems) > 0 {
-		return writeApplied(fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; ")))
+		// The rename reached the file, so it is as persisted as one that ended
+		// cleanly: renamePersistedError is what the RPC handler reads to
+		// broadcast and to hand the client the discriminator.
+		return writeApplied(renamePersistedError{fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; "))})
 	}
 	return nil
 }
 
-// Remove deletes an authored instance, its stored key and its OAuth record.
-// An instance that exists from the environment has no entry to delete, so the
-// refusal says what to unset instead (spec §5.1). Refusals that blame the name
-// the caller sent — malformed, unknown, or an environment-only instance that
-// cannot be deleted — follow Create and Edit's convention (#717/#748):
-// appwire.InvalidParams, not a generic wire error.
+// keylessScheme reports whether an auth scheme resolves without a credential, so
+// the registry derives the instance whether or not one is stored
+// (computeInstances): a keyless local endpoint (auth: none) and a gateway on the
+// optional-bearer scheme. Those instances come back with their provider, which
+// is what makes them the environment's rather than the user's.
+func keylessScheme(auth string) bool {
+	return auth == registry.AuthNone || auth == registry.AuthOptionalBearer
+}
+
+// environmentBacked reports whether an instance owes its existence to the
+// host's environment rather than to a credential the user added through the
+// UI. The two differ in what a removal can achieve: a stored key and a
+// signed-in Codex record are files under the instance name, so deleting them
+// takes the instance with them, while an API-key variable, the ADC file and a
+// keyless local endpoint come back with the host - the row would be re-derived
+// by the reload right after. The credential source is the discriminator, not
+// `implicit` alone: a curated provider is implicit whenever no providers.toml
+// entry shadows it, which includes the account a user signed in to
+// (client-side parity: fromEnvironment in the AppWire package's
+// credentialLabels).
+//
+// The Codex transport needs no case of its own here: the source check already
+// places it with the user. The registry resolves a Codex instance from its
+// OAuth record alone, to the "oauth" source when that record is readable and
+// "none" when it is absent or corrupt (credential, llm/registry/instances.go),
+// and neither is on the allow-list below; the hub's own status reports the same
+// two values for it (openAIInstanceStatus), so a Codex row whose status
+// resolved no usable source is still the user's to remove. The client's other
+// early return - true when the row needs no credential - is already the
+// keylessScheme branch: the wire's CredentialRequired is exactly `Auth !=
+// AuthNone && Auth != AuthOptionalBearer` (List, app_instances.go), so
+// `!credentialRequired` is keylessScheme, and keylessScheme returns true below.
+//
+// The source check is an ALLOW-list, not a deny-list: only env:<VAR> and adc
+// name a credential the host supplies. Any other source - none, empty, or a
+// future one this vocabulary does not know - is not the environment's, so an
+// implicit credential-required instance resolving none (a bearer row with no
+// key) stays the user's to remove rather than being badged "from environment"
+// and refused with nothing to say. Mirrors the client's
+// `activeSource.startsWith("env:") || activeSource === "adc"` in
+// appwire-client/typescript/credentialLabels.ts, verified against this file's
+// List entry.
+func environmentBacked(inst registry.Instance) bool {
+	if !inst.Implicit {
+		return false
+	}
+	if keylessScheme(inst.Auth) {
+		return true
+	}
+	return strings.HasPrefix(inst.CredentialSource, "env:") || inst.CredentialSource == "adc"
+}
+
+// renameLeavesRow reports whether renaming inst leaves an instance resolving
+// under its old name, because the environment re-supplies what the rename
+// moves. Two things can hold the old name up: the instance is already
+// environment-backed (environmentBacked - the environment is what supplies it
+// now, so moving the user's layers changes nothing), or the old name is a
+// curated provider id that re-derives an instance from the layers a rename
+// cannot move (registry.ProviderRenameLeavesInstance). The rename note reads
+// the wire bit this computes; a client cannot answer it because it cannot see
+// ADC availability or the curated set.
+func (c *hubInstancesController) renameLeavesRow(r *registry.Registry, inst registry.Instance) bool {
+	if environmentBacked(inst) {
+		return true
+	}
+	if r == nil {
+		return false
+	}
+	return r.ProviderRenameLeavesInstance(inst.Name)
+}
+
+// Remove deletes an instance, its stored key and its OAuth record. An instance
+// that exists from the environment has no entry to delete and would come
+// straight back, so it is refused with a message saying what to unset instead
+// (spec §5.1); one the user credentialed through the UI has no entry either,
+// and there the credential cleanup is the removal (environmentBacked).
+// Refusals that blame the name the caller sent - a name that resolves to no
+// instance or an environment-only one that cannot be deleted - follow Create
+// and Edit's convention (#717/#748): appwire.InvalidParams, not a generic wire
+// error.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -1198,8 +1401,8 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	if inst.Implicit {
-		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst)))
+	if environmentBacked(inst) {
+		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); %s", name, describeImplicit(inst), removalRemedy(inst)))
 	}
 
 	// Read the authored layer before anything is deleted: this is a pure read,
@@ -1226,8 +1429,30 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// that had already passed its checks free to store a key after the
 	// cleanup, leaving a credential behind under a name the removal had just
 	// deleted.
+	if c.beforeCredentialLock != nil {
+		c.beforeCredentialLock()
+	}
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
+
+	// The classification above predates the credential lock, and a credential
+	// writer that held that lock first can change what the instance resolves:
+	// clearing a stored key on an instance whose provider has an environment
+	// fallback turns a row the user owns into one the environment supplies. So
+	// the question is re-asked here, under the lock no writer can hold beside
+	// this call - existence first, because a rename landing between the two
+	// would have taken the name away entirely.
+	locked, ok := c.reg.Get().Instance(name)
+	if !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	if environmentBacked(locked) {
+		// The same caller-fixable condition the pre-lock check classified as
+		// InvalidParams, so the locked re-check answers the same way rather than
+		// letting a concurrent credential clear change the wire class of one
+		// refusal (see Remove's doc comment).
+		return appwire.InvalidParams(fmt.Sprintf("%s exists from the environment (%s); %s", name, describeImplicit(locked), removalRemedy(locked)))
+	}
 
 	// The confirmation this removal carries names the row the client listed, so
 	// a name another client has re-pointed since (a removal and a recreation
@@ -1255,30 +1480,148 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return err
 	}
 
+	// Whether the config authored this instance is read before the cleanup, so
+	// its failure below is classified by the same question every later branch
+	// asks: an authored entry resolves from the config, an implicit instance
+	// from the layer supplyOf names. A pure map read, so moving it ahead of the
+	// cleanup changes nothing it observes.
+	_, authored := before.Providers[name]
+
 	removed, err := c.removeCredentials(name)
 	if err != nil {
 		// The cleanup never reached the config, so a clean restore leaves
 		// nothing changed; a credential that stays deleted is still a change
-		// every other client's status for this name is stale against, and
-		// the hub owes them the broadcast even though the entry itself never
+		// every other client's status for this name is stale against, and the
+		// hub owes them the broadcast even though the entry itself never
 		// moved - restoreFailedRemoval wraps its own result in that case.
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+		//
+		// An authored entry never moved, so the instance resolves from the config
+		// whatever happens to its credentials, and the configured frame with
+		// supplyAny's strict question is the honest report. An implicit instance
+		// has no entry to fall back on - the layer supplyOf names is what carries
+		// it - so when the cleanup deleted that layer and the restore cannot put
+		// it back, the instance no longer resolves: the removal stands, the frame
+		// must say so, and the discriminator goes with it, because
+		// instanceRemoveError reads it to tell the client the removal applied
+		// rather than leaving it to retry a removal that stands. supplyConfig is
+		// the provider carrying the row, with no credential of the user's at
+		// stake, so it keeps the configured frame.
+		frame, supplies := "the instance is still configured", supplyAny
+		if !authored {
+			supplies = supplyOf(locked)
+			if supplies != supplyConfig {
+				frame = "the removal stands"
+			}
+		}
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, frame, supplies)
+		return restoreErr
 	}
 
+	// An instance the user credentialed through the UI has no authored entry:
+	// the credential cleanup above IS the removal, and writing the absent file
+	// back as an empty one would leave a providers.toml the user never had. The
+	// reload below is what re-derives the instance set either way. The file is
+	// still written when its `default` named this instance, because dropping
+	// that pointer is a real change to a file that already exists - leaving it
+	// behind would name an instance the next load cannot find.
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.
 	if l.Default == name {
 		l.Default = ""
 	}
-	if err := c.writeLoadable(l); err != nil {
-		// The config write never landed, so a clean restore leaves nothing
-		// changed; a credential that stays deleted is still a change every
-		// other client's status for this name is stale against -
-		// restoreFailedRemoval wraps its own result in that case.
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+	configChanged := authored || l.Default != before.Default
+	if configChanged {
+		if err := c.writeLoadable(l); err != nil {
+			// The config write never landed, so a clean restore leaves
+			// nothing changed; a credential that stays deleted is still a
+			// change every other client's status for this name is stale
+			// against - restoreFailedRemoval wraps its own result in that
+			// case.
+			//
+			// Which layer the restore has to put back - and so what a failed
+			// restore means - depends on what was in the file before this
+			// write. An authored entry never moved: the write that would have
+			// deleted it failed, so the instance resolves from the config
+			// whatever happens to its credentials, and the configured frame
+			// with supplyAny's strict question is the honest report. An
+			// implicit instance has no entry to fall back on, and the change
+			// this write failed to make - dropping the `default` pointer - is
+			// not a layer it resolves from: the layer supplyOf names is. When
+			// that layer is a credential this call deleted, a restore that
+			// cannot put it back leaves the instance unresolvable, so the
+			// removal stands and the frame has to say so; the discriminator
+			// goes with it, because instanceRemoveError reads it to tell the
+			// client the removal applied instead of leaving it to retry a
+			// removal that stands. supplyConfig is the provider carrying the
+			// row, with no credential of the user's at stake, so it keeps the
+			// configured frame.
+			frame, supplies := "the instance is still configured", supplyAny
+			if !authored {
+				supplies = supplyOf(locked)
+				if supplies != supplyConfig {
+					frame = "the removal stands"
+				}
+			}
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, frame, supplies)
+			if restored {
+				// The carrying layer is back, so the removal did not stand, and
+				// restoreFailedRemoval answers such a rollback with the
+				// leftovers when a stray other layer stayed deleted. The write
+				// failure and the applied mark - that deletion is what every
+				// other client's status for this name is stale against - are
+				// folded in here, the way the reload rollback below folds the
+				// same leftovers into its own report.
+				if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+					return writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers))
+				}
+			}
+			return restoreErr
+		}
 	}
 	if err := c.reg.Reload(); err != nil {
+		if !configChanged {
+			// Nothing was written, so there is no file to put back: restoring
+			// the credentials this call deleted is the whole rollback, and a
+			// write here would create the providers.toml the guard above
+			// exists to avoid. The question is what actually carries this
+			// instance - it is implicit (nothing was authored), so that is the
+			// layer it resolved from, not "every file this call deleted came
+			// back" (supplyOf). When that layer is back the instance is
+			// configured again and the removal was rolled back, even if a stray
+			// other credential could not be restored; only when the carrying
+			// layer itself could not be put back does the removal stand, and
+			// reporting a rolled-back removal as a standing one - and skipping
+			// the reload that would republish the row - would tell the caller
+			// the opposite of the truth. The reload is retried only once the
+			// credentials are back: the failure above parked the registry on
+			// the implicit-only view a failed load leaves (writes refused, this
+			// row missing), and the state the file describes is unchanged, so a
+			// second attempt is the recovery rather than a repetition.
+			cause := fmt.Errorf("removing %q failed: %w", name, err)
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				cause, "the removal stands", supplyOf(locked))
+			if !restored {
+				return restoreErr
+			}
+			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
+			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+				// Two separate facts, and the error has to carry both. The
+				// instance is configured again - the layer that carries it is
+				// back - so the removal is a rollback and the message says so.
+				// A credential is still gone, though: a deleted layer that
+				// could not be put back is a change every other client's
+				// credential status for this name is stale against, so the
+				// rollback error also carries the applied marker (writeApplied
+				// leaves the message and wire class alone) that makes
+				// instanceWrite broadcast evener/auth/updated.
+				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
+			}
+			if reloadErr := c.reg.Reload(); reloadErr != nil {
+				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", rolledBack, reloadErr)
+			}
+			return rolledBack
+		}
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
 		// load (#711). A failed reload drops the registry to implicit-only and
@@ -1296,14 +1639,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// of this file produces, and writing is what is broken, not loading.
 			// The removal stands in the file, so it is an applied write
 			// however this call ends: the other clients are still listing an
-			// instance that is gone. Unconditional: unlike the other
-			// call sites, this one applies to the config regardless of
-			// whether the credential restore below also fails, so it wraps
-			// its own result rather than relying on restoreFailedRemoval's.
-			standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			// instance that is gone. Unconditional: unlike the other call
+			// sites, this one applies to the config regardless of whether the
+			// credential restore below also fails, so it wraps its own result
+			// rather than relying on restoreFailedRemoval's.
+			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
-				"the entry is gone from the config")
-			return writeApplied(standingErr)
+				"the entry is gone from the config", supplyAny)
+			return writeApplied(removeApplied(standingErr))
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1314,13 +1657,56 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// refused for missing credentials, until some later write happened to
 		// reload again.
 		// The config rolled back cleanly, so this would be a plain refusal -
-		// unless the credential restore itself failed, in which case a
-		// stored key or OAuth record stays deleted under an instance that is
-		// back in the config, which every other client's status for it is
-		// stale against; restoreFailedRemoval wraps its own result in that
-		// case.
-		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+		// unless the credential restore itself failed, in which case a stored
+		// key or OAuth record stays deleted under an instance that is back in
+		// the config, which every other client's status for it is stale
+		// against; restoreFailedRemoval wraps its own result in that case.
+		//
+		// Which layer the restore has to put back - and so what a failed
+		// restore means - depends on what held the instance up. An authored
+		// entry is back in the config, so the instance resolves from it whatever
+		// happens to its credentials: the configured frame with supplyAny's
+		// strict question is the honest report. An implicit instance has no
+		// entry to fall back on - configChanged is true only because a `default`
+		// pointer named it - so the layer supplyOf names is what carries it.
+		// When that layer is a credential this call deleted, a restore that
+		// cannot put it back leaves the instance unresolvable: the removal
+		// stands, the frame must say so, and the discriminator goes with it
+		// because instanceRemoveError reads it to tell the client the removal
+		// applied rather than leaving it to retry a removal that stands.
+		// supplyConfig is the provider carrying the row, with no credential of
+		// the user's at stake, so it keeps the configured frame.
+		frame, supplies := "the instance is still configured", supplyAny
+		if !authored {
+			supplies = supplyOf(locked)
+			if supplies != supplyConfig {
+				frame = "the removal stands"
+			}
+		}
+		// The cause is neutral - "failed", not "was rolled back" - because this
+		// rollback only lands when restoreFailedRemoval answers carried. When the
+		// layer that carries the instance is a credential this call deleted and
+		// the restore cannot put it back, that answer is the standing frame, and
+		// a cause that already said "was rolled back" would have the one sentence
+		// report both outcomes at once ("removing X was rolled back: ...; the
+		// removal stands, ..."). The rollback wording is built below, once the
+		// restore has actually carried the instance, the way the !configChanged
+		// sibling builds it.
+		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			fmt.Errorf("removing %q failed: %w", name, err), frame, supplies)
+		if restored {
+			// The carrying layer is back, so the config this rollback restored is
+			// the pre-removal one and the removal was rolled back - the message
+			// says so. A stray other layer that stayed deleted is still a change
+			// every other client's credential status for this name is stale
+			// against, so it is folded in with the applied mark, exactly as the
+			// !configChanged sibling folds its leftovers.
+			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
+			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
+			}
+			restoreErr = rolledBack
+		}
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the
@@ -1335,9 +1721,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// told only that the removal "was rolled back" would read the hub as
 		// healthy.
 		if reloadErr := c.reg.Reload(); reloadErr != nil {
-			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restored, reloadErr)
+			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restoreErr, reloadErr)
 		}
-		return restored
+		return restoreErr
 	}
 	return nil
 }
@@ -1360,41 +1746,117 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
+// removalSupply names the layer an instance resolves from, so a failed
+// removal's rollback can decide from what actually carries the instance rather
+// than from every deleted file coming back. supplyAny is the older, stricter
+// question the config-backed call sites ask - did every layer this call deleted
+// come back? - because there the authored config entry, not a credential file,
+// is what the instance resolves from.
+type removalSupply uint8
+
+const (
+	supplyAny removalSupply = iota
+	// supplyConfig: the authored entry or the provider itself carries it.
+	supplyConfig
+	supplyStoredKey
+	supplyOAuth
+)
+
+// supplyOf reports which removed credential layer carries inst: the OAuth
+// record for the Codex scheme, the stored key for the "store" source, and
+// neither when the authored entry or the provider itself is what holds the
+// instance up. It mirrors credential()'s precedence - the source it reports is
+// the one that actually won.
+func supplyOf(inst registry.Instance) removalSupply {
+	switch inst.CredentialSource {
+	case "oauth":
+		return supplyOAuth
+	case "store":
+		return supplyStoredKey
+	}
+	return supplyConfig
+}
+
 // restoreFailedRemoval puts back what the cleanup deleted after a failed
-// removal, and folds whatever it could not restore into the error the caller
-// sees: a caller told only that the removal failed would have no way to know
-// what state the name is in. frame names that state in the failure to restore
-// - whether the entry is still authored or the removal stood - so the message
-// reads as correct English for the failure that produced it. Its callers pass
-// only the layers the failure actually deleted, so this never rewrites - and
-// never reports a failure to rewrite - a credential that is still where it was.
+// removal, and reports whether the layer that carries the instance is back:
+// supplies names that layer, so a restore that leaves the instance configured
+// answers ok even when a stray other layer could not be put back (a stored key
+// left over beside a Codex OAuth record, or the reverse). supplyAny keeps the
+// stricter rule and answers ok only on a complete restore.
 //
-// A layer that was deleted and could not be put back is a change every other
-// client's credential status for the name is stale against, even when the
-// config write this removal was attempting rolled back cleanly, so that case
-// answers writeApplied; a clean restore is a plain refusal, so cause comes
-// back unwrapped.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
+// cause is the failure that triggered the rollback. On a restore that carries
+// the instance (ok true) it comes back unchanged, unless a stray layer could
+// not be put back - then the returned error names only those leftover layers,
+// which the caller folds into its own rollback report and marks applied: a
+// deleted credential that stays deleted is a change other clients are stale
+// against even though the instance itself is carried again. On a restore that
+// does not carry the instance, the returned error folds cause, frame, and the
+// layers that could not be put back, and answers writeApplied too. When the
+// failed restore took the layer that carries the instance - a stored key or
+// OAuth record (supplyStoredKey/supplyOAuth) - it also carries the
+// standing-removal discriminator, because the instance no longer resolves and
+// clients must reconcile the removal. supplyAny/supplyConfig are the
+// config-backed question: the authored entry or its provider still carries the
+// instance, so the removal did not stand and a plain applied write is reported
+// (the caller that knows the config IS gone marks removeApplied itself). frame
+// names the state - whether the entry is still authored or the removal stood -
+// so the message reads as correct English for the failure that produced it and
+// never contradicts the wire class. Its callers pass only the layers the
+// failure actually deleted, so this never rewrites - and never reports a
+// failure to rewrite - a credential that is still where it was.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
+	storedKeyRestored := true
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
+			storedKeyRestored = false
 			problems = append(problems, fmt.Sprintf("its stored key could not be restored (%v)", err))
 		}
 	}
+	oauthRestored := true
 	if hasOAuth {
 		// Through the writer the auth store uses, so the record this puts back
 		// is replaced atomically: an in-place rewrite of a credential is a
 		// file a reader can catch half written, and a crash inside it leaves
 		// truncated state where this call exists to restore the whole thing.
 		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+			oauthRestored = false
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
 		}
 	}
-	if len(problems) == 0 {
-		return cause
+	var carried bool
+	switch supplies {
+	case supplyStoredKey:
+		carried = storedKeyRestored
+	case supplyOAuth:
+		carried = oauthRestored
+	default:
+		carried = len(problems) == 0
 	}
-	return writeApplied(fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and ")))
+	if !carried {
+		standing := fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
+		if supplies == supplyStoredKey || supplies == supplyOAuth {
+			return false, writeApplied(removeApplied(standing))
+		}
+		return false, writeApplied(standing)
+	}
+	if len(problems) > 0 {
+		// The instance is carried again, but a stray layer stayed deleted: a
+		// plain rollback, so the caller learns what is missing without the
+		// writeApplied mark a real applied deletion carries.
+		return true, removalLeftoversError{strings.Join(problems, " and ")}
+	}
+	return true, cause
 }
+
+// removalLeftoversError is the error restoreFailedRemoval returns when the
+// layer that carries the instance is back but a stray other layer could not be
+// put back. The caller folds it into its own rollback report and wraps that in
+// writeApplied: the removal rolled back, but a credential is still gone, and
+// the applied marker is what makes every other client hear about it.
+type removalLeftoversError struct{ problems string }
+
+func (e removalLeftoversError) Error() string { return e.problems }
 
 // removeCredentials deletes the credential layers filed under a name whose
 // instance is being removed: the stored key and the OAuth record. Both go
@@ -1453,6 +1915,53 @@ func describeImplicit(inst registry.Instance) string {
 	default:
 		return "credential source " + src
 	}
+}
+
+// removalRemedy names the action that really takes an environment-backed
+// instance away, keyed on what makes it exist. The refusal beside describeImplicit
+// reads it, so a remedy has to name something that exists for this instance and
+// would take the row with it: the variable a credential-required scheme reads,
+// the ADC credentials the host supplies, or - for a keyless scheme - the
+// provider endpoint the row is derived from, since a stored credential such a
+// row holds is the user's to clear but does not take the row away.
+func removalRemedy(inst registry.Instance) string {
+	// A keyless scheme comes first: it resolves without any credential, so the
+	// registry derives its instance whether or not a variable is set
+	// (computeInstances). Unsetting the variable an active env source names
+	// would only drop the optional key and leave the row - a keyless gateway
+	// reading OLLAMA_API_KEY keeps coming back from its provider endpoint - so
+	// the endpoint is what the remedy has to name instead.
+	if keylessScheme(inst.Auth) {
+		if strings.HasPrefix(inst.CredentialSource, "env:") {
+			return "the provider endpoint is what keeps it, so remove or disable that endpoint instead"
+		}
+		if inst.CredentialSource == "store" {
+			// The stored credential is the user's to clear, but it is not what
+			// removes the row: keylessScheme makes the registry re-derive the
+			// instance from its provider endpoint, so clearing the credential
+			// leaves the row and reads as the advised action having failed. The
+			// endpoint is the remedy, exactly as in the env: branch above.
+			return "the provider endpoint is what keeps it, so remove or disable that endpoint instead (clearing the stored credential does not remove the row)"
+		}
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	// For a credential-required scheme the variable comes first: it is what
+	// supplies the credential the removal cannot take away, and unsetting it
+	// takes the instance with it.
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
+	// No source at all - a credential-required instance the registry derives
+	// from its provider alone - holds no credential this removal could take
+	// away, so naming one to remove would send the caller after something that
+	// does not exist.
+	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	if inst.CredentialSource == "adc" {
+		return "remove the application-default credentials this host supplies instead"
+	}
+	return "remove the credential that supplies it instead"
 }
 
 // instanceModels renders an instance's model inventory for the sheet's

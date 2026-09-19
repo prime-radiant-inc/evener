@@ -122,6 +122,21 @@ var hubRelayIdleInterval = 250 * time.Millisecond
 // acknowledges speculatively or allocates a worker per attacker-chosen target.
 const hubRelayPendingDeliveryLimit = 64
 
+// hubTransientOwnershipBudget bounds how long a path without a request
+// context of its own waits for a session alias that a deletion or a
+// long-running Resume may hold: long enough for transient ownership to
+// resolve, bounded so the caller cannot be parked indefinitely. The
+// workspaceData reads in web_workspace.go keep their own inline 3s budgets;
+// those sites predate this constant.
+const hubTransientOwnershipBudget = 3 * time.Second
+
+// relayPublicationGuardTimeout bounds how long the per-frame publication guard
+// waits for the target alias. A deletion or a long-running Resume holds that
+// alias; a bounded wait lets transient ownership resolve so an acknowledged
+// frame is still published, while the fan-out and its publicationDone drain can
+// never be parked indefinitely.
+const relayPublicationGuardTimeout = hubTransientOwnershipBudget
+
 const (
 	relayRetryMinDelay = 100 * time.Millisecond
 	relayRetryMaxDelay = 5 * time.Second
@@ -722,11 +737,41 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
-				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
-					server.Broadcast(target.relayKey, notification.Method, notification.Params)
-					return struct{}{}, nil
-				})
-				_ = publicationErr
+				// The guard is best-effort: it only keeps a frame from being
+				// published while the target is being deleted, and its error is
+				// already discarded. Wait for the alias with a bounded timeout so
+				// transient deletion or Resume ownership does not drop an
+				// acknowledged frame, while the fan-out and its publicationDone
+				// drain still cannot be parked indefinitely. On expiry the frame
+				// is skipped as before — an explicit Resume can hold the alias
+				// longer than the guard — but the delivery is acknowledged
+				// afterwards, so the skipped frame would be a silent gap in the
+				// subscriber's projection: broadcast a resync naming the target
+				// first, and the subscriber re-reads instead of missing an
+				// acknowledged notification.
+				// Fast path: an immediately free alias needs no guard context or
+				// timer. A contended or unresolved target falls through to the
+				// bounded wait unchanged.
+				var release func()
+				var lockErr error
+				if fastRelease, ok := tryLockDeletionTarget(cfg, target.ref, target.threadID); ok {
+					release = fastRelease
+				} else {
+					guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
+					release, lockErr = lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
+					cancelGuard()
+				}
+				if lockErr == nil {
+					if deletionFenceError(cfg, target.ref, target.threadID, "") == nil {
+						server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					}
+					release()
+				} else {
+					server.Broadcast(target.relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+						ThreadID: target.threadID,
+						Ref:      target.ref,
+					})
+				}
 				var closeHandle bool
 				relayMu.Lock()
 				target.state.publications--
@@ -1992,7 +2037,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, thread.ID)
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, thread.ID)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}

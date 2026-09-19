@@ -1,18 +1,75 @@
 // @vitest-environment node
 
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import appwireErrorsGo from "../../appwire/errors.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
+  ErrorInstanceRemoveApplied,
+  ErrorInstanceRenamePersisted,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   isHubLaunchError,
+  isInstanceRemoveApplied,
   sessionActionError,
   sessionActionHeadline,
   WireError,
 } from "./errors";
+
+// goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
+// file the hub stamps every evenerErrorInfo from. Reading the source (the way
+// mobile/src/services/conversation.test.ts binds its decoder literals to
+// appwire/types.go) is what makes the binding real: renaming the constant or
+// changing its value in Go fails here, rather than leaving every client matching
+// a discriminator the hub no longer sends.
+function goErrorInfo(name: string): string {
+  const match = appwireErrorsGo.match(new RegExp(`${name}\\s+ErrorInfo\\s*=\\s*"([^"]+)"`));
+  if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
+  return match[1]!;
+}
+
+// The persisted rename discriminator (a rename that stood in the config but
+// could not finish) is the one place a client decides whether to report a
+// standing write or a failed one. A hub-side rename of it must break this test,
+// not silently disable recognition in the web pane, the sheet, and native.
+describe("the persisted rename discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRenamePersisted).toBe(goErrorInfo("ErrorInstanceRenamePersisted"));
+  });
+});
+
+// The applied-removal discriminator is the removal-side sibling: a removal that
+// stood but could not put back what it deleted must be reconciled by every
+// client, not read as a retryable failure. A hub-side rename of it has to break
+// this binding.
+describe("the applied-removal discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRemoveApplied).toBe(goErrorInfo("ErrorInstanceRemoveApplied"));
+  });
+
+  test("isInstanceRemoveApplied reads only that discriminator", () => {
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRemoveApplied })),
+    ).toBe(true);
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
+    ).toBe(false);
+    expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
+  });
+});
+
+// The endpoint-conflict discriminant is what separates a moved destination from
+// a genuine conflict (a name collision) that shares CodeConflict. A hub-side
+// rename of it must break this binding rather than silently read collisions as
+// endpoint conflicts.
+describe("the endpoint-conflict discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorEndpointConflict).toBe(goErrorInfo("ErrorEndpointConflict"));
+  });
+});
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");

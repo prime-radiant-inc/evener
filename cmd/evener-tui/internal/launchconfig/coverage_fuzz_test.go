@@ -163,7 +163,7 @@ func exerciseClientCommands(t *testing.T) {
 		CmdAuthTest(client, "openai", 1),
 		CmdAuthLoginStart(client, "openai"), CmdAuthLoginComplete(client, "openai", "flow", "http://local"),
 		CmdInstanceList(client), CmdInstanceCreate(client, appwire.InstanceCreateParams{}),
-		CmdInstanceEdit(client, appwire.InstanceEditParams{}), CmdInstanceRemove(client, "x"),
+		CmdInstanceEdit(client, appwire.InstanceEditParams{}), CmdInstanceRemove(client, "x", "fp"),
 		CmdInstanceSetDefault(client, "x"), CmdMarketplaceList(client),
 		CmdMarketplaceAdd(client, appwire.MarketplaceAddParams{}), CmdMarketplaceRemove(client, "m"),
 		CmdMarketplaceRefresh(client, "m"), CmdMarketplaceBrowse(client, "m"), CmdPluginList(client),

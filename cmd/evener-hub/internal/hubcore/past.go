@@ -55,6 +55,27 @@ type PastIndex struct {
 	// write once a newer mutation has superseded it, so an older snapshot can
 	// never clobber a fresher one's mirror or lock the mirror into stale data.
 	gen uint64
+	// rebuildGen is bumped only by Rebuild's swap. Find captures it before
+	// probing so foldOne does not re-insert a probe when a Rebuild completed in
+	// the meantime and did not find the session — the deletion won, and folding
+	// the stale probe would resurrect it.
+	rebuildGen uint64
+	// idGen is a per-session mutation generation, bumped under mu by every
+	// operation that changes one id's indexed row: a fold or update that inserts
+	// or replaces it, and an eviction — including a confirmed-absence eviction of
+	// an id that is not currently indexed, which must still fence that id's
+	// in-flight probe. Find captures an id's generation before probing, and evict
+	// and foldOne each act only while it is unchanged, so a fold of a session
+	// cannot be clobbered by a miss-eviction of that same session and, because it
+	// is keyed by id, an eviction of an unrelated session cannot invalidate a
+	// fold of another. Whole-index replacement is covered separately by
+	// rebuildGen.
+	idGen map[string]uint64
+	// probePins counts in-flight Find probes per id. It lets unpinProbe drop an
+	// id's generation entry only once no probe can still compare against it,
+	// keeping idGen bounded by the live index plus active probes rather than
+	// growing without bound on every confirmed miss for a nonexistent id.
+	probePins map[string]int
 
 	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
 	// publish's delta is applied against exactly the snapshot the previous
@@ -93,6 +114,14 @@ type PastIndex struct {
 	// fingerprint is the content hash from the most recent Rebuild (see
 	// contentFingerprint), used to gate onChange against no-op rebuilds.
 	fingerprint uint64
+	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
+	// foldOne folds the row. Instance-scoped test seam for interleaving a
+	// concurrent writer that indexes a newer row first; nil in production.
+	afterFindProbe func()
+	// afterFindCacheMiss, when non-nil, runs in Find after its top-level
+	// findCached miss and before the first probe. Instance-scoped test seam for
+	// interleaving a Rebuild swap in that window; nil in production.
+	afterFindCacheMiss func()
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -107,6 +136,8 @@ func NewPastIndex(projectGlob string) *PastIndex {
 		fs:        afero.NewOsFs(),
 		openDB:    sql.Open,
 		byID:      make(map[string]PastEntry),
+		idGen:     make(map[string]uint64),
+		probePins: make(map[string]int),
 		ftsOwner:  pastIndexOwner(),
 	}
 }
@@ -154,8 +185,11 @@ func (i *PastIndex) StateGlob() string {
 // on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
-// contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
-// Rebuild can detect a genuine content delta without a deep compare.
+// contentFingerprint hashes the consumer-visible fields of the sorted entries so
+// a publish can detect a genuine content delta without a deep compare. It
+// deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
+// re-saves the meta without moving UpdatedAt, and a fold that adopts such a row
+// must still fire onChange so the Hub bumps/invalidates navigation.
 func contentFingerprint(all []PastEntry) uint64 {
 	h := fnv.New64a()
 	for _, e := range all {
@@ -163,6 +197,12 @@ func contentFingerprint(all []PastEntry) uint64 {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(e.Meta.Name))
 		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Meta.ForkLabel))
+		_, _ = h.Write([]byte{0})
+		for _, observer := range e.Meta.ObservedBy {
+			_, _ = h.Write([]byte(observer))
+			_, _ = h.Write([]byte{0})
+		}
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(e.Meta.UpdatedAt.UnixNano()))
 		_, _ = h.Write(b[:])
@@ -211,7 +251,16 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		}
 		i.all = all
 		i.byID = byID
+		// Drop generation fences for ids this scan no longer indexes so idGen stays
+		// bounded by the live index rather than by every id ever seen. An in-flight
+		// probe for a pruned id is already invalidated by the rebuildGen bump below.
+		for id := range i.idGen {
+			if _, ok := byID[id]; !ok {
+				delete(i.idGen, id)
+			}
+		}
 		i.gen++
+		i.rebuildGen++
 		gen := i.gen
 		i.mu.Unlock()
 		// Report skips only for the scan that actually replaced the index; a
@@ -412,6 +461,13 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 		i.mu.Unlock()
 		return false
 	}
+	if metaNewer(old.Meta, meta) {
+		// The indexed row is strictly newer than this update — a concurrent
+		// Rebuild, fold, or refresh advanced it — so keep it rather than let a
+		// stale rename/refresh overwrite newer metadata.
+		i.mu.Unlock()
+		return false
+	}
 	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
 	i.byID[id] = pe
 	fresh := make([]PastEntry, 0, len(i.all))
@@ -423,6 +479,7 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	fresh = insertSorted(fresh, pe)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.idGen[id]++
 	i.gen++
 	gen := i.gen
 	i.mu.Unlock()
@@ -1093,6 +1150,11 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	return out
 }
 
+// pastFindProbeAttempts bounds how many times Find re-probes when a Rebuild
+// swaps the index during its probe (see foldOne): after the bound it reports a
+// miss rather than a stale probe.
+const pastFindProbeAttempts = 3
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1104,12 +1166,126 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	entry, found := i.probeOne(sessionID)
-	if !found {
+	if i.afterFindCacheMiss != nil {
+		i.afterFindCacheMiss()
+	}
+	// Hold a pin for the whole probe loop so unpinProbe cannot prune this id's
+	// generation entry while a value captured below may still be compared.
+	i.pinProbe(sessionID)
+	defer i.unpinProbe(sessionID)
+	for range pastFindProbeAttempts {
+		i.mu.RLock()
+		probeRebuildGen := i.rebuildGen
+		probeIDGen := i.idGen[sessionID]
+		i.mu.RUnlock()
+		entry, found, determinate := i.probeOne(sessionID)
+		if !found {
+			if !determinate {
+				// An indeterminate miss (corrupt meta, unlistable dir) is not
+				// proof of deletion; never evict a valid cached row for it. A
+				// concurrent fold or Rebuild may have indexed this id between the
+				// top-level cache miss and this probe, so consult the index once
+				// more and return a row it now holds: that only reads the cache,
+				// it never evicts, so the indeterminate guarantee is untouched.
+				if live, ok := i.findCached(sessionID); ok {
+					return live, true
+				}
+				return PastEntry{}, false
+			}
+			// Evict only if this id's index state still matches what the probe
+			// observed; a Rebuild swap, a concurrent fold, or another eviction may
+			// have published a row the probe never saw (a session deleted and
+			// recreated, or one a racing lookup just indexed), which deleting
+			// would drop. Re-probe instead.
+			if !i.evict(sessionID, probeRebuildGen, probeIDGen) {
+				continue
+			}
+			return PastEntry{}, false
+		}
+		if i.afterFindProbe != nil {
+			i.afterFindProbe()
+		}
+		if !i.foldOne(entry, probeRebuildGen, probeIDGen) {
+			// A Rebuild swapped in a new index during the probe; its view is newer
+			// than ours, so re-probe against it rather than guess deletion vs
+			// creation.
+			continue
+		}
+		// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
+		// swapped it in after this Find's cache lookup missed, or another fold won
+		// the id — so return what the index actually holds.
+		if live, ok := i.findCached(sessionID); ok {
+			return live, true
+		}
 		return PastEntry{}, false
 	}
-	i.foldOne(entry)
-	return entry, true
+	// Contended on every attempt: report a miss rather than a stale probe.
+	return PastEntry{}, false
+}
+
+// pinProbe marks an in-flight probe for id so its per-id generation fence cannot
+// be pruned while a captured value may still be compared. The count lets
+// concurrent probes for the same id coexist; the last one to unpin prunes.
+func (i *PastIndex) pinProbe(id string) {
+	i.mu.Lock()
+	i.probePins[id]++
+	i.mu.Unlock()
+}
+
+// unpinProbe releases a probe's pin. When it was the last in-flight probe for an
+// id that is no longer indexed, the id's generation entry is dropped: with no
+// probe left to compare against it the entry can never be observed again, and a
+// future probe starts from a fresh generation. The id cannot be re-fenced
+// incorrectly after pruning: an entry is dropped only when no probe remains to
+// compare against it, and while any probe is in flight the entry survives
+// untouched by pruning, so every captured value is compared against the very
+// entry it was read from.
+func (i *PastIndex) unpinProbe(id string) {
+	i.mu.Lock()
+	if i.probePins[id] <= 1 {
+		delete(i.probePins, id)
+		if _, ok := i.byID[id]; !ok {
+			delete(i.idGen, id)
+		}
+	} else {
+		i.probePins[id]--
+	}
+	i.mu.Unlock()
+}
+
+// evict removes an id the disk no longer holds, but only while this id's index
+// state still matches what the caller's probe observed: a Rebuild swap or any
+// other mutation of this id's row (a concurrent fold or update, or a prior
+// eviction) between the check and this call means the row may be one the probe
+// never saw, so it declines and the caller re-probes. Returns whether it acted.
+func (i *PastIndex) evict(id string, expectedRebuildGen, expectedIDGen uint64) bool {
+	i.mu.Lock()
+	if i.rebuildGen != expectedRebuildGen || i.idGen[id] != expectedIDGen {
+		i.mu.Unlock()
+		return false
+	}
+	// Bump unconditionally, even when the row is absent: a cache-miss Find
+	// reaches eviction with the row absent from byID, yet its invalidation must
+	// still fence in-flight probes for this id.
+	i.idGen[id]++
+	if _, ok := i.byID[id]; !ok {
+		i.mu.Unlock()
+		return true
+	}
+	delete(i.byID, id)
+	fresh := make([]PastEntry, 0, len(i.all))
+	for _, e := range i.all {
+		if e.ID != id {
+			fresh = append(fresh, e)
+		}
+	}
+	i.all = fresh
+	i.gen++ // supersede any in-flight publisher (FTS + fingerprint)
+	gen := i.gen
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+	i.publishAndSignal(all, gen)
+	return true
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
@@ -1119,26 +1295,48 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	return e, ok
 }
 
+// globBaseDir returns the directory portion of pattern before its first
+// wildcard, or the pattern's own directory when it has none.
+func globBaseDir(pattern string) string {
+	if i := strings.IndexAny(pattern, "*?["); i >= 0 {
+		return filepath.Dir(pattern[:i])
+	}
+	return filepath.Dir(pattern)
+}
+
 // probeOne looks for one session's meta across every project the glob
 // matches, reading only that session's meta.json per project — the same file
 // and decode Rebuild's list path reads — instead of decoding every meta on
 // disk. Like Rebuild's byID map, a session present in several projects
 // resolves to the LAST project in glob order.
 //
-// A miss here is not proof the session does not exist: a corrupt meta file,
-// a sessions dir that cannot be listed, or an invalid project id skip that
-// project silently — the same paths Rebuild skips (and reports); the 60s
-// rebuild tick remains the authority for those. Find's miss path only needs
-// to surface a session persisted after the last index (the
-// fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss contract).
-func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
+// The bool pair distinguishes an authoritative absence (every matched project
+// was listable and its meta read as not-exist) from an indeterminate miss (a
+// corrupt meta file, an unlistable sessions dir, or an invalid project id was
+// skipped) — the same paths Rebuild skips and reports. Find may evict a cached
+// row on the former but must not on the latter, so a transient read error cannot
+// drop a valid session.
+func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool, bool) {
 	matches, err := filepath.Glob(i.stateGlob)
 	if err != nil {
-		return PastEntry{}, false
+		return PastEntry{}, false, false
+	}
+	determinate := true
+	// filepath.Glob swallows directory read errors and returns no matches, which
+	// would otherwise look like an authoritative "no such session". Verify the
+	// glob's base directory is readable so a transiently inaccessible projects
+	// root is treated as indeterminate rather than evicting valid cached rows.
+	// A base that does not exist is a definite absence, not an indeterminate
+	// one: only a non-IsNotExist read error (EACCES, EIO) is indeterminate.
+	if base := globBaseDir(i.stateGlob); base != "" {
+		if _, err := os.ReadDir(base); err != nil && !os.IsNotExist(err) {
+			determinate = false
+		}
 	}
 	var found PastEntry
 	for _, project := range matches {
 		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			determinate = false
 			continue
 		}
 		// Rebuild's gate, shared rather than copied: ListSessionMetas skips
@@ -1149,15 +1347,21 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 		// OS fs matches the filesystem LoadSessionMeta below reads through;
 		// PastIndex.fs is a different seam (FTS scaffolding).
 		if !schema.SessionsDirListable(afero.NewOsFs(), project) {
+			determinate = false
 			continue
 		}
 		meta, err := schema.LoadSessionMeta(project, sessionID)
 		if err != nil {
+			// A missing meta is a conclusive "absent here"; any other read or
+			// decode error leaves the project's contribution unknown.
+			if !errors.Is(err, os.ErrNotExist) {
+				determinate = false
+			}
 			continue
 		}
 		found = PastEntry{ID: sessionID, Meta: meta, StateDir: project}
 	}
-	return found, found.ID != ""
+	return found, found.ID != "", determinate
 }
 
 // foldOne inserts a probed entry into the in-memory index with the same
@@ -1165,22 +1369,81 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 // slice Rebuild may still be reading must not be mutated in place); the one
 // difference is that it inserts an id the index has never seen, where
 // UpdateMeta replaces an existing one.
-func (i *PastIndex) foldOne(entry PastEntry) {
+//
+// probeRebuildGen and probeIDGen are the index's rebuildGen and the probed id's
+// idGen when the probe read the session. A Rebuild that swapped in a new index
+// since that read leaves the probe's view ambiguous (the swap either dropped the
+// session or listed its project before the session existed), and a mutation of
+// this id since the read — an eviction proving the disk no longer holds it, or a
+// concurrent fold/update that already indexed it — means the probe's view is
+// superseded; either way foldOne declines (returns false) and the caller
+// re-probes the disk. Checking both under this same lock keeps the decision
+// atomic with the insert. Returns true when the entry was folded or an
+// at-least-as-fresh indexed row was kept.
+func (i *PastIndex) foldOne(entry PastEntry, probeRebuildGen, probeIDGen uint64) bool {
 	i.mu.Lock()
-	if _, ok := i.byID[entry.ID]; ok {
-		// A concurrent Rebuild indexed it first; its entry is at least as
-		// fresh as the probe's (both read the same file), so keep it.
+	if i.rebuildGen != probeRebuildGen || i.idGen[entry.ID] != probeIDGen {
 		i.mu.Unlock()
-		return
+		return false
+	}
+	old, ok := i.byID[entry.ID]
+	if ok && !metaNewer(entry.Meta, old.Meta) {
+		// A concurrent Rebuild indexed it first and its row is at least as fresh
+		// as the probe's; keep it. The reverse — the scan read v1, an external
+		// writer then bumped the meta to v2, and the probe read v2 — must not keep
+		// the stale scanned row, so the freshness check falls through to replace.
+		i.mu.Unlock()
+		return true
 	}
 	i.byID[entry.ID] = entry
 	fresh := make([]PastEntry, 0, len(i.all)+1)
-	fresh = append(fresh, i.all...)
+	for _, e := range i.all {
+		if e.ID != entry.ID {
+			fresh = append(fresh, e)
+		}
+	}
 	fresh = insertSorted(fresh, entry)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.idGen[entry.ID]++
 	i.gen++
 	gen := i.gen
 	i.mu.Unlock()
 	i.publishAndSignal(all, gen)
+	return true
+}
+
+// metaNewer reports whether a is a newer revision of the same session than b.
+// Revision, bumped on every save by schema.saveSessionMetaLocked, is the
+// authoritative order: a fork tag (ForkLabel) or an ObservedBy append re-saves
+// without advancing UpdatedAt or NameUpdatedAt, so timestamps alone cannot
+// order those. Timestamps remain the fallback for metas written before Revision
+// existed, and an undecidable tie returns false so foldOne keeps the indexed row
+// rather than clobbering it with a probe whose order cannot be established.
+func metaNewer(a, b schema.SessionMeta) bool {
+	// Revision orders two revisioned rows. A row written before the field
+	// existed has Revision 0 and no revision order, so it must fall back to
+	// timestamps rather than lose to every revisioned row.
+	if a.Revision != 0 && b.Revision != 0 && a.Revision != b.Revision {
+		return a.Revision > b.Revision
+	}
+	if a.UpdatedAt.After(b.UpdatedAt) {
+		return true
+	}
+	if b.UpdatedAt.After(a.UpdatedAt) {
+		return false
+	}
+	if a.NameUpdatedAt.After(b.NameUpdatedAt) {
+		return true
+	}
+	if b.NameUpdatedAt.After(a.NameUpdatedAt) {
+		return false
+	}
+	// Timestamps tie. A mixed pair (Revision 0 vs nonzero) is a legacy row and
+	// its first re-save — the revisioned side is the newer version. Any other
+	// tie carries no order, so keep the indexed row rather than clobber it.
+	if a.Revision != b.Revision {
+		return a.Revision != 0
+	}
+	return false
 }

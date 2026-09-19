@@ -6,6 +6,7 @@ import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
@@ -114,7 +115,7 @@ describe("two stores share nothing", () => {
 
     expect(draftsA.stored()).toMatchObject({ baseRevision: 3, writeUncertain: false });
     expect(draftsB.stored()).toBeNull();
-    expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
     expect(storeB.getState().draft).toBeNull();
   });
 
@@ -130,7 +131,7 @@ describe("two stores share nothing", () => {
     // storeB classifies the record storeA just wrote (its own restoreDraft,
     // via readyStore, runs against the SAME port and sees it).
     const storeB = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(storeB.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(storeB.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
 
     // storeA edits again, replacing what storeB classified.
     const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
@@ -240,6 +241,105 @@ describe("without a registry", () => {
 });
 
 describe("the checkpointed draft editor", () => {
+  test("decodeKeybindingDraftFields matches restoreDraft for valid and invalid records", () => {
+    expect(decodeKeybindingDraftFields({ id: "d1", baseRevision: 3, rules, writeUncertain: true })).toEqual({
+      draft: { version: 1, revision: 3, rules },
+      writeUncertain: true,
+    });
+    expect(decodeKeybindingDraftFields("{not json")).toEqual({ draft: null, writeUncertain: false });
+  });
+
+  test("restored drafts start unconfirmed and the first authoritative payload stamps the live generation", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: true });
+    const store = createKeybindingsStore({ client: clientServing(3, rules), drafts: drafts.storage });
+
+    expect(store.getState()).toMatchObject({
+      draft: { version: 1, revision: 3, rules, generation: null },
+      writeUncertain: true,
+    });
+
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      draft: { version: 1, revision: 3, rules, generation: 1 },
+      writeUncertain: false,
+    });
+  });
+
+  test("editing and saving a draft preserve its generation stamp", async () => {
+    const client = clientServing(3);
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const store = await readyStore(client);
+
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toMatchObject({ revision: 3, rules, generation: 1 });
+
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    expect(store.getState().draft).toMatchObject({ revision: 3, rules, generation: 1 });
+
+    reply.resolve(payload(4, rules));
+    await save;
+    expect(store.getState().draft).toBeNull();
+  });
+
+  test("rebasing a draft earns the current ready generation", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+    expect(store.getState().draft?.generation).toBe(1);
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().draft?.generation).toBe(1);
+
+    store.getState().rebaseDraft(3);
+    expect(store.getState().draft?.generation).toBe(3);
+  });
+
+  test("a draft is stale across a generation change even when the new hub reports the same revision", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toMatchObject({ revision: 3, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
+  test("editing a conflicted draft cannot launder its generation, and only rebase clears the conflict", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().draftConflict).toBe(true);
+    const conflictedGeneration = store.getState().draft?.generation;
+
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Meta+Shift+P" }];
+    store.getState().editDraft(otherRules);
+    expect(store.getState().draft).toEqual({
+      version: 1,
+      revision: 3,
+      rules: otherRules,
+      generation: conflictedGeneration,
+    });
+    expect(store.getState().draftConflict).toBe(true);
+
+    store.getState().rebaseDraft(3);
+    expect(store.getState().draft?.generation).not.toBe(conflictedGeneration);
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
   test("persists the intent before the PATCH leaves, clears it on the ack and applies the canonical payload", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
@@ -296,7 +396,7 @@ describe("the checkpointed draft editor", () => {
     // not just removed. The replacement survives on disk, and the store
     // adopts it rather than reporting no draft.
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // Settling an uncertain checkpoint replaces it atomically: a concurrent
@@ -330,7 +430,7 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
     expect(store.getState().writeUncertain).toBe(false);
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // settledWrite's checkpoint reclassification is deferred inside the thunk
@@ -572,7 +672,7 @@ describe("the checkpointed draft editor", () => {
     const mine: KeybindingDraftCheckpoint = { id: "mine", baseRevision: 3, rules, writeUncertain: false };
     drafts.storage.save(mine);
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
 
     // Another window replaces the SAME classified record while this store
     // still thinks it owns it - a CAS mismatch, not a storage exception.
@@ -686,7 +786,7 @@ describe("the checkpointed draft editor", () => {
     // just removed. The replacement survives on disk, and the store adopts
     // it rather than reporting no draft.
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   // Both rejection branches below apply their payload through
@@ -997,7 +1097,7 @@ describe("the checkpointed draft editor", () => {
     // actually there now, which is readable.
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
   });
 
   test("a genuine storage-read failure never erases an earlier unreadable-record recovery", async () => {
@@ -1024,7 +1124,7 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
     });
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
 
     // Another store or app version replaces the SAME record with a valid,
     // newer checkpoint - under different storage bytes - between this
@@ -1039,7 +1139,7 @@ describe("the checkpointed draft editor", () => {
     store.getState().discardDraft();
     expect(drafts.stored()).toEqual(newer);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: null });
   });
 
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
@@ -1382,6 +1482,8 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
     after: { writeUncertain: boolean; stored: "intact" | null; hubError: boolean };
     /** Brings the store back to a confirmed state the way its host would. */
     settle: (store: KeybindingsStore) => Promise<void>;
+    /** A fenced write settles under a new generation and must remain stale. */
+    draftConflictAfterSettle?: boolean;
   }
 
   const refresh = async (store: KeybindingsStore) => {
@@ -1397,6 +1499,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.beginReadyGeneration();
         await refresh(store);
       },
+      draftConflictAfterSettle: true,
     },
     {
       name: "fenced out by support dropping before the reply lands",
@@ -1407,6 +1510,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.setSupport("supported");
         await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
       },
+      draftConflictAfterSettle: true,
     },
     {
       // The oracle's wedge: the draft drops the override, and a foreign binding
@@ -1446,7 +1550,15 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
 
   test.each(scenarios)(
     "$name",
-    async ({ rules = proposed, arrange, reply = payload(4, rules), rejects, after, settle }) => {
+    async ({
+      rules = proposed,
+      arrange,
+      reply = payload(4, rules),
+      rejects,
+      after,
+      settle,
+      draftConflictAfterSettle = false,
+    }) => {
       const registry = registryWithDefaults();
       const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
       const client = clientServing(3, [applied]);
@@ -1474,7 +1586,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       expect(store.getState()).toMatchObject({
         saving: false,
         writeUncertain: false,
-        draftConflict: false,
+        draftConflict: draftConflictAfterSettle,
         loaded: true,
       });
       expect(() => store.getState().editDraft([])).not.toThrow();
