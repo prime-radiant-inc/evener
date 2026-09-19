@@ -9,7 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification } from "@evener/appwire-client";
 import {
   ENDPOINT_CHANGED_TEST_MESSAGE,
-  FINGERPRINT_UNAVAILABLE_ERROR,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -19,7 +19,11 @@ import { render, renderedText } from "./renderNative.testkit";
 const harness = vi.hoisted(() => ({
   connection: {} as Record<string, unknown>,
 }));
-vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
+const alerts = vi.hoisted(() => ({ alert: vi.fn() }));
+vi.mock("react-native", async () => {
+  const mock = (await import("./renderNative.testkit")).nativeModuleMock();
+  return { ...mock, Alert: { alert: alerts.alert } };
+});
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
@@ -182,37 +186,126 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
   pressLabel(tree, "Save key");
   await act(async () => {});
   expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
-  expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_ERROR);
+  expect(renderedText(tree)).toContain("credential was not saved");
 });
 
-it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
+it("refuses a credential-JSON save for a destination the hub cannot fingerprint", async () => {
   const listing = rows(
     row("alpha", {
       baseUrl: "https://alpha.example",
-      hasStoredFile: true,
-      activeSource: "oauth",
-      authModes: ["oauth"],
+      authModes: ["credentialJson"],
+      hasStoredFile: false,
     }),
   );
   const { tree, scripted } = mount({ request: async () => listing });
   await act(async () => {});
   pressRow(tree, "alpha");
+  pressLabel(tree, "Set credential JSON");
+  const input = tree.root
+    .findAll((node) => String(node.type) === "TextInput")
+    .find((node) => node.props.accessibilityLabel === "Google credential JSON");
+  if (!input) throw new Error("no credential JSON input");
+  act(() => input.props.onChangeText("{}"));
+  pressLabel(tree, "Save credential JSON");
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("credential was not saved");
+  expect(scripted.methods).not.toContain("evener/auth/credentialJson/set");
+});
+
+it("does not report a destination change for a conflict on a non-asserting write", async () => {
+  const listing = rows(row("alpha", { isDefault: false }));
+  const { tree } = mount({
+    request: async (method: string) => {
+      if (method === "evener/instance/setDefault")
+        throw new WireError("conflict", -32013, {
+          evenerErrorInfo: "conflict",
+        });
+      return listing;
+    },
+  });
+  await act(async () => {});
+  pressRow(tree, "alpha");
+  pressLabel(tree, "Make default");
+  await act(async () => {});
+  expect(renderedText(tree)).not.toContain("changed to a different endpoint");
+  expect(renderedText(tree)).toContain("could not be confirmed");
+});
+
+it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
   for (const label of [
     "Clear stored key",
     "Clear credentials",
     "Remove instance",
   ]) {
-    const action = pressables(tree).find(
-      (node) => node.props.accessibilityLabel === label,
+    alerts.alert.mockClear();
+    const listing = rows(
+      row("alpha", {
+        baseUrl: "https://alpha.example",
+        hasStoredFile: true,
+        activeSource: "oauth",
+        authModes: ["oauth"],
+      }),
     );
-    if (!action) throw new Error(`no action ${label}`);
+    const { tree, scripted } = mount({ request: async () => listing });
+    await act(async () => {});
+    pressRow(tree, "alpha");
     // Not silently greyed out: pressing says why it cannot proceed.
-    expect(action.props.disabled).toBeFalsy();
     pressLabel(tree, label);
     await act(async () => {});
-    expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_ERROR);
+    expect(renderedText(tree)).toContain("action was not run");
+    // The guard returns before the confirmation, so no write can go out.
+    expect(alerts.alert).not.toHaveBeenCalled();
+    expect(scripted.methods).not.toContain("evener/instance/remove");
+    expect(scripted.methods).not.toContain("evener/auth/logout");
+    expect(scripted.methods).not.toContain("evener/auth/apiKey/clear");
   }
-  expect(scripted.methods).not.toContain("evener/instance/remove");
+});
+
+it("refuses a probe for a row the hub cannot fingerprint", async () => {
+  const listing = rows(
+    row("alpha", {
+      baseUrl: "https://alpha.example",
+      authModes: ["apiKey"],
+      hasStoredFile: false,
+    }),
+  );
+  const { tree, scripted } = mount({ request: async () => listing });
+  await act(async () => {});
+  pressRow(tree, "alpha");
+  pressLabel(tree, "Test credentials");
+  await act(async () => {});
+  expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+  expect(scripted.methods).not.toContain("evener/auth/test");
+});
+
+it("clears the credential editor when another instance is selected", async () => {
+  const listing = rows(
+    row("alpha", {
+      baseUrl: "https://alpha.example",
+      endpointFingerprint: "fp-1",
+      authModes: ["apiKey"],
+      hasStoredFile: false,
+    }),
+    row("beta", {
+      baseUrl: "https://beta.example",
+      endpointFingerprint: "fp-2",
+      authModes: ["apiKey"],
+      hasStoredFile: false,
+    }),
+  );
+  const { tree, scripted } = mount({ request: async () => listing });
+  await act(async () => {});
+  pressRow(tree, "alpha");
+  pressLabel(tree, "Set key");
+  // The alpha draft must not carry over to beta.
+  pressRow(tree, "beta");
+  await act(async () => {});
+  expect(
+    pressables(tree).find(
+      (node) => node.props.accessibilityLabel === "Save key",
+    ),
+  ).toBeUndefined();
+  expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
 });
 
 it("leaves only the store's own reconcile read after an in-flight write outlives the screen", async () => {

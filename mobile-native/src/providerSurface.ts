@@ -109,6 +109,23 @@ function providerWriteGate(store: CredentialInstancesStore): ProviderWriteGate {
   return gate;
 }
 
+// One recovery slot per credential store: a read the surface owes but could
+// not start because one was already in flight. It is keyed by the store, not
+// the hook, so a remount still performs the read a superseded write needed.
+interface ProviderRecoveryState {
+  pendingRead: boolean;
+}
+const recoveryStates = new WeakMap<CredentialInstancesStore, ProviderRecoveryState>();
+
+function providerRecovery(store: CredentialInstancesStore): ProviderRecoveryState {
+  let recovery = recoveryStates.get(store);
+  if (recovery === undefined) {
+    recovery = { pendingRead: false };
+    recoveryStates.set(store, recovery);
+  }
+  return recovery;
+}
+
 /** useProviderSurface binds one credential store to the shell the Providers
  * screen puts around it: one write at a time, configuration writes refused
  * while the listing refuses them (or holds a replaced connection's rows), and a
@@ -134,6 +151,9 @@ export function useProviderSurface(
   // disposed stops a callback the screen no longer owns - an Alert confirmation
   // retained past unmount, say - from writing to whatever hub is connected then.
   const disposed = useRef(false);
+  // The per-store recovery slot: a read the surface owes but could not start
+  // because one was already in flight.
+  const recovery = providerRecovery(store);
 
   // clearCredentialTest retires any probe - a shown result, or one still in
   // flight - so a late answer cannot publish against rows that moved.
@@ -159,6 +179,18 @@ export function useProviderSurface(
     });
   }, [store]);
 
+  // A superseded instance write deferred its reconcile because a listing read
+  // was already out. That read snapshotted the write's landing before it
+  // happened, so it cannot reconcile the write; once it settles, chain the read
+  // the write needs.
+  useEffect(() => {
+    return store.subscribe((state) => {
+      if (!recovery.pendingRead || state.loading || disposed.current) return;
+      recovery.pendingRead = false;
+      void store.getState().fetch().catch(() => {});
+    });
+  }, [store]);
+
   // A listing the store already holds for this connection - a list remounted
   // after a sign-in, say - is adopted as it is, with the read state it came
   // with; anything else reads one now. The store's own refresh keeps it
@@ -179,10 +211,19 @@ export function useProviderSurface(
     if (disposed.current) return;
     clearCredentialTest();
     if (gate.active()) return;
-    // A read already in flight (a reconnect's restore, another refresh) is
-    // this screen's answer too: superseding it would let a failed second read
-    // discard one that already succeeded.
-    if (store.getState().loading) return;
+    queueRead();
+  }
+
+  // queueRead starts the read the surface owes, or defers it to once the read
+  // already in flight settles: superseding that one would let a failed second
+  // read discard a response that already succeeded.
+  function queueRead() {
+    // A read already in flight, or a screen that is gone, defers to the slot:
+    // the next mounted hook performs it once the read settles.
+    if (store.getState().loading || disposed.current) {
+      recovery.pendingRead = true;
+      return;
+    }
     void store.getState().fetch().catch(() => {});
   }
 
@@ -216,8 +257,15 @@ export function useProviderSurface(
       // read before the caller reports an unconfirmed save. This is the single
       // owner of that recovery read (the screen does not also fetch), and a
       // screen that is gone reconciles nothing.
-      if (result === false && reconcilesOnUnconfirmed && !disposed.current)
-        void store.getState().fetch().catch(() => {});
+      if (
+        result === false &&
+        reconcilesOnUnconfirmed
+      ) {
+        // A read already in flight cannot reconcile this write: it snapshotted
+        // the write's landing before the write bumped it. Defer the reconcile
+        // to once that read settles.
+        queueRead();
+      }
       return result;
     } finally {
       // Released even for a screen that is gone: the gate outlives it, and a
@@ -254,7 +302,7 @@ export function useProviderSurface(
         // longer owns.
         if (revision !== testRevision.current || disposed.current) return;
         clearCredentialTest();
-        void store.getState().fetch().catch(() => {});
+        queueRead();
         return;
       }
       if (isEndpointConflict(err)) {
@@ -264,7 +312,7 @@ export function useProviderSurface(
         // probe's reply is neither acted on nor surfaced.
         if (revision !== testRevision.current || disposed.current) return;
         clearCredentialTest();
-        void store.getState().fetch().catch(() => {});
+        queueRead();
         throw err;
       }
       result = safeCredentialTestResult(provider, {

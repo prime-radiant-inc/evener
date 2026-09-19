@@ -19,7 +19,6 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
-  FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   groupByProvider,
@@ -46,6 +45,17 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 // was saved and the user re-enters against the destination now on screen.
 const ENDPOINT_CHANGED_SAVE_MESSAGE =
   "This connection changed to a different endpoint, so the change was not saved. Check its destination and try again.";
+
+// What clearing a credential or removing an instance says when the hub cannot
+// fingerprint the destination: no key is being sent, so it does not reuse the
+// save-specific wording.
+const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
+  "The hub cannot check this endpoint right now, so the action was not run. Review its destination and try again once it can be checked.";
+
+// What a credential save (a key or a JSON blob) says for the same condition;
+// neutral about which credential kind, unlike the key-specific package copy.
+const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
+  "The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
 
 export function ProvidersScreen({
   route,
@@ -176,12 +186,14 @@ function Providers({
       setKey("");
       return;
     }
-    // The endpoint the editor was opened against moved: re-anchor so a key
-    // typed for the old destination cannot be saved against the new one.
+    // The row the editor was opened for changed - another instance was picked,
+    // or this one's endpoint moved - so re-anchor: a key typed for the old
+    // target must never be saved against a different one.
     if (
       editingCredential &&
-      credentialTarget?.name === instance.name &&
-      credentialTarget.fingerprint !== instance.endpointFingerprint
+      credentialTarget !== null &&
+      (credentialTarget.name !== instance.name ||
+        credentialTarget.fingerprint !== instance.endpointFingerprint)
     ) {
       setEditingCredential(null);
       setCredentialTarget(null);
@@ -209,7 +221,13 @@ function Providers({
     setKey("");
     setActionError(null);
   }
-  async function act(action: () => Promise<unknown>, secret = false) {
+  async function act(
+    action: () => Promise<unknown>,
+    {
+      secret = false,
+      endpointAsserted = false,
+    }: { secret?: boolean; endpointAsserted?: boolean } = {},
+  ) {
     const version = editorVersion.current;
     setActionError(null);
     try {
@@ -239,7 +257,9 @@ function Providers({
         surface.refresh();
         return;
       }
-      if (isEndpointConflict(err)) {
+      // Only an operation that asserted a destination can be refused for a
+      // changed one; a generic conflict (a duplicate name) is not that.
+      if (endpointAsserted && isEndpointConflict(err)) {
         setActionError(ENDPOINT_CHANGED_SAVE_MESSAGE);
         surface.refresh();
         return;
@@ -253,14 +273,18 @@ function Providers({
       );
     }
   }
-  function confirm(title: string, action: () => Promise<unknown>) {
+  function confirm(
+    title: string,
+    action: () => Promise<unknown>,
+    options: { endpointAsserted?: boolean } = {},
+  ) {
     Alert.alert(title, `${selected} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Confirm",
         style: "destructive",
         onPress: () => {
-          void act(action);
+          void act(action, options);
         },
       },
     ]);
@@ -476,7 +500,9 @@ function Providers({
                               // endpoint to assert, so the save is refused here
                               // rather than stored without an assertion.
                               if (fingerprintUnavailable(instance)) {
-                                setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+                                );
                                 return;
                               }
                               const value = key.trim();
@@ -493,7 +519,7 @@ function Providers({
                                       value,
                                       credentialTarget?.fingerprint,
                                     ),
-                                true,
+                                { secret: true, endpointAsserted: true },
                               );
                             }}
                           >
@@ -587,7 +613,9 @@ function Providers({
                                 // no endpoint to assert: refuse with a reason
                                 // rather than grey the control out silently.
                                 if (fingerprintUnavailable(instance)) {
-                                  setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                  setActionError(
+                                    FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                  );
                                   return;
                                 }
                                 confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
@@ -595,7 +623,7 @@ function Providers({
                                     instance.name,
                                     instance.endpointFingerprint,
                                   ),
-                                );
+                                { endpointAsserted: true });
                               }}
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
@@ -606,7 +634,9 @@ function Providers({
                             disabled={surface.busy || stale}
                             onPress={() => {
                               if (fingerprintUnavailable(instance)) {
-                                setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                );
                                 return;
                               }
                               confirm("Clear active credentials?", () =>
@@ -614,7 +644,7 @@ function Providers({
                                   instance.name,
                                   instance.endpointFingerprint,
                                 ),
-                              );
+                              { endpointAsserted: true });
                             }}
                           >
                             Clear credentials
@@ -625,7 +655,9 @@ function Providers({
                             disabled={surface.busy || core.writesRefused || stale}
                             onPress={() => {
                               if (fingerprintUnavailable(instance)) {
-                                setActionError(FINGERPRINT_UNAVAILABLE_ERROR);
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                );
                                 return;
                               }
                               confirm("Remove provider instance?", () =>
@@ -633,7 +665,7 @@ function Providers({
                                   instance.name,
                                   instance.endpointFingerprint,
                                 ),
-                              );
+                              { endpointAsserted: true });
                             }}
                           >
                             Remove instance

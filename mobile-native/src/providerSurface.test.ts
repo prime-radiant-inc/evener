@@ -221,10 +221,13 @@ it("treats a probe refused for a replaced connection's rows as a changed connect
   store.connectionChanged(failingConnection(requests), "ready");
   await vi.waitFor(() => expect(store.getState().loading).toBe(false));
   expect(store.getState().listingFromPreviousConnection).toBe(true);
+  const { result } = renderHook(() => useProviderSurface(store));
+  // Let the mount read settle before counting: only the probe's own recovery
+  // may add a read.
+  await act(async () => {});
   const reads = requests.filter(
     (request) => request.method === "evener/instance/list",
   ).length;
-  const { result } = renderHook(() => useProviderSurface(store));
   await act(async () => {
     await result.current.testCredentials("work");
   });
@@ -236,7 +239,7 @@ it("treats a probe refused for a replaced connection's rows as a changed connect
   expect(
     requests.filter((request) => request.method === "evener/instance/list")
       .length,
-  ).toBeGreaterThan(reads);
+  ).toBe(reads + 1);
 });
 
 it("a pull-to-refresh retires a shown probe and re-reads the listing", async () => {
@@ -525,6 +528,50 @@ it("reconciles a superseded instance write with a listing read", async () => {
   ).toBe(reads + 1);
 });
 
+it("chains a superseded write's reconcile after an in-flight read settles", async () => {
+  const { io, store, requests } = boundary();
+  await store.getState().fetch();
+  const write = deferred<unknown>();
+  const inFlight = deferred<InstanceListResponse>();
+  io.request = (method: string) =>
+    method === "evener/instance/remove" ? write.promise : inFlight.promise;
+  const { result } = renderHook(() => useProviderSurface(store));
+  let applied!: Promise<boolean>;
+  await act(async () => {
+    applied = result.current.remove("work");
+  });
+  // A read starts after the write and is still in flight.
+  let read!: Promise<boolean>;
+  await act(async () => {
+    read = store.getState().fetch();
+  });
+  expect(store.getState().loading).toBe(true);
+  const reads = requests.filter(
+    (request) => request.method === "evener/instance/list",
+  ).length;
+  write.resolve(listing(["written"]));
+  await act(async () => {
+    expect(await applied).toBe(false);
+  });
+  // The in-flight read settles first: the reconcile read chains after it.
+  expect(
+    requests.filter((request) => request.method === "evener/instance/list")
+      .length,
+  ).toBe(reads);
+  io.request = async () => listing(["reconciled"]);
+  inFlight.resolve(listing(["stale"]));
+  await act(async () => {
+    await read;
+  });
+  await act(async () => {});
+  await act(async () => {});
+  expect(
+    requests.filter((request) => request.method === "evener/instance/list")
+      .length,
+  ).toBe(reads + 1);
+  expect(store.getState().diagnostics).toEqual(["reconciled"]);
+});
+
 it("re-derives an in-flight write on a remount, so it still gates the new screen", async () => {
   const { io, store, requests } = boundary();
   await store.getState().fetch();
@@ -588,7 +635,7 @@ it("does not start a second read while the store's restore read is in flight", a
   expect(result.current.busy).toBe(false);
 });
 
-it("a refresh does not supersede an in-flight restore read", async () => {
+it("a refresh coalesces with an in-flight restore read and re-reads once it settles", async () => {
   const { io, store, requests } = boundary();
   io.request = async () => listing(["initial"]);
   await store.getState().fetch();
@@ -616,4 +663,52 @@ it("a refresh does not supersede an in-flight restore read", async () => {
   ).toBe(reads);
   restore.resolve(listing(["restored"]));
   await act(async () => {});
+  await act(async () => {});
+  // The deferred refresh runs once the restore settles.
+  expect(
+    requests.filter((request) => request.method === "evener/instance/list")
+      .length,
+  ).toBe(reads + 1);
+});
+
+it("performs a superseded write's reconcile after a remount once the read settles", async () => {
+  const { io, store, requests } = boundary();
+  await store.getState().fetch();
+  const write = deferred<unknown>();
+  const inFlight = deferred<InstanceListResponse>();
+  io.request = (method: string) =>
+    method === "evener/instance/remove" ? write.promise : inFlight.promise;
+  const first = renderHook(() => useProviderSurface(store));
+  let applied!: Promise<boolean>;
+  await act(async () => {
+    applied = first.result.current.remove("work");
+  });
+  let read!: Promise<boolean>;
+  await act(async () => {
+    read = store.getState().fetch();
+  });
+  expect(store.getState().loading).toBe(true);
+  // The list remounts while the write is still out; its response is superseded.
+  first.unmount();
+  const second = renderHook(() => useProviderSurface(store));
+  expect(second.result.current.busy).toBe(true);
+  write.resolve(listing(["written"]));
+  await act(async () => {
+    expect(await applied).toBe(false);
+  });
+  const reads = requests.filter(
+    (request) => request.method === "evener/instance/list",
+  ).length;
+  io.request = async () => listing(["reconciled"]);
+  inFlight.resolve(listing(["stale"]));
+  await act(async () => {
+    await read;
+  });
+  await act(async () => {});
+  await act(async () => {});
+  expect(
+    requests.filter((request) => request.method === "evener/instance/list")
+      .length,
+  ).toBe(reads + 1);
+  expect(store.getState().diagnostics).toEqual(["reconciled"]);
 });
