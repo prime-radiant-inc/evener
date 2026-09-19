@@ -3,6 +3,7 @@ package interactiveartifacts
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 type compactSDKTransport struct {
 	base        http.RoundTripper
 	maxResponse int
+	maxRequest  int
 }
 
 func (t *compactSDKTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -37,6 +39,7 @@ func (t *compactSDKTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		r = r.Clone(r.Context())
 		r.Body = io.NopCloser(&buffer)
 		r.ContentLength = int64(buffer.Len())
+		t.maxRequest = max(t.maxRequest, buffer.Len())
 	}
 	response, err := t.base.RoundTrip(r)
 	if err != nil {
@@ -53,6 +56,11 @@ func (t *compactSDKTransport) RoundTrip(r *http.Request) (*http.Response, error)
 }
 func TestServiceSDKLargeEscapedReadViewAndList(t *testing.T) {
 	s, token := serviceFixture(t)
+	scope := testScope()
+	scope.NamespaceID = strings.Repeat("<é\x00", 20000)
+	requireNoError(t, s.store.EnsureNamespace(t.Context(), scope.NamespaceID, scope.RealmID, "owner"))
+	token = "large-namespace-token"
+	requireNoError(t, s.store.InstallGrant(t.Context(), sha256.Sum256([]byte(token)), scope))
 	client := NewHTTPClient(token)
 	wire := &compactSDKTransport{base: client.Transport}
 	client.Transport = wire
@@ -120,10 +128,16 @@ func TestServiceSDKLargeEscapedReadViewAndList(t *testing.T) {
 		if page.NextCursor == "" {
 			break
 		}
+		if len(page.NextCursor) > 256 {
+			t.Fatalf("cursor bytes=%d", len(page.NextCursor))
+		}
 		cursor = page.NextCursor
 	}
 	if len(seen) != 5 || pages < 2 || wire.maxResponse <= 2<<20 || wire.maxResponse > 16<<20 {
 		t.Fatalf("size evidence entries=%d pages=%d response=%d", len(seen), pages, wire.maxResponse)
+	}
+	if wire.maxRequest > MaxRequestBytes || wire.maxResponse > MaxResponseBytes {
+		t.Fatalf("wire budgets: request=%d response=%d", wire.maxRequest, wire.maxResponse)
 	}
 	t.Logf("actual SDK largest encoded HTTP response=%d bytes; 5 whole entries across %d pages", wire.maxResponse, pages)
 }

@@ -60,10 +60,8 @@ func (s *Store) List(ctx context.Context, hash [32]byte, raw []byte) (ListResult
 // Cursors carry position only. Their signature is per service run; every page
 // separately authorizes the caller's current namespace and artifact restriction.
 func (s *Store) encodeCursor(namespace, last string) string {
-	raw, _ := json.Marshal([2]string{namespace, last})
-	mac := hmac.New(sha256.New, s.cursorKey[:])
-	_, _ = mac.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(append(raw, mac.Sum(nil)...))
+	raw, _ := json.Marshal(last)
+	return base64.RawURLEncoding.EncodeToString(append(raw, s.cursorMAC(namespace, raw)...))
 }
 func (s *Store) decodeCursor(cursor, namespace string) (string, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
@@ -71,11 +69,20 @@ func (s *Store) decodeCursor(cursor, namespace string) (string, error) {
 		return "", errors.New("invalid artifact cursor")
 	}
 	body, signature := raw[:len(raw)-sha256.Size], raw[len(raw)-sha256.Size:]
-	mac := hmac.New(sha256.New, s.cursorKey[:])
-	_, _ = mac.Write(body)
-	var position [2]string
-	if !hmac.Equal(signature, mac.Sum(nil)) || json.Unmarshal(body, &position) != nil || position[0] != namespace {
+	var position string
+	if !hmac.Equal(signature, s.cursorMAC(namespace, body)) || json.Unmarshal(body, &position) != nil {
 		return "", errors.New("invalid artifact cursor")
 	}
-	return position[1], nil
+	return position, nil
+}
+
+// JSON escaping excludes a literal NUL, separating namespace authority from the
+// position without copying an unbounded namespace into each response cursor.
+func (s *Store) cursorMAC(namespace string, position []byte) []byte {
+	authority, _ := json.Marshal(namespace)
+	mac := hmac.New(sha256.New, s.cursorKey[:])
+	_, _ = mac.Write(authority)
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write(position)
+	return mac.Sum(nil)
 }
