@@ -151,9 +151,14 @@ func OpenHostAuthority(privateDir string) (*HostAuthority, error) {
 }
 
 func openHostAuthority(privateDir string, hooks authorityHooks) (*HostAuthority, error) {
-	directory, err := PrepareStoreDirectory(privateDir)
+	directory, created, err := prepareStoreDirectory(privateDir)
 	if err != nil {
 		return nil, err
+	}
+	for _, createdDirectory := range created {
+		if err := syncDirectory(filepath.Dir(createdDirectory), hooks); err != nil {
+			return nil, fmt.Errorf("sync artifact authority parent directory: %w", err)
+		}
 	}
 	if err := syncDirectory(directory, hooks); err != nil {
 		return nil, fmt.Errorf("sync artifact authority directory: %w", err)
@@ -328,11 +333,8 @@ func (a *HostAuthority) PrepareRoot(ctx context.Context, request RootRequest) (R
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.openLocked(); err != nil {
+	if err := a.mutationReadyLocked(); err != nil {
 		return RootAssociation{}, err
-	}
-	if a.debt.Load() {
-		return RootAssociation{}, ErrDurabilityDebt
 	}
 	if request.RealmID != a.snapshot.Installation.RealmID || request.HumanOwnerID != a.snapshot.Installation.HumanOwnerID {
 		return RootAssociation{}, errors.New("artifact authority installation identity changed")
@@ -369,11 +371,8 @@ func (a *HostAuthority) EnsureSession(ctx context.Context, request SessionReques
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.openLocked(); err != nil {
+	if err := a.mutationReadyLocked(); err != nil {
 		return SessionAssociation{}, err
-	}
-	if a.debt.Load() {
-		return SessionAssociation{}, ErrDurabilityDebt
 	}
 	if request.RealmID != a.snapshot.Installation.RealmID || request.HumanOwnerID != a.snapshot.Installation.HumanOwnerID {
 		return SessionAssociation{}, errors.New("artifact authority installation identity changed")
@@ -421,7 +420,7 @@ func (a *HostAuthority) BeginSessionDeletion(ctx context.Context, sessionID stri
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.openLocked(); err != nil {
+	if err := a.mutationReadyLocked(); err != nil {
 		return DeletionIntent{}, err
 	}
 	for _, deletion := range a.snapshot.Deletions {
@@ -485,6 +484,9 @@ func (a *HostAuthority) ReconcileDeletion(ctx context.Context, intent DeletionIn
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.mutationReadyLocked(); err != nil {
+		return err
+	}
 	for _, deletion := range a.snapshot.Deletions {
 		if deletion.SessionID != intent.SessionID || deletion.NamespaceID != intent.NamespaceID || deletion.Root != intent.Root {
 			continue
@@ -512,6 +514,9 @@ func (a *HostAuthority) ReconcileDurability(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.openLocked(); err != nil {
+		return err
+	}
 	if !a.debt.Load() {
 		return nil
 	}
@@ -529,8 +534,8 @@ func (a *HostAuthority) ReconcileDurability(ctx context.Context) error {
 	if err := syncDirectory(a.directory, a.hooks); err != nil {
 		return err
 	}
-	a.debt.Store(false)
 	a.publishLocked()
+	a.debt.Store(false)
 	return nil
 }
 
@@ -544,6 +549,16 @@ func (a *HostAuthority) Close() error {
 func (a *HostAuthority) openLocked() error {
 	if a.closed {
 		return errors.New("artifact authority closed")
+	}
+	return nil
+}
+
+func (a *HostAuthority) mutationReadyLocked() error {
+	if err := a.openLocked(); err != nil {
+		return err
+	}
+	if a.debt.Load() {
+		return ErrDurabilityDebt
 	}
 	return nil
 }

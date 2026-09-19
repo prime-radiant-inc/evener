@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/identifier"
 )
@@ -228,6 +230,33 @@ func TestHostAuthorityFailsClosedForMalformedPrivateSnapshot(t *testing.T) {
 	}
 }
 
+func TestHostAuthorityRejectsUnknownVersionFieldsAndOversizedInput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, authorityFilename)
+	valid := `"installation":{"realmId":"realm","humanOwnerId":"owner"},"sessions":[],"deletions":[]}`
+	for name, data := range map[string][]byte{
+		"unknown-version": []byte(`{"version":99,` + valid),
+		"unknown-field":   []byte(`{"version":1,"unexpected":true,` + valid),
+		"oversized":       bytes.Repeat([]byte("x"), authorityMaxBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenHostAuthority(root); err == nil {
+				t.Fatal("invalid authority snapshot opened")
+			}
+		})
+	}
+}
+
 func TestHostAuthorityRejectsDuplicateDecodedIdentities(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "artifacts")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -369,7 +398,7 @@ func TestHostAuthorityFirstCreateSyncDebtRetainsCandidate(t *testing.T) {
 	authority, err := openHostAuthority(root, authorityHooks{
 		SyncDir: func(directory *os.File) error {
 			syncs++
-			if syncs == 2 {
+			if syncs == 3 {
 				return errors.New("initial directory sync barrier")
 			}
 			return directory.Sync()
@@ -400,6 +429,102 @@ func TestHostAuthorityFirstCreateSyncDebtRetainsCandidate(t *testing.T) {
 	request := RootRequest{SessionID: identifier.MustNewSessionID(), ProjectID: "project-0123456789", RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID}
 	if _, err := reopened.PrepareRoot(t.Context(), request); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostAuthorityFirstCreateSyncsCreatedParentBeforeLeaf(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	parent := filepath.Dir(root)
+	parent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentFault := true
+	if _, err := openHostAuthority(root, authorityHooks{
+		SyncDir: func(directory *os.File) error {
+			if filepath.Clean(directory.Name()) == filepath.Clean(parent) && parentFault {
+				parentFault = false
+				return errors.New("created parent directory barrier")
+			}
+			return directory.Sync()
+		},
+	}); err == nil {
+		t.Fatal("created parent directory sync failure was hidden")
+	}
+	if _, err := os.Stat(filepath.Join(root, authorityFilename)); !os.IsNotExist(err) {
+		t.Fatalf("authority file appeared after parent durability failure: %v", err)
+	}
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	if authority.Installation().RealmID == "" {
+		t.Fatal("authority did not recover after parent durability barrier")
+	}
+}
+
+func TestHostAuthorityFirstCreateFileSyncFailureLeavesNoCandidate(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	if _, err := openHostAuthority(root, authorityHooks{SyncFile: func(*os.File) error {
+		return errors.New("initial file sync barrier")
+	}}); err == nil {
+		t.Fatal("initial file sync failure was hidden")
+	}
+	if _, err := os.Stat(filepath.Join(root, authorityFilename)); !os.IsNotExist(err) {
+		t.Fatalf("authority file appeared after initial file sync failure: %v", err)
+	}
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	if authority.Installation().RealmID == "" {
+		t.Fatal("authority did not recover after initial file sync barrier")
+	}
+}
+
+func TestHostAuthorityRejectsMutationsAcrossDebtAndClose(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := authority.Installation()
+	rootRequest := RootRequest{SessionID: identifier.MustNewSessionID(), ProjectID: "project-0123456789", RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID}
+	association, err := authority.PrepareRoot(t.Context(), rootRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := true
+	authority.hooks.SyncDir = func(directory *os.File) error {
+		if fault {
+			fault = false
+			return errors.New("debt barrier")
+		}
+		return directory.Sync()
+	}
+	if _, err := authority.PrepareRoot(t.Context(), RootRequest{SessionID: identifier.MustNewSessionID(), ProjectID: rootRequest.ProjectID, RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID}); err == nil {
+		t.Fatal("debt mutation was accepted")
+	}
+	if _, err := authority.BeginSessionDeletion(t.Context(), association.SessionID); !errors.Is(err, ErrDurabilityDebt) {
+		t.Fatalf("debt deletion returned %v, want durability debt", err)
+	}
+	if err := authority.ReconcileDurability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := authority.BeginSessionDeletion(t.Context(), association.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.ReconcileDeletion(t.Context(), intent); err == nil {
+		t.Fatal("closed authority accepted deletion reconciliation")
+	}
+	if err := authority.ReconcileDurability(t.Context()); err == nil {
+		t.Fatal("closed authority accepted durability reconciliation")
 	}
 }
 
@@ -540,4 +665,115 @@ func TestHostAuthorityPolicyDrivesRealStoreTombstone(t *testing.T) {
 	restarted := processSupervisor(t, root, reopened.Policy)
 	_, err = restarted.Grant(t.Context(), scope)
 	requireCode(t, err, NotFoundOrForbidden)
+}
+
+func TestHostAuthorityTombstoneLostAcknowledgmentReplaysAfterOwnedRestart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "artifacts")
+	authority, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := authority.Installation()
+	association, err := authority.PrepareRoot(t.Context(), RootRequest{SessionID: identifier.MustNewSessionID(), ProjectID: "project-0123456789", RealmID: installation.RealmID, HumanOwnerID: installation.HumanOwnerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventRead, eventWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeRead, resumeWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = eventRead.Close()
+		_ = eventWrite.Close()
+		_ = resumeRead.Close()
+		_ = resumeWrite.Close()
+	})
+	waitStarted := make(chan struct{})
+	s := NewSupervisor(root, SupervisorOptions{
+		Policy:     authority.Policy,
+		extraFiles: []*os.File{eventWrite, resumeRead},
+		command:    []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process-namespace-barrier"},
+		Wait: func(ctx context.Context, _ time.Duration) error {
+			close(waitStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if _, err := s.Grant(t.Context(), testScopeForAssociation(association)); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := authority.BeginSessionDeletion(t.Context(), association.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := authority.Policy(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- s.ApplyNamespace(t.Context(), policy[0]) }()
+	var reached [1]byte
+	if _, err := io.ReadFull(eventRead, reached[:]); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	child := s.child
+	s.mu.Unlock()
+	if child == nil {
+		t.Fatal("tombstone barrier reached without an owned child")
+	}
+	if err := child.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-applyDone; err == nil {
+		t.Fatal("lost tombstone acknowledgment was reported as success")
+	}
+	<-waitStarted
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenHostAuthority(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted := processSupervisor(t, root, reopened.Policy)
+	scope := testScopeForAssociation(association)
+	requireCode(t, func() error { _, err := restarted.Grant(t.Context(), scope); return err }(), NotFoundOrForbidden)
+	if err := reopened.ReconcileDeletion(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(root, "artifacts.sqlite"), StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var namespaces, tombstones int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_namespaces").Scan(&namespaces); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_namespaces WHERE tombstoned_at IS NOT NULL").Scan(&tombstones); err != nil {
+		t.Fatal(err)
+	}
+	if namespaces != 1 || tombstones != 1 {
+		t.Fatalf("lost tombstone acknowledgment created unexpected namespaces: total=%d tombstoned=%d", namespaces, tombstones)
+	}
+}
+
+func testScopeForAssociation(association RootAssociation) Scope {
+	scope := testScope()
+	scope.RealmID = association.RealmID
+	scope.PrincipalID = association.PrincipalID
+	scope.NamespaceID = association.NamespaceID
+	return scope
 }
