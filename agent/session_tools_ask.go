@@ -419,28 +419,31 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 // no entry turn (history begins mid-round, e.g. a compaction boundary) keeps
 // the previous behavior: decisive.
 //
-// Only TurnUserInput, TurnSteering and TurnFailure are entry-capable kinds
-// (turnResolvesAskBoundary's own switch is the only thing that can call any
-// of them decisive; every other kind is its default:false). Every other
-// kind — TurnAssistant/TurnToolResults's own round chain, plus non-decisive
-// bookkeeping (TurnCheckpoint, TurnSummary, TurnModelSwitch,
-// TurnHookCompleted, TurnEnvironment, TurnNotesContext,
-// TurnAttentionResolution, TurnSystem) — is transparent pass-through here,
-// matching the outer scan's own treatment of these kinds (it only ever acts
-// on TurnAssistant/TurnToolResults in its switch; everything else falls
-// through turnResolvesAskBoundary's false and the loop just continues).
+// Only TurnUserInput, TurnSteering and a resolving SteeringCarrier TurnFailure
+// are entry-capable kinds (turnResolvesAskBoundary's own switch is the only
+// thing that can call any of them decisive; every other kind is transparent).
+// In particular, a non-carrier TurnFailure is bookkeeping just like
+// TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
+// TurnEnvironment, TurnNotesContext, TurnAttentionResolution, or TurnSystem:
+// the outer scan also passes through it while looking for the round's real
+// entry.
 // Stopping at the first non-Assistant/ToolResults turn, as this used to,
 // misreads a bookkeeping turn interleaved before the real entry as the entry
 // itself.
 func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int, origins map[string]steeringOrigin) bool {
 	for j := idx - 1; j >= 0; j-- {
 		switch history[j].Kind {
-		case schema.TurnUserInput, schema.TurnSteering, schema.TurnFailure:
+		case schema.TurnUserInput, schema.TurnSteering:
 			turnOrigins := origins
 			if j < boundaryStart {
 				turnOrigins = nil
 			}
 			return turnResolvesAskBoundary(history[j], turnOrigins)
+		case schema.TurnFailure:
+			if history[j].Error == nil || !history[j].Error.SteeringCarrier {
+				continue
+			}
+			return true
 		default:
 			continue
 		}

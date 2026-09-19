@@ -866,7 +866,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	return false, fmt.Errorf("provider error: %w", err)
 }
 

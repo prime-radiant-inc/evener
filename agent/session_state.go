@@ -278,6 +278,18 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 	}
 }
 
+// finishProcessingAtFailureBoundary settles a failed turn to the same boundary
+// state restore derives from its transcript. A pending ask survives provider,
+// retry-budget, and other terminal failures, so those paths must remain
+// awaiting instead of reporting idle to the live client.
+func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
+	state := SessionIdle
+	if s.askPendingCount() > 0 {
+		state = SessionAwaiting
+	}
+	s.finishProcessingAtBoundary(ctx, state)
+}
+
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
 // returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
 // (no turn was timed) contributes nothing.

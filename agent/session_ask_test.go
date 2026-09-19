@@ -4023,6 +4023,100 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore(t *tes
 	}
 }
 
+// TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
+// covers the provider-owned terminal path: a human-note carrier preserves the
+// pending ask, and handleModelError must leave the live session awaiting just
+// as restore does for the same transcript shape.
+func TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) { return toolCallResponse(ask), nil },
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-provider-failure", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a provider failure after the carrier ran", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after provider failure = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after provider failure = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore covers the
+// no-tool retry terminal path: a human-note carrier preserves the pending ask,
+// and exhausting bare-text retries must leave the live session awaiting.
+func TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	steps := []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+	}
+	for range maxBareTextRetries + 1 {
+		steps = append(steps, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text")} })
+	}
+	c := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: steps}
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-no-tool-exhaustion", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want no-tool retry exhaustion after the carrier ran", ran, err)
+	}
+	if got := len(adapter.Requests()); got != maxBareTextRetries+2 {
+		t.Fatalf("provider requests = %d, want %d (initial ask plus carrier and its exhausted retries)", got, maxBareTextRetries+2)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after no-tool exhaustion = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after no-tool exhaustion = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+}
+
 // TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry
 // covers a RoboRev #1907 round-2 Medium: roundEntryResolvesAskBoundary's
 // backward walk only skips TurnAssistant/TurnToolResults on its way to the
@@ -4048,5 +4142,17 @@ func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t
 	}
 	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
 		t.Fatal("roundEntryResolvesAskBoundary = false, want true (the real entry is a resolving TurnUserInput one step past the TurnEnvironment bookkeeping turn)")
+	}
+}
+
+func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
+		{Kind: schema.TurnFailure, Message: llm.System("provider failed"), Error: &schema.TurnFailureInfo{Message: "provider failed"}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("checking the schema")),
+		schema.NewTurn(schema.TurnToolResults, llm.User("tool result")),
+	}
+	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
+		t.Fatal("roundEntryResolvesAskBoundary = false, want true (a non-carrier TurnFailure is transparent bookkeeping before the resolving TurnUserInput entry)")
 	}
 }

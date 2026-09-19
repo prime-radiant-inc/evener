@@ -1353,11 +1353,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				// diverging from restore's deriveRestoredState for the identical
 				// transcript and, via WireState, telling a live client nothing is
 				// waiting on them.
-				boundaryState := SessionIdle
-				if s.askPendingCount() > 0 {
-					boundaryState = SessionAwaiting
-				}
-				s.finishProcessingAtBoundary(processCtx, boundaryState)
+				s.finishProcessingAtFailureBoundary(processCtx)
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
