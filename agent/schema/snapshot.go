@@ -303,9 +303,9 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
-// SessionMetaTombstoneSuffix names the marker DeleteSessionMeta leaves beside a
-// removed session so a writer that acquires the meta lock afterwards refuses to
-// recreate it. It is deliberately not a *.meta.json suffix, so the directory
+// SessionMetaTombstoneSuffix names the marker TombstoneSessionMeta leaves beside
+// a removed session so a writer that acquires the meta lock afterwards refuses
+// to recreate it. It is deliberately not a *.meta.json suffix, so the directory
 // scanners ignore it.
 const SessionMetaTombstoneSuffix = ".meta.json.deleted"
 

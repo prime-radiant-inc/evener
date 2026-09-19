@@ -60,10 +60,17 @@ type PastIndex struct {
 	// the meantime and did not find the session — the deletion won, and folding
 	// the stale probe would resurrect it.
 	rebuildGen uint64
-	// evictGen is bumped by evict. foldOne validates it alongside rebuildGen so
-	// an in-flight probe that read a session before an eviction cannot reinsert
-	// the deleted row afterwards.
-	evictGen uint64
+	// idGen is a per-session mutation generation, bumped under mu by every
+	// operation that changes one id's indexed row: a fold or update that inserts
+	// or replaces it, and an eviction — including a confirmed-absence eviction of
+	// an id that is not currently indexed, which must still fence that id's
+	// in-flight probe. Find captures an id's generation before probing, and evict
+	// and foldOne each act only while it is unchanged, so a fold of a session
+	// cannot be clobbered by a miss-eviction of that same session and, because it
+	// is keyed by id, an eviction of an unrelated session cannot invalidate a
+	// fold of another. Whole-index replacement is covered separately by
+	// rebuildGen.
+	idGen map[string]uint64
 
 	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
 	// publish's delta is applied against exactly the snapshot the previous
@@ -124,6 +131,7 @@ func NewPastIndex(projectGlob string) *PastIndex {
 		fs:        afero.NewOsFs(),
 		openDB:    sql.Open,
 		byID:      make(map[string]PastEntry),
+		idGen:     make(map[string]uint64),
 		ftsOwner:  pastIndexOwner(),
 	}
 }
@@ -457,6 +465,7 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	fresh = insertSorted(fresh, pe)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.idGen[id]++
 	i.gen++
 	gen := i.gen
 	i.mu.Unlock()
@@ -1149,7 +1158,7 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	for range pastFindProbeAttempts {
 		i.mu.RLock()
 		probeRebuildGen := i.rebuildGen
-		probeEvictGen := i.evictGen
+		probeIDGen := i.idGen[sessionID]
 		i.mu.RUnlock()
 		entry, found, determinate := i.probeOne(sessionID)
 		if !found {
@@ -1158,11 +1167,12 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 				// proof of deletion; never evict a valid cached row for it.
 				return PastEntry{}, false
 			}
-			// Evict only if the index still matches the generations this probe
-			// observed; a Rebuild swap or another eviction may have published a
-			// row the probe never saw (a session deleted and recreated), which
-			// deleting would drop. Re-probe instead.
-			if !i.evict(sessionID, probeRebuildGen, probeEvictGen) {
+			// Evict only if this id's index state still matches what the probe
+			// observed; a Rebuild swap, a concurrent fold, or another eviction may
+			// have published a row the probe never saw (a session deleted and
+			// recreated, or one a racing lookup just indexed), which deleting
+			// would drop. Re-probe instead.
+			if !i.evict(sessionID, probeRebuildGen, probeIDGen) {
 				continue
 			}
 			return PastEntry{}, false
@@ -1170,7 +1180,7 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 		if i.afterFindProbe != nil {
 			i.afterFindProbe()
 		}
-		if !i.foldOne(entry, probeRebuildGen, probeEvictGen) {
+		if !i.foldOne(entry, probeRebuildGen, probeIDGen) {
 			// A Rebuild swapped in a new index during the probe; its view is newer
 			// than ours, so re-probe against it rather than guess deletion vs
 			// creation.
@@ -1188,20 +1198,21 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	return PastEntry{}, false
 }
 
-// evict removes an id the disk no longer holds, but only while the index still
-// matches the generations the caller's probe observed: a Rebuild swap or another
-// eviction between the check and this call means the row may be one the probe
+// evict removes an id the disk no longer holds, but only while this id's index
+// state still matches what the caller's probe observed: a Rebuild swap or any
+// other mutation of this id's row (a concurrent fold or update, or a prior
+// eviction) between the check and this call means the row may be one the probe
 // never saw, so it declines and the caller re-probes. Returns whether it acted.
-func (i *PastIndex) evict(id string, expectedRebuildGen, expectedEvictGen uint64) bool {
+func (i *PastIndex) evict(id string, expectedRebuildGen, expectedIDGen uint64) bool {
 	i.mu.Lock()
-	if i.rebuildGen != expectedRebuildGen || i.evictGen != expectedEvictGen {
+	if i.rebuildGen != expectedRebuildGen || i.idGen[id] != expectedIDGen {
 		i.mu.Unlock()
 		return false
 	}
 	// Bump unconditionally, even when the row is absent: a cache-miss Find
 	// reaches eviction with the row absent from byID, yet its invalidation must
 	// still fence in-flight probes for this id.
-	i.evictGen++
+	i.idGen[id]++
 	if _, ok := i.byID[id]; !ok {
 		i.mu.Unlock()
 		return true
@@ -1302,17 +1313,19 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool, bool) {
 // difference is that it inserts an id the index has never seen, where
 // UpdateMeta replaces an existing one.
 //
-// probeRebuildGen and probeEvictGen are the index's rebuildGen and evictGen when
-// the probe read the session. A Rebuild that swapped in a new index since that
-// read leaves the probe's view ambiguous (the swap either dropped the session or
-// listed its project before the session existed), and an eviction since the read
-// proves the disk no longer holds it; either way foldOne declines (returns false)
-// and the caller re-probes the disk. Checking both under this same lock keeps the
-// decision atomic with the insert. Returns true when the entry was folded or an
+// probeRebuildGen and probeIDGen are the index's rebuildGen and the probed id's
+// idGen when the probe read the session. A Rebuild that swapped in a new index
+// since that read leaves the probe's view ambiguous (the swap either dropped the
+// session or listed its project before the session existed), and a mutation of
+// this id since the read — an eviction proving the disk no longer holds it, or a
+// concurrent fold/update that already indexed it — means the probe's view is
+// superseded; either way foldOne declines (returns false) and the caller
+// re-probes the disk. Checking both under this same lock keeps the decision
+// atomic with the insert. Returns true when the entry was folded or an
 // at-least-as-fresh indexed row was kept.
-func (i *PastIndex) foldOne(entry PastEntry, probeRebuildGen, probeEvictGen uint64) bool {
+func (i *PastIndex) foldOne(entry PastEntry, probeRebuildGen, probeIDGen uint64) bool {
 	i.mu.Lock()
-	if i.rebuildGen != probeRebuildGen || i.evictGen != probeEvictGen {
+	if i.rebuildGen != probeRebuildGen || i.idGen[entry.ID] != probeIDGen {
 		i.mu.Unlock()
 		return false
 	}
@@ -1335,6 +1348,7 @@ func (i *PastIndex) foldOne(entry PastEntry, probeRebuildGen, probeEvictGen uint
 	fresh = insertSorted(fresh, entry)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.idGen[entry.ID]++
 	i.gen++
 	gen := i.gen
 	i.mu.Unlock()

@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // TestSaveSessionMetaWaitsForCrossProcessLock pins that the Revision
@@ -119,4 +121,44 @@ func TestAppendSessionObservedByLoadsUnderCrossProcessLock(t *testing.T) {
 	if len(got.ObservedBy) == 0 {
 		t.Fatal("append did not persist ObservedBy")
 	}
+}
+
+// TestLockSessionMetaCrossProcessAppliesToOsFs pins the capability check: the
+// production filesystem, afero.NewOsFs() (a *afero.OsFs), and the value form
+// afero.OsFs{} must both engage the cross-process lock, while a non-OS afero.Fs
+// must not claim locking it cannot provide. A mis-narrowed assertion silently
+// disables production locking, so this guards the type switch directly.
+func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+
+	release, applied, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id)
+	if err != nil {
+		t.Fatalf("pointer OsFs: %v", err)
+	}
+	if !applied {
+		t.Fatal("afero.NewOsFs() (pointer form) did not engage the cross-process lock")
+	}
+	release()
+
+	release, applied, err = lockSessionMetaCrossProcess(afero.OsFs{}, dir, id)
+	if err != nil {
+		t.Fatalf("value OsFs: %v", err)
+	}
+	if !applied {
+		t.Fatal("afero.OsFs{} (value form) did not engage the cross-process lock")
+	}
+	release()
+
+	release, applied, err = lockSessionMetaCrossProcess(afero.NewMemMapFs(), dir, id)
+	if err != nil {
+		t.Fatalf("MemMapFs: %v", err)
+	}
+	if applied {
+		t.Fatal("a non-OS afero.Fs claimed a cross-process lock it cannot provide")
+	}
+	release()
 }

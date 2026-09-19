@@ -23,7 +23,14 @@ import (
 // mutex serializes those writers. The returned func releases the lock. The lock
 // file is left in place; flock releases it on close.
 func lockSessionMetaCrossProcess(fs afero.Fs, dir, id string) (func(), bool, error) {
-	if _, ok := fs.(*afero.OsFs); !ok {
+	// afero.NewOsFs returns *afero.OsFs — its OsFs methods have pointer
+	// receivers — and that pointer form is what production constructs and what
+	// the check below must accept. The value form is accepted too so a caller
+	// that hands us an afero.OsFs by value still gets the flock: it is the same
+	// OS-backed filesystem, so enabling locking on it cannot weaken a real guard.
+	switch fs.(type) {
+	case *afero.OsFs, afero.OsFs:
+	default:
 		return func() {}, false, nil
 	}
 	lockPath := filepath.Join(dir, sessionsSubdir, id+".meta.json.lock")

@@ -33,9 +33,9 @@ func foldNow(t *testing.T, idx *PastIndex, entry PastEntry) {
 	t.Helper()
 	idx.mu.RLock()
 	rebuildGen := idx.rebuildGen
-	evictGen := idx.evictGen
+	idGen := idx.idGen[entry.ID]
 	idx.mu.RUnlock()
-	if !idx.foldOne(entry, rebuildGen, evictGen) {
+	if !idx.foldOne(entry, rebuildGen, idGen) {
 		t.Fatalf("foldOne declined for %s with no racing Rebuild", entry.ID)
 	}
 }
@@ -168,7 +168,7 @@ func fuzzScenarioPastIndex_StaleUpdateMetaDoesNotClobberNewerRow(t *testing.T) {
 
 // fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe pins that an eviction
 // invalidates a probe that read the session before it: foldOne must decline for a
-// probe whose evictGen predates the eviction, so a concurrent Find cannot
+// probe whose id generation predates the eviction, so a concurrent Find cannot
 // reinsert the deleted row after another Find evicted it.
 func fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe(t *testing.T) {
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
@@ -178,15 +178,15 @@ func fuzzScenarioPastIndex_EvictionInvalidatesInFlightProbe(t *testing.T) {
 
 	idx.mu.RLock()
 	probeRebuildGen := idx.rebuildGen
-	probeEvictGen := idx.evictGen
+	probeIDGen := idx.idGen[id]
 	idx.mu.RUnlock()
 
-	if !idx.evict(id, probeRebuildGen, probeEvictGen) { // another Find confirmed the disk no longer holds it
+	if !idx.evict(id, probeRebuildGen, probeIDGen) { // another Find confirmed the disk no longer holds it
 		t.Fatal("evict declined despite current generations")
 	}
 
 	// The in-flight probe's entry (read before the eviction) must not be folded.
-	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base}}, probeRebuildGen, probeEvictGen) {
+	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "probe", UpdatedAt: base}}, probeRebuildGen, probeIDGen) {
 		t.Fatal("foldOne accepted an in-flight probe that predates the eviction")
 	}
 	if _, ok := idx.findCached(id); ok {
@@ -401,14 +401,14 @@ func fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange(t *testing.T) {
 }
 
 // fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe pins Medium 2:
-// a confirmed deletion must advance evictGen even when the id is not currently
-// indexed, so an in-flight probe (which reaches eviction via a cache miss) cannot
-// pass its guard and reinsert the deleted row.
+// a confirmed deletion must advance the id's generation even when the id is not
+// currently indexed, so an in-flight probe (which reaches eviction via a cache
+// miss) cannot pass its guard and reinsert the deleted row.
 func fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe(t *testing.T) {
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 	idx := NewPastIndex("")
 	idx.mu.RLock()
-	before := idx.evictGen
+	before := idx.idGen[id]
 	rebuildGen := idx.rebuildGen
 	idx.mu.RUnlock()
 
@@ -417,10 +417,10 @@ func fuzzScenarioPastIndex_EvictingAbsentIDInvalidatesInFlightProbe(t *testing.T
 	}
 
 	idx.mu.RLock()
-	after := idx.evictGen
+	after := idx.idGen[id]
 	idx.mu.RUnlock()
 	if after == before {
-		t.Fatal("evicting an absent id did not bump evictGen")
+		t.Fatal("evicting an absent id did not bump its id generation")
 	}
 	if idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id}}, 0, before) {
 		t.Fatal("foldOne accepted an in-flight probe that predates the eviction")
@@ -437,14 +437,70 @@ func fuzzScenarioPastIndex_EvictDeclinesWhenGenerationsChanged(t *testing.T) {
 	idx.SeedForTest([]schema.SessionMeta{{ID: id}})
 	idx.mu.RLock()
 	rebuildGen := idx.rebuildGen
-	evictGen := idx.evictGen
+	idGen := idx.idGen[id]
 	idx.mu.RUnlock()
 
-	if !idx.evict(id, rebuildGen, evictGen) {
+	if !idx.evict(id, rebuildGen, idGen) {
 		t.Fatal("evict declined with the current generations")
 	}
-	if idx.evict(id, rebuildGen, evictGen) {
+	if idx.evict(id, rebuildGen, idGen) {
 		t.Fatal("evict proceeded with generations a later eviction had superseded")
+	}
+}
+
+// fuzzScenarioPastIndex_EvictDeclinesWhenFoldRacedProbe pins the medium eviction
+// TOCTOU: a miss captures the id's generation before its probe, but a concurrent
+// fold can index the session in the window before the miss reaches evict. Since
+// that fold bumps the id's generation, the stale miss must decline the eviction
+// rather than delete the freshly folded row.
+func fuzzScenarioPastIndex_EvictDeclinesWhenFoldRacedProbe(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex("")
+	idx.mu.RLock()
+	rebuildGen := idx.rebuildGen
+	probeIDGen := idx.idGen[id]
+	idx.mu.RUnlock()
+
+	// A concurrent fold indexes the session between the miss's probe and its
+	// eviction.
+	if !idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "folded"}}, rebuildGen, probeIDGen) {
+		t.Fatal("foldOne declined with the current generations")
+	}
+	// The stale miss's eviction must re-validate the per-id generation and
+	// decline instead of deleting the just-folded row.
+	if idx.evict(id, rebuildGen, probeIDGen) {
+		t.Fatal("evict deleted a row a racing fold had published")
+	}
+	if _, ok := idx.findCached(id); !ok {
+		t.Fatal("the folded row was dropped by the stale miss")
+	}
+}
+
+// fuzzScenarioPastIndex_EvictingUnrelatedIDPreservesInFlightFold pins the low
+// global-generation interference: eviction invalidation is keyed per id, so a
+// confirmed-absence eviction for an unrelated session cannot make an in-flight
+// fold for another session decline (which, repeated, would exhaust Find's probe
+// attempts and return a false miss for a session that exists on disk).
+func fuzzScenarioPastIndex_EvictingUnrelatedIDPreservesInFlightFold(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	const other = "02wMz5Txv8Vo4rqb3QYZuV"
+	idx := NewPastIndex("")
+	idx.mu.RLock()
+	rebuildGen := idx.rebuildGen
+	probeIDGen := idx.idGen[id]
+	otherIDGen := idx.idGen[other]
+	idx.mu.RUnlock()
+
+	// An unrelated id's confirmed-absence eviction...
+	if !idx.evict(other, rebuildGen, otherIDGen) {
+		t.Fatal("evict of the unrelated id declined")
+	}
+	// ...must leave an in-flight fold of the first id able to proceed.
+	if !idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{ID: id, Name: "in-flight"}}, rebuildGen, probeIDGen) {
+		t.Fatal("evicting an unrelated id invalidated a fold for another session")
+	}
+	if _, ok := idx.findCached(id); !ok {
+		t.Fatal("the folded row is missing")
 	}
 }
 
