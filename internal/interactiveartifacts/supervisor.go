@@ -348,23 +348,30 @@ func (s *Supervisor) Revoke(ctx context.Context, token string) error {
 func (s *Supervisor) Backup(ctx context.Context, path string) error {
 	return s.request(ctx, controlBackup, backupParams{Path: path}, nil)
 }
+
+// Retry resets an open circuit before acquiring readiness. Ordinary backoff
+// keeps its scheduled wait and failure history; Close remains terminal.
 func (s *Supervisor) Retry(ctx context.Context) (Readiness, error) {
 	s.mu.Lock()
-	circuit := s.status.CircuitOpen
-	s.failures = nil
-	s.status.Failures = 0
-	s.status.CircuitOpen = false
-	if circuit {
+	if s.closed {
+		s.mu.Unlock()
+		return Readiness{}, errors.New("artifact supervisor closed")
+	}
+	if s.status.CircuitOpen {
+		s.failures = nil
+		s.status.Failures = 0
+		s.status.CircuitOpen = false
 		s.status.State = "starting"
 		select {
 		case s.retry <- struct{}{}:
 		default:
 		}
+		s.signal()
 	}
-	s.signal()
 	s.mu.Unlock()
 	return s.Ensure(ctx)
 }
+
 func (s *Supervisor) stop(child *ownedService) {
 	// Closing private control is the orderly parent-liveness signal. Do not
 	// cancel the connection lifetime until the child's drain deadline expires.
