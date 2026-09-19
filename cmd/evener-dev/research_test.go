@@ -57,3 +57,25 @@ func TestResearchOracleCmd_MissingStateDirFails(t *testing.T) {
 		t.Fatal("oracle on missing state dir returned 0")
 	}
 }
+
+func TestResearchRolloutCmd_FlagErrorsFailFast(t *testing.T) {
+	// A live pass without the opt-in env var must exit nonzero without
+	// executing anything, and the guard's refusal must reach stderr. The
+	// env is pinned empty so ambient EVENER_LIVE_TESTS cannot make the
+	// guard pass (agent/internal/liveeval.OptInEnv); this also forbids
+	// t.Parallel, which is fine — the dispatch path is process-global.
+	t.Setenv("EVENER_LIVE_TESTS", "")
+	code, stderr := captureResearchStderr(t, []string{
+		"rollout", "--env-dir", "research/environments",
+		"--env", "smoke-fix",
+		"--model", "lunaroute/deepseek-4.1-flash",
+		"--live",
+		"--run-dir", t.TempDir(),
+	})
+	if code == 0 {
+		t.Fatal("live rollout without EVENER_LIVE_TESTS must not exit 0")
+	}
+	if !strings.Contains(stderr, "EVENER_LIVE_TESTS") {
+		t.Errorf("stderr does not name the guard env var: %q", stderr)
+	}
+}
