@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -144,15 +145,20 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel               string          `json:"cheap_model,omitempty"`
-	VisionModel              string          `json:"vision_model,omitempty"`
-	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt                time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount                int             `json:"turn_count"` // number of model responses processed
-	AcceptedInputTurns       int             `json:"accepted_input_turns,omitempty"`
-	TurnBudgetWarningEmitted bool            `json:"turn_budget_warning_emitted,omitempty"`
+	CheapModel  string          `json:"cheap_model,omitempty"`
+	VisionModel string          `json:"vision_model,omitempty"`
+	Config      ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	// Revision is a monotonic per-session counter bumped on every save, so two
+	// revisions that share a timestamp (a fork tag or an ObservedBy append
+	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas
+	// written before it existed.
+	Revision                 uint64 `json:"revision,omitempty"`
+	TurnCount                int    `json:"turn_count"` // number of model responses processed
+	AcceptedInputTurns       int    `json:"accepted_input_turns,omitempty"`
+	TurnBudgetWarningEmitted bool   `json:"turn_budget_warning_emitted,omitempty"`
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
@@ -297,6 +303,84 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
+// SessionMetaTombstoneSuffix names the marker TombstoneSessionMeta leaves beside
+// a removed session so a writer that acquires the meta lock afterwards refuses
+// to recreate it. It is deliberately not a *.meta.json suffix, so the directory
+// scanners ignore it.
+const SessionMetaTombstoneSuffix = ".meta.json.deleted"
+
+// ErrSessionDeleted reports a write attempted against a session that has been
+// deleted (tombstoned). The write is dropped, not retried: the session no longer
+// exists, so the metadata change is intentionally lost. Callers own the policy
+// for surfacing it — the hub warns on an autosave and maps it to an internal
+// error on a rename — but none may retry the save, because a retry is refused
+// again by the same marker.
+var ErrSessionDeleted = errors.New("session meta deleted")
+
+// TombstoneSessionMeta writes a session's deletion marker while holding the same
+// in-process and cross-process locks every writer takes. A writer that acquires
+// the lock afterwards observes the tombstone and refuses to recreate the meta, so
+// an in-flight out-of-process autosave cannot resurrect a session the hub is
+// deleting. It does not remove the meta itself: the caller's artifact sweep owns
+// that, so a failed sweep still leaves the metadata for a resume. The tombstone
+// must be left in place by the caller once the metadata is durably removed;
+// UntombstoneSessionMeta reverses it when the sweep fails first.
+//
+// When the sessions dir is already gone there is nothing to fence, so the
+// tombstone is skipped rather than creating the directory: a marker write must
+// never resurrect a deleted project's state dir, which the PastIndex projects/*
+// glob would then surface as a live project. A daemon that recreates the dir
+// after the deletion is handled by the durable deletion record, not this marker.
+func TombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
+			if os.IsNotExist(err) {
+				return errSessionsDirAbsent
+			}
+			return fmt.Errorf("write session tombstone: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
+}
+
+// UntombstoneSessionMeta removes a session's deletion marker under the same
+// in-process and cross-process locks TombstoneSessionMeta takes. A caller rolls
+// the marker back when a deletion fails before the metadata is durably removed:
+// while the meta still exists the session is still resumable and must stay
+// writable, whereas leaving the marker would make every later save — autosave,
+// rename, observer append — fail with ErrSessionDeleted for a session that was
+// never actually deleted. Removing an absent marker is a no-op.
+func UntombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove session tombstone: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
+}
+
 // SessionsDirListable reports whether dir's sessions subdirectory can be
 // listed — the same gate ListSessionMetas applies before reading any metas
 // (a missing directory counts as listable: the list is simply empty). A
@@ -353,14 +437,19 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 	lock := sessionMetaWriteLock(workerSessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
-	if err != nil {
-		return err
-	}
-	// Only workerSessionID is validated: it names the file being written, while
-	// observerSessionID is persisted as data and never joined into a path here.
-	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
-	return saveSessionMetaLocked(fs, dir, meta)
+	// The load must happen under the cross-process lock too: loading first and
+	// saving later would write this process's stale copy of every other field
+	// over a concurrent writer's newer one.
+	return withSessionMetaCrossProcessLock(fs, dir, workerSessionID, func() error {
+		meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
+		if err != nil {
+			return err
+		}
+		// Only workerSessionID is validated: it names the file being written, while
+		// observerSessionID is persisted as data and never joined into a path here.
+		meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
 }
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
@@ -386,15 +475,73 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 // the lock is striped, re-entering for a different session self-deadlocks only
 // on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
-	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
-	if err == nil {
-		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
+}
+
+// withSessionMetaCrossProcessLock runs fn with the session's cross-process meta
+// lock held (and the sessions dir ensured). The caller must already hold the
+// in-process striped lock. The lock covers fn's whole load/merge/increment/write
+// so a caller that reads the current meta before mutating it cannot race a
+// writer in another process.
+func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() error) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
+	}
+	return withExistingSessionsDirLock(fs, dir, id, fn)
+}
+
+// errSessionsDirAbsent reports that a marker-only lock path found the sessions
+// dir already gone. Callers treat it as "nothing to fence" rather than a
+// failure: there is no metadata to protect.
+var errSessionsDirAbsent = errors.New("sessions dir absent")
+
+// withExistingSessionsDirLock takes the same in-process and cross-process locks
+// as withSessionMetaCrossProcessLock but never creates the sessions dir. The
+// tombstone paths use it so deleting an already-removed session cannot recreate
+// the deleted project's state directory — which the PastIndex projects/* glob
+// would then surface as a live project. It reports errSessionsDirAbsent when
+// that dir is missing.
+func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) error {
+	// The Revision increment is a read-modify-write, and the daemon rewrites the
+	// same session's meta out of process, so the in-process striped lock alone
+	// cannot serialize it. Hold a file lock across the load/increment/rename.
+	release, _, err := lockSessionMetaCrossProcess(fs, dir, id)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errSessionsDirAbsent
+		}
+		return fmt.Errorf("lock session meta: %w", err)
+	}
+	defer release()
+	return fn()
+}
+
+// writeSessionMetaLocked loads the current meta, unions ObservedBy, bumps
+// Revision, and writes atomically. It assumes the caller holds both locks, so
+// the read-modify-write cannot interleave with another writer.
+func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	// A deleted session's tombstone is written under this same lock; refuse to
+	// recreate the metadata so an in-flight out-of-process autosave cannot
+	// resurrect a session the hub just deleted.
+	if exists, err := afero.Exists(fs, filepath.Join(dir, sessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
+		return err
+	} else if exists {
+		return ErrSessionDeleted
+	}
+	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
+	if err == nil {
+		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		if previous.Revision == math.MaxUint64 {
+			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
+		}
+		meta.Revision = previous.Revision + 1
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else {
+		meta.Revision = 1
 	}
 
 	data, err := marshalSessionMeta(meta)
@@ -402,7 +549,7 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}
 
-	target := filepath.Join(sessDir, meta.ID+".meta.json")
+	target := filepath.Join(dir, sessionsSubdir, meta.ID+".meta.json")
 	tmp := target + ".tmp"
 
 	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {

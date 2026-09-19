@@ -1243,8 +1243,12 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// one, because the issuing client cannot treat an errored mutation's echo as
 	// its own success - the broadcast can beat the failing reply, and consuming
 	// the marker then would suppress the invalidation a failed operation owes.
-	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
-		err := apply()
+	// apply performs the mutation and returns the listing to answer with, so
+	// the notify-and-answer block below is shared by every instance write. An
+	// edit passes its lock-scoped capture (see edit); the rest answer with a
+	// fresh List() via listAfter.
+	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
+		list, err := apply()
 		if writeDidApply(err) {
 			if err != nil {
 				notifyInstanceUpdated(server, "")
@@ -1255,27 +1259,40 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		return instancesController.List(), nil
+		return list, nil
+	}
+	listAfter := func(mutate func() error) func() (appwire.InstanceListResponse, error) {
+		return func() (appwire.InstanceListResponse, error) {
+			if err := mutate(); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.Create(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Create(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error {
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			var list appwire.InstanceListResponse
+			err := instancesController.edit(params, &list)
+			if err == nil {
+				return list, nil
+			}
 			// A rename that persisted before it failed is a write that stands,
 			// so it is announced (writeApplied, which instanceWrite broadcasts
 			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
 			// so the client that asked reports the standing rename rather than
 			// a failed save.
-			persisted, wireErr := instanceRenameError(instancesController.Edit(params))
+			persisted, wireErr := instanceRenameError(err)
 			if persisted {
-				return writeApplied(wireErr)
+				return list, writeApplied(wireErr)
 			}
-			return wireErr
+			return list, wireErr
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error {
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
 			// A removal whose credential deletion applied before it failed is a
 			// write that stands, so it is announced (writeApplied, which
 			// instanceWrite broadcasts on) and the error goes back carrying
@@ -1283,19 +1300,22 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 			// standing removal rather than a failed remove it would retry.
 			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
 			if applied {
-				return writeApplied(wireErr)
+				return appwire.InstanceListResponse{}, writeApplied(wireErr)
 			}
-			return wireErr
+			if wireErr != nil {
+				return appwire.InstanceListResponse{}, wireErr
+			}
+			return instancesController.List(), nil
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetDefault(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetDefault(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.SetModelDisabled(params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.SetModelDisabled(params) }))
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, func() error { return instancesController.RefreshModels(ctx, params) })
+		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.RefreshModels(ctx, params) }))
 	})
 }
 

@@ -5048,3 +5048,56 @@ api_key = "sk-inline"
 		t.Fatalf("google-vertex = %+v, want renameLeavesRow true once ADC exists", got)
 	}
 }
+
+// TestInstances_EditAnswersWithItsOwnState: an edit asked for its captured
+// answer returns a listing carrying the row that edit wrote, and the returned
+// value is a snapshot - a later edit does not change it. (The write-lock GAP is
+// not exercised: Edit exposes no seam inside its critical section to pause on,
+// so a concurrent edit cannot be made to land between the write and the
+// capture. What the code enforces is that both happen under c.mu; see edit.)
+func TestInstances_EditAnswersWithItsOwnState(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/first"}); err != nil {
+		t.Fatalf("Edit(first): %v", err)
+	}
+
+	var out appwire.InstanceListResponse
+	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/second"}, &out); err != nil {
+		t.Fatalf("edit(second): %v", err)
+	}
+
+	// A later edit does not mutate the already-returned captured answer.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/foreign"}); err != nil {
+		t.Fatalf("Edit(foreign): %v", err)
+	}
+
+	second := entry(t, out, "groq")
+	if !strings.Contains(second.BaseURL, "/second") {
+		t.Fatalf("captured answer shows base_url %q, want the second edit's own state", second.BaseURL)
+	}
+	if foreign := entry(t, f.ctl.List(), "groq"); !strings.Contains(foreign.BaseURL, "/foreign") {
+		t.Fatalf("later List shows base_url %q, want the foreign edit", foreign.BaseURL)
+	}
+}
+
+// TestInstances_EditCapturesTheListingForARename: a successful rename answers
+// with the same lock-scoped listing a plain edit does. The rename branch must
+// fall through to the capture rather than return before it, or the client is
+// handed an empty response and blanks the pane.
+func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var out appwire.InstanceListResponse
+	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}, &out); err != nil {
+		t.Fatalf("edit(rename): %v", err)
+	}
+	if len(out.Instances) == 0 {
+		t.Fatal("a successful rename returned an empty listing")
+	}
+	if renamed := entry(t, out, "personal"); renamed.Name != "personal" {
+		t.Fatalf("captured row = %+v, want the renamed instance", renamed)
+	}
+}

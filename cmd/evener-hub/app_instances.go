@@ -85,6 +85,15 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		c.auth.credMu.RLock()
 		defer c.auth.credMu.RUnlock()
 	}
+	return c.listLocked(key, keyErr)
+}
+
+// listLocked builds the listing from state the caller has ALREADY locked, using
+// a fingerprint key resolved before that lock. A mutation that captured its
+// answer under its own write lock uses this so the answer is the state that
+// mutation produced, not a second read a concurrent edit can slip into (see
+// Edit).
+func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.InstanceListResponse {
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
 	userLayer := ""
@@ -920,6 +929,14 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // appwire.InvalidParams; the hub's own faults (the registry not loaded, a
 // read, write, or restore failure) stay plain errors.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
+	return c.edit(params, nil)
+}
+
+// edit applies an edit. When out is non-nil it receives the listing captured
+// while this edit's write lock is still held, so the answer describes the state
+// this edit produced rather than a later List() a concurrent write can slip
+// into; the RPC handler uses it that way for its response.
+func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -957,8 +974,10 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// on resolving the fingerprint key before the locks): resolving can repair
 	// the key file - an inter-process lock and a write - so doing it while c.mu
 	// and credMu are held would hold every listing and credential op behind it.
+	// This edit's own endpoint assertion needs it, and so does the listing the
+	// edit captures under its write locks (listLocked), so it is resolved for
+	// every caller rather than only the captured-listing one.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Held for the rest of the call, so the providers.toml write and the
@@ -1139,7 +1158,12 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		reloadErr := c.reg.Reload()
 		switch {
 		case reloadErr == nil:
-			return moveErr
+			if moveErr != nil {
+				return moveErr
+			}
+			// Both halves landed, so this is a clean rename: fall through to the
+			// listing captured below rather than returning nil here, so the RPC
+			// handler's answer still describes the state this edit produced.
 		case moveErr == nil:
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
@@ -1158,6 +1182,12 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 			// move's message or wire class.
 			return fmt.Errorf("%w; the registry could not be reloaded either, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, reloadErr)
 		}
+	}
+	if out != nil {
+		// Still under this edit's write locks, so no concurrent edit can land
+		// between the write and this read. Reached for a plain edit AND a clean
+		// rename (the rename branch above only returns on an applied error).
+		*out = c.listLocked(key, keyErr)
 	}
 	return nil
 }
