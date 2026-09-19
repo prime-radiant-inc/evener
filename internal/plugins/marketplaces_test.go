@@ -1646,6 +1646,43 @@ func TestEditMarketplace_RenameAndResourceReplacesASourceUnderTheOldCache(t *tes
 	}
 }
 
+// The directory-branch sweep is destructive and runs before either store file
+// is saved, so it must not delete the edited record's own source ahead of a
+// commit that can still fail. A save failure must leave that source readable.
+func TestEditMarketplace_FailedRenameAndResourceKeepsASourceUnderTheOldClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	oldSource := filepath.Join(m.marketplaceDir("acme"), "source")
+	if err := os.MkdirAll(oldSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(oldSource, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: oldSource},
+		InstallLocation: oldSource,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(path, marketplacesFileName) {
+			return errors.New("injected save failure")
+		}
+		return origWrite(path, data, perm)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: dir}); err == nil {
+		t.Fatal("expected the injected save failure to fail the edit")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the failed edit deleted a source under the old clone: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

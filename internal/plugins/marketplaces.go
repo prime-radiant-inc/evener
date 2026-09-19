@@ -886,7 +886,11 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// live source. Presence is the entry's own, not a stat through a final
 		// symlink: sweeping is what removes it either way, so an unreadable
 		// link must still be cleared rather than block a directory rename.
-		present, protect := m.sweepDestroysSource(registeredSources(), oldDir)
+		// The sweep here is destructive and runs before either store file is
+		// saved, so it must keep every current source — the edited record's
+		// included. A source beneath the old clone is then left in place rather
+		// than deleted ahead of a commit that can still fail.
+		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
 		if present && !protect {
 			if err := marketplaceRemoveAll(oldDir); err != nil {
 				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
