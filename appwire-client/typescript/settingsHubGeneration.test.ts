@@ -189,9 +189,14 @@ describe("createSettingsHubGeneration", () => {
 
   test("endReadyGeneration ends the fence, unwires notifications and retires the payload, in that order", () => {
     const { fence } = fenceOver();
-    const unwire = vi.fn();
-    const wireNotifications = vi.fn(() => unwire);
     const order: string[] = [];
+    const end = fence.end;
+    fence.end = () => {
+      order.push("end");
+      end();
+    };
+    const unwire = vi.fn(() => order.push("unwire"));
+    const wireNotifications = vi.fn(() => unwire);
     const retirePayload = vi.fn(() => order.push("retirePayload"));
     const generationCore = createSettingsHubGeneration({ fence, wireNotifications, retirePayload });
     generationCore.beginReadyGeneration();
@@ -201,7 +206,7 @@ describe("createSettingsHubGeneration", () => {
     expect(fence.generation).toBe(-1);
     expect(unwire).toHaveBeenCalledTimes(1);
     expect(retirePayload).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(["retirePayload"]);
+    expect(order).toEqual(["end", "unwire", "retirePayload"]);
   });
 
   test("endReadyGeneration before any generation began still ends the fence and retires, without unwiring anything", () => {
