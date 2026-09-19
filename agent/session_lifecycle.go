@@ -1987,7 +1987,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		// Leave the processing boundary for the outer cancellation handler. It
+		// must first admit the interrupt marker, then settle Awaiting when a
+		// pending ask survives a rejected marker; settling Idle here would make
+		// finishProcessingAtFailureBoundary a no-op and diverge from restore.
 		return "", false, ctx.Err()
 	default:
 	}
@@ -2186,7 +2189,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		select {
 		case <-ctx.Done():
 			s.emit(events.EventError, errorDataFromError(ctx.Err()))
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			// Leave the processing boundary for the outer cancellation handler.
+			// A cancellation between rounds has the same marker-admission and
+			// pending-ask boundary as cancellation before the first round.
 			return "", progressed, ctx.Err()
 		default:
 		}

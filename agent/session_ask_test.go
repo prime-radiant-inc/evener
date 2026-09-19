@@ -1881,11 +1881,11 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 	}
 }
 
-// TestAskUser_InterruptMarkerWriteFailurePreservesBoundary keeps an ask_user
-// question pending when cancellation reaches the interrupt marker but the
-// marker cannot be recorded. The queued input proves the failed marker does
-// not open the autonomous drain, while restore proves the live boundary and
-// the transcript-derived boundary agree.
+// TestAskUser_InterruptMarkerWriteFailurePreservesBoundary keeps an existing
+// ask_user question pending when an already-canceled input reaches the
+// interrupt marker but the marker cannot be recorded. The queued input proves
+// the failed marker does not open the autonomous drain, while restore proves
+// the live boundary and the transcript-derived boundary agree.
 func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1893,11 +1893,8 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	// I/O; 30s is a generous hang guard, and this test makes no network requests.
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer parentCancel()
-	ctx, cancel := context.WithCancel(parentCtx)
-	defer cancel()
 
 	ask := askUserCall("ask1", askUserArgsValid())
-	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
 	modelCalls := 0
 	c.Register(&fakeAdapter{
@@ -1905,7 +1902,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				modelCalls++
-				return toolCallResponse(ask, triggerCancel)
+				return toolCallResponse(ask)
 			},
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach a second LLM call after an unrecorded interrupt marker")
@@ -1919,6 +1916,15 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	}
 	defer sess.Close()
 
+	if _, err := sess.ProcessInput(parentCtx, "which db should we use?", nil); err != nil {
+		t.Fatalf("initial ask ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pending count before already-canceled input = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before already-canceled input = %q, want %q", got, SessionAwaiting)
+	}
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "queued-behind-unrecorded-interrupt",
 		Input:            []appwire.InputItem{{Type: "text", Text: "wait for the pending answer"}},
@@ -1926,7 +1932,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	if got := sess.QueueDepth(); got != 1 {
-		t.Fatalf("queue depth before cancellation = %d, want 1", got)
+		t.Fatalf("queue depth before already-canceled input = %d, want 1", got)
 	}
 	drainPendingEvents(sess)
 
@@ -1937,20 +1943,13 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	fs := attachEnvironmentFailureFS(t, sess)
 	markerFaultHit := false
 	markerFailure := errors.New("injected interrupt marker write failure")
-	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) {
-			return "cancel after the tool results are durable", nil
-		})
-	processCtx := context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
-		beforeSteering: func() {
-			fs.mu.Lock()
-			fs.failure = markerFailure
-			fs.onFailure = func() { markerFaultHit = true }
-			fs.mu.Unlock()
-			cancel()
-		},
-	})
+	fs.mu.Lock()
+	fs.failure = markerFailure
+	fs.onFailure = func() { markerFaultHit = true }
+	fs.mu.Unlock()
+	turnCtx, cancel := context.WithCancel(parentCtx)
+	cancel()
+	processCtx := WithQueuedInputDrainOnInterrupt(turnCtx, parentCtx)
 
 	_, err = sess.ProcessInput(processCtx, "which db should we use?", nil)
 	if !errors.Is(err, context.Canceled) {
