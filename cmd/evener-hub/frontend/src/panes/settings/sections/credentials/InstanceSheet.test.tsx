@@ -2404,4 +2404,127 @@ describe("the form", () => {
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
+
+  // A pathless URL is not a path disagreement: the hub serves `https://host`
+  // while WHATWG supplies `/`, so the normalization guard must not refuse a
+  // rename that moves the endpoint to a bare authority.
+  test("a superseded rename to a pathless Base URL is confirmed", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://api.example.test");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://api.example.test",
+      originClientId: "test-tab",
+    });
+
+    const renamed = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://api.example.test",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+  });
+
+  // The endpoint fingerprint excludes `surface` and the variables that do not
+  // feed the endpoint, so a matching fingerprint alone must not confirm a
+  // declared variable that the listing carries differently.
+  test("a superseded variable save is not re-anchored onto an entry with a conflicting declared variable", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const ours = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    const foreign = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p3" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [foreign], [VERTEX]);
+    await act(async () => finish({ instances: [ours], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A rename that only changes a variable (no declared Base URL) moved the
+  // resolved URL, which the listing alone cannot prove and the rename path has
+  // no authoritative fingerprint for: it must not confirm an entry at another
+  // URL that happens to carry the requested variable.
+  test("a superseded rename that only changes a variable is not confirmed by an entry at another URL", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      newName: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const foreign = {
+      ...before,
+      name: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://elsewhere.example.test/v1",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [foreign], [VERTEX]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [VERTEX] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
 });

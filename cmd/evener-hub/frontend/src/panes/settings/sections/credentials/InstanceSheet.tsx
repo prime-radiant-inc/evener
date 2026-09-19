@@ -267,7 +267,10 @@ function pathPreservedByParser(raw: string): boolean {
   }
   if (parsed.protocol === "" || parsed.host === "") return false;
   const authoredPath = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/.exec(trimmed)?.[1] ?? "";
-  return authoredPath === parsed.pathname;
+  // A pathless URL is not a disagreement: the hub serves `https://host` and
+  // WHATWG supplies the root path `/`; treat that one case as preserved while
+  // still rejecting genuine rewrites such as dot-segment collapsing.
+  return authoredPath === parsed.pathname || (authoredPath === "" && parsed.pathname === "/");
 }
 
 /** Whether the listed endpoint is the one this save declared. The listed URL
@@ -330,6 +333,18 @@ function declaredValuesLanded(
 ): boolean {
   if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
   if (failClosedOnCredentialClear && (params.clearApiKeyEnv || params.clearCredentialHeader)) return false;
+  // A save that changed vars/protocol/surface without declaring a Base URL moved
+  // the RESOLVED URL, which the listing alone cannot prove - the client does not
+  // resolve the provider's template. Without an authoritative fingerprint the
+  // confirmation fails closed rather than accept a same-name entry at whatever
+  // URL it now resolves.
+  const changed = changedFields(params);
+  if (
+    params.baseUrl === undefined &&
+    ENDPOINT_AFFECTING_FIELDS.some((field) => field !== "baseUrl" && changed.has(field))
+  ) {
+    return false;
+  }
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
@@ -362,6 +377,20 @@ function renamedInstanceLanded(
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
   return declaredValuesLanded(listed, params, false) ? newName : undefined;
+}
+
+/** Whether the listed entry carries the non-endpoint values this save declared
+ * for fields the endpoint fingerprint does not cover. The hub's destination
+ * identity excludes `surface` and the variables that do not feed the endpoint,
+ * so a matching fingerprint alone cannot confirm them; each declared value has
+ * to match the listing directly. */
+function declaredVarsAndSurfaceLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
+  if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
+  for (const [key, value] of Object.entries(params.vars ?? {})) {
+    if ((listed.vars?.[key] ?? "") !== value) return false;
+  }
+  return true;
 }
 
 /** Whether the listed entry carries the credential fields this save declared.
@@ -426,9 +455,11 @@ function supersededSaveLanded(
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
   if (authoritativeFingerprint !== "") {
     if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
-    // The fingerprint settles the destination; the credential fields it does
-    // not cover are verified (and their clears fail closed) separately.
-    return credentialValuesLanded(listed, params, true) ? listed : undefined;
+    // The fingerprint settles the destination; the fields it does not cover
+    // (credentials, surface, declared variables) are verified separately, and
+    // a credential clear fails closed.
+    if (!credentialValuesLanded(listed, params, true)) return undefined;
+    return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
   }
   return declaredValuesLanded(listed, params, true) ? listed : undefined;
 }
