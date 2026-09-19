@@ -92,9 +92,11 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  * Data.applied is the current list with the target already gone - reconcile
  * from it even though the call still rejects, the same way keybindingsStore's
  * rejectionPayload reads a post-rename durable failure's applied state.
- * Returns undefined for any other rejection, or when the hub's own follow-up
- * read to build Data.applied failed too (Data.appliedUnavailable): there is
- * then nothing to reconcile from. */
+ * Returns undefined for any other rejection. A recognized marker with missing,
+ * unavailable, or malformed applied data is still an applied-but-unconfirmed
+ * outcome: the unregister already landed, but callers must reconcile through
+ * their normal fetch path rather than retrying the removal or treating it as
+ * an authoritative empty list. */
 export type MarketplaceRemovalOutcome = { kind: "applied"; marketplaces: MarketplaceEntry[] } | { kind: "unavailable" };
 
 /** Classifies the hub's applied-with-litter rejection for UI consumers. The
@@ -105,14 +107,14 @@ export type MarketplaceRemovalOutcome = { kind: "applied"; marketplaces: Marketp
 export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
   if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
     return undefined;
-  if (!error.data || typeof error.data !== "object") return undefined;
+  if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
   const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
   if (data.appliedUnavailable) return { kind: "unavailable" };
-  if (!data.applied || typeof data.applied !== "object") return undefined;
+  if (!data.applied || typeof data.applied !== "object") return { kind: "unavailable" };
   const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
   return Array.isArray(marketplaces)
     ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
-    : undefined;
+    : { kind: "unavailable" };
 }
 
 function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {

@@ -44,10 +44,18 @@ describe("marketplaceRemovalOutcome", () => {
     });
   });
 
-  test("ignores ordinary, malformed, and non-array clone cleanup failures", () => {
+  test("keeps malformed marked outcomes applied-but-unconfirmed", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError(null))).toEqual({ kind: "unavailable" });
+    expect(marketplaceRemovalOutcome(cloneLitterError({ name: "not-a-list" }))).toEqual({ kind: "unavailable" });
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("clone could not be removed", -32603, { evenerErrorInfo: "marketplaceUnregisteredCloneRemains" }),
+      ),
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  test("keeps truly ordinary failures retryable", () => {
     expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
-    expect(marketplaceRemovalOutcome(cloneLitterError(null))).toBeUndefined();
-    expect(marketplaceRemovalOutcome(cloneLitterError({ name: "not-a-list" }))).toBeUndefined();
   });
 });
 

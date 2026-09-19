@@ -21,7 +21,7 @@
 // alternative - reseeding on every store update - silently discards whatever
 // the user is halfway through typing, which is worse.
 
-import type { MarketplaceEntry } from "@evener/appwire-client";
+import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
@@ -67,6 +67,13 @@ export interface MarketplaceSheetProps {
   /** Written only by a rename, which moves the entry's expansion to its new
    * name - the set is keyed by name. */
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
+  /** Applied removals survive this sheet's load-error unmount until the owning
+   * connection returns an authoritative list without the marketplace. */
+  appliedRemovalNames: ReadonlySet<string>;
+  /** The client identity that owned this render's mutation. */
+  connectionClient: AppwireClientLike | null;
+  /** Records a completed registry removal for the owning connection only. */
+  onAppliedRemoval: (name: string, owner: AppwireClientLike | null) => void;
 }
 
 function lastUpdatedText(seconds: number): string {
@@ -79,6 +86,9 @@ export function MarketplaceSheet({
   onRenamed,
   expandedMarketplaces,
   setExpandedMarketplaces,
+  appliedRemovalNames,
+  connectionClient,
+  onAppliedRemoval,
 }: MarketplaceSheetProps) {
   const marketplaces = useExtensionsStore((s) => s.marketplaces);
   const isMobile = useIsMobile();
@@ -93,7 +103,6 @@ export function MarketplaceSheet({
   const [refreshing, setRefreshing] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
   const [removeBusy, setRemoveBusy] = useState(false);
-  const [removeAppliedUnconfirmed, setRemoveAppliedUnconfirmed] = useState<Set<string>>(() => new Set());
   // Set for the span of a rename request: the old name vanishes from the
   // store when the response lands, and that vanish must not close the sheet.
   const pendingRename = useRef<string | null>(null);
@@ -121,15 +130,6 @@ export function MarketplaceSheet({
     setDraft(marketplaceDraftFor(current));
     setFormError(null);
   }
-
-  useEffect(() => {
-    if (marketplaces === null) return;
-    const currentNames = new Set(marketplaces.map((marketplace) => marketplace.name));
-    setRemoveAppliedUnconfirmed((blocked) => {
-      const next = new Set([...blocked].filter((blockedName) => currentNames.has(blockedName)));
-      return next.size === blocked.size ? blocked : next;
-    });
-  }, [marketplaces]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different marketplace opens; a refresh of the same one must not clobber in-progress edits
   useEffect(() => {
@@ -180,7 +180,7 @@ export function MarketplaceSheet({
   // changing that name refreshes a marketplace that no longer answers to it,
   // or races the rename for the store lock.
   const busy = saving || refreshing || removeBusy;
-  const removeDisabled = busy || (entry !== undefined && removeAppliedUnconfirmed.has(entry.name));
+  const removeDisabled = busy || (entry !== undefined && appliedRemovalNames.has(entry.name));
   const canSave = dirty && !busy && !(sourceTouched && incomplete);
 
   function update(patch: Partial<MarketplaceDraft>): void {
@@ -267,6 +267,7 @@ export function MarketplaceSheet({
   async function handleConfirmRemove(): Promise<void> {
     if (entry === undefined) return;
     const removalName = entry.name;
+    const removalClient = connectionClient;
     setRemoveBusy(true);
     try {
       await extensionsStore.getState().removeMarketplace(removalName);
@@ -286,7 +287,7 @@ export function MarketplaceSheet({
         // The registry removal already landed. Close the completed confirm and
         // keep this entry from issuing the same removal again while an
         // unavailable applied list is reconciled through the normal fetch.
-        setRemoveAppliedUnconfirmed((blocked) => new Set(blocked).add(removalName));
+        onAppliedRemoval(removalName, removalClient);
         if (liveName.current === removalName) setPendingRemove(false);
         toasts.push("warning", "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.");
         if (outcome.kind === "unavailable") void extensionsStore.getState().fetchMarketplaces();
