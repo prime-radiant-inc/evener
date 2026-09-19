@@ -545,11 +545,11 @@ function projectItem(
 // whenever there's also a message. A message-less frame folds to text: ""
 // on the wire side (reducer.ts's warning fold; joinWarningParts filters it
 // out), leaving just title+hint, the same content the web renders via
-// item.warning directly.
-function warningFallbackText(item: ItemModel): string | undefined {
-  if (item.type !== "warning" || !item.warning) return undefined;
-  const joined = joinWarningParts([item.warning.title, item.text, item.warning.hint]);
-  return joined === "" ? undefined : joined;
+// item.warning directly. Returns "" rather than undefined when there's
+// nothing to show - the one call site's `||` chain treats them identically.
+function warningFallbackText(item: ItemModel): string {
+  if (item.type !== "warning" || !item.warning) return "";
+  return joinWarningParts([item.warning.title, item.text, item.warning.hint]);
 }
 
 function activityDescription(item: ItemModel): string | undefined {

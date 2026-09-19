@@ -1305,6 +1305,20 @@ export function Composer({ ref, focused }: ComposerProps) {
   // clearIfUnchanged is, so a clear on success never clobbers an edit made
   // while the RPC was still in flight.
   async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
+    // The recovery fence, re-read live at the press (the same render-vs-press
+    // rule as handleSteerClick): a fenced command's run mints a durable
+    // mutation the hub's recovery admission refuses for the obligation's
+    // whole window, so running it here could only mint intent that parks
+    // until the explicit Resume action clears the fence - the same harm the
+    // Send/Steer/queue-strip fences exist to prevent, reached by typing
+    // instead of clicking. Which commands carry the fence is declared on the
+    // command itself (commands.ts's recoveryFenced); the refusal names the
+    // Resume path and preserves the draft, ahead of the busy churn so a
+    // refusal never reports busy state.
+    if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
+      toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
+      return;
+    }
     const submittedText = textRef.current;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedRevision = draftEditRevisionRef.current;

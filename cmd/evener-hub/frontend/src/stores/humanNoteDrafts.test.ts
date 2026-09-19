@@ -539,6 +539,52 @@ test("a background save whose blocked row is accepted elsewhere mid-retry stays 
   expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
 });
 
+// RoboRev finding (PR 1393 fresh review, fa5d3cb): the persistence refresh
+// read only the outbox and recovery stores, so a note this tab saved and that
+// another connection ACCEPTED while blocked - settleReceipt moves the row
+// outbox -> optimistic, the accepted-copy retention e7a2098d5 added for notes -
+// was invisible to it. The draft kept the stale "blocked pending session
+// recovery" status for a save that was no longer blocked at all: it was
+// accepted and waiting on its canonical reflection. The refresh must read the
+// optimistic store too and map an accepted row to the draft's pending state -
+// the same mapping the post-retry lookup's accepted branch applies.
+test("a blocked note accepted by another connection updates the draft through the persistence refresh", async () => {
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  const blockedStatus = result.current?.error;
+  expect(blockedStatus).toBeTruthy();
+  // Another connection's dispatcher accepts the blocked save: the row moves
+  // outbox -> optimistic (state "accepted"). This tab sees no write of its
+  // own - only the shared storage changed, which is exactly the cross-tab
+  // shape the refresh exists to reconcile.
+  await storage.settleReceipt(original.clientMutationId, "pending");
+  expect(await storage.getOutbox(original.clientMutationId)).toBeUndefined();
+  expect((await storage.getOptimistic(original.clientMutationId))?.state).toBe("accepted");
+  // Any pane mount drives the same refresh a persistence notification does;
+  // the block above ("opening a second session discovers its durable note")
+  // establishes this trigger's shape.
+  act(() => syncHumanNote("ref-b", ""));
+  // Accepted-but-unreflected is pending, never stale-blocked: the draft keeps
+  // its submitted identity so the canonical note state that arrives next
+  // still acknowledges this same save.
+  await waitFor(() => expect(result.current?.submitted?.state).toBe("submitting"));
+  expect(result.current?.error).toBeNull();
+  expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
+});
+
 // A resumeRequired session presents as a live, idle thread with the
 // SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
 // is not zeroed by the recovery fence), so the status/capability pair alone

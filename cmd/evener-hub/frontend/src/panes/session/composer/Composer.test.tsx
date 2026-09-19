@@ -16,6 +16,7 @@ import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../st
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
+import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
@@ -3567,6 +3568,168 @@ test("an active fenced local session renders a disabled Steer and parks nothing"
   const parked = await storage.listOutbox(ref);
   storage.close();
   expect(parked).toEqual([]);
+});
+
+// The fresh-review RoboRev Medium on PR 1393 (fa5d3cb): the Slack-model
+// interception ran the matched built-in BEFORE the submit path's fence, so a
+// typed /queue, /steer, /drain-as-steer or /clear minted exactly the durable
+// intent the Send/Steer/queue-strip fences exist to keep from parking until
+// the explicit Resume action clears the obligation. The typed press now reads
+// the same live fence the button presses do. The fenced set is the built-ins
+// whose run mints a durable mutation the hub's recovery admission refuses for
+// the obligation's whole window (turn/queue, turn/steer, turn/drainAsSteer,
+// thread/clear). /interrupt is deliberately NOT in it: the Stop button stays
+// reachable through the window, and the typed form agrees with the button.
+async function mountActiveFencedForTypedCommands(
+  ref: string,
+  queue: NonNullable<Thread["evener"]>["queue"] = { revision: 0 },
+): Promise<FakeClient> {
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue,
+      activeTurnId: "turn_1",
+    },
+  });
+  // The obligation the resumeRequired hydration arms IS the fence under
+  // test: wait for it loudly before typing anything.
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  return fake;
+}
+
+async function parkedOutboxFor(ref: string): Promise<MutationOutboxRecord[]> {
+  const storage = new MutationOutboxIndexedDB();
+  const rows = await storage.listOutbox(ref);
+  storage.close();
+  return rows;
+}
+
+test("a typed /queue on an active fenced session is refused and parks no intent", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-queue";
+  const fake = await mountActiveFencedForTypedCommands(ref);
+
+  await user.type(textarea(), "/queue hello from the typed path");
+  // The Send button is disabled by the fence under test, so the submit chord
+  // is the reachable route - the same one the fenced-active tests above use.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain("/queue isn't available until this session is resumed"),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(await parkedOutboxFor(ref)).toEqual([]);
+  // A refusal preserves the draft, like every other failed built-in run.
+  expect(textarea().textContent).toBe("/queue hello from the typed path");
+});
+
+test("a typed /steer on an active fenced session is refused and parks no intent", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-steer";
+  const fake = await mountActiveFencedForTypedCommands(ref);
+
+  await user.type(textarea(), "/steer go left");
+  // The Send button is disabled by the fence under test, so the submit chord
+  // is the reachable route - the same one the fenced-active tests above use.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain("/steer isn't available until this session is resumed"),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(await parkedOutboxFor(ref)).toEqual([]);
+  expect(textarea().textContent).toBe("/steer go left");
+});
+
+// /drain-as-steer's availability rule needs a queued row to drain; the mount
+// carries one so the fence - not the drain rule - is what refuses the press.
+test("a typed /drain-as-steer on an active fenced session is refused and parks no intent", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-drain";
+  const fake = await mountActiveFencedForTypedCommands(ref, {
+    revision: 0,
+    depth: 1,
+    ids: ["q1"],
+    texts: ["hello"],
+    preview: ["hello"],
+  });
+
+  await user.type(textarea(), "/drain-as-steer");
+  // Close the inline slash menu first: an argless command's full name leaves
+  // the completion open, and its Enter handler would accept the highlighted
+  // row instead of submitting the form.
+  await user.keyboard("{Escape}");
+  // The Send button is disabled by the fence under test, so the submit chord
+  // is the reachable route - the same one the fenced-active tests above use.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain(
+      "/drain-as-steer isn't available until this session is resumed",
+    ),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  expect(await parkedOutboxFor(ref)).toEqual([]);
+  expect(textarea().textContent).toBe("/drain-as-steer");
+});
+
+// thread/clear is durable like the turn mutations: the hub's recovery
+// admission refuses it for the window, so a typed /clear could only park a
+// context wipe that fires the moment Resume clears the fence.
+test("a typed /clear on an active fenced session is refused and parks no intent", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-clear";
+  const fake = await mountActiveFencedForTypedCommands(ref);
+
+  await user.type(textarea(), "/clear");
+  // Close the inline slash menu first: an argless command's full name leaves
+  // the completion open, and its Enter handler would accept the highlighted
+  // row instead of submitting the form.
+  await user.keyboard("{Escape}");
+  // The Send button is disabled by the fence under test, so the submit chord
+  // is the reachable route - the same one the fenced-active tests above use.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain("/clear isn't available until this session is resumed"),
+  );
+  expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
+  expect(await parkedOutboxFor(ref)).toEqual([]);
+  expect(textarea().textContent).toBe("/clear");
+});
+
+test("a typed /interrupt on an active fenced session still mints its intent: Stop stays reachable, button and typed form agree", async () => {
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-interrupt";
+  await mountActiveFencedForTypedCommands(ref);
+
+  await user.type(textarea(), "/interrupt");
+  // Close the inline slash menu first: an argless command's full name leaves
+  // the completion open, and its Enter handler would accept the highlighted
+  // row instead of submitting the form.
+  await user.keyboard("{Escape}");
+  // The Send button is disabled by the fence under test, so the submit chord
+  // is the reachable route - the same one the fenced-active tests above use.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+
+  // No fence refusal: the Stop button's own press is deliberately unfenced
+  // (Stop is how the window ends), so the typed /interrupt must agree with
+  // it. While the obligation stands the dispatcher holds the intent rather
+  // than firing the RPC - exactly what the Stop button's press parks on this
+  // mount - so the agreement under test is that the intent is minted at all.
+  const parked = await parkedOutboxFor(ref);
+  expect(parked.map((record) => record.method)).toEqual(["turn/interrupt"]);
+  expect(getToasts().map((toast) => toast.text)).not.toContain(
+    "/interrupt isn't available until this session is resumed",
+  );
 });
 
 // --- interrupt ---------------------------------------------------------------
