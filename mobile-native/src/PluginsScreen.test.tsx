@@ -10,6 +10,8 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { PluginEntry } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { AddMarketplace } from "./MarketplaceBrowser";
+import { createPluginMutationGate } from "./pluginMutationGate";
 import { PluginsScreen } from "./PluginsScreen";
 import { render, renderedText } from "./renderNative.testkit";
 
@@ -153,5 +155,35 @@ it("keeps the marketplace draft and exposes reconnect inside its modal", async (
 		modalReconnect.props.onPress();
 	});
 	expect(retry).toHaveBeenCalledOnce();
-	expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
+  expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
+});
+
+it("keeps Add marketplace open when readiness is lost during submit", async () => {
+  const hub = pluginsClient([]);
+  const onAdd = vi.fn(async () => {});
+  const onClose = vi.fn();
+  let readinessChecks = 0;
+  const tree = render(
+    <AddMarketplace
+      client={hub.client}
+      hubName="Work hub"
+      gate={createPluginMutationGate()}
+      ready
+      canUseConnection={() => readinessChecks++ === 0}
+      onClose={onClose}
+      onAdd={onAdd}
+    />,
+  );
+  const source = tree.root.findByProps({ accessibilityLabel: "Marketplace source" });
+  act(() => source.props.onChangeText("https://example.test/plugins.git"));
+
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+  });
+
+  expect(onAdd).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(
+    tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.value,
+  ).toBe("https://example.test/plugins.git");
 });

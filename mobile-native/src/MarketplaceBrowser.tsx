@@ -364,7 +364,7 @@ export function MarketplaceBrowser({
   );
 }
 
-function AddMarketplace({
+export function AddMarketplace({
   client,
   hubName,
   gate,
@@ -426,7 +426,7 @@ function AddMarketplace({
       setError(
         "Could not confirm the marketplace was added. Check the list and source before trying again.",
       );
-    else onClose();
+    else if (outcome === "ran") onClose();
   }
   return (
     <Modal
