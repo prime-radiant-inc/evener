@@ -4310,6 +4310,86 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
 	}
 }
 
+// TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore
+// covers the clean communication boundary after a human-note carrier. The
+// carrier does not answer ask1, and the notification arrives while its model
+// turn is completing. deliverIfCommunicated returns before the later
+// notification boundary, so the final clean settle must keep the live state
+// aligned with restore instead of letting autonomy mask the pending ask.
+func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	var sess *Session
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response {
+				sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
+				return communicateResponse(true, "note recorded")
+			},
+		},
+	}
+	c.Register(adapter)
+	var err error
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted provider and in-memory notification are deterministic;
+	// this only fires on a genuine lifecycle deadlock.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-communicate-notification", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier communication turn", ran, err)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (the pending notification must not start an autonomous turn)", got)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live askPendingCount = %d, want 1 (the human note does not answer ask1)", got)
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("live pending notifications = %d, want 1 (the notification must remain queued)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after carrier communication = %q, want %q", got, SessionAwaiting)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("live wire state after carrier communication = %q, want %q", got, SessionAwaiting)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored askPendingCount = %d, want 1", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q", got, SessionAwaiting)
+	}
+	if got := restored.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
+	}
+}
+
 // TestAskUser_LiveStateAfterObserverYieldMatchesRestore drives a stable watch
 // through the real job-manager event rail. The observer handoff arrives after
 // a non-terminal tool round while ask1 remains pending; the live boundary must
