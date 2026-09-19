@@ -2985,4 +2985,48 @@ describe("the form", () => {
     expect(screen.queryByText(/Save failed/)).toBeNull();
     expect(screen.queryByText(/no client connected/)).toBeNull();
   });
+
+  // `vars` is a map: the re-anchor must rebase per key, so an undeclared
+  // variable a concurrent client changed does not become a pending overwrite.
+  test("a re-anchor does not resurrect a concurrently changed undeclared variable", async () => {
+    const seeded = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(seeded, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    // Another client changes the OTHER authored variable; the draft keeps its
+    // seeded value because the reseed effect keys on the instance name only.
+    await act(async () => {
+      credentialsStore.setState({
+        instances: [{ ...seeded, vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc-client" } }],
+        availableProviders: [VERTEX],
+      });
+    });
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...seeded,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2", GOOGLE_VERTEX_LOCATION: "loc-client" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    // The undeclared variable takes the landed (foreign) value; nothing pending.
+    expect(field("GOOGLE_VERTEX_LOCATION").value).toBe("loc-client");
+    expect(saveButton().disabled).toBe(true);
+  });
 });

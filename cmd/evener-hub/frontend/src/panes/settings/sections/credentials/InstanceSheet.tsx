@@ -766,7 +766,14 @@ export function InstanceSheet({
                     baseUrl: declared.has("baseUrl") ? current.baseUrl : landedDraft.baseUrl,
                     protocol: declared.has("protocol") ? current.protocol : landedDraft.protocol,
                     surface: declared.has("surface") ? current.surface : landedDraft.surface,
-                    vars: declared.has("vars") ? current.vars : landedDraft.vars,
+                    // `vars` is a map, not a scalar: the draft only keeps the
+                    // keys THIS save declared, and takes every other key from
+                    // the landed row - otherwise a variable another client
+                    // changed under the draft resurfaces as a pending overwrite.
+                    vars: Object.fromEntries([
+                      ...Object.entries(landedDraft.vars),
+                      ...Object.entries(params.vars ?? {}).map(([key]) => [key, current.vars[key] ?? ""] as const),
+                    ]),
                     apiKeyEnv: declared.has("apiKeyEnv") ? current.apiKeyEnv : landedDraft.apiKeyEnv,
                     credentialHeader: declared.has("credentialHeader")
                       ? current.credentialHeader
