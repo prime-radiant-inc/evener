@@ -3961,6 +3961,379 @@ func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarl
 	}
 }
 
+// TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore covers
+// a RoboRev #1907 round-2 Medium, measured real: a failed human-note
+// carrier's own transcript append leaves askPending set (its entry clear
+// never ran, steeringCarrierClaimAnswersAsk), but the generic non-provider
+// failure tail in processOneInput's caller
+// (session_lifecycle.go's "handleModelError owns terminal provider
+// recovery... Keep this generic tail" branch) settled the live session
+// SessionIdle unconditionally, with no regard for askPendingCount(). Restore
+// of the identical transcript (TestAskUser_RestoreDoesNotResolveAcrossAFailed
+// HumanNoteCarrierAppend) correctly derives SessionAwaiting. WireState (the
+// externally-reported status) reads State() directly, so a live client would
+// have read this session as idle with a genuinely unanswered question still
+// live -- exactly the deadlock WireState's own doc warns against ("masking
+// the question as working would deadlock"). Drives the real
+// ProcessPendingUserInput path (not a direct acceptSteeringCarrierInput
+// call, which never reaches this tail) with the note's own transcript append
+// forced to fail, and asserts the LIVE session's state, not just a restored
+// one.
+func TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	refusal := refuseSteerAppends(sess, "note-1")
+	refusal.refuse.Store(true)
+
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true and the injected append failure", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live askPendingCount after the failed carrier append = %d, want 1 (still unanswered)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after the failed carrier append = %q, want %q (matching restore; a pending ask must not settle idle)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
+// covers the provider-owned terminal path: a human-note carrier preserves the
+// pending ask, and handleModelError must leave the live session awaiting just
+// as restore does for the same transcript shape.
+func TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) { return toolCallResponse(ask), nil },
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-provider-failure", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a provider failure after the carrier ran", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after provider failure = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after provider failure = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore covers the
+// no-tool retry terminal path: a human-note carrier preserves the pending ask,
+// and exhausting bare-text retries must leave the live session awaiting.
+func TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	steps := []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+	}
+	for range maxBareTextRetries + 1 {
+		steps = append(steps, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text")} })
+	}
+	c := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: steps}
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-no-tool-exhaustion", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want no-tool retry exhaustion after the carrier ran", ran, err)
+	}
+	if got := len(adapter.Requests()); got != maxBareTextRetries+2 {
+		t.Fatalf("provider requests = %d, want %d (initial ask plus carrier and its exhausted retries)", got, maxBareTextRetries+2)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after no-tool exhaustion = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after no-tool exhaustion = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore covers the
+// explicit MaxToolRoundsPerInput terminal boundary: a human-note carrier
+// preserves the pending ask, but the tool-round exhaustion branch must leave
+// the live session awaiting just as restore does for the same transcript.
+func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:              dir,
+		MaxToolRoundsPerInput: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-tool-round-budget", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	_, ran, err := sess.ProcessPendingUserInput(ctx, nil)
+	if !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want tool-round budget exhaustion after the carrier ran", ran, err)
+	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after tool-round exhaustion = %d, want 1 (the note does not answer ask1)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after tool-round exhaustion = %q, want %q (matching restore)", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after tool-round exhaustion = %q, want %q (live and restore must agree)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterNotificationYieldMatchesRestore covers the
+// notification yield boundary: a human-note carrier leaves ask1 pending while
+// a real queued job notification asks the turn loop to yield before another
+// model round. The live boundary must retain the unanswered ask; restore of
+// the same transcript must derive the same awaiting state.
+func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	taskList := llm.ToolCallData{ID: "task-list", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(taskList) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-notification-yield", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for notification", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live askPendingCount after notification yield = %d, want 1", got)
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("live pending notifications after yield = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after notification yield = %q, want %q", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored askPendingCount = %d, want 1", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after notification yield = %q, want %q", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_LiveStateAfterObserverYieldMatchesRestore drives a stable watch
+// through the real job-manager event rail. The observer handoff arrives after
+// a non-terminal tool round while ask1 remains pending; the live boundary must
+// preserve the same awaiting state that restore derives from the transcript.
+func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
+	t.Parallel()
+	fixture := newStableWatchRuntimeBase(t, nil)
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.delegateController = fixture.controller
+	sess.delegateRootSessionID = fixture.root.ID()
+	sess.owningDelegateID = "dlg_source"
+	sess.jobManager.delegateController = fixture.controller
+	sess.jobManager.retirementOwner = sess
+	fixture.controller.mu.Lock()
+	fixture.controller.live["dlg_source"].runtime = sess
+	fixture.controller.live["dlg_source"].binding.runtime = sess
+	fixture.controller.mu.Unlock()
+	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
+		"operation": "create",
+		"source":    "dlg_source",
+		"events":    []any{"assistant.tool"},
+	}, 4096); err != nil {
+		t.Fatalf("create stable observer watch: %v", err)
+	}
+	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-observer-yield", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for observer delivery", ran, err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live askPendingCount after observer yield = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after observer yield = %q, want %q", got, SessionAwaiting)
+	}
+	if pending := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(pending) != 0 {
+		t.Fatalf("observer watch remained pending after lifecycle yield: %#v", pending)
+	}
+	attentionIDs, err := fixture.root.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read observer attention: %v", err)
+	}
+	if len(attentionIDs) == 0 {
+		t.Fatal("observer attention count = 0, want at least 1")
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored askPendingCount = %d, want 1", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after observer yield = %q, want %q", got, SessionAwaiting)
+	}
+}
+
 // TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry
 // covers a RoboRev #1907 round-2 Medium: roundEntryResolvesAskBoundary's
 // backward walk only skips TurnAssistant/TurnToolResults on its way to the
@@ -3986,5 +4359,17 @@ func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t
 	}
 	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
 		t.Fatal("roundEntryResolvesAskBoundary = false, want true (the real entry is a resolving TurnUserInput one step past the TurnEnvironment bookkeeping turn)")
+	}
+}
+
+func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
+		{Kind: schema.TurnFailure, Message: llm.System("provider failed"), Error: &schema.TurnFailureInfo{Message: "provider failed"}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("checking the schema")),
+		schema.NewTurn(schema.TurnToolResults, llm.User("tool result")),
+	}
+	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
+		t.Fatal("roundEntryResolvesAskBoundary = false, want true (a non-carrier TurnFailure is transparent bookkeeping before the resolving TurnUserInput entry)")
 	}
 }
