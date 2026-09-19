@@ -477,12 +477,24 @@ func (b *DaemonBroker) FinalizeOwnership(ctx context.Context, identity appwire.B
 	}
 	var response appwire.BrokerFinalizeOwnershipResponse
 	if err := client.Request(ctx, appwire.MethodBrokerFinalizeOwnership, appwire.BrokerFinalizeOwnershipParams{LaunchID: b.cfg.LaunchID, ActualDaemonIdentity: identity}, &response); err != nil {
+		b.sealClient(client, err)
 		return err
 	}
 	if response.DaemonEpoch != epoch {
+		b.sealClient(client, ErrBrokerAuthentication)
 		return ErrBrokerAuthentication
 	}
 	return nil
+}
+
+func (b *DaemonBroker) sealClient(client *appwire.Client, cause error) {
+	b.mu.Lock()
+	if b.client == client {
+		b.client = nil
+		b.establishErr = errors.Join(ErrBrokerSealed, cause)
+	}
+	b.mu.Unlock()
+	_ = client.Close()
 }
 
 // InstallOwnership records the complete rendezvous identity and finalizes it

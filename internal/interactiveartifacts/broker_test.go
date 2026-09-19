@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -105,5 +106,180 @@ func TestLaunchBrokerRejectsWrongResumeBeforePersistingAssociation(t *testing.T)
 	}
 	if _, err := authority.RootAssociation(t.Context(), actualRoot); !errors.Is(err, ErrAssociationMissing) {
 		t.Fatalf("wrong resumed root association error = %v, want ErrAssociationMissing", err)
+	}
+}
+
+func TestDaemonBrokerSealsConnectionAfterOwnershipFinalizationFails(t *testing.T) {
+	authority, err := OpenHostAuthority(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close() //nolint:errcheck
+	rootID := identifier.MustNewSessionID()
+
+	hubSide, daemonSide := net.Pipe()
+	hub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(hubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "launch", HubEpoch: "hub", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	daemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(daemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "launch",
+	})
+	defer daemon.Close() //nolint:errcheck
+	go func() { _ = hub.Serve(t.Context()) }()
+	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := completeBrokerIdentity(rootID)
+	actual := expected
+	actual.PID++
+	if err := hub.ExpectOwnership(expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.InstallOwnership(t.Context(), actual); err == nil {
+		t.Fatal("mismatched ownership unexpectedly finalized")
+	}
+	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err == nil {
+		t.Fatal("failed ownership epoch remained usable")
+	}
+}
+
+type dropResponseTransport struct {
+	appwire.Transport
+}
+
+func (t dropResponseTransport) Send(ctx context.Context, message appwire.Message) error {
+	if message.Response != nil {
+		_ = t.Transport.Close()
+		return io.ErrClosedPipe
+	}
+	return t.Transport.Send(ctx, message)
+}
+
+func TestLaunchBrokerReusesDurableAssociationAfterInstallAcknowledgmentIsLost(t *testing.T) {
+	authority, err := OpenHostAuthority(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close() //nolint:errcheck
+	rootID := identifier.MustNewSessionID()
+
+	firstHubSide, firstDaemonSide := net.Pipe()
+	firstHub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(firstHubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "first-launch", HubEpoch: "first-hub", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	firstDaemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: dropResponseTransport{Transport: appwire.NewStreamTransportWithLimit(firstDaemonSide, appwire.PrivateBrokerFrameLimit)},
+		LaunchID:  "first-launch",
+	})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- firstHub.Serve(t.Context()) }()
+	if _, err := firstDaemon.EstablishRoot(t.Context(), rootID, 1); err == nil {
+		t.Fatal("dropped install acknowledgment unexpectedly established the first connection")
+	}
+	_ = firstDaemon.Close()
+	// TRIPWIRE: both in-memory pipe ends were closed above; this only guards a
+	// regression that strands the single launch-broker reader.
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first launch broker remained blocked after acknowledgment loss")
+	}
+	persisted, err := authority.RootAssociation(t.Context(), rootID)
+	if err != nil {
+		t.Fatalf("durable association after acknowledgment loss: %v", err)
+	}
+
+	secondHubSide, secondDaemonSide := net.Pipe()
+	secondHub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(secondHubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "second-launch", HubEpoch: "second-hub", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	secondDaemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(secondDaemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "second-launch",
+	})
+	defer secondDaemon.Close() //nolint:errcheck
+	go func() { _ = secondHub.Serve(t.Context()) }()
+	retried, err := secondDaemon.EstablishRoot(t.Context(), rootID, 1)
+	if err != nil {
+		t.Fatalf("retry EstablishRoot: %v", err)
+	}
+	if got := brokerAssociation(persisted); !reflect.DeepEqual(retried, got) {
+		t.Fatalf("retried association = %+v, want persisted %+v", retried, got)
+	}
+}
+
+func completeBrokerIdentity(rootID string) appwire.BrokerDaemonIdentity {
+	return appwire.BrokerDaemonIdentity{
+		PID: 42, Address: "127.0.0.1:4131", Endpoint: "ws://127.0.0.1:4131/rpc", Protocol: appwire.ProtocolVersion,
+		SourceID: "local", ThreadID: rootID, SessionID: rootID, InstanceID: rootID, WorkspaceRef: "local:" + rootID,
+		WorkingDir: "/work", StateDir: "/state", StartedAt: time.Unix(123, 456).UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func TestDirectRebootstrapAuthenticatesCurrentOwnedDaemonAndReplacesConnection(t *testing.T) {
+	authority, err := OpenHostAuthority(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close() //nolint:errcheck
+	rootID := identifier.MustNewSessionID()
+	identity := completeBrokerIdentity(rootID)
+
+	launchHubSide, launchDaemonSide := net.Pipe()
+	launchHub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchHubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "launch", HubEpoch: "hub-one", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	daemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchDaemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "launch",
+	})
+	defer daemon.Close() //nolint:errcheck
+	go func() { _ = launchHub.Serve(t.Context()) }()
+	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := launchHub.ExpectOwnership(identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.InstallOwnership(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+
+	hubSide, daemonSide := net.Pipe()
+	generation := uint64(9)
+	daemonDone := make(chan error, 1)
+	go func() {
+		daemonDone <- daemon.AcceptRebootstrap(t.Context(), appwire.NewStreamTransportWithLimit(daemonSide, appwire.PrivateBrokerFrameLimit), DaemonRebootstrapCallbacks{
+			Validate: func(expected appwire.BrokerDaemonIdentity) (appwire.BrokerDaemonIdentity, uint64, error) {
+				if !reflect.DeepEqual(expected, identity) {
+					return appwire.BrokerDaemonIdentity{}, 0, ErrBrokerAuthentication
+				}
+				return identity, generation, nil
+			},
+			Complete: func(candidate uint64) error {
+				if candidate != generation {
+					return ErrBrokerAuthentication
+				}
+				generation++
+				return nil
+			},
+		})
+	}()
+	connection, err := EstablishHubRebootstrap(t.Context(), HubRebootstrapConfig{
+		Transport: appwire.NewStreamTransportWithLimit(hubSide, appwire.PrivateBrokerFrameLimit), Authority: authority,
+		HubEpoch: "hub-two", ExpectedIdentity: identity,
+	})
+	if err != nil {
+		t.Fatalf("EstablishHubRebootstrap: %v", err)
+	}
+	defer connection.Close() //nolint:errcheck
+	if err := <-daemonDone; err != nil {
+		t.Fatalf("AcceptRebootstrap: %v", err)
+	}
+	if generation != 10 {
+		t.Fatalf("generation = %d, want completed candidate", generation)
 	}
 }
