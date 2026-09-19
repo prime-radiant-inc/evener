@@ -50,7 +50,7 @@ const initialize: InitializeResponse = {
 	features: { keybindingsSettings: true, transcriptDisplaySettings: false },
 } as InitializeResponse;
 
-function clientFixture({ deferred = false } = {}) {
+function clientFixture({ deferred = false, failed = false } = {}) {
 	const readyListeners = new Set<(value: InitializeResponse) => void>();
 	const notifications = new Set<(value: AnyNotification) => void>();
 	let resolveConnected!: () => void;
@@ -66,6 +66,9 @@ function clientFixture({ deferred = false } = {}) {
 	const requests: string[] = [];
 	const client = {
 		connect: async () => {
+			if (failed) {
+				throw new Error("handshake failed");
+			}
 			if (!deferred) {
 				for (const listener of readyListeners) listener(initialize);
 				resolveConnected();
@@ -253,6 +256,115 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
 			draft: { revision: 2, rules: [] },
 			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("reconciles a readable replacement into the retained snapshot while the same-hub client waits", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		expect(confirmed).toEqual({ version: 1, revision: 1, rules: [] });
+
+		writeDraft("hub-a", {
+			id: "replacement",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: true,
+		});
+		const replacement = clientFixture({ deferred: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: { revision: 2, rules: [] },
+			writeUncertain: true,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("clears the retained unreadable projection after a failed same-hub replacement removes the record", async () => {
+		writeDraft("hub-a", "{not json");
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		expect(mounted.current.snapshot?.keybindings.storageUnavailable).toBe(true);
+
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		let outcome: unknown;
+		act(() => {
+			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+		});
+
+		expect(outcome).toBe("removed");
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: null,
+			writeUncertain: false,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("marks only the retained draft projection unavailable when replacement storage throws", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		const draft = mounted.current.snapshot?.keybindings.draft;
+
+		const replacement = clientFixture({ failed: true });
+		harness.storage.throwOnGet = true;
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.model).toBeNull();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft,
+			storageUnavailable: true,
 		});
 		mounted.unmount();
 	});
