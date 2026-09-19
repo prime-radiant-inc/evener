@@ -50,7 +50,7 @@ const initialize: InitializeResponse = {
 	features: { keybindingsSettings: true, transcriptDisplaySettings: false },
 } as InitializeResponse;
 
-function clientFixture({ deferred = false, failed = false } = {}) {
+function clientFixture({ deferred = false, failed = false, keybindingsError = false } = {}) {
 	const readyListeners = new Set<(value: InitializeResponse) => void>();
 	const notifications = new Set<(value: AnyNotification) => void>();
 	let resolveConnected!: () => void;
@@ -87,8 +87,10 @@ function clientFixture({ deferred = false, failed = false } = {}) {
 		},
 		request: async (method: string) => {
 			requests.push(method);
-			if (method === "evener/settings/keybindings/get")
+			if (method === "evener/settings/keybindings/get") {
+				if (keybindingsError) throw new Error("hub request failed");
 				return { version: 1, revision: 1, rules: [] };
+			}
 			throw new Error(`Unexpected request: ${method}`);
 		},
 	} as unknown as AppwireClient;
@@ -292,6 +294,8 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			confirmed,
 			draft: { revision: 2, rules: [] },
 			writeUncertain: true,
+			conflict: true,
+			error: null,
 			storageUnavailable: false,
 		});
 		mounted.unmount();
@@ -328,6 +332,47 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			confirmed,
 			draft: null,
 			writeUncertain: false,
+			conflict: false,
+			error: null,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
+	it("preserves an unrelated hub error while clearing a retained draft", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const first = clientFixture({ keybindingsError: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: first.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(first);
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: { revision: 1, rules: [] },
+			error: "The hub request could not be confirmed.",
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		const replacement = clientFixture({ failed: true });
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: replacement.client,
+			state: "closed",
+		};
+		mounted.rerender();
+
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			conflict: false,
+			error: "The hub request could not be confirmed.",
 			storageUnavailable: false,
 		});
 		mounted.unmount();
