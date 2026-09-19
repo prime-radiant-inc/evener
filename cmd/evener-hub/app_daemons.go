@@ -274,6 +274,13 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err := deletionFenceError(cfg, params.Identity.Ref, ref.ThreadID, ""); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
+	// A deletion record may name any alias in the ownership group, not only
+	// the ref the request addressed (the e68ec81fa class): every alias's
+	// reservation is already held here, so the whole group is fenced before
+	// the retire RPC is forwarded.
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return appwire.DaemonRetireResponse{}, err
+	}
 	// No automatic fallback against a peer that cannot answer the current
 	// protocol's safe-retire RPC.
 	if current.Protocol != appwire.ProtocolVersion || current.Endpoint == "" {
