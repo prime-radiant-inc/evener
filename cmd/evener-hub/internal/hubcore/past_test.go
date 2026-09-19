@@ -104,6 +104,35 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_LegacyFirstResaveBeatsItsLegacyRow pins the mixed-pair
+// tie: the first timestamp-neutral re-save of a legacy session advances Revision
+// 0 -> 1 without moving either timestamp, so a probe carrying it must replace the
+// legacy indexed row.
+func fuzzScenarioPastIndex_LegacyFirstResaveBeatsItsLegacyRow(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	idx := NewPastIndex("")
+	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "legacy", UpdatedAt: base}})
+
+	// The first re-save (an AppendSessionObservedBy) bumps Revision to 1 with the
+	// same timestamps.
+	idx.foldOne(PastEntry{ID: id, Meta: schema.SessionMeta{
+		ID:         id,
+		Name:       "legacy",
+		UpdatedAt:  base,
+		Revision:   1,
+		ObservedBy: []string{"02wMz5Txv8Vo4rqb3QYZuV"},
+	}})
+
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index after the fold")
+	}
+	if !slices.Contains(got.Meta.ObservedBy, "02wMz5Txv8Vo4rqb3QYZuV") {
+		t.Fatalf("fold dropped the first re-save of a legacy row: ObservedBy=%v", got.Meta.ObservedBy)
+	}
+}
+
 // fuzzScenarioPastIndex_LegacyRowOrdersByTimestampAgainstRevisioned pins that a
 // row written before the Revision field existed (Revision 0) is ordered by its
 // timestamps, not treated as older than every revisioned row. A legacy probe

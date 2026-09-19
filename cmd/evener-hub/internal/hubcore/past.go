@@ -1224,5 +1224,17 @@ func metaNewer(a, b schema.SessionMeta) bool {
 	if b.UpdatedAt.After(a.UpdatedAt) {
 		return false
 	}
-	return a.NameUpdatedAt.After(b.NameUpdatedAt)
+	if a.NameUpdatedAt.After(b.NameUpdatedAt) {
+		return true
+	}
+	if b.NameUpdatedAt.After(a.NameUpdatedAt) {
+		return false
+	}
+	// Timestamps tie. A mixed pair (Revision 0 vs nonzero) is a legacy row and
+	// its first re-save — the revisioned side is the newer version. Any other
+	// tie carries no order, so keep the indexed row rather than clobber it.
+	if a.Revision != b.Revision {
+		return a.Revision != 0
+	}
+	return false
 }
