@@ -6,6 +6,7 @@ import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
@@ -240,6 +241,14 @@ describe("without a registry", () => {
 });
 
 describe("the checkpointed draft editor", () => {
+  test("decodeKeybindingDraftFields matches restoreDraft for valid and invalid records", () => {
+    expect(decodeKeybindingDraftFields({ id: "d1", baseRevision: 3, rules, writeUncertain: true })).toEqual({
+      draft: { version: 1, revision: 3, rules },
+      writeUncertain: true,
+    });
+    expect(decodeKeybindingDraftFields("{not json")).toEqual({ draft: null, writeUncertain: false });
+  });
+
   test("persists the intent before the PATCH leaves, clears it on the ack and applies the canonical payload", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
