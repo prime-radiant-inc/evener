@@ -55,8 +55,8 @@ func TestLaunchBrokerAuthenticatesAndFinalizesOwnedRoot(t *testing.T) {
 	if err := hub.ExpectOwnership(identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := daemon.FinalizeOwnership(t.Context(), identity); err != nil {
-		t.Fatalf("FinalizeOwnership: %v", err)
+	if err := daemon.InstallOwnership(t.Context(), identity); err != nil {
+		t.Fatalf("InstallOwnership: %v", err)
 	}
 	if err := hub.WaitFinalized(t.Context()); err != nil {
 		t.Fatalf("WaitFinalized: %v", err)

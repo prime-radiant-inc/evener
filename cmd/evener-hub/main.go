@@ -409,6 +409,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return fmt.Errorf("load artifact authority: %w", err)
 	}
 	defer func() { _ = authority.Close() }()
+	spawner.ArtifactAuthority = authority
+	spawner.ArtifactHubEpoch = interactiveartifacts.NewBrokerID()
 	for _, record := range deletionStore.Deleting() {
 		sessionIDs := make([]string, 0, len(record.Targets))
 		for _, target := range record.Targets {

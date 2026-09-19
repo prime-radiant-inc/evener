@@ -10,17 +10,82 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"regexp"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 var (
 	ErrBrokerAuthentication = errors.New("artifact broker authentication failed")
 	ErrBrokerSealed         = errors.New("artifact broker sealed")
 )
+
+var brokerIDPattern = regexp.MustCompile(`\A[0-9a-f]{32}\z`)
+
+func NewBrokerID() string { return randomID() }
+
+type splitBrokerStream struct {
+	reader io.ReadCloser
+	writer io.WriteCloser
+	once   sync.Once
+	err    error
+}
+
+func (s *splitBrokerStream) Read(p []byte) (int, error)  { return s.reader.Read(p) }
+func (s *splitBrokerStream) Write(p []byte) (int, error) { return s.writer.Write(p) }
+func (s *splitBrokerStream) Close() error {
+	s.once.Do(func() { s.err = errors.Join(s.reader.Close(), s.writer.Close()) })
+	return s.err
+}
+
+// NewPrivateBrokerTransport joins the two unidirectional private descriptors
+// and applies the protocol's finite frame limit in both processes.
+func NewPrivateBrokerTransport(reader io.ReadCloser, writer io.WriteCloser) appwire.Transport {
+	return appwire.NewStreamTransportWithLimit(&splitBrokerStream{reader: reader, writer: writer}, appwire.PrivateBrokerFrameLimit)
+}
+
+// WriteLaunchCorrelation sends the Hub-owned launch correlation over the
+// inherited private channel before AppWire framing begins.
+func WriteLaunchCorrelation(writer io.Writer, launchID string) error {
+	if !brokerIDPattern.MatchString(launchID) {
+		return ErrBrokerAuthentication
+	}
+	data := append([]byte(launchID), '\n')
+	for len(data) > 0 {
+		n, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+// ReadLaunchCorrelation reads exactly one fixed-size correlation record. It
+// does not buffer into the following AppWire frame, preserving one reader per
+// handshake phase.
+func ReadLaunchCorrelation(reader io.Reader) (string, error) {
+	var data [33]byte
+	if _, err := io.ReadFull(reader, data[:]); err != nil {
+		return "", err
+	}
+	if data[len(data)-1] != '\n' {
+		return "", ErrBrokerAuthentication
+	}
+	launchID := string(data[:len(data)-1])
+	if !brokerIDPattern.MatchString(launchID) {
+		return "", ErrBrokerAuthentication
+	}
+	return launchID, nil
+}
 
 type LaunchBrokerConfig struct {
 	Transport appwire.Transport
@@ -46,15 +111,27 @@ type LaunchBroker struct {
 	sealed              error
 
 	expectedReady chan struct{}
+	authenticated chan struct{}
 	finalized     chan struct{}
 	finalizeOnce  sync.Once
+	serveDone     chan struct{}
+	serveErr      error
 }
 
 func NewLaunchBroker(cfg LaunchBrokerConfig) *LaunchBroker {
-	return &LaunchBroker{cfg: cfg, expectedReady: make(chan struct{}), finalized: make(chan struct{})}
+	return &LaunchBroker{
+		cfg: cfg, expectedReady: make(chan struct{}), authenticated: make(chan struct{}),
+		finalized: make(chan struct{}), serveDone: make(chan struct{}),
+	}
 }
 
-func (b *LaunchBroker) Serve(ctx context.Context) error {
+func (b *LaunchBroker) Serve(ctx context.Context) (resultErr error) {
+	defer func() {
+		b.mu.Lock()
+		b.serveErr = resultErr
+		b.mu.Unlock()
+		close(b.serveDone)
+	}()
 	if err := b.validateConfig(); err != nil {
 		_ = b.cfg.Transport.Close()
 		return err
@@ -140,6 +217,7 @@ func (b *LaunchBroker) Serve(ctx context.Context) error {
 			return nil, ErrBrokerAuthentication
 		}
 		authenticated = true
+		close(b.authenticated)
 		return appwire.BrokerAuthenticateResponse{DaemonEpoch: daemonEpoch}, nil
 	})
 
@@ -170,6 +248,9 @@ func (b *LaunchBroker) Serve(ctx context.Context) error {
 		}
 		if err := b.cfg.Transport.Send(ctx, appwire.ResponseMessage(message.Request.ID, result)); err != nil {
 			return err
+		}
+		if message.Request.Method == appwire.MethodBrokerFinalizeOwnership {
+			b.finalizeOnce.Do(func() { close(b.finalized) })
 		}
 	}
 }
@@ -210,7 +291,6 @@ func (b *LaunchBroker) finalizeOwnership(ctx context.Context, params appwire.Bro
 	if b.sealed != nil || !b.expectedOwnershipOK || !reflect.DeepEqual(params.ActualDaemonIdentity, b.expectedOwnership) {
 		return appwire.BrokerFinalizeOwnershipResponse{}, ErrBrokerAuthentication
 	}
-	b.finalizeOnce.Do(func() { close(b.finalized) })
 	return appwire.BrokerFinalizeOwnershipResponse{DaemonEpoch: b.daemonEpoch}, nil
 }
 
@@ -231,6 +311,30 @@ func (b *LaunchBroker) WaitFinalized(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-b.finalized:
+		return nil
+	case <-b.serveDone:
+		b.mu.Lock()
+		err := b.serveErr
+		b.mu.Unlock()
+		if err == nil {
+			return ErrBrokerSealed
+		}
+		return errors.Join(ErrBrokerSealed, err)
+	}
+}
+
+// FinalizeLaunch publishes the rendezvous identity and, when the daemon had
+// already authenticated before rendezvous, waits for its exact same-channel
+// finalization acknowledgment. A broker first used later can finalize against
+// the already-published identity without holding up an ordinary launch.
+func (b *LaunchBroker) FinalizeLaunch(ctx context.Context, identity appwire.BrokerDaemonIdentity) error {
+	if err := b.ExpectOwnership(identity); err != nil {
+		return err
+	}
+	select {
+	case <-b.authenticated:
+		return b.WaitFinalized(ctx)
+	default:
 		return nil
 	}
 }
@@ -264,6 +368,8 @@ type DaemonBroker struct {
 	association  appwire.BrokerAssociation
 	daemonEpoch  string
 	client       *appwire.Client
+	ownership    appwire.BrokerDaemonIdentity
+	ownershipSet bool
 }
 
 func NewDaemonBroker(cfg DaemonBrokerConfig) *DaemonBroker { return &DaemonBroker{cfg: cfg} }
@@ -302,9 +408,15 @@ func (b *DaemonBroker) EstablishRoot(ctx context.Context, rootSessionID string, 
 		b.daemonEpoch = daemonEpoch
 		b.client = client
 	}
+	ownership, ownershipSet := b.ownership, b.ownershipSet
 	b.establishErr = err
 	close(done)
 	b.mu.Unlock()
+	if err == nil && ownershipSet {
+		if finalizeErr := b.FinalizeOwnership(ctx, ownership); finalizeErr != nil {
+			return appwire.BrokerAssociation{}, finalizeErr
+		}
+	}
 	return association, err
 }
 
@@ -373,6 +485,21 @@ func (b *DaemonBroker) FinalizeOwnership(ctx context.Context, identity appwire.B
 	return nil
 }
 
+// InstallOwnership records the complete rendezvous identity and finalizes it
+// immediately when construction already established the private connection.
+// If registration wins the race, EstablishRoot finalizes before returning.
+func (b *DaemonBroker) InstallOwnership(ctx context.Context, identity appwire.BrokerDaemonIdentity) error {
+	b.mu.Lock()
+	b.ownership = identity
+	b.ownershipSet = true
+	established := b.client != nil
+	b.mu.Unlock()
+	if !established {
+		return nil
+	}
+	return b.FinalizeOwnership(ctx, identity)
+}
+
 func (b *DaemonBroker) Close() error {
 	b.mu.Lock()
 	client := b.client
@@ -390,6 +517,15 @@ func brokerAssociation(root RootAssociation) appwire.BrokerAssociation {
 	return appwire.BrokerAssociation{
 		RealmID: root.RealmID, HumanOwnerID: root.HumanOwnerID, RootSessionID: root.RootSessionID,
 		PrincipalID: root.PrincipalID, NamespaceID: root.NamespaceID, ProjectID: root.ProjectID,
+	}
+}
+
+func DaemonIdentity(entry rendezvous.Entry) appwire.BrokerDaemonIdentity {
+	return appwire.BrokerDaemonIdentity{
+		PID: entry.PID, Address: entry.Address, Endpoint: entry.Endpoint, Protocol: entry.Protocol,
+		SourceID: entry.SourceID, ThreadID: entry.ThreadID, SessionID: entry.SessionID, InstanceID: entry.InstanceID,
+		WorkspaceRef: entry.WorkspaceRef, WorkingDir: entry.WorkingDir, StateDir: entry.StateDir,
+		StartedAt: entry.StartedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 

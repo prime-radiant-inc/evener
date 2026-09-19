@@ -33,6 +33,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -197,6 +198,10 @@ type serveDeps struct {
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
 	newClearSession  func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
+	// managedRuntime binds the inherited private broker into the engine during
+	// construction. The provider stays lazy: Bind may establish the root before
+	// NewSession or RestoreSession returns, without waiting on rendezvous.
+	managedRuntime func(*interactiveartifacts.DaemonBroker) agent.ManagedRuntimeProvider
 	// prepareAppIdentity projects a session's transcript into an installable
 	// AppWire identity. It is the one fallible step of an identity swap, so it
 	// is injectable: a test needs a deterministic preparation failure to prove
@@ -393,6 +398,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	apiLog := fs.String("api-log", "off", "durable API request logging on|off (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
+	artifactBrokerReadFD := fs.Int("artifact-broker-read-fd", -1, "internal inherited artifact broker read descriptor")
+	artifactBrokerWriteFD := fs.Int("artifact-broker-write-fd", -1, "internal inherited artifact broker write descriptor")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: evener serve [flags]\n\n")
@@ -403,6 +410,22 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	var daemonBroker *interactiveartifacts.DaemonBroker
+	if (*artifactBrokerReadFD >= 0) != (*artifactBrokerWriteFD >= 0) {
+		return errors.New("artifact broker requires both inherited descriptors")
+	}
+	if *artifactBrokerReadFD >= 0 {
+		var err error
+		daemonBroker, err = openInheritedDaemonBroker(*artifactBrokerReadFD, *artifactBrokerWriteFD)
+		if err != nil {
+			return err
+		}
+		defer daemonBroker.Close() //nolint:errcheck
+	}
+	var managedRuntime agent.ManagedRuntimeProvider
+	if daemonBroker != nil && deps.managedRuntime != nil {
+		managedRuntime = deps.managedRuntime(daemonBroker)
 	}
 	if *daemonIdleTimeout < 0 {
 		return fmt.Errorf("--daemon-idle-timeout must not be negative (got %v)", *daemonIdleTimeout)
@@ -617,6 +640,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		ProviderIdleTimeout:         *providerIdleTimeout,
+		ManagedRuntime:              managedRuntime,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if *maxSubagentDepth >= 0 {
@@ -657,6 +681,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			ManagedRuntime:              managedRuntime,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -1686,6 +1711,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
+		if daemonBroker != nil {
+			if err := daemonBroker.InstallOwnership(ctx, interactiveartifacts.DaemonIdentity(rvEntry)); err != nil {
+				removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(removeErr error) {
+					serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after broker finalization failure: %v", removeErr)
+				})
+				return fmt.Errorf("finalize artifact broker ownership: %w", err)
+			}
+		}
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
 				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)

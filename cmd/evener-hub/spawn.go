@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -68,6 +69,8 @@ type HubSpawner struct {
 	ProvidersConfigPath string                    // providers.toml the child reads as its user layer
 	CredentialsPath     string                    // credentials.toml the child resolves keys from
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
+	ArtifactAuthority   *interactiveartifacts.HostAuthority
+	ArtifactHubEpoch    string
 }
 
 // childNoUserLayer is spec §10's third state as a child must see it: the hub's
@@ -199,6 +202,11 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
+	if h.ArtifactAuthority != nil {
+		return spawnDaemonWithBroker(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, &daemonBrokerLaunchConfig{
+			Authority: h.ArtifactAuthority, ProjectID: req.Project.ID, HubEpoch: h.ArtifactHubEpoch,
+		})
+	}
 	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 
@@ -266,6 +274,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	contractDone(nil)
 	prepareDone(nil)
+	if h.ArtifactAuthority != nil {
+		return resumeDaemonWithBroker(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, &daemonBrokerLaunchConfig{
+			Authority: h.ArtifactAuthority, ProjectID: req.Project.ID, ResumeID: req.SessionID, HubEpoch: h.ArtifactHubEpoch,
+		})
+	}
 	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 
@@ -407,6 +420,10 @@ func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 // spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
 func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+	return spawnDaemonWithBroker(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func spawnDaemonWithBroker(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, brokerCfg *daemonBrokerLaunchConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
 	daemonStarted := time.Now()
 	trace.record(ctx, "daemon", "begin", daemonStarted, nil, 0, 0)
@@ -430,14 +447,30 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
+	var brokerLaunch *daemonBrokerLaunch
+	if brokerCfg != nil {
+		brokerLaunch, err = attachDaemonBrokerLaunch(cmd, *brokerCfg)
+		if err != nil {
+			launchDone(err)
+			dlog.close()
+			dlog.removeIfPending()
+			return rendezvous.Entry{}, err
+		}
+	}
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		if brokerLaunch != nil {
+			brokerLaunch.afterStart(err)
+		}
 		launchDone(err)
 		dlog.close()
 		// Nothing was ever written to it and no session will ever claim it.
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
+	}
+	if brokerLaunch != nil {
+		brokerLaunch.afterStart(nil)
 	}
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
@@ -454,6 +487,9 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
 	if err != nil {
+		if brokerLaunch != nil {
+			brokerLaunch.seal(err)
+		}
 		_ = cmd.Process.Kill()
 		// Take the tail FIRST: it is the only account of this failure anyone
 		// gets. Then drop the file, because the session id that would have
@@ -464,6 +500,16 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 		failure := launchFailureError(launchFailurePrefix("daemon spawn", err), err, tail)
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, failure
+	}
+	if brokerLaunch != nil {
+		if err := brokerLaunch.finalize(entry); err != nil {
+			brokerLaunch.seal(err)
+			_ = cmd.Process.Kill()
+			failure := fmt.Errorf("finalize artifact broker ownership: %w", err)
+			tail := dlog.tail(daemonLaunchOutputLimit)
+			dlog.removeIfPending()
+			return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("daemon spawn", failure), failure, tail)
+		}
 	}
 	dlog.adopt(entry.SessionID)
 	// A fresh daemon only reveals its session through rendezvous. Bind that
@@ -515,6 +561,10 @@ func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
 func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+	return resumeDaemonWithBroker(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func resumeDaemonWithBroker(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, brokerCfg *daemonBrokerLaunchConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, hubLog)
 	done := trace.stage(ctx, "daemon")
 	defer func() { done(launchErr) }()
@@ -536,12 +586,28 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
+	var brokerLaunch *daemonBrokerLaunch
+	if brokerCfg != nil {
+		brokerLaunch, err = attachDaemonBrokerLaunch(cmd, *brokerCfg)
+		if err != nil {
+			launchDone(err)
+			dlog.close()
+			dlog.removeIfUncommitted()
+			return rendezvous.Entry{}, err
+		}
+	}
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		if brokerLaunch != nil {
+			brokerLaunch.afterStart(err)
+		}
 		launchDone(err)
 		dlog.close()
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
+	}
+	if brokerLaunch != nil {
+		brokerLaunch.afterStart(nil)
 	}
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
@@ -557,12 +623,25 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
 	if err != nil {
+		if brokerLaunch != nil {
+			brokerLaunch.seal(err)
+		}
 		_ = cmd.Process.Kill()
 		tail := dlog.tail(daemonLaunchOutputLimit)
 		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
+	}
+	if brokerLaunch != nil {
+		if err := brokerLaunch.finalize(entry); err != nil {
+			brokerLaunch.seal(err)
+			_ = cmd.Process.Kill()
+			failure := fmt.Errorf("finalize artifact broker ownership: %w", err)
+			tail := dlog.tail(daemonLaunchOutputLimit)
+			dlog.removeIfUncommitted()
+			return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", failure), failure, tail)
+		}
 	}
 	if err := dlog.promote(); err != nil {
 		_ = cmd.Process.Kill()
