@@ -82,6 +82,15 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 	return mk, nil
 }
 
+// saveMarketplaces is the shared boundary every caller (ensureFetched,
+// AddMarketplace, RefreshMarketplace, RemoveMarketplace, EditMarketplace,
+// saveRename, SeedDefaultMarketplaces) writes known_marketplaces.json
+// through, so scrubbing here once - atomicWriteFile's own error can name
+// this machine's absolute plugin-store path directly - covers every present
+// and future caller instead of relying on each one to wrap it. Callers that
+// need the marketplace name in the message (saveFailed/
+// storeChangeRollbackFailed) wrap this already-scrubbed error with it; no
+// path can reach the wire either way.
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 	path, err := m.storePath(marketplacesFileName)
 	if err != nil {
@@ -92,7 +101,8 @@ func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 		return fmt.Errorf("marshalling marketplaces: %w", err)
 	}
 	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
-		return err
+		_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", marketplacesFileName, err)
+		return fmt.Errorf("saving %s failed; see the hub's log for detail", marketplacesFileName)
 	}
 	m.markStoreChanged(StoreChanged{Marketplaces: true})
 	return nil
@@ -164,7 +174,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
-		return MarketplaceRef{}, err
+		return MarketplaceRef{}, m.saveFailed(name, marketplacesFileName, err)
 	}
 	return ref, nil
 }
@@ -240,11 +250,50 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			_ = marketplaceRemoveAll(installLoc)
+			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
+				return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
+			}
 		}
-		return MarketplaceRef{}, err
+		return MarketplaceRef{}, m.saveFailed(name, marketplacesFileName, err)
 	}
 	return ref, nil
+}
+
+// saveFailed scrubs a save failure's absolute plugin-store path -
+// atomicWriteFile's own error text names its destination and temp file
+// directly - before it reaches the RPC caller, logging the raw error
+// server-side first. fileName is the store file saveErr's own caller was
+// writing, not assumed: saveRename can fail saving either
+// known_marketplaces.json or installed_plugins.json, and the wire error
+// needs to name whichever one it was. saveErr wrapping errStoreBetweenNames
+// (saveRename's own rollback-also-failed case) keeps that identity through
+// %w - the sentinel's own text carries no path - so a caller can still
+// errors.Is against it.
+func (m *Manager) saveFailed(name, fileName string, saveErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: saving marketplace %q failed: %v\n", name, saveErr)
+	if errors.Is(saveErr, errStoreBetweenNames) {
+		return fmt.Errorf("marketplace %q: saving %s failed; see the hub's log for detail: %w", name, fileName, errStoreBetweenNames)
+	}
+	return fmt.Errorf("marketplace %q: saving %s failed; see the hub's log for detail", name, fileName)
+}
+
+// storeChangeRollbackFailed reports that an operation on marketplace name
+// failed (cause) and the rollback that tried to undo it also failed
+// (rollbackErr), leaving the store changed rather than back as it was found
+// - the shape AddMarketplace and EditMarketplace's own fail closure both hit.
+// Both cause's and rollbackErr's own text can carry this
+// machine's absolute plugin-store path (atomicWriteFile, os.RemoveAll and
+// os.Rename all name it directly), so both go to the hub's log instead of
+// the RPC caller. cause wrapping errStoreBetweenNames (EditMarketplace's
+// rename reaching this branch: saveRename's own between-names failure, whose
+// directory rollback then also failed) keeps that identity through %w - the
+// sentinel's own text carries no path.
+func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v; rolling back failed too: %v\n", name, cause, rollbackErr)
+	if errors.Is(cause, errStoreBetweenNames) {
+		return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail: %w", name, errStoreBetweenNames)
+	}
+	return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail", name)
 }
 
 // ListMarketplaces returns every registered marketplace, read from behind the
@@ -396,9 +445,17 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
 		// name: the contents have to be in it first.
-		errs := []error{err, undoSwap(), runUndo(undo)}
+		swapErr, undoErr := undoSwap(), runUndo(undo)
 		_ = marketplaceRemoveAll(staging)
-		return MarketplaceRef{}, errors.Join(errs...)
+		if swapErr == nil && undoErr == nil {
+			return MarketplaceRef{}, err
+		}
+		// The rollback could not put every directory back, so the store is
+		// left changed rather than back as it was found. swapErr/undoErr are
+		// undoSwap/runUndo's own renames and removes, which can carry this
+		// machine's absolute plugin-store path - storeChangeRollbackFailed's
+		// log is the only place that says which.
+		return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, errors.Join(swapErr, undoErr))
 	}
 
 	// 2. Rename on disk and in the registry. The registry as the edit found it
@@ -448,13 +505,17 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	// new name would be orphaned by the next refresh, which reclones the
 	// recorded source at the recorded path.
 	if renaming {
+		// saveRename already returns a scrubbed error, naming whichever file
+		// (known_marketplaces.json or installed_plugins.json) actually
+		// failed, before fail decides whether the outer rollback also needs
+		// reporting.
 		if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
 			return fail(err)
 		}
 	} else {
 		mk[name] = ref
 		if err := m.saveMarketplaces(mk); err != nil {
-			return fail(err)
+			return fail(m.saveFailed(name, marketplacesFileName, err))
 		}
 	}
 	for _, fn := range afterSave {
@@ -565,17 +626,24 @@ var errRenameRollbackIncomplete = errors.New("a failed move could not be put bac
 // write that can fail, and only then is the store left inconsistent, so the
 // error says so and carries errStoreBetweenNames, which is how a rename that
 // wrote a marker knows the marker is still needed.
+//
+// The returned error is already scrubbed through saveFailed, naming whichever
+// store file (known_marketplaces.json or installed_plugins.json) actually
+// failed instead of the raw *fs.PathError, so no caller — EditMarketplace or
+// a migration recovery reached from ListMarketplaces/List, which can surface
+// its error over RPC just as directly — can forget to scrub before the
+// absolute plugin-store path in the raw error reaches an RPC caller.
 func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref MarketplaceRef, reg, registryAsFound Registry) error {
 	if err := m.saveRegistry(reg); err != nil {
-		return err
+		return m.saveFailed(name, registryFileName, err)
 	}
 	delete(mk, name)
 	mk[newName] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if restoreErr := m.saveRegistry(registryAsFound); restoreErr != nil {
-			return fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so %w: it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, errStoreBetweenNames, newName)
+			return m.saveFailed(name, marketplacesFileName, fmt.Errorf("saving %s failed (%w); restoring %s failed (%w), so %w: it still keys this marketplace's plugins under %q", marketplacesFileName, err, registryFileName, restoreErr, errStoreBetweenNames, newName))
 		}
-		return fmt.Errorf("marketplace %q not renamed: saving %s failed, so the store is back as it was: %w", name, marketplacesFileName, err)
+		return m.saveFailed(name, marketplacesFileName, err)
 	}
 	return nil
 }
@@ -932,5 +1000,8 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	}
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
-	return m.saveMarketplaces(mk)
+	if err := m.saveMarketplaces(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
+	return nil
 }

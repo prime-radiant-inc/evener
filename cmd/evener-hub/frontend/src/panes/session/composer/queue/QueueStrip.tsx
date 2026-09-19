@@ -301,7 +301,6 @@ export function QueueStrip({
       await submitWithPendingTracking(
         {
           ref: sessionRef,
-          method: "drain",
           recoveryId: activeRecoveryId,
           text,
           attachments,

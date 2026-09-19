@@ -1,5 +1,6 @@
 import type { PendingTurnsStore, SubmittedDraft } from "./pendingTurns";
 import type { MutationProjectionFence } from "./projection";
+import type { MutationProjectionWorkTracker } from "./projectionWork";
 import type { MutationAttachmentRef } from "./records";
 
 // What one submission needs tracked and settled: which ref it targets, the
@@ -12,14 +13,11 @@ export interface MutationSubmissionOptions extends SubmittedDraft {
   onFailure: (error: unknown) => void;
 }
 
-// What `store.settleSubmittedDraft` decided, handed back to a caller that
-// wants to notify its own listeners once a submission commits - the web's
-// composer draft UI and recovery tray, for instance, neither of which this
-// module names.
-export interface MutationSubmissionCommitted {
-  clearedDraft: boolean;
-  draftUnchanged: boolean;
-}
+// Exactly what `store.settleSubmittedDraft` returns - named here as the
+// report `onCommitted` gets, for a caller that wants to notify its own
+// listeners once a submission commits (the web's composer draft UI and
+// recovery tray, for instance, neither of which this module names).
+export type MutationSubmissionCommitted = ReturnType<PendingTurnsStore["settleSubmittedDraft"]>;
 
 // Runs one submission through the store's begin/end lifecycle and whichever
 // draft-settling rule the given store implements ("clear only if unchanged"
@@ -42,7 +40,7 @@ export interface MutationSubmissionCommitted {
 export function submitWithPendingTracking<A extends MutationAttachmentRef = MutationAttachmentRef>(
   store: PendingTurnsStore<A>,
   fence: MutationProjectionFence<A>,
-  track: <T>(work: Promise<T>) => Promise<T>,
+  track: MutationProjectionWorkTracker["track"],
   opts: MutationSubmissionOptions,
   perform: () => Promise<void>,
   refresh: (ref?: string) => void,
@@ -62,8 +60,7 @@ export function submitWithPendingTracking<A extends MutationAttachmentRef = Muta
           throw error;
         }
         if (epoch === fence.epoch()) {
-          const settled = store.settleSubmittedDraft(opts.ref, opts);
-          onCommitted?.({ clearedDraft: settled.cleared, draftUnchanged: settled.draftUnchanged });
+          onCommitted?.(store.settleSubmittedDraft(opts.ref, opts));
         }
       } finally {
         if (epoch === fence.epoch()) {
@@ -73,4 +70,24 @@ export function submitWithPendingTracking<A extends MutationAttachmentRef = Muta
       }
     })(),
   );
+}
+
+// Binds the four singletons a host has exactly one of (its store, fence,
+// work tracker and refresh) once, at module scope - the convention this
+// directory otherwise uses for a long-lived host wiring
+// (`createPendingTurnsStore`, `createMutationProjectionWorkTracker`,
+// `wireMutationCommitFeed`). Only `opts`, `perform` and `onCommitted` differ
+// per submission, so the returned function takes exactly those.
+export function createSubmissionRunner<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  store: PendingTurnsStore<A>,
+  fence: MutationProjectionFence<A>,
+  track: MutationProjectionWorkTracker["track"],
+  refresh: (ref?: string) => void,
+): (
+  opts: MutationSubmissionOptions,
+  perform: () => Promise<void>,
+  onCommitted?: (committed: MutationSubmissionCommitted) => void,
+) => Promise<void> {
+  return (opts, perform, onCommitted) =>
+    submitWithPendingTracking(store, fence, track, opts, perform, refresh, onCommitted);
 }

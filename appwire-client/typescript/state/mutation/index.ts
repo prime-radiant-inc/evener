@@ -68,4 +68,4 @@ export { createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
 export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";
-export { submitWithPendingTracking } from "./submission";
+export { createSubmissionRunner, submitWithPendingTracking } from "./submission";
