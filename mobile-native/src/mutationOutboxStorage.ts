@@ -361,7 +361,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			record.method,
 			JSON.stringify(record.payload),
 			JSON.stringify(record.attachments),
-			JSON.stringify(record.optimisticDisplay),
+			JSON.stringify(record.optimisticDisplay ?? null),
 			record.composerText ?? null,
 			record.intentSequence,
 			record.createdAt,

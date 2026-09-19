@@ -106,6 +106,18 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
 });
 
+test("enqueueIntent persists an absent optimistic display as JSON null so settlement can retire it", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("without an optimistic display"),
+		optimisticDisplay: undefined,
+	});
+
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ optimistic_display: "null" });
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
+});
+
 test("enqueueIntent rejects an empty or whitespace targetRef before allocating a sequence", async () => {
 	await expect(storage.enqueueIntent(intent("no target", "   "))).rejects.toThrow("targetRef is required");
 	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("   ")).toBeUndefined();
