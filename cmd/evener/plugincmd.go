@@ -140,6 +140,16 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		}
 		name := fs.Arg(0)
 		if err := m.RemoveMarketplace(context.Background(), name); err != nil {
+			if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+				// The unregister already landed - name is gone from the
+				// registry - but its clone could not be removed from disk.
+				// No evener command sweeps a marketplace's own clone
+				// directory (`evener plugin gc` only sweeps the plugin
+				// cache), so there is nothing to point the user at yet; this
+				// still exits non-zero so a script does not read the litter
+				// as a clean success.
+				return fmt.Errorf("removed marketplace %q; its clone files could not be removed and remain on disk; no automated cleanup exists yet for marketplace clones, remove them by hand: %w", name, plugins.ErrMarketplaceUnregisteredCloneRemains)
+			}
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed marketplace %q\n", name)
