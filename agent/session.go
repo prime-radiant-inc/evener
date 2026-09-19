@@ -572,9 +572,8 @@ type Session struct {
 	// failure for THIS client mutation id is the carrier's own claimed steer
 	// — whose mere acceptance already cleared askPending, so the TurnFailure
 	// it records must be tagged schema.TurnFailureInfo.SteeringCarrier too.
-	// That tag is not read yet: the restore scan that treats it as a
-	// resolution boundary (#1806 piece 2) lands in the next change stacked
-	// on this one.
+	// turnResolvesAskBoundary reads that tag as a resolution boundary on
+	// restore.
 	// Guarded by mu, like askPending above.
 	steeringCarrierClaimClientMutationID string
 

@@ -39,6 +39,18 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
+// awaitingOrHasPendingAsk reports whether the session is SessionAwaiting or
+// has an unresolved ask_user question, sampling state and the pending set
+// under one lock. The drain-ladder gate (session_lifecycle.go) needs both
+// facts as of the SAME instant: two separate locked calls (State() then
+// askPendingCount()) could observe a state transition or an askPending
+// mutation land between them.
+func (s *Session) awaitingOrHasPendingAsk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == SessionAwaiting || len(s.askPending) > 0
+}
+
 // WireState is the externally-reported session state. It equals State()
 // except for one override: an idle session with undelivered job notifications
 // or claimable queued input reads as "active" because work the session owns
@@ -266,6 +278,18 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 	}
 }
 
+// finishProcessingAtFailureBoundary settles a failed turn to the same boundary
+// state restore derives from its transcript. A pending ask survives provider,
+// retry-budget, and other terminal failures, so those paths must remain
+// awaiting instead of reporting idle to the live client.
+func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
+	state := SessionIdle
+	if s.askPendingCount() > 0 {
+		state = SessionAwaiting
+	}
+	s.finishProcessingAtBoundary(ctx, state)
+}
+
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
 // returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
 // (no turn was timed) contributes nothing.
@@ -355,11 +379,15 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // first time — live children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2).
-func (s *Session) recomputeRestoredState() {
+// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
+// its one caller (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at this
+// point: a forked child's inherited prefix must not be decided by this
+// session's own journal (steeringOriginBoundary).
+func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history)
+	target := deriveRestoredState(s.history, divergenceTurn, s.clientMutations.steeringOrigins())
 	s.mu.Unlock()
 	if !idle || target != SessionAwaiting {
 		return
@@ -385,8 +413,11 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	target := settleTerminalState(hadOutput, goalKicked,
-		s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+	target := SessionAwaiting
+	if s.askPendingCount() == 0 {
+		target = settleTerminalState(hadOutput, goalKicked,
+			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+	}
 	if target != SessionAwaiting {
 		return
 	}
