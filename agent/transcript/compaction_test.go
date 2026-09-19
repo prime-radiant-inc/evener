@@ -85,3 +85,13 @@ func TestIndexedOrdinaryAppendReportsActualRecord(t *testing.T) {
 		t.Fatalf("closed writer recorded=%v err=%v", recorded, err)
 	}
 }
+
+func TestCompactionRejectsSourceAmbiguityAfterMarker(t *testing.T) {
+	input := Entry{Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("original"))}
+	marker := Entry{Seq: 5, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary"))}
+	marker.Turn.Compaction = &schema.CompactionManifest{Version: 1, SessionID: "owner", History: []schema.CompactionHistoryItem{{Source: &schema.CompactionLocator{EntrySeq: 3}}}}
+	duplicate := Entry{Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("different"))}
+	if _, err := ProjectHistory("owner", []Entry{input, marker, duplicate}); err == nil {
+		t.Fatal("later duplicate source replaced committed retained input")
+	}
+}

@@ -10,7 +10,11 @@ import (
 
 // TurnOccurrence is an in-memory occurrence identity. Copies of a turn retain
 // it; JSON never carries it. Its nonzero size makes distinct allocations unique.
-type TurnOccurrence struct{ identity byte }
+type TurnOccurrence struct {
+	identity         byte
+	repair           bool
+	strategyArtifact bool
+}
 
 func (t Turn) Occurrence() *TurnOccurrence { return t.occurrence }
 
@@ -68,3 +72,19 @@ func ValidateCompactionArtifact(t Turn) error {
 	}
 	return nil
 }
+
+// WithOccurrenceOf associates the canonical persisted form with its live turn.
+// It changes no content and conveys no authority beyond local occurrence identity.
+func (t Turn) WithOccurrenceOf(source Turn) Turn {
+	t.occurrence = source.occurrence
+	return t
+}
+
+// MarkHistoryRepair identifies a transient orphan repair owned by reconstruction.
+func (t *Turn) MarkHistoryRepair()   { t.EnsureOccurrence().repair = true }
+func (t Turn) IsHistoryRepair() bool { return t.occurrence != nil && t.occurrence.repair }
+
+// MarkStrategyArtifact records provenance at the strategy's actual creation
+// callback. It grants no identity or receipt outside transient context staging.
+func (t *Turn) MarkStrategyArtifact()   { t.EnsureOccurrence().strategyArtifact = true }
+func (t Turn) IsStrategyArtifact() bool { return t.occurrence != nil && t.occurrence.strategyArtifact }

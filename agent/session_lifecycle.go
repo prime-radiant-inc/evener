@@ -1679,6 +1679,9 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
+	if _, err := s.settlePendingFold(); err != nil {
+		return "", false, err
+	}
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
 		for callID := range communicatePreviewCalls {
@@ -1927,7 +1930,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	if kind == EntryContinuation {
-		s.acceptContinuationInput(ctx, input, runningTurnID)
+		if err := s.acceptContinuationInput(ctx, input, runningTurnID); err != nil {
+			return "", false, err
+		}
 	} else if kind == EntryNotification {
 		if !s.acceptNotificationInput(ctx, runningTurnID) {
 			// The name taken above is released by the deferred handback, which
@@ -1937,7 +1942,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
-		s.acceptDelegateAttentionInput()
+		if err := s.acceptDelegateAttentionInput(); err != nil {
+			return "", false, err
+		}
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
 			return "", false, nil
@@ -2358,6 +2365,10 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	writeErr := s.writeTranscriptLocked(turn)
 	if writeErr != nil && s.attachedTranscript().Poisoned() {
 		s.attentionMu.Unlock()
@@ -2365,7 +2376,6 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	}
 	s.mu.Lock()
 	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
 	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	if writeErr != nil {
@@ -2396,7 +2406,9 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
 	s.replaceActiveProvenance(inputProvenance)
-	s.repairOrphanedToolResults(context.Background(), "before accepting new input")
+	if _, err := s.repairOrphanedToolResults(context.Background(), "before accepting new input"); err != nil {
+		return err
+	}
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
@@ -2564,11 +2576,13 @@ const goalContinuationMarker = "Continuing toward the goal."
 // MaxTurns check, and the s.turns++ accounting (goal turns are bounded by the
 // no-progress breaker, not the session's user-input ceiling; SESSION_END.Turns
 // reads the separate modelResponses counter, so skipping s.turns++ is safe).
-func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID string) {
+func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID string) error {
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
+	if _, err := s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation"); err != nil {
+		return err
+	}
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
 	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
@@ -2582,7 +2596,9 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
-	s.recordTurn(turn, turn)
+	if err := s.recordTurn(turn, turn); err != nil {
+		return err
+	}
 
 	// On resume the agent re-reads the current notes beside the continuation
 	// prompt, so a human edit that landed while the goal loop ran is visible.
@@ -2590,11 +2606,15 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
+	return nil
 }
 
-func (s *Session) acceptDelegateAttentionInput() {
+func (s *Session) acceptDelegateAttentionInput() error {
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
+	if _, err := s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // acceptNotificationInput records a job-completion notification turn at the
@@ -2642,7 +2662,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		return false
 	}
 
-	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
+	if _, err := s.repairOrphanedToolResults(context.Background(), "before accepting notification"); err != nil {
+		s.requeueJobNotifications(jobNotifications(jobNotifs))
+		s.emit(events.EventWarning, warningDataFromError("notification history refused", err))
+		return false
+	}
 
 	// A notification turn adopts the union of the provenance carried by the
 	// notifications it delivers, so events the turn emits (and any watch it
@@ -2732,7 +2756,9 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		s.finishNotificationNoop()
 		return errSteeringCarrierStoodDown
 	}
-	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
+	if _, err := s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier"); err != nil {
+		return err
+	}
 	// The announce precedes every content event of the turn, the same as
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.

@@ -83,6 +83,9 @@ func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentio
 	if !headerRead {
 		return delegateAttentionFold{}, errors.New("delegate attention transcript has no header")
 	}
+	if err := transcript.ValidateCompactionManifests(expectedSessionID, entries); err != nil {
+		return delegateAttentionFold{}, err
+	}
 	return foldDelegateAttention(entries)
 }
 
@@ -1046,6 +1049,9 @@ func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (dele
 }
 
 func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
+	if s.pendingFold != nil {
+		return errFoldDurabilityPending
+	}
 	if turn.Kind != schema.TurnSteering || turn.AttentionID == "" {
 		return errors.New("durable delegate attention turn is invalid")
 	}

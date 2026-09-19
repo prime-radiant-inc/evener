@@ -188,7 +188,9 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 	// observes so PendingHandoffs and this scan stay bounded over a long-lived
 	// session; a failed retirement save only warns and leaves them for the next
 	// request.
-	s.retireSkillCompactionCancellations()
+	if err := s.retireSkillCompactionCancellations(); err != nil {
+		return nil, nil, 0, err
+	}
 	s.mu.Lock()
 	handoffs := make([]schema.SkillCompactionReceipt, len(s.skillLifecycle.PendingHandoffs))
 	for i, handoff := range s.skillLifecycle.PendingHandoffs {
@@ -299,9 +301,15 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 				// No skill is loaded: the complete reminder is an empty list
 				// with nothing to notify. Consume the receipt without a turn
 				// rather than appending vacuous history.
+				s.attentionMu.Lock()
+				if s.pendingFold != nil {
+					s.attentionMu.Unlock()
+					return nil, nil, 0, errFoldDurabilityPending
+				}
 				s.mu.Lock()
 				s.consumeSkillReloadReminderLocked(publicationID)
 				s.mu.Unlock()
+				s.attentionMu.Unlock()
 				consumedReminders++
 				continue
 			}
@@ -521,6 +529,11 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	if err := func() error {
 		s.metaSaveMu.Lock()
 		defer s.metaSaveMu.Unlock()
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		publications := s.consumedReloadPublicationsLocked(outcomes)
 		removed := s.removeSkillCompactionHandoffsLocked(publications)
@@ -532,16 +545,23 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			s.skillLifecycle.Revision++
 		}
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		if !changed {
 			return nil
 		}
 		err := s.autoSaveMetaLocked()
 		if err != nil {
+			s.attentionMu.Lock()
+			if s.pendingFold != nil {
+				s.attentionMu.Unlock()
+				return errFoldDurabilityPending
+			}
 			s.mu.Lock()
 			s.restoreSkillCompactionHandoffsLocked(removed)
 			s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, obligations)
 			s.skillLifecycle.Revision++
 			s.mu.Unlock()
+			s.attentionMu.Unlock()
 		}
 		return err
 	}(); err != nil {

@@ -305,11 +305,11 @@ func seedSessionHistory(t *testing.T, s *Session, n int) {
 // subtle enough that a formula is easy to get wrong).
 func seedNumberedSessionHistory(t *testing.T, s *Session, n int) {
 	t.Helper()
-	s.mu.Lock()
 	for i := range n {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i))))
+		if err := s.appendTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i))); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.mu.Unlock()
 }
 
 // indexOfTurnText returns the index of the first turn whose message text
@@ -799,18 +799,24 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
 
-	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold for the first (losing) attempt
 
 	s.setPinnedNote("REMEMBER: the API signature")
 
-	var transcriptWrites atomic.Int32
-	updateSessionTestConfig(s, func(cfg *testConfig) {
-		cfg.appendCompactionTurn = func(schema.Turn) error {
-			transcriptWrites.Add(1)
-			return nil
+	transcriptWrites := func() int {
+		data, err := readTranscriptFull(s.TranscriptPath())
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
+		count := 0
+		for _, entry := range data.Entries {
+			if entry.Turn.Compaction != nil {
+				count++
+			}
+		}
+		return count
+	}
 
 	errA := make(chan error, 1)
 	go func() {
@@ -824,7 +830,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	if s.PinnedNote() == "" {
 		t.Fatal("the pinned note was cleared before any fold won publication -- a losing attempt's side effects must not commit eagerly")
 	}
-	if n := transcriptWrites.Load(); n != 0 {
+	if n := transcriptWrites(); n != 0 {
 		t.Fatalf("expected no transcript writes before any fold has published, got %d", n)
 	}
 
@@ -834,7 +840,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	s.mu.Lock()
 	snapLen := len(s.history)
 	snapRevision := s.historyRevision
-	_, competingOK := s.publishFoldedHistory(snapLen, snapRevision, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("competing"))})
+	_, competingOK := s.publishFoldedHistory(snapLen, snapRevision, append([]schema.Turn(nil), s.history[4:]...))
 	s.mu.Unlock()
 	if !competingOK {
 		t.Fatal("test setup: competing publish itself conflicted")
@@ -856,7 +862,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	if n := countSteering(currentHistory(t, s), noteHandoffPrefix); n != 1 {
 		t.Fatalf("expected exactly one note handoff turn in the published history, got %d", n)
 	}
-	if n := transcriptWrites.Load(); n != 1 {
+	if n := transcriptWrites(); n != 1 {
 		t.Fatalf("expected exactly one transcript write (the winning retry's), got %d", n)
 	}
 }

@@ -203,7 +203,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// Repair orphaned tool results through the shared locked helper (capture,
 	// repair, and publish are one critical section), then copy history once
 	// for both context management and message expansion.
-	s.repairOrphanedToolResults(ctx, "before model request")
+	if _, settleErr := s.settlePendingFold(); settleErr != nil {
+		err = settleErr
+		return
+	}
+	if _, repairErr := s.repairOrphanedToolResults(ctx, "before model request"); repairErr != nil {
+		err = repairErr
+		return
+	}
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
@@ -251,14 +258,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			historyTurns = append([]schema.Turn{}, s.history...)
 			preManageLen := len(historyTurns)
 			snapRevision := s.historyRevision
-			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
-			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
+			if err = s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys)); err != nil {
+				return
+			}
 
 			// This per-request fold is the REQUESTING caller of the pending
 			// AUTOMATIC operation (the one this round's elicitation just
@@ -270,6 +278,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+			}
+			if commit.inputError != nil {
+				err = commit.inputError
+				return
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
@@ -284,7 +296,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, historyTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {

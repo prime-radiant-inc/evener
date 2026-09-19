@@ -67,3 +67,51 @@ func mustResumeHistory(t testing.TB, entries []transcript.Entry) []schema.Turn {
 	}
 	return turns
 }
+
+func TestForkRebasesConcreteCompactionSourcesWithoutAdoptingReceipt(t *testing.T) {
+	stateDir, parentID := buildParentSession(t)
+	input := schema.NewTurn(schema.TurnUserInput, llm.User("inherited retained input"))
+	added := schema.NewTurn(schema.TurnSteering, llm.User("inherited hook"))
+	first := schema.NewTurn(schema.TurnSummary, llm.User("first"))
+	first.Compaction = &schema.CompactionManifest{Version: 1, SessionID: parentID, History: []schema.CompactionHistoryItem{{Source: &schema.CompactionLocator{EntrySeq: 7}}, {Added: &added}}}
+	second := schema.NewTurn(schema.TurnSummary, llm.User("second"))
+	index := 1
+	second.Compaction = &schema.CompactionManifest{Version: 1, SessionID: parentID, History: []schema.CompactionHistoryItem{{Source: &schema.CompactionLocator{EntrySeq: 7}}, {Source: &schema.CompactionLocator{EntrySeq: 12, AddedIndex: &index}}}}
+	second.SkillState = &schema.SkillTurnState{Compaction: &schema.SkillCompactionReceipt{SessionID: parentID, Revision: 9, Operation: schema.SkillCompactionOperation{PublicationID: "parent-publication"}}}
+	path := transcriptPath(stateDir, parentID)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(transcript.Header{Kind: "header", FormatVersion: 2, SessionID: parentID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []transcript.Entry{{Kind: "entry", Seq: 7, Turn: input}, {Kind: "entry", Seq: 12, Turn: first}, {Kind: "entry", Seq: 20, Turn: second}, {Kind: "entry", Seq: 23, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("fork here"))}} {
+		if err := enc.Encode(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	child, err := ForkSession(stateDir, parentID, 4, "child input", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := readTranscriptFull(transcriptPath(stateDir, child))
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := mustResumeHistory(t, data.Entries)
+	if len(history) != 4 || history[1].Message.Text() != "inherited retained input" || history[2].Message.Text() != "inherited hook" {
+		t.Fatal("fork lost retained sources")
+	}
+	receipt := data.Entries[2].Turn.SkillState.Compaction
+	if receipt.SessionID != parentID || receipt.Operation.PublicationID != "parent-publication" {
+		t.Fatal("fork adopted parent receipt ownership")
+	}
+	if source := data.Entries[2].Turn.Compaction.History[1].Source; source.EntrySeq != 1 || source.AddedIndex == nil || *source.AddedIndex != 1 {
+		t.Fatalf("inline source was not rebased: %+v", source)
+	}
+}

@@ -70,6 +70,10 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 }
 
 func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
+	return readSemanticTranscriptVisit(path, maxLineBytes, retainEntries, retainEntryLines, corruptSentinel, nil)
+}
+
+func readSemanticTranscriptVisit(path string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error, visit func(transcript.Entry)) (transcriptData, error) {
 	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
@@ -121,6 +125,9 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retain
 		}
 		if err := manifests.Observe(entry); err != nil {
 			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "invalid compaction history", err)
+		}
+		if visit != nil {
+			visit(entry)
 		}
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)

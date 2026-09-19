@@ -32,27 +32,30 @@ import (
 // (acceptAutomaticSkillCompaction) is rejected when the note changed or an
 // operation appeared mid-elicitation, and persists the elicited response as a
 // generation-owned automatic operation before any compaction runs.
-func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
+func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) error {
 	if s.contextMgr == nil {
-		return
+		return nil
 	}
 	if s.PinnedNote() != "" {
-		return // a note is already set — don't overwrite the agent's (or this cycle's) note
+		return nil // a note is already set — don't overwrite the agent's (or this cycle's) note
 	}
 	if s.pendingSkillCompactionSnapshot() != nil {
-		return // an operation already owns this compaction cycle — its response is recorded
+		return nil // an operation already owns this compaction cycle — its response is recorded
 	}
 	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
-		return // no compaction imminent — nothing to capture yet
+		return nil // no compaction imminent — nothing to capture yet
 	}
 	// Elicit only over the prefix the compaction will fold into a lossy summary;
 	// the most-recent PreserveRecentTurns survive verbatim and need no rescuing.
 	preserve := s.contextMgr.PreserveRecentTurns
 	cutoff, foldableExists := attentionTransparentRecentCutoff(history, preserve)
 	if !foldableExists {
-		return // nothing will be folded yet — nothing to capture
+		return nil // nothing will be folded yet — nothing to capture
 	}
-	foldable := history[:cutoff]
+	foldable, projectionErr := s.canonicalFoldHistory(append([]schema.Turn(nil), history[:cutoff]...))
+	if projectionErr != nil {
+		return projectionErr
+	}
 
 	// Capture the note generation before the actual elicitor call, so the
 	// acceptance can reject a response that raced a note change.
@@ -65,13 +68,13 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		raw, err = fn(ctx, foldable)
 	} else {
 		if !s.contextMgr.HasClient() {
-			return // no elicitor available (no client) — skip silently
+			return nil // no elicitor available (no client) — skip silently
 		}
 		raw, err = s.contextMgr.ElicitNote(ctx, foldable, skillInventorySummaries(inventory))
 	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
-		return
+		return nil
 	}
 	// Split the selection block from the free-text note and accept both as one
 	// generation-owned automatic operation. An invalid selection preserves the
@@ -86,13 +89,21 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	if _, err := s.acceptAutomaticSkillCompaction(ctx, capturedNoteGen, note, selection); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "persisting the elicited compaction intent failed: " + err.Error()})
 	}
+	return nil
 }
 
-func (s *Session) setPinnedNote(note string) {
+func (s *Session) setPinnedNote(note string) error {
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	s.pinnedNote = note
 	s.pinnedNoteGen++
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	return nil
 }
 
 // PinnedNote returns the current agent-authored note (empty if none).

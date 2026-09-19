@@ -9,9 +9,10 @@ import (
 const MaxCompactionItems = 65536
 
 type compactionSource struct {
-	ambiguous bool
-	attention bool
-	added     map[int]bool
+	ambiguous  bool
+	referenced bool
+	attention  bool
+	added      map[int]bool
 }
 
 // CompactionValidator validates backward local locators without retaining any
@@ -69,9 +70,14 @@ func (v *CompactionValidator) Observe(e Entry) error {
 				return fmt.Errorf("duplicate compaction source")
 			}
 			seen[k] = true
+			target.referenced = true
+			v.sources[locator.EntrySeq] = target
 		}
 	}
-	if _, exists := v.sources[e.Seq]; exists {
+	if prior, exists := v.sources[e.Seq]; exists {
+		if prior.referenced {
+			return fmt.Errorf("ambiguous compaction source %d", e.Seq)
+		}
 		source.ambiguous = true
 	}
 	v.sources[e.Seq] = source

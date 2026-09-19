@@ -310,3 +310,98 @@ func forkContextToolCall(id, name string) llm.Message {
 		ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"},
 	}}}
 }
+
+func TestDelegateForkContext_ReopensMaterializedMultipleFolds(t *testing.T) {
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	disableSessionNaming(root)
+	for range 12 {
+		if err := root.appendTurn(schema.TurnUserInput, llm.User("consumed-parent-prefix")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 6 {
+		if err := root.appendTurn(schema.TurnUserInput, llm.User("retained-parent-suffix")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := root.setPinnedNote("retained-inline-parent-note"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := root.Compact(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := readTranscriptFull(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Compaction != nil {
+			markers++
+		}
+	}
+	if markers != 2 {
+		t.Fatalf("actual committed folds=%d", markers)
+	}
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		if !requestContainsText(req, "retained-parent-suffix") || !requestContainsText(req, "retained-inline-parent-note") {
+			t.Error("child missed materialized retained history")
+		}
+		return finalResponse("child completed")
+	}}})
+	result := root.createDelegate(t.Context(), delegateArgs{Task: "child assignment", ForkContext: true, DelegationAllowance: new(0)})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	sub := root.getSub(result.ChildSessionID)
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scripted child did not finish")
+	}
+	root.delegateController.mu.Lock()
+	root.delegateController.maxRetainedTerminal = 1
+	root.delegateController.mu.Unlock()
+	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
+		t.Fatal(err)
+	}
+	resumed := newTask6FrozenDescriptorAdapter()
+	client.Register(resumed)
+	t.Cleanup(resumed.releaseRun)
+	outcome := (delegateRuntime{owner: root}).send(t.Context(), result.DelegateID, "followup", 0)
+	if outcome.result.Err != nil {
+		t.Fatal(outcome.result.Err)
+	}
+	select {
+	case req := <-resumed.entered:
+		if !requestContainsText(req, "retained-parent-suffix") || !requestContainsText(req, "retained-inline-parent-note") || !requestContainsText(req, "child assignment") {
+			t.Fatal("cold child lost retained background")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("restored child did not reach provider")
+	}
+	childData, err := readTranscriptFull(transcriptPath(root.stateDir, result.ChildSessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, entry := range childData.Entries {
+		if entry.Turn.Compaction != nil {
+			t.Fatal("child adopted parent-local manifest")
+		}
+		if strings.Contains(entry.Turn.Message.Text(), "retained-inline-parent-note") {
+			notes++
+		}
+		if entry.Turn.SkillState != nil && entry.Turn.SkillState.Compaction != nil && entry.Turn.SkillState.Compaction.SessionID == root.id {
+			t.Fatal("child adopted parent ownership")
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("parent note copied %d times", notes)
+	}
+}

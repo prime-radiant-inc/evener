@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -19,6 +20,9 @@ import (
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
+	if settled, err := s.settlePendingFold(); err != nil || settled {
+		return err
+	}
 	if err := s.checkManagedHistory(); err != nil {
 		return err
 	}
@@ -135,164 +139,104 @@ func (s *Session) bumpHistoryRevisionLocked() {
 	s.historyRevision++
 }
 
-// publishFoldTransaction commits one completed fold attempt atomically. The
-// fold itself (the LLM calls, the layer work) stays optimistic and unlocked;
-// only publication and commit serialize, in three nested phases:
-//
-//   - attentionMu — the transcript door every writeTranscript goes through —
-//     is held across the publish decision AND the fold's own transcript
-//     entries. A turn recorded concurrently (recordTurn: history append,
-//     then transcript write) either completes entirely before this publish
-//     (its entry precedes the fold's markers, and the fold's snapshot or
-//     merge-back accounts for the turn itself) or has its transcript write
-//     queue behind this transaction, sequencing its entry after the markers
-//     — the order ResumeHistory needs, since it anchors on the LAST
-//     compaction marker and discards every entry before it. A competing
-//     fold's own transaction queues the same way, so compaction markers
-//     always land in publish order. The transcript-commit phase also
-//     re-appends the PERSISTED forms of the pairs recorded DURING the fold
-//     (their original entries are already pre-marker) after the markers, so
-//     they stay resume-visible too; the forms come from the session's pair
-//     log — see the rewrite-set comment in the body — never from the live
-//     turns.
-//   - s.mu is nested inside (the codebase-wide attentionMu → s.mu order
-//     writeTranscript itself established; no s.mu-holding caller can reach
-//     attentionMu, since writeTranscript's internal s.mu use would already
-//     self-deadlock such a caller) and held only for the memory-state
-//     pieces: the revision check + history swap (publishFoldedHistory), the
-//     caller's baseline correction, and the pinned-note claim — never
-//     across file I/O.
-//   - Everything else (events, session naming, hook user messages, the
-//     nudge latch) runs after both locks release, via commit.flush: those
-//     effects re-enter emit/steering/transcript machinery that itself takes
-//     these locks, and none of them need the ordering guarantee. The lone
-//     deliberate exception is appendEnvironmentContext's EventEnvironment,
-//     which publishes under attentionMu because it DOES need the ordering
-//     guarantee — the projector reads it as a turn boundary, so a live reader
-//     must see it where the transcript holds it. It is one emit of known
-//     content; this flush is unbounded work (naming, hook user messages) that
-//     re-enters these very locks, so it stays out here.
-//
-// onPublishLocked, when non-nil, runs under s.mu immediately after a
-// successful publish — the publisher's baseline correction, per
-// publishFoldedHistory's contract. On conflict NOTHING is committed and
-// ok=false; the caller retries against the now-current history or aborts.
-//
-// refusal names WHICH of the two ok=false outcomes happened. A publication
-// race leaves it nil — that is the retryable one. A poisoned transcript sets
-// it to ErrWriterPoisoned, which no retry can clear: the writer refuses every
-// append for the rest of the session, so a caller that retries a fold against
-// it burns another summarizer call to lose the same way, and a caller that
-// reports the loss must not call it a race the operator can win.
-// The returned published slice is a defensive copy taken under s.mu, never
-// s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
+// publishFoldTransaction selects a complete candidate under attentionMu -> mu,
+// establishes source and final-marker durability without mu, then publishes the
+// history and exact ownership delta once. Concurrent appends queue behind this
+// door; pre-snapshot non-append changes invalidate the optimistic revision.
+// A retained-unsynced whole marker keeps this same candidate pending. Hooks,
+// events, naming, and metadata saves run only after both locks are released.
+// A nil refusal means a revision conflict; all durability refusals are explicit.
+func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
 	s.attentionMu.Lock()
-	// Fail closed on a transcript that has stopped accepting records, before
-	// anything is published rather than after the markers fail to land. This
-	// transaction swaps model history, resets the environment tracker and tells
-	// every client the context was compacted, and only then writes the entries
-	// that make the fold survive a restart; a poisoned writer refuses all of
-	// them, so a fold published here is one the session announces, acts on, and
-	// loses -- the restart anchors on the last marker that did land and brings
-	// the pre-compaction history back. It is the turn loop's own admission rule
-	// applied to the other durable write the session makes. Refusing reports the
-	// publication lost, which is the answer both callers already handle: a fold
-	// that did not publish runs neither commit phase.
-	//
-	// The read is under the transcript door, so no session append can poison the
-	// writer between here and the entries below -- every one of them goes
-	// through this lock.
-	if s.attachedTranscript().Poisoned() {
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return nil, false, errFoldDurabilityPending
+	}
+	writer := s.attachedTranscript()
+	if writer.Poisoned() {
 		s.attentionMu.Unlock()
 		return nil, false, errTranscriptRefusesRecords()
 	}
 	s.mu.Lock()
-	previousEnvironmentIDs := environmentTurnIDs(s.history)
-	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
-	if !ok {
+	if s.historyRevision != snapRevision {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil, false, nil
 	}
-	// The merge-back rewrite set: the PERSISTED transcript forms of every
-	// append/write pair since this fold's snapshot (snapAppends), taken from
-	// the pair log — never the live history turns, whose tool results
-	// deliberately retain private API-log evidence that the persisted
-	// projection replaces with a re-read placeholder, and whose delegate
-	// delivery commits live only on the persisted form. The pairs' original
-	// entries sit BEFORE the compaction markers this transaction is about to
-	// write — where ResumeHistory's last-marker anchor would silently drop
-	// them on restart — so the transcript-commit phase below re-appends these
-	// forms after the markers. Attention-retained turns and repair synthetics
-	// never enter the log (they have no session-transcript pair: the
-	// attention re-fold and ResumeHistory's own repair own their restart
-	// stories), so the rewrite cannot manufacture entries for attention-owned
-	// turns — and a turn the attention machinery deletes between publish and
-	// rewrite cannot be resurrected. The log is pruned wholesale: a competing
-	// fold still in flight must re-snapshot to publish after this
-	// one (its revision check fails otherwise), so no older snapshot can
-	// need the pruned entries — and snapAppends >= persistedAppendLogBase
-	// for the same reason, since only publications advance the base.
-	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[snapAppends-s.persistedAppendLogBase:]...)
-	s.persistedAppendLogBase += len(s.persistedAppendLog)
-	s.persistedAppendLog = nil
-	if onPublishLocked != nil {
-		onPublishLocked(published)
+	candidate := append([]schema.Turn(nil), folded...)
+	if len(s.history) > snapLen {
+		candidate = append(candidate, s.history[snapLen:]...)
 	}
-	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
-	commit.claimNoteLocked()
-	commit.publishedRevision = s.historyRevision
-	// The compaction-operation claim runs in the same s.mu critical section
-	// as the history swap: actualCompaction comes from the staged
-	// EventContextCompaction payloads (never from the successful publication
-	// itself), and the claim is generation-matched against the operation this
-	// fold's requesting caller captured — so an unchanged publication, a
-	// losing fold, or a fold with no captured operation claims nothing.
-	commit.actualCompaction = commit.stagedCompactionCount() > 0
+	previousEnvironmentIDs := environmentTurnIDs(s.history)
+	marker, markerIndex, err := s.foldMarkerLocked(candidate, commit)
+	if err != nil {
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		return nil, false, err
+	}
+	commit.actualCompaction = markerIndex >= 0
 	commit.claimCompactionLocked()
-	// Publication-order marker for last-write-wins effect suppression, set
-	// HERE — at publish, not at flush: an older fold whose deferred flush
-	// runs after this publish must find it and stay silent, even before
-	// this fold's own flush has run. Publications stamp strictly increasing
-	// revisions, so plain assignment is monotone.
-	s.newestPublishedFoldRevision = commit.publishedRevision
-	// Return a defensive copy, taken under this same s.mu hold: the
-	// published slice IS s.history's new backing array, and
-	// delegate-attention delivery goroutines mutate s.history IN PLACE
-	// under s.mu (retainDelegateAttentionTurn's element overwrite,
-	// removeUnverifiedDelegateAttentionTurn's element shift). A caller
-	// reading the returned slice unlocked — prepareModelRequestWithError
-	// expands it into the model request — would otherwise race those
-	// mutations with torn multi-word Turn reads.
-	published = append([]schema.Turn(nil), published...)
+	if markerIndex >= 0 && commit.receipt != nil {
+		marker.SkillState = &schema.SkillTurnState{Compaction: commit.receipt}
+	}
+	apply := func() {
+		s.history = candidate
+		s.bumpHistoryRevisionLocked()
+		if onPublishLocked != nil {
+			onPublishLocked(s.history)
+		}
+		commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, s.history))
+		commit.claimNoteLocked()
+		if receipt := commit.receipt; receipt != nil {
+			s.skillLifecycle.Revision = receipt.Revision
+			if receipt.Operation.Generation != 0 {
+				operation := receipt.Operation
+				operation.Selection.Names = slices.Clone(receipt.Operation.Selection.Names)
+				s.skillLifecycle.PendingCompaction = &operation
+			}
+			s.recordSkillCompactionHandoffLocked(*receipt)
+		}
+		s.completeSkillCompactionPublicationLocked(commit)
+		commit.publishedRevision = s.historyRevision
+		s.newestPublishedFoldRevision = commit.publishedRevision
+		s.pruneHistoryOriginsLocked()
+	}
 	s.mu.Unlock()
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	commit.commitTranscriptsLocked()
-	var mergedTailWriteErrs []error
-	for _, turn := range rewriteTail {
-		if err := s.writeTranscriptDurableLocked(turn); err != nil {
-			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+	if markerIndex >= 0 && s.stateDir != "" {
+		if writer == nil {
+			s.attentionMu.Unlock()
+			return nil, false, transcript.ErrWriterClosed
+		}
+		if err = writer.EstablishDurability(); err != nil {
+			s.attentionMu.Unlock()
+			return nil, false, err
+		}
+		seq, writeErr := writer.AppendSyncedEntry(marker)
+		if writeErr != nil && !errors.Is(writeErr, transcript.ErrRetainedUnsynced) {
+			s.attentionMu.Unlock()
+			return nil, false, writeErr
+		}
+		s.mu.Lock()
+		s.bindFoldOriginsLocked(candidate, markerIndex, marker, seq)
+		s.mu.Unlock()
+		if writeErr != nil {
+			s.pendingFold = &pendingFoldPublication{seq: seq, applyLocked: apply, commit: commit}
+			s.attentionMu.Unlock()
+			s.surfaceTranscriptWarnings()
+			return nil, false, writeErr
 		}
 	}
+	s.mu.Lock()
+	apply()
+	published = append([]schema.Turn(nil), s.history...)
+	s.mu.Unlock()
 	s.attentionMu.Unlock()
-	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	if markerIndex >= 0 || s.stateDir == "" {
+		s.finishFoldPublication(commit)
 	}
-	// The fold's buffered marker/steering writes and its durable merged-tail
-	// copies each queue a diagnostic when a whole line landed but did not sync;
-	// this is the fold's one owner for surfacing them, outside the door.
-	s.surfaceTranscriptWarnings()
-	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
-		hook()
-	}
-	commit.flush()
-	// After the locks release and the events flush, the winning publication's
-	// handoff completes: the claimed operation's delivery finishes, its
-	// receipt's phase advances, and the metadata save persists the result.
-	s.commitSkillCompactionPublication(commit)
 	return published, true, nil
 }
 
@@ -330,16 +274,18 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		histCopy := append([]schema.Turn{}, s.history...)
 		snapLen := len(s.history)
 		snapRevision := s.historyRevision
-		snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 		s.mu.Unlock()
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy)
 		commit.captured = captured
 		s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
+		if commit.inputError != nil {
+			return false, commit.inputError
+		}
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
+		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, histCopy, commit, func([]schema.Turn) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
 		})
 		if published {
@@ -419,9 +365,8 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // atomically with the history swap — between a publish and a deferred clear
 // the note would stay globally visible, so a concurrent fold could re-inject
 // it, and an unconditional clear could erase a newer note pinned mid-fold.
-// commitTranscriptsLocked appends the fold's own transcript entries and MUST
-// run under the same attentionMu hold that decided the publish. flush
-// commits the remaining deferred effects, outside the locks. A losing fold
+// The publisher writes the one selected final marker before applying the
+// claims. flush commits deferred effects outside the locks; a losing fold
 // runs none of them.
 //
 // publishedRevision is the historyRevision this fold's publish produced,
@@ -440,12 +385,12 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // generation-matched publication claim inside the winning publish's s.mu
 // critical section — minting the publication identity from the persisted
 // lifecycle revision it stamps — and stages the resulting handoff receipt;
-// the receipt is attached to the fold's compaction turns by
-// commitTranscriptsLocked and delivered (with its metadata save) by
-// commitSkillCompactionPublication after the flush.
+// the receipt is attached to the final marker, applied after durability,
+// and saved to metadata after the flush.
 type foldCommit struct {
+	inputError                   error
+	artifacts                    map[*schema.TurnOccurrence]schema.Turn
 	claimNoteLocked              func()
-	commitTranscriptsLocked      func()
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
@@ -517,11 +462,22 @@ func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
 }
 
 func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), *foldCommit, func() int) {
+	artifacts := make(map[*schema.TurnOccurrence]schema.Turn)
+	commit := &foldCommit{artifacts: artifacts}
+	ctx = contextmgr.WithCompactionInput(ctx, func(prefix []schema.Turn) ([]schema.Turn, error) {
+		projected, err := s.canonicalFoldHistory(prefix)
+		if err != nil {
+			commit.inputError = err
+		}
+		return projected, err
+	})
+	existingOccurrences := make(map[*schema.TurnOccurrence]bool)
 	preCompactRan := false
 	artifactProduced := false
 	var existingArtifacts []schema.Turn
 	if history != nil {
 		for _, turn := range *history {
+			existingOccurrences[turn.Occurrence()] = true
 			if isSessionNameCompactionTurn(turn) {
 				existingArtifacts = append(existingArtifacts, turn)
 			}
@@ -557,7 +513,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// no side effect) and stays inline.
 	var pendingCompactionTurns []schema.Turn
 	ctx = contextmgr.WithCompactionTurnCallback(ctx, func(turn schema.Turn) {
+		if existingOccurrences[turn.Occurrence()] {
+			return
+		}
 		pendingCompactionTurns = append(pendingCompactionTurns, turn)
+		artifacts[turn.Occurrence()] = turn
 		if isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn) {
 			artifactProduced = true
 		}
@@ -568,6 +528,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// reporting channel into the same injected-turn correction (issue #634).
 	// See contextmgr.WithPostFoldInjectionCallback.
 	ctx = contextmgr.WithPostFoldInjectionCallback(ctx, func(n int) { strategyInjected += n })
+	ctx = contextmgr.WithFoldArtifactCallback(ctx, func(turn schema.Turn) {
+		turn.MarkStrategyArtifact()
+		artifacts[turn.Occurrence()] = turn
+	})
 	// liveBaseline lets a self-injecting Strategy tell whether the marker
 	// turn it's about to replace sits before or after the N4 boundary — the
 	// net-delta report above can't see a marker-before-baseline removal (it
@@ -608,50 +572,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				var records []steeringTurnRecord
 				records, noteCommit = s.runPreCompactHook(ctx, history)
 				pendingSteering = append(pendingSteering, records...)
+				for _, record := range records {
+					artifacts[record.turn.Occurrence()] = record.turn
+				}
 			}
 			return
 		}
 		s.emit(kind, data)
-	}
-	// commitTranscriptsLocked and flush are the two staged-commit phases a
-	// winning publish runs, in order — a losing fold runs NEITHER: it must
-	// leave the pinned note intact, write no transcript entries, emit no
-	// compaction/steering events, launch no
-	// session-naming, inject no task-list steering, and not reset the
-	// self-compact nudge latch.
-	//
-	// commitTranscriptsLocked appends the fold's own transcript entries
-	// (checkpoint/summary turns, then the steering turns the fold injected,
-	// in their history order) while the publication transaction still holds
-	// attentionMu — the transcript door — so no concurrently recorded
-	// turn's entry can sequence between the publish and these markers
-	// (ResumeHistory anchors on the LAST compaction marker and discards
-	// everything before it, so a late marker would silently drop every turn
-	// recorded after the fold). It also attaches the publication's staged
-	// handoff receipt to each compaction turn, so the durable transcript
-	// carries the typed record a restart reconciles from. Write errors are
-	// carried into flush, where emitting is safe again.
-	commit := &foldCommit{}
-	var compactionTurnWriteErrs []error
-	var steeringWriteErrs []error
-	commitTranscriptsLocked := func() {
-		if commit.receipt != nil {
-			for i := range pendingCompactionTurns {
-				state := pendingCompactionTurns[i].SkillState.Clone()
-				if state == nil {
-					state = &schema.SkillTurnState{}
-				}
-				receipt := *commit.receipt
-				receipt.Operation.Selection.Names = slices.Clone(commit.receipt.Operation.Selection.Names)
-				state.Compaction = &receipt
-				pendingCompactionTurns[i].SkillState = state
-			}
-		}
-		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		for i, turn := range pendingCompactionTurns {
-			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
-		}
-		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
 		if removed && len(pendingCompactionTurns) > 0 {
@@ -679,10 +606,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		for _, ccd := range pendingCompactionEvents {
 			s.emit(events.EventContextCompaction, ccd)
 		}
-		for i, turn := range pendingCompactionTurns {
-			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
+		for _, turn := range pendingCompactionTurns {
+			s.handleCompactionTurnEffects(turn, nil, superseded, commit.publishedRevision)
 		}
-		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		s.emitSteeringTurnRecords(pendingSteering, nil)
 		if artifactProduced && !superseded {
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
@@ -730,13 +657,12 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
 		var receipt *schema.SkillCompactionReceipt
 		if claim {
-			pending.Phase = skillCompactionPhasePublished
-			s.skillLifecycle.Revision++
-			pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
 			claimed := *pending
+			claimed.Phase = skillCompactionPhasePublished
+			claimed.PublicationID = foldPublicationID(s.skillLifecycle.Revision + 1)
 			claimed.Selection.Names = slices.Clone(pending.Selection.Names)
 			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
+				Revision:  s.skillLifecycle.Revision + 1,
 				SessionID: s.id,
 				Operation: claimed,
 				Phase:     skillCompactionReceiptPublished,
@@ -745,17 +671,15 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			// The reminder handoff is itself a lifecycle mutation: it bumps
 			// the revision like any other receipt, so a restart reconciles
 			// it from the transcript even if the post-flush save never ran.
-			s.skillLifecycle.Revision++
 			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
+				Revision:  s.skillLifecycle.Revision + 1,
 				SessionID: s.id,
-				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
+				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision + 1)},
 				Phase:     skillCompactionReceiptPublished,
 				Reason:    skillCompactionReminderNoOperation,
 			}
 		}
 		if receipt != nil {
-			s.recordSkillCompactionHandoffLocked(*receipt)
 			commit.receipt = receipt
 		}
 	}
@@ -764,7 +688,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			noteClaimLocked()
 		}
 	}
-	commit.commitTranscriptsLocked = commitTranscriptsLocked
 	commit.flush = flush
 	return ctx, emitFn, commit, injectedTurns
 }

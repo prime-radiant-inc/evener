@@ -112,6 +112,7 @@ func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, e
 }
 
 type forkTranscriptWriter interface {
+	AppendEntry(schema.Turn) (int, bool, error)
 	Append(schema.Turn) error
 	Close() error
 }
@@ -238,6 +239,12 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 
 		allEntries = append(allEntries, entry)
 	}
+	if parentHeader.SessionID != parentID {
+		return transcript.Header{}, nil, fmt.Errorf("fork parent transcript owner mismatch")
+	}
+	if err := transcript.ValidateCompactionManifests(parentID, allEntries); err != nil {
+		return transcript.Header{}, nil, err
+	}
 	return parentHeader, allEntries, nil
 }
 
@@ -291,11 +298,39 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 
 	modelResponses := 0
 	acceptedInputTurns := 0
-	// Replay prefix entries into the child transcript.
+	// Replay the raw prefix while rebasing only local storage locators. Parent
+	// skill receipts and managed authority remain parent-owned background data.
+	if err := transcript.ValidateCompactionManifests(parentID, prefixEntries); err != nil {
+		return "", err
+	}
+	sequences := make(map[int]int, len(prefixEntries))
 	for _, entry := range prefixEntries {
-		if err := tw.Append(entry.Turn); err != nil {
+		turn := entry.Turn
+		if turn.Compaction != nil {
+			manifest := *turn.Compaction
+			manifest.SessionID = childID
+			manifest.History = append([]schema.CompactionHistoryItem(nil), manifest.History...)
+			for i, item := range manifest.History {
+				if item.Source != nil {
+					source := *item.Source
+					seq, ok := sequences[source.EntrySeq]
+					if !ok {
+						return "", fmt.Errorf("fork compaction source missing from prefix")
+					}
+					source.EntrySeq = seq
+					manifest.History[i].Source = &source
+				}
+			}
+			turn.Compaction = &manifest
+		}
+		seq, recorded, err := tw.AppendEntry(turn)
+		if err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
+		if !recorded {
+			return "", fmt.Errorf("child transcript did not record prefix turn")
+		}
+		sequences[entry.Seq] = seq
 		if entry.Turn.Kind == schema.TurnAssistant {
 			modelResponses++
 		}

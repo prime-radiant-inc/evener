@@ -129,13 +129,11 @@ func (s *Session) managedCallContext(ctx context.Context, index int) context.Con
 // appendManagedTurn preserves the raw synced result while the existing paired
 // append machinery adopts a retained entry exactly once and records fold data.
 func (s *Session) appendManagedTurn(live, persisted schema.Turn) (int, error) {
+	persisted.EnsureOccurrence()
 	var seq int
 	var rawErr error
 	err := s.appendTurnAfterTranscriptWrite(persisted, func() error {
-		s.mu.Lock()
-		writer := s.transcript
-		s.mu.Unlock()
-		seq, rawErr = writer.AppendSyncedEntry(persisted)
+		seq, rawErr = s.appendSyncedTranscriptEntry(persisted)
 		return rawErr
 	}, func() { s.history = append(s.history, live) })
 	return seq, errors.Join(err, rawErr)

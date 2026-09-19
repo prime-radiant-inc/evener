@@ -113,7 +113,11 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
-			*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
+			fallback, fallbackErr := checkpointWithInput(ctx, *history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
+			if fallbackErr != nil {
+				return fallbackErr
+			}
+			*history = fallback
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
 			})
@@ -180,6 +184,12 @@ func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history, nil
+	}
+
+	var err error
+	history, err = projectCompactionPrefix(ctx, history, cutoff)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build a condensed view of old history for the prediction model.

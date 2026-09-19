@@ -1125,7 +1125,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 			// returns rather than reporting a recorded round.
 			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
 		} else {
-			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
+			persistErr = s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
 		if persistErr != nil {
 			return

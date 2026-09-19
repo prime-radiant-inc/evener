@@ -449,11 +449,11 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	// so B's fold is genuinely competing regardless of how much of A's
 	// result the summarizer preserved: B must fold real content and produce
 	// its own summary, not short-circuit over a too-short history.
-	s.mu.Lock()
 	for i := range 8 {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("fresh post-A turn %d", i))))
+		if err := s.appendTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("fresh post-A turn %d", i))); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.mu.Unlock()
 
 	if err := s.Compact(context.Background()); err != nil { // fold B: folds A's result + the fresh turns, publishes second
 		t.Fatalf("Compact (B): %v", err)
@@ -662,7 +662,7 @@ func TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline(t *testing.T) {
 		s.turnHistoryBaseline = 2 // the marked turn opens the in-flight region
 		s.mu.Unlock()
 
-		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
+		if repairs, err := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); err != nil || repairs != 1 {
 			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
 		}
 		assertBaselineTracksMarkedTurn(t, s, marker)
@@ -682,7 +682,7 @@ func TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline(t *testing.T) {
 		s.turnHistoryBaseline = 1
 		s.mu.Unlock()
 
-		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
+		if repairs, err := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); err != nil || repairs != 1 {
 			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
 		}
 		assertBaselineTracksMarkedTurn(t, s, marker)
@@ -902,9 +902,15 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	close(proceed)
 	<-inCommit // published; the merged tail has not been written
 
-	s.removeUnverifiedDelegateAttentionTurn(unverified) // durability verification failed: the turn must vanish
-
+	removed := make(chan struct{})
+	go func() {
+		s.attentionMu.Lock()
+		s.removeUnverifiedDelegateAttentionTurn(unverified)
+		s.attentionMu.Unlock()
+		close(removed)
+	}()
 	close(proceedCommit)
+	<-removed
 	if err := <-compactErr; err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -1274,7 +1280,11 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		commit.publishedRevision = s.historyRevision
 		s.mu.Unlock()
 		s.attentionMu.Lock()
-		commit.commitTranscriptsLocked()
+		for _, turn := range *history {
+			if _, staged := commit.artifacts[turn.Occurrence()]; staged {
+				_ = s.writeTranscriptLocked(turn)
+			}
+		}
 		s.attentionMu.Unlock()
 		commit.flush()
 	}
@@ -1360,7 +1370,12 @@ func TestFoldPublication_NamerGateEvaluationRacesPublication(t *testing.T) {
 func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 	t.Parallel()
 	var summarizeCalls atomic.Int32
-	s := newScriptedSummaryCompactSession(t, "meta-race-cheap", func(llm.Request) llm.Response {
+	var sawSessionMeta atomic.Bool
+	var s *Session
+	s = newScriptedSummaryCompactSession(t, "meta-race-cheap", func(req llm.Request) llm.Response {
+		if s != nil && requestContainsText(req, s.id) {
+			sawSessionMeta.Store(true)
+		}
 		n := summarizeCalls.Add(1)
 		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
@@ -1408,36 +1423,23 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 		t.Fatalf("hammer Compact: %v", err)
 	}
 
-	// The per-call meta must still reach the fold content. The contention
-	// phase above has racy fold outcomes by design (any given fold may lose
-	// its publication), so probe deterministically: one final quiescent
-	// Compact publishes unopposed, and its checkpoint layer always folds the
-	// post-hammer history (a summary plus the preserved window, always past
-	// PreserveRecentTurns), so ITS id-bearing checkpoint marker entry is
-	// guaranteed to reach the transcript. The scripted summarize layer
-	// replaces that turn in LIVE history, hence the transcript assertion.
+	// A final unopposed fold must supply the checkpoint's session metadata to
+	// the summarizer, while only its final summary becomes a raw reset marker.
+	sawSessionMeta.Store(false)
 	if err := s.Compact(context.Background()); err != nil {
-		t.Fatalf("final quiescent Compact: %v", err)
+		t.Fatal(err)
+	}
+	if !sawSessionMeta.Load() {
+		t.Fatal("per-call session metadata did not reach actual summary input")
 	}
 	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
 	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
+		t.Fatal(err)
 	}
-	found := false
-	var survey []string
-	for _, e := range data.Entries {
-		text := e.Turn.Message.Text()
-		if e.Turn.Kind == schema.TurnCheckpoint &&
-			strings.Contains(text, "This session's id is "+s.id) {
-			found = true
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnCheckpoint {
+			t.Fatal("discarded intermediate checkpoint became authoritative")
 		}
-		if len(text) > 80 {
-			text = text[:80]
-		}
-		survey = append(survey, string(e.Turn.Kind)+": "+text)
-	}
-	if !found {
-		t.Fatalf("no published checkpoint marker carries the session id — the per-call compaction meta did not reach the fold content; transcript entries:\n%s", strings.Join(survey, "\n"))
 	}
 }
 

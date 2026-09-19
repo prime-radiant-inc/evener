@@ -17,7 +17,22 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fork delegate context: %w", err)
 	}
-	entries := completedDelegateContext(data.Entries)
+	materialized := data.Entries
+	manifestHistory := false
+	for _, entry := range data.Entries {
+		manifestHistory = manifestHistory || entry.Turn.Compaction != nil
+	}
+	if manifestHistory {
+		projected, err := transcript.ProjectHistory(s.id, data.Entries)
+		if err != nil {
+			return nil, fmt.Errorf("fork delegate context: %w", err)
+		}
+		materialized = make([]transcript.Entry, 0, len(projected))
+		for i, item := range projected {
+			materialized = append(materialized, transcript.Entry{Kind: "entry", Seq: i, Turn: item.Turn})
+		}
+	}
+	entries := completedDelegateContext(materialized)
 	out := make([]transcript.Entry, 0, len(entries))
 	for _, entry := range entries {
 		t := entry.Turn
@@ -30,6 +45,7 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 		// continuation handles. Those belong to its execution, not the child.
 		entry.Turn = schema.Turn{
 			Kind:                 t.Kind,
+			AttemptGroupID:       t.AttemptGroupID,
 			Message:              t.Message,
 			Timestamp:            t.Timestamp,
 			SteeringSource:       t.SteeringSource,
@@ -38,6 +54,12 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 			ResponseRequestModel: t.ResponseRequestModel,
 			ResponseProtocol:     t.ResponseProtocol,
 		}
+		// Inherited summaries are background messages, not child reset markers.
+		if manifestHistory && (entry.Turn.Kind == schema.TurnSummary || entry.Turn.Kind == schema.TurnCheckpoint) {
+			entry.Turn.Kind = schema.TurnSystem
+		}
+		entry.Turn.EnsureOccurrence()
+		entry.Seq = len(out)
 		out = append(out, entry)
 	}
 	return out, nil

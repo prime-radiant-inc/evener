@@ -142,11 +142,13 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 			},
 		})
 	}
-	return schema.Turn{
+	turn := schema.Turn{
 		Kind:      schema.TurnToolResults,
 		Message:   llm.Message{Role: llm.RoleTool, Content: parts},
 		Timestamp: time.Now().UTC(),
 	}
+	turn.MarkHistoryRepair()
+	return turn
 }
 
 // repairOrphanedToolResults captures, repairs, and publishes s.history under
@@ -158,9 +160,14 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 // would drop concurrent appends and clobber concurrent publishes). ctx
 // scopes only the post-repair watch-send retry; boundary callers with no
 // turn context pass context.Background().
-func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) int {
+func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) (int, error) {
 	if hook := s.cfg.testOnly.beforeHistoryRepairPublish; hook != nil {
 		hook()
+	}
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return 0, errFoldDurabilityPending
 	}
 	s.mu.Lock()
 	repaired, repairs, insertedAt := repairOrphanedToolResultsReserved(s.history, managedReservations(s.managedJournal.pending()))
@@ -186,6 +193,7 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 		s.bumpHistoryRevisionLocked()
 	}
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 
 	if repairs > 0 {
 		msg := fmt.Sprintf("Recovered %d interrupted tool call(s)", repairs)
@@ -196,7 +204,7 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 		s.maybeAutoSave()
 		s.retryPendingCallerWatchSendsAfterRepair(ctx)
 	}
-	return repairs
+	return repairs, nil
 }
 
 func (s *Session) retryPendingCallerWatchSendsAfterRepair(ctx context.Context) {

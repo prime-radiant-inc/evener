@@ -69,6 +69,49 @@ func WithCompactionTurnCallback(ctx context.Context, callback func(schema.Turn))
 	return context.WithValue(ctx, compactionTurnCallbackKey{}, callback)
 }
 
+type compactionInputKey struct{}
+
+// WithCompactionInput supplies the canonical consumed prefix for a durable
+// context artifact. Pressure decisions and retained live suffixes are unchanged.
+func WithCompactionInput(ctx context.Context, project func([]schema.Turn) ([]schema.Turn, error)) context.Context {
+	return context.WithValue(ctx, compactionInputKey{}, project)
+}
+
+func projectCompactionPrefix(ctx context.Context, history []schema.Turn, cutoff int) ([]schema.Turn, error) {
+	project, ok := ctx.Value(compactionInputKey{}).(func([]schema.Turn) ([]schema.Turn, error))
+	if !ok {
+		return history, nil
+	}
+	prefix, err := project(append([]schema.Turn(nil), history[:cutoff]...))
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, history[cutoff:]...), nil
+}
+
+func checkpointWithInput(ctx context.Context, history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) ([]schema.Turn, error) {
+	if attentionTransparentTurnCount(history) <= preserveRecent {
+		return history, nil
+	}
+	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	if cutoff < 0 {
+		return history, nil
+	}
+	projected, err := projectCompactionPrefix(ctx, history, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	return checkpoint(projected, preserveRecent, meta, resultToolName), nil
+}
+
+type foldArtifactCallbackKey struct{}
+
+// WithFoldArtifactCallback reports canonical strategy-created context turns.
+// Publication uses their occurrence identities to admit inline fold artifacts.
+func WithFoldArtifactCallback(ctx context.Context, callback func(schema.Turn)) context.Context {
+	return context.WithValue(ctx, foldArtifactCallbackKey{}, callback)
+}
+
 type postFoldInjectionCallbackKey struct{}
 
 // WithPostFoldInjectionCallback returns a context whose callback receives the
@@ -194,7 +237,11 @@ func replaceSteeringMarkerTurn(ctx context.Context, history *[]schema.Turn, mark
 	}
 	*history = filtered
 
-	*history = append(*history, schema.NewTurn(schema.TurnSteering, llm.User(text)))
+	turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+	*history = append(*history, turn)
+	if callback, ok := ctx.Value(foldArtifactCallbackKey{}).(func(schema.Turn)); ok {
+		callback(turn)
+	}
 
 	reportPostFoldInjection(ctx, len(*history)-preLen+removedBeforeBaseline)
 }
@@ -624,7 +671,12 @@ func (cm *Manager) MaybeCompact(
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := cm.estimateTokensFor(prof, *history)
-		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+		result, err := checkpointWithInput(ctx, *history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+		if err != nil {
+			emitFn(events.EventWarning, events.WarningData{Message: "checkpoint input: " + err.Error()})
+			return
+		}
+		*history = result
 		after := cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
@@ -699,7 +751,12 @@ func (cm *Manager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := cm.estimateTokensFor(prof, *history)
-	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+	result, err := checkpointWithInput(ctx, *history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+	if err != nil {
+		emitFn(events.EventWarning, events.WarningData{Message: "checkpoint input: " + err.Error()})
+		return false
+	}
+	*history = result
 	after := cm.estimateTokensFor(prof, *history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
@@ -1629,6 +1686,12 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history, nil
+	}
+
+	var err error
+	history, err = projectCompactionPrefix(ctx, history, cutoff)
+	if err != nil {
+		return nil, err
 	}
 
 	// Cap the history text to avoid exceeding the cheap model's context window.

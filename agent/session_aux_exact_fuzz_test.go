@@ -251,6 +251,11 @@ func (w *fuzzAuxWriter) Append(schema.Turn) error {
 	w.appends++
 	return nil
 }
+func (w *fuzzAuxWriter) AppendEntry(turn schema.Turn) (int, bool, error) {
+	seq := w.appends
+	err := w.Append(turn)
+	return seq, err == nil, err
+}
 func (w *fuzzAuxWriter) Close() error { err := w.closeErr; w.closeErr = nil; return err }
 
 func fuzzAuxParentFS(t *testing.T) (afero.Fs, string, string) {

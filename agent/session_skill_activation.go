@@ -511,12 +511,18 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 			Identity:         identity,
 			Route:            item.Invocation.Route,
 		}
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		prior := s.skillLifecycle.Inventory[identity.Name].Ordinary
 		duplicate := prior != nil && prior.Identity == identity
 		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligation)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		adm := admission{obligation: obligation, duplicate: duplicate}
 		if duplicate {
 			// Identical complete content was already admitted; the obligation
@@ -553,10 +559,16 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 		for _, adm := range admissions {
 			added = append(added, adm.obligation)
 		}
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, added)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}

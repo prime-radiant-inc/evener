@@ -216,15 +216,27 @@ func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) erro
 	if state == nil || len(state.Obligations) == 0 {
 		return nil
 	}
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, state.Obligations...)
 	s.skillLifecycle.Revision++
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if err := s.saveMeta(); err != nil {
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, state.Obligations)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}
@@ -241,6 +253,7 @@ func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) erro
 // the wrong door here: this turn may be the only copy of a skill's complete
 // instructions.
 func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
+	persisted.EnsureOccurrence()
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
@@ -271,13 +284,18 @@ func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome s
 // delivery failed permanently (reload failure, budget rejection). The failed
 // outcome is already recorded on its notification turn; the inventory keeps
 // any earlier successful record.
-func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
+func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) error {
 	if len(invocationIDs) == 0 {
-		return
+		return nil
 	}
 	drop := map[string]bool{}
 	for _, id := range invocationIDs {
 		drop[id] = true
+	}
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
 	}
 	s.mu.Lock()
 	kept := s.skillLifecycle.Obligations[:0]
@@ -289,6 +307,8 @@ func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
 	s.skillLifecycle.Obligations = kept
 	s.skillLifecycle.Revision++
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	return nil
 }
 
 // prepareSkillDelivery revalidates every pending delivery obligation against
@@ -391,6 +411,11 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		}
 		// Carry the corrected identity forward so the final admission checks
 		// the bytes this dispatch actually delivers.
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return req, commit, errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		for i := range s.skillLifecycle.Obligations {
 			if s.skillLifecycle.Obligations[i].InvocationID == obligation.InvocationID {
@@ -399,10 +424,13 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		}
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		commit.appendedNotifications = true
 	}
 	if len(failed) > 0 {
-		s.finalizeSkillDeliveryFailure(failed...)
+		if err := s.finalizeSkillDeliveryFailure(failed...); err != nil {
+			return req, commit, err
+		}
 	}
 	if commit.appendedNotifications {
 		// Obligation identity corrections and failure finalizations must be
@@ -512,9 +540,15 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 		satisfied[id] = true
 	}
 	var newBodies []string
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return false, errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	if s.skillLifecycle.Revision != commit.Revision {
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		return false, nil
 	}
 	// Snapshot what this transaction is about to change so a failed metadata
@@ -562,10 +596,16 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 	s.skillLifecycle.Revision++
 	committedRevision := s.skillLifecycle.Revision
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if err := s.saveMeta(); err != nil {
 		// Undo the whole transaction, but only when no concurrent writer touched
 		// the lifecycle since: the snapshot is the previous map wholesale, so
 		// replaying it over a newer revision would clobber that writer's work.
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return false, errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		if s.skillLifecycle.Revision == committedRevision {
 			s.skillLifecycle.Obligations = priorObligations
@@ -573,6 +613,7 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 			s.skillLifecycle.Revision = commit.Revision
 		}
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery admission failed", err))
 		return true, err
 	}

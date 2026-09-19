@@ -351,6 +351,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// the child seeds exactly its own role preloads (seedFrozenSkillPreloads)
 		// and tracks its own future activations.
 		for i := range inheritedContext {
+			inheritedContext[i].Turn.EnsureOccurrence()
 			inheritedContext[i].Turn.SkillState = nil
 		}
 		// The inherited prefix comes from the parent's transcript, which keeps the
@@ -520,7 +521,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
 		for _, entry := range inheritedContext {
-			if err := tw.Append(entry.Turn); err != nil {
+			seq, recorded, err := tw.AppendEntry(entry.Turn)
+			if recorded {
+				s.bindTranscriptOrigin(entry.Turn, seq)
+			}
+			if err != nil {
 				_ = tw.Close()
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}
@@ -898,6 +903,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		profile = provider.WithCheapModel(profile, meta.CheapModel)
 	}
 
+	if resumeTranscript != nil {
+		for _, entry := range transcriptEntries {
+			if entry.Turn.Compaction != nil {
+				if err := resumeTranscript.EstablishDurability(); err != nil {
+					return nil, fmt.Errorf("sync restored compaction: %w", err)
+				}
+				break
+			}
+		}
+	}
 	// Reconcile the typed compaction handoff receipts from ALL decoded
 	// transcript entries into the persisted lifecycle snapshot BEFORE
 	// ResumeHistory seeds the session's history: the receipts live on
@@ -1345,6 +1360,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
 		}
 	}
+	s.seedHistoryOrigins(resumed.Sources)
 	s.attachTranscript(tw)
 	if s.cfg.spawn.parentSessionID == "" {
 		// Install retention on the environment that OWNS the scratch: worktree

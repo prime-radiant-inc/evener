@@ -129,9 +129,15 @@ func (s *Session) cancelSkillCompactionLocked(generation uint64, reason string) 
 // rather than silently dropped, so a restart can reconcile the stale record.
 func (s *Session) cancelSkillCompaction(ctx context.Context, generation uint64, reason string) error {
 	_ = ctx
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	cancelled := s.cancelSkillCompactionLocked(generation, reason)
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if cancelled == nil {
 		return nil
 	}
@@ -164,6 +170,11 @@ func (s *Session) cancelSkillCompaction(ctx context.Context, generation uint64, 
 // slot is left free so the caller can retry.
 func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions string, selection schema.SkillReloadSelection) (uint64, error) {
 	clearOnly := note == "" && instructions == "" && selection.State == "absent"
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return 0, errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	existing := s.skillLifecycle.PendingCompaction
 	if existing != nil && !clearOnly {
@@ -171,10 +182,12 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 		case existing.Phase == skillCompactionPhasePublished:
 			// Delivery owns the slot until it completes; a new intent must wait.
 			s.mu.Unlock()
+			s.attentionMu.Unlock()
 			return 0, fmt.Errorf("compaction operation %d (%s) is still being delivered", existing.Generation, existing.Origin)
 		case existing.Origin == skillCompactionOriginForced:
 			// Distinct intents are never silently clobbered; nothing is mutated.
 			s.mu.Unlock()
+			s.attentionMu.Unlock()
 			return 0, fmt.Errorf("a forced compaction operation is already pending (generation %d)", existing.Generation)
 		}
 		// A pending automatic operation is superseded by this explicit request.
@@ -188,6 +201,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 			cancelled = s.cancelSkillCompactionLocked(existing.Generation, skillCompactionCancelSupersededNote)
 		}
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		if cancelled != nil {
 			s.skillCompactionCancelNotice(*cancelled, skillCompactionCancelSupersededNote)
 		}
@@ -228,16 +242,23 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 	s.forceRequested = true
 	s.pendingInstructions = instructions
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if superseded != nil {
 		s.skillCompactionCancelNotice(*superseded, skillCompactionCancelSupersededNote)
 	}
 	if err := s.saveMeta(); err != nil {
 		// Retire the operation and its trigger: no dispatch may treat an
 		// unsaved intent as durable, and the caller must be able to retry.
+		s.attentionMu.Lock()
+		if s.pendingFold != nil {
+			s.attentionMu.Unlock()
+			return 0, errFoldDurabilityPending
+		}
 		s.mu.Lock()
 		s.forceRequested = false
 		s.pendingInstructions = ""
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		_ = s.cancelSkillCompaction(ctx, gen, skillCompactionCancelSaveFailed)
 		return gen, &skillCompactionSaveError{Generation: gen, Reason: skillCompactionCancelSaveFailed, Err: err}
 	}
@@ -258,9 +279,15 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 // elicited note text itself stays pinned in memory, the same best-effort
 // pinning a successful elicitation had before this persistence existed.
 func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNoteGen uint64, note string, selection schema.SkillReloadSelection) (bool, error) {
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return false, errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	if s.pinnedNoteGen != capturedNoteGen || s.skillLifecycle.PendingCompaction != nil {
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		return false, nil
 	}
 	gen := s.skillLifecycle.NextOperationGen + 1
@@ -277,6 +304,7 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 	s.skillLifecycle.PendingCompaction = op
 	s.skillLifecycle.Revision++
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if err := s.saveMeta(); err != nil {
 		_ = s.cancelSkillCompaction(ctx, gen, skillCompactionCancelSaveFailed)
 		return false, &skillCompactionSaveError{Generation: gen, Reason: skillCompactionCancelSaveFailed, Err: err}
@@ -397,19 +425,26 @@ func (s *Session) retireSkillCompactionCancellationsLocked() bool {
 // already retired, so the persisted snapshot keeps the records only until the
 // next successful save (which persists the retired list) or a restart, after
 // which the next request retires them again.
-func (s *Session) retireSkillCompactionCancellations() {
+func (s *Session) retireSkillCompactionCancellations() error {
+	s.attentionMu.Lock()
+	if s.pendingFold != nil {
+		s.attentionMu.Unlock()
+		return errFoldDurabilityPending
+	}
 	s.mu.Lock()
 	removed := s.retireSkillCompactionCancellationsLocked()
 	if removed {
 		s.skillLifecycle.Revision++
 	}
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if !removed {
-		return
+		return nil
 	}
 	if err := s.saveMeta(); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("retiring compaction cancellation receipts failed", err))
 	}
+	return nil
 }
 
 // capturableAutomaticCompaction returns a detached copy of the pending
@@ -441,12 +476,13 @@ func (s *Session) capturableAutomaticCompaction() *schema.SkillCompactionOperati
 // the durable transcript receipt lets a restart reconcile the stale snapshot.
 //
 // Losing folds never reach this: they run none of the publication's commits.
-func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
+// completeSkillCompactionPublicationLocked applies the delivery flip with the
+// durable fold's history/claim delta. The handoff already exists in that history.
+func (s *Session) completeSkillCompactionPublicationLocked(commit *foldCommit) {
 	if commit == nil || commit.receipt == nil {
 		return
 	}
 	receipt := *commit.receipt
-	s.mu.Lock()
 	if receipt.Phase == skillCompactionReceiptPublished && receipt.Operation.Generation != 0 {
 		if op := s.skillLifecycle.PendingCompaction; op != nil && op.Phase == skillCompactionPhasePublished &&
 			op.Generation == receipt.Operation.Generation {
@@ -461,7 +497,12 @@ func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
 			}
 		}
 	}
-	s.mu.Unlock()
+}
+
+func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
+	if commit == nil || commit.receipt == nil {
+		return
+	}
 	if err := s.saveMeta(); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("persisting the published compaction handoff failed", err))
 	}

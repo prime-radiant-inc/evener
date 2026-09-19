@@ -263,14 +263,16 @@ func historyEnvironmentTurnIDs(sess *Session) []string {
 	return ids
 }
 
-// pairLogEnvironmentTurnIDs lists the ENVIRONMENT turns recorded in the
-// append/write pair log, the forms a fold publication re-appends after its
-// compaction markers.
-func pairLogEnvironmentTurnIDs(sess *Session) []string {
+// recordedEnvironmentTurnIDs lists live environment occurrences with actual
+// transcript receipts, excluding hard write failures.
+func recordedEnvironmentTurnIDs(sess *Session) []string {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	var ids []string
-	for _, turn := range sess.persistedAppendLog {
+	for _, turn := range sess.history {
+		if _, recorded := sess.historyOrigins[turn.Occurrence()]; !recorded {
+			continue
+		}
 		if turn.Kind == schema.TurnEnvironment {
 			ids = append(ids, turn.StableTurnID)
 		}
@@ -611,7 +613,7 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("model history environment turns = %v, want the confirmed durable entry %v", got, confirmed)
 	}
-	if got := pairLogEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
+	if got := recordedEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("pair-log environment turns = %v, want the confirmed durable entry %v", got, confirmed)
 	}
 	if got := environmentEventTurnIDs(t, drainPendingEvents(sess)); !reflect.DeepEqual(got, confirmed) {
