@@ -56,6 +56,16 @@ func TestManagerHostLocksReleasedAfterRemove(t *testing.T) {
 func TestManagerHostLockNotDroppedWhileHeld(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"}), &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}, Options{})
 	lock := m.hostLock("alpha")
+	// Pair the acquisition with its release the way every other holder does —
+	// an unpaired hostLock leaves the refs entry behind, exactly the leak the
+	// refcount exists to bound — and prove the release is the gate's last
+	// reference: the map must drop the name once the holder lets go.
+	defer func() {
+		m.releaseHostLock("alpha")
+		if got := len(m.locks); got != 0 {
+			t.Errorf("host-lock entries after the held gate's release = %d, want 0", got)
+		}
+	}()
 	lock.Lock()
 
 	// Unrelated churn runs the cleanup path while alpha's gate is held.
