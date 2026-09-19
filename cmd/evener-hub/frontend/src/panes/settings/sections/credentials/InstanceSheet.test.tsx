@@ -1907,11 +1907,11 @@ describe("the form", () => {
   });
 
   // Clearing an endpoint override drops the authored value, and the listing
-  // then serves the RESOLVED value (the base provider's), which the client
-  // cannot know. The mutation's own discarded answer carries the hub's
-  // fingerprint for that resolved endpoint, so the re-anchor is confirmed from
-  // it rather than inferred from the resolved display value.
-  test("a superseded clear of the Base URL re-anchors on the authoritative fingerprint", async () => {
+  // then serves the RESOLVED one: an instance with a different authored override
+  // that resolves to the same effective endpoint carries the same fingerprint,
+  // so the capture cannot tell this save's clear from a replacement. The plain
+  // supersede fails closed on an endpoint clear instead of re-anchoring.
+  test("a superseded endpoint clear is not re-anchored onto a same-endpoint replacement", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -1930,17 +1930,24 @@ describe("the form", () => {
       originClientId: "test-tab",
     });
 
-    const landed = {
+    // This save's landing resolved the inherited URL; a replacement carries its
+    // own override that resolves to the same effective endpoint.
+    const ours = {
       ...before,
       baseUrl: "https://inherited.example.test/v1",
       endpointFingerprint: "fp-after",
     };
-    await refreshList(fake, [landed]);
-    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+    const foreign = {
+      ...before,
+      baseUrl: "https://other.example.test/x",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
 
     await user.click(saveButton());
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 
   // The hub normalizes a credential header to `name=value` (trimming around

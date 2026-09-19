@@ -307,32 +307,24 @@ function normalizedCredentialHeader(raw: string): string {
   return `${raw.slice(0, eq).trim()}=${raw.slice(eq + 1).trim()}`;
 }
 
-/** Whether the listed entry carries the values this save declared for the
- * fields it changed. Without it a concurrent write that differs only in those
- * very fields reads as this save's own landing, and re-anchoring there pins
- * the draft to a foreign instance and lets the next save write onto it.
+/** Whether the listed entry carries the values a superseded RENAME declared for
+ * the fields it changed. The plain-save path verifies through the authoritative
+ * fingerprint instead (see supersededSaveLanded). Without this a concurrent
+ * write that differs only in those very fields reads as this rename's landing,
+ * and confirming it steers the sheet onto a foreign instance.
  *
- * The representation differs per field. A declared Base URL is compared as the
- * sanitized endpoint the listing serves (and fails closed when it carries
- * parts the listing strips, or cannot be keyed at all - see endpointMatches).
- * A `clear` drops the authored value, and the listing then serves either the
- * RESOLVED value (baseUrl/protocol/surface inherit from the base provider) or
- * an OMITTED field (apiKeyEnv/credentialHeader, which the hub omits when the
- * authored value is invalid or a literal secret) - neither is proof of the
- * clear, so an ENDPOINT clear (baseUrl/protocol/surface) always fails closed;
- * a credential clear fails closed only when `failClosedOnCredentialClear` is
- * set, which the plain-save path does and the rename path does not: a rename
- * riding along with a credential clear is confirmed by the untouched identity
- * fields it did not change, and the clear is merely unverifiable. A declared
- * header is compared after the hub's own normalization. A declared var has to
- * be present and equal, key by key. */
-function declaredValuesLanded(
-  listed: InstanceEntry,
-  params: InstanceEditParams,
-  failClosedOnCredentialClear: boolean,
-): boolean {
+ * A declared Base URL is compared as the sanitized endpoint the listing serves
+ * (and fails closed when it carries parts the listing strips, or cannot be
+ * keyed at all - see endpointMatches). An ENDPOINT clear (baseUrl/protocol/
+ * surface) drops the authored value and the listing then serves the RESOLVED
+ * one, which proves nothing about the clear: it always fails closed. A
+ * credential clear (apiKeyEnv/credentialHeader) is allowed here - the hub omits
+ * an authored value it cannot serve, and the rename is confirmed by the
+ * untouched identity fields it did not change. A declared header is compared
+ * after the hub's own normalization. A declared var has to be present and
+ * equal, key by key. */
+function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
   if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
-  if (failClosedOnCredentialClear && (params.clearApiKeyEnv || params.clearCredentialHeader)) return false;
   // A save that changed vars/protocol/surface without declaring a Base URL moved
   // the RESOLVED URL, which the listing alone cannot prove - the client does not
   // resolve the provider's template. Without an authoritative fingerprint the
@@ -376,7 +368,7 @@ function renamedInstanceLanded(
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
-  return declaredValuesLanded(listed, params, false) ? newName : undefined;
+  return declaredValuesLanded(listed, params) ? newName : undefined;
 }
 
 /** Whether the listed entry carries the non-endpoint values this save declared
@@ -460,13 +452,16 @@ function supersededSaveLanded(
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
   if (authoritativeFingerprint === "") return undefined;
   if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
+  // An ENDPOINT clear (baseUrl/protocol/surface) drops the authored override
+  // and the listing then serves the RESOLVED value: two instances whose
+  // overrides differ can resolve to the same effective endpoint and carry the
+  // same fingerprint, so the capture cannot tell this save's clear from a
+  // replacement's override. Fail closed; the caller marks the draft stale.
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
   // The fingerprint settles the destination; the fields it does not cover
   // (credentials, surface, declared variables) are verified separately, and
   // a credential clear fails closed.
   if (!credentialValuesLanded(listed, params, true)) return undefined;
-  // The fingerprint excludes surface, and a clear leaves no declared value to
-  // compare: the captured row is the only proof of what the clear resolved to.
-  if (params.clearSurface && (listed.surface ?? "") !== (authoritative?.surface ?? "")) return undefined;
   return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
 }
 
