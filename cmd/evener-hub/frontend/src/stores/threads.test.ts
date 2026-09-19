@@ -9890,8 +9890,12 @@ test("a superseded refresh's stale Stop fence cannot unwind a newer resume's sta
     release.resolve();
     await expect(refresh).rejects.toThrow("Stop canceled this pending action");
     expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
-    // The newer resume's dispatchability stands: the later discovery scan
-    // delivers the queued message.
+    // The newer resume's dispatchability stands. The shutdown durably canceled
+    // the pre-Stop probe row (the stacked stop-cancellation semantics), so the
+    // proof the gate is open is the design's own release path: an explicit
+    // Retry after the resume dispatches it.
+    expect((await storage.getOutbox("superseded-unwind"))?.state).toBe("canceled");
+    expect(await retryBlockedMutation("superseded-unwind", "user")).toBe(true);
     await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => sends >= 1);
     expect(sends).toBe(1);
@@ -9984,8 +9988,12 @@ test("a refresh overtaken before its tail recheck cannot unwind the newer resume
       await expect(refresh).rejects.toThrow("Stop canceled this pending action");
       await resumed;
       expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
-      // The newer resume's dispatchability stands: the later discovery scan
-      // delivers the queued message.
+      // The newer resume's dispatchability stands. The shutdown durably
+      // canceled the pre-Stop probe row (the stacked stop-cancellation
+      // semantics), so the proof the gate is open is the design's own release
+      // path: an explicit Retry after the resume dispatches it.
+      expect((await storage.getOutbox("overtaken-tail-unwind"))?.state).toBe("canceled");
+      expect(await retryBlockedMutation("overtaken-tail-unwind", "user")).toBe(true);
       await vi.advanceTimersByTimeAsync(2000);
       await flushIndexedDBUntil(() => sends >= 1);
       expect(sends).toBe(1);
