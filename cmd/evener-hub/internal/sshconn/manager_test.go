@@ -652,8 +652,10 @@ func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 		beforeHostGate: func(string) { arrival.hook() },
 	})
 
-	// Hold the host gate, the way a long preflight or attach does.
+	// Hold the host gate, the way a long preflight or attach does. The
+	// acquisition is paired so the gate entry comes back down with the test.
 	lock := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -1242,6 +1244,7 @@ func TestAttachEventIsEmittedUnderTheHostLock(t *testing.T) {
 				return
 			}
 			lock := m.hostLock(ev.Host)
+			defer m.releaseHostLock(ev.Host)
 			acquired := lock.TryLock()
 			if acquired {
 				lock.Unlock()
@@ -2493,7 +2496,9 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 	if !m.publishChannel("alpha", ch) {
 		t.Fatal("publishChannel refused a live manager")
 	}
-	if got := m.reconnectOnce(context.Background(), host, m.hostLock("alpha")); got {
+	hostGate := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
+	if got := m.reconnectOnce(context.Background(), host, hostGate); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {

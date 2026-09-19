@@ -334,7 +334,7 @@ type Manager struct {
 	// Detached yet. Close reads it to pair the events for the channel it tears
 	// down without emitting a Detached for one already paired.
 	announced map[string]*Channel
-	locks     map[string]*sync.Mutex
+	locks     map[string]*hostLockEntry
 	chans     map[string]*Channel
 	// devDeployed records hosts this Manager has installed its own
 	// identity-less build on — "dev", or a dirty "<sha>-dirty" build whose
@@ -413,7 +413,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		baseCtx:         baseCtx,
 		cancel:          cancel,
 		closeDone:       make(chan struct{}),
-		locks:           map[string]*sync.Mutex{},
+		locks:           map[string]*hostLockEntry{},
 		chans:           map[string]*Channel{},
 		devDeployed:     map[string]bool{},
 		resolvedTargets: map[string]string{},
@@ -462,6 +462,12 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		m.opts.beforeHostGate(name)
 	}
 	lock := m.hostLock(name)
+	// The acquisition is paired here, on the caller's own reference: every
+	// return path below releases it, including the ones that hand the gate to
+	// a supervisor — startSupervise takes that goroutine's own reference
+	// before it exists, so this release never drops an entry a live supervisor
+	// still gates on.
+	defer m.releaseHostLock(name)
 	// Honor the caller's context while waiting for the host gate: a canceled
 	// caller must not park behind another Ensure's or a supervisor's long
 	// preflight/attach, and must not be handed a channel afterwards.
@@ -914,6 +920,7 @@ func (m *Manager) Close() error {
 		// Close as terminal must not find an entry that looks live afterwards.
 		m.clearChannel(e.name)
 		lock.Unlock()
+		m.releaseHostLock(e.name)
 		if err != nil && first == nil {
 			first = err
 		}
@@ -990,6 +997,7 @@ func (m *Manager) DetachHost(name string) error {
 		m.detachEvent(name, StateDisconnected)
 	}
 	lock.Unlock()
+	m.releaseHostLock(name)
 	// Reaping the ssh child can block on its exit, which needs no lock; the map
 	// no longer references this channel, so a concurrent Ensure attaching fresh
 	// — the re-add path — cannot interleave with it.
@@ -1032,6 +1040,7 @@ func (m *Manager) RemoveHost(name string) error {
 		name = host.Name
 	}
 	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
 	lock.Lock()
 	// Registry entry first, under the same lock the rechecks in Ensure and
 	// reconnectOnce consult: once it is gone no attach path can publish. An
@@ -1080,8 +1089,11 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 		return errors.New("sshconn: AddHost with no registry")
 	}
 	// Trimmed for the lock key exactly as Get and Remove trim what they are
-	// given, so a padded spelling takes the same gate as its canonical name.
-	lock := m.hostLock(strings.TrimSpace(entry.Name))
+	// given, so a padded spelling takes the same gate as its canonical name —
+	// and held in a name so the release below pairs this exact acquisition.
+	name := strings.TrimSpace(entry.Name)
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
 	lock.Lock()
 	defer lock.Unlock()
 	return m.reg.Add(entry)
@@ -1702,6 +1714,14 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
 	}
 	m.supervisors[host.Name][loop] = struct{}{}
+	// The supervisor goroutine outlives this call and keeps gating on lock, so
+	// it takes its own live-user reference here — under m.mu, before the
+	// goroutine exists, and while the caller's reference still pins the entry
+	// (an entry is deleted only at zero references, so the entry this lock
+	// belongs to is the one being counted). Without it, the caller's release
+	// with its return could drop the entry while the loop still holds this
+	// mutex, and a fresh acquisition would build a second gate for the name.
+	m.locks[host.Name].refs++
 	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
 	// group observes the fully-finished loop.
 	m.supervisorsWG.Go(func() {
@@ -1719,6 +1739,9 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 			}
 			m.mu.Unlock()
 			cancel()
+			// The loop no longer touches the gate, so its reference goes with
+			// it — the last one out drops the entry.
+			m.releaseHostLock(host.Name)
 			// Announce the exit only after the gate is released, so a test that
 			// waits on it can assert on the supervisor's final state.
 			if m.opts.superviseExited != nil {
@@ -1912,15 +1935,57 @@ func isTerminal(err error) bool {
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrControllerDirty = errControllerDirty
 
+// hostLockEntry is one per-host gate together with its live-user count.
+// refs counts the hostLock acquisitions that have not been released yet —
+// holders and parked waiters both — so the entry can be dropped exactly when
+// nobody can still be using its mutex.
+type hostLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// hostLock returns the per-host gate for name and registers the caller as a
+// live user of it: every hostLock call must be paired with exactly one
+// releaseHostLock call, made by the caller once neither it nor anyone it handed
+// the gate to can touch the mutex again. The pairing keeps the map bounded
+// (round-7 M3: a gate used to be one permanent mutex per name, so a hub
+// churning unique host names leaked every gate for the manager's lifetime)
+// while making that cleanup safe: an entry is deleted only when its last user
+// released it, so a gate is never dropped while a holder — or a goroutine
+// parked waiting on it — still uses it, and two callers can never hold two
+// different gates for one name.
 func (m *Manager) hostLock(name string) *sync.Mutex {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	lock := m.locks[name]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		m.locks[name] = lock
+	entry := m.locks[name]
+	if entry == nil {
+		entry = &hostLockEntry{}
+		m.locks[name] = entry
 	}
-	return lock
+	entry.refs++
+	m.mu.Unlock()
+	return &entry.mu
+}
+
+// releaseHostLock pairs one hostLock call for name, dropping the entry when
+// the last live user released it: refs reached zero, so no goroutine holds
+// the gate or is parked acquiring it, and a later acquisition building a
+// fresh entry for the name cannot split one host's exclusion across two
+// mutexes. Waiters are counted at acquisition, before they park, so they hold
+// the entry open for as long as they wait; lockHostCtx's abandoned acquire
+// parks on the mutex without a reference of its own, but its caller's
+// reference covers the parking and the abandoned goroutine only hands the
+// mutex straight back — it never runs a critical section — so a release that
+// deletes the entry under it leaves it touching a mutex nothing else
+// references.
+func (m *Manager) releaseHostLock(name string) {
+	m.mu.Lock()
+	if entry := m.locks[name]; entry != nil {
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.locks, name)
+		}
+	}
+	m.mu.Unlock()
 }
 
 // lockHostCtx acquires the per-host gate, giving up when ctx is done. The host

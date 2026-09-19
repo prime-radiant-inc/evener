@@ -31,18 +31,18 @@ func TestManagerHostLocksReleasedAfterRemove(t *testing.T) {
 		t.Fatalf("manager retains %d host-lock entries after %d completed add/remove cycles; a finished cycle must leave no gate behind", got, adds)
 	}
 	// A cleaned name gates correctly again: the next acquisition builds a fresh
-	// entry rather than colliding with a stale one, and it comes back down too.
+	// entry rather than colliding with a stale one. The gate exists only while
+	// a user holds it, so a completed add/remove cycle still leaves none — a
+	// name with no live user owns no entry, exactly the bounded state the
+	// refcount exists for.
 	if err := m.AddHost(hostreg.Host{Name: "churn-00", SSH: "churn.example"}); err != nil {
 		t.Fatalf("AddHost(churn-00) after cleanup: %v", err)
-	}
-	if got := len(m.locks); got != 1 {
-		t.Fatalf("host-lock entries after re-adding one name = %d, want 1", got)
 	}
 	if err := m.RemoveHost("churn-00"); err != nil {
 		t.Fatalf("RemoveHost(churn-00) after re-add: %v", err)
 	}
 	if got := len(m.locks); got != 0 {
-		t.Fatalf("host-lock entries after the re-add's removal = %d, want 0", got)
+		t.Fatalf("host-lock entries after the completed re-add cycle = %d, want 0", got)
 	}
 }
 
