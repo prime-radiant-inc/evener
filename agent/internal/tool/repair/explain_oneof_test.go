@@ -63,8 +63,10 @@ func delegateOneOfSwappedParams() map[string]any {
 // arm-internal, and its bare "enum" keyword must not be read against the
 // top-level sandbox property — that announces `"off" is not one of the allowed
 // values: off, read-only, workspace-write, restricted`, an allowed-values list
-// that literally contains the rejected value. The message must render the
-// branch-level pairing rule and its narrowed enum instead.
+// that literally contains the rejected value. The sibling `not` arm accepts
+// sandbox "off" (as long as sandbox_net is omitted), so the failing arm's
+// narrowed enum is not the globally accepted set either; the message must render
+// the branch-level pairing rule and its narrowed enum instead.
 func TestExplainSchemaError_OneOfPositiveArmFirstDoesNotRenderTopLevelEnum(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfSwappedParams(), delegateOneOfArgs(), "sandbox", "oneOf/0/properties/sandbox/enum")
 	if strings.Contains(msg, "is not one of the allowed values") {
@@ -528,11 +530,15 @@ func TestExplainSchemaError_ArmEnumNotRenderedByBranchFallsThrough(t *testing.T)
 			if strings.Contains(msg, "Branch 0 requires") {
 				t.Fatalf("enum the branch prose does not render was explained as a branch requirement the call already satisfied: %q", msg)
 			}
-			// The top-level enum is wider than the arm's and contains the
-			// rejected value, so rendering it would announce a list that
-			// includes the value it calls disallowed.
-			if strings.Contains(msg, "is not one of the allowed values") {
-				t.Fatalf("unrenderable arm enum printed the top-level allowed-values list (issue #621 misdirection): %q", msg)
+			// The top-level enum is WIDER than the arm's and contains the
+			// rejected value "b"; reproducing it would announce a value the
+			// message calls disallowed. The arm's own enum (issue #622) is
+			// narrower and excludes "b", so that is the list to render.
+			if strings.Contains(msg, `"a", "b"`) {
+				t.Fatalf("unrenderable arm enum printed the top-level allowed-values list containing the rejected value: %q", msg)
+			}
+			if !strings.Contains(msg, `"a"`) {
+				t.Fatalf("arm-narrowed enum must be rendered: %q", msg)
 			}
 			leaf := tc.field[strings.IndexAny(tc.field, "/")+1:]
 			if !strings.Contains(msg, leaf) {
@@ -686,27 +692,34 @@ func stricterLimitParams(refWrapped bool) map[string]any {
 	return params
 }
 
-// a maxLength reached inside a root-level arm, or behind a
-// $ref, can be stricter than the top-level property's. Reading the top-level
-// schema would coach "exceeds maxLength (100)" for a value that only exceeds
-// the arm's limit of 3.
+// a maxLength reached inside a root-level arm can be stricter than the
+// top-level property's. The renderer resolves the failing cause's own schema
+// from the arm (issue #622), so it reports the arm's limit (3), never the
+// top-level property's (100). A $ref behind the root cannot be resolved here, so
+// its message is the bare generic mismatch — the referenced schema owns the
+// property and its guidance.
 func TestExplainSchemaError_StricterNestedLimitDoesNotReadTopLevel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		params map[string]any
 		loc    string
 		named  bool
+		limit  string
 	}{
-		// An arm is attributed to the branch, so the present-field path still
-		// names the property. A $ref cannot be resolved here, so the message
-		// is the bare generic mismatch — the referenced schema owns both the
-		// property and its guidance.
-		"arm":         {stricterLimitParams(false), "oneOf/0/properties/x/maxLength", true},
-		"ref-wrapped": {stricterLimitParams(true), "/$ref/properties/x/maxLength", false},
+		// An arm is attributed to the branch; the resolved arm constraint names
+		// the property with the arm's own stricter limit.
+		"arm":         {stricterLimitParams(false), "oneOf/0/properties/x/maxLength", true, "maxLength (3)"},
+		"ref-wrapped": {stricterLimitParams(true), "/$ref/properties/x/maxLength", false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", tc.params, map[string]any{"x": "abcd"}, "x", tc.loc)
-			if strings.Contains(msg, "maxLength") {
+			if strings.Contains(msg, "maxLength (100)") {
 				t.Fatalf("nested stricter limit was read against the top-level property: %q", msg)
+			}
+			if tc.limit != "" && !strings.Contains(msg, tc.limit) {
+				t.Fatalf("message must report the arm's own limit %q: %q", tc.limit, msg)
+			}
+			if tc.limit == "" && strings.Contains(msg, "maxLength") {
+				t.Fatalf("unresolved $ref failure must not report a limit: %q", msg)
 			}
 			if tc.named && !strings.Contains(msg, `argument "x"`) {
 				t.Fatalf("message must still name the offending property: %q", msg)
@@ -1036,11 +1049,11 @@ func TestExplainSchemaError_OneOfExampleOmittedForDependencies(t *testing.T) {
 	}
 }
 
-// a defect nested beneath an arm's items is not branch
-// structure — the arm prose would tell the caller to supply a field it already
-// sent — and the walk cannot resolve the item, so the message must be the
-// generic mismatch rather than naming a field that does not exist.
-func TestExplainSchemaError_ArmNestedItemDefectStaysGeneric(t *testing.T) {
+// A defect nested beneath an arm's items is not branch structure — the arm prose
+// would tell the caller to supply a field it already sent — but the element WAS
+// sent, so the resolved item schema explains it by its instance path rather than
+// falling back to the generic mismatch (issue #622 review).
+func TestExplainSchemaError_ArmNestedItemDefectNamesElement(t *testing.T) {
 	params := map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}},
@@ -1049,8 +1062,11 @@ func TestExplainSchemaError_ArmNestedItemDefectStaysGeneric(t *testing.T) {
 		},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"xs": []any{"abc"}}, "xs/0", "oneOf/0/properties/xs/items/type")
-	if msg != "probe_tool: arguments did not match the schema." {
-		t.Fatalf("arm-nested item defect must be the generic mismatch, got: %q", msg)
+	if strings.Contains(msg, "missing required argument") {
+		t.Fatalf("a sent array element was reported as a missing argument: %q", msg)
+	}
+	if !strings.Contains(msg, `argument "xs.0"`) {
+		t.Fatalf("arm-nested item defect must name the element: %q", msg)
 	}
 }
 
