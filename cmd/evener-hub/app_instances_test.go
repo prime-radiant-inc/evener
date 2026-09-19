@@ -1252,6 +1252,76 @@ func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
 	}
 }
 
+// An edit is applied to the row the client listed, so the endpoint that row was
+// served with travels with the save. A name another client has re-pointed since
+// - or replaced with a different instance - must not have its replacement
+// edited or renamed. A stale assertion is refused and changes nothing, the
+// endpoint the name resolves to now applies, and an empty assertion is the
+// pre-existing contract and is skipped.
+func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://a.example.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stale := f.ctl.auth.endpointFingerprintFor("work")
+	if stale == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+	// What another client does while the form is open: the name now resolves to
+	// a different endpoint.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	current := f.ctl.auth.endpointFingerprintFor("work")
+	if current == "" || current == stale {
+		t.Fatalf("fixture drift: the edit must move the endpoint (stale=%q current=%q)", stale, current)
+	}
+
+	// A rename carrying the stale assertion is refused, and the name does not
+	// move onto the replacement.
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal", ExpectedEndpointFingerprint: stale})
+	if err == nil {
+		t.Fatal("Edit renamed the replacement for a form opened on a different endpoint")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("Edit = %v, want a conflict wire error", err)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("personal"); ok {
+		t.Fatal("the refused rename landed anyway")
+	}
+
+	// A field edit carrying the stale assertion is refused, and the field is
+	// untouched.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: stale}); err == nil {
+		t.Fatal("Edit applied a field change for a form opened on a different endpoint")
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "" {
+		t.Fatalf("apiKeyEnv = %q, want the refused edit to change nothing", got.APIKeyEnv)
+	}
+
+	// The endpoint the name resolves to now is accepted.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: current}); err != nil {
+		t.Fatalf("Edit with the endpoint the name resolves to now: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
+		t.Fatalf("apiKeyEnv = %q, want the matching edit to land", got.APIKeyEnv)
+	}
+
+	// An empty assertion asserts nothing (the pre-existing contract) and is
+	// skipped rather than refused.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-chat"}); err != nil {
+		t.Fatalf("Edit with no assertion: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.Protocol != "openai-chat" {
+		t.Fatalf("protocol = %q, want the unasserted edit to land", got.Protocol)
+	}
+}
+
 // unwritableCredentialsPath puts a directory where credentials.toml belongs, so
 // the store's next persist cannot land: the shape of a credentials path that is
 // gone, read-only, or on a filesystem that has stopped taking writes.

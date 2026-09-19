@@ -42,6 +42,7 @@ const rows: InstanceListResponse = {
 			activeSource: "store",
 			hasStoredOAuth: false,
 			credentialRequired: true,
+				endpointFingerprint: "fp-work",
 		},
 	],
 	availableProviders: [],
@@ -178,4 +179,61 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
 	expect(text).toContain("Remove instance");
+});
+
+// The editor was opened on one row of the listing, so its save asserts that
+// row's endpoint; the hub's refusal of the assertion is its own class, not a
+// generic save failure: the editor clears, the provider list is re-read, and
+// the screen says in its own words what changed (never the hub's text, which
+// can echo submitted values).
+it("asserts the row's endpoint on an edit and reconciles the conflict", async () => {
+	alertRequests.length = 0;
+	const hub = scriptedClient(rows, {
+		"evener/instance/edit": [
+			new WireError(
+				"work no longer resolves to the endpoint this form was opened on",
+				-32013,
+				{ evenerErrorInfo: "conflict" },
+			),
+		],
+		"evener/instance/list": [rows, rows],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit instance");
+	await act(async () => {});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	const edit = hub.requests.find(
+		(request) => request.method === "evener/instance/edit",
+	);
+	expect(edit?.params).toMatchObject({
+		name: "work",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/edit",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("changed to a different endpoint");
+	expect(text).not.toContain("work no longer resolves");
+	// The editor cleared like a completed save; the instance's detail remains.
+	expect(text).not.toContain("Save instance");
+	expect(text).toContain("Edit instance");
 });

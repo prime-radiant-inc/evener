@@ -109,11 +109,13 @@ export function scriptedClient(
 	script: Record<string, (InstanceListResponse | Error)[]> = {},
 ) {
 	const methods: string[] = [];
+	const requests: { method: string; params: unknown }[] = [];
 	const taken = new Map<string, number>();
 	let unsubscribes = 0;
 	const client = {
-		request: async (method: string) => {
+		request: async (method: string, params?: unknown) => {
 			methods.push(method);
+			requests.push({ method, params });
 			const answers = script[method];
 			if (!answers || answers.length === 0) return rows;
 			const index = Math.min(taken.get(method) ?? 0, answers.length - 1);
@@ -126,7 +128,7 @@ export function scriptedClient(
 			unsubscribes += 1;
 		},
 	} as ConversationClientLike;
-	return { client, methods, unsubscribes: () => unsubscribes };
+	return { client, methods, requests, unsubscribes: () => unsubscribes };
 }
 
 /** Mounts `element` and flushes its effects, returning the test renderer. */

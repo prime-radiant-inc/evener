@@ -207,12 +207,12 @@ func TestInstanceRenamePersistedFollowsTheNewNameAndRefreshes(t *testing.T) {
 	}
 }
 
-// TestInstanceMutatePlainFailureKeepsTheErrorPath: an ordinary refusal (the
-// stale-fingerprint conflict, a missing instance) keeps today's behavior - the
-// error line, no refresh, no warning - so the reconciliation above stays
-// scoped to the applied-write discriminators.
+// TestInstanceMutatePlainFailureKeepsTheErrorPath: an ordinary refusal (a
+// missing instance, a stale listing) keeps today's behavior - the error line,
+// no refresh, no warning - so the reconciliation above stays scoped to the
+// applied-write discriminators and the endpoint-conflict class.
 func TestInstanceMutatePlainFailureKeepsTheErrorPath(t *testing.T) {
-	refused := appwire.Conflict("old no longer resolves to the endpoint this form was opened on")
+	refused := appwire.InvalidParams(`instance "old" not found`)
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m := newHubModel(client, "http://hub.test")

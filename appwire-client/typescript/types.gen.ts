@@ -1010,6 +1010,15 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Name (InstanceEntry.endpointFingerprint), checked the way
+   * InstanceRemoveParams's is. The edit is applied to the row the client
+   * listed, so a name another client has re-pointed since - or replaced with a
+   * different instance - must not have its replacement edited or renamed.
+   * Empty asserts nothing.
+   */
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceEntry {

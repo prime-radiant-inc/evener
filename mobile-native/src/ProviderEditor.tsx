@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { TextInput, View } from "react-native";
-import type {
-  InstanceEntry,
-  ProviderDescriptor,
+import {
+  isEndpointConflict,
+  type InstanceEntry,
+  type ProviderDescriptor,
 } from "@evener/appwire-client";
 import {
   createProviderParams,
@@ -18,6 +19,7 @@ export function ProviderEditor({
   model,
   disabled,
   onSaved,
+  onEndpointConflict,
   onCancel,
 }: {
   instance?: InstanceEntry;
@@ -25,6 +27,7 @@ export function ProviderEditor({
   model: ProviderInstances;
   disabled: boolean;
   onSaved(name: string): void;
+  onEndpointConflict(name: string): void;
   onCancel(): void;
 }) {
   const colors = useColors();
@@ -90,11 +93,21 @@ export function ProviderEditor({
       if (edit) await model.edit(edit);
       else if (create) await model.create(create);
       if (alive.current) onSaved(instance?.name ?? draft.name.trim());
-    } catch {
-      if (alive.current)
-        setError(
-          "Save could not be confirmed. Check the provider list before trying again.",
-        );
+    } catch (err) {
+      if (alive.current) {
+        if (isEndpointConflict(err)) {
+          // The hub refused the asserted destination: the row moved since this
+          // editor was opened, so nothing was written. Hand it to the screen,
+          // which clears this editor, re-reads the provider list, and warns in
+          // its own words - the rejection's text can echo submitted values and
+          // is never shown.
+          onEndpointConflict(instance?.name ?? draft.name.trim());
+        } else {
+          setError(
+            "Save could not be confirmed. Check the provider list before trying again.",
+          );
+        }
+      }
     } finally {
       if (alive.current) setSaving(false);
     }

@@ -1028,6 +1028,40 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
+  // The save carries the endpoint the draft was seeded from, and the hub refuses
+  // an edit whose name another client has re-pointed since. The refusal is the
+  // endpoint-conflict class: a clear message, a listing refresh so a retry
+  // asserts the destination now on screen, and the draft kept.
+  test("a save refused for a changed endpoint surfaces the message, refreshes, and keeps the draft", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: "conflict" },
+      );
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    // The assertion the hub checks travels with the save.
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-work",
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    expect(getToasts().some((t) => t.text.includes("changed to a different endpoint"))).toBe(true);
+    // The draft survives for the retry, and the listing is re-read.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+  });
+
   test("a rename toasts the new name, calls onRenamed, and does not close the sheet", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", (params) => {
@@ -1694,7 +1728,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     const renamed = { ...shadow, name: "openai-work", base: "openai" };
     await refreshList(fake, [renamed]);
@@ -1727,7 +1765,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai-codex", newName: "openai-codex-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+    });
 
     // What the hub authors: the entry under the new name, pinning the curated
     // id it was inheriting from, so the listing's row is authored and carries
@@ -1761,7 +1803,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai-codex", newName: "openai-codex-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+    });
 
     // Every identity field matches, but the row is implicit - not something a
     // rename authors.
@@ -1796,7 +1842,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
@@ -1817,7 +1867,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
     await refreshList(fake, [lookAlike]);

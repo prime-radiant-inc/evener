@@ -953,6 +953,12 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 	}
 
+	// Resolved before the locks, as Remove resolves its own (see the file's note
+	// on resolving the fingerprint key before the locks): resolving can repair
+	// the key file - an inter-process lock and a write - so doing it while c.mu
+	// and credMu are held would hold every listing and credential op behind it.
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Held for the rest of the call, so the providers.toml write and the
@@ -980,6 +986,15 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 			return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 		}
 		p = registry.Provider{ID: name}
+	}
+	// The edit is applied to the row the client listed, so the endpoint that row
+	// was served with is asserted before anything is written: a name another
+	// client has re-pointed since - or replaced with a different instance - must
+	// not have its replacement edited or renamed. Asked here, under the lock
+	// that holds the write, so it describes the instance this edit lands on.
+	// Empty asserts nothing (the contract InstanceRemoveParams documents).
+	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		return err
 	}
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name

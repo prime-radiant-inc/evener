@@ -52,6 +52,8 @@ const APPLIED_REMOVAL_WARNING =
   "The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
 const APPLIED_RENAME_WARNING =
   "The instance was renamed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
+const ENDPOINT_CHANGED_WARNING =
+  "This instance changed to a different endpoint since the form was opened. The provider list was refreshed; review its destination and try again.";
 
 export function ProvidersScreen({
   route,
@@ -332,6 +334,17 @@ function Providers({
                     setConfiguration(null);
                     setSelected(name);
                   }}
+                  onEndpointConflict={(name) => {
+                    // The hub refused the endpoint the save asserted: the name
+                    // moved since this editor was seeded, and nothing was
+                    // written. Clear the editor like a completed save, re-read
+                    // the provider list so a retry asserts the destination now
+                    // on screen, and warn in this client's own words.
+                    setConfiguration(null);
+                    setSelected(name);
+                    setActionWarning(ENDPOINT_CHANGED_WARNING);
+                    void model.refresh();
+                  }}
                   onCancel={() => {
                     if (configuration === "create") close();
                     else setConfiguration(null);
@@ -365,6 +378,7 @@ function Providers({
                       <Copy key={message}>{message}</Copy>
                     ))}
                     <ErrorMessage message={actionError} />
+                    <WarningMessage message={actionWarning} />
                     {state.busy && (
                       <ActivityIndicator accessibilityLabel="Updating provider" />
                     )}

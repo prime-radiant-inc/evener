@@ -3257,6 +3257,13 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// InstanceRemoveParams's is. The edit is applied to the row the client
+	// listed, so a name another client has re-pointed since - or replaced with a
+	// different instance - must not have its replacement edited or renamed.
+	// Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.

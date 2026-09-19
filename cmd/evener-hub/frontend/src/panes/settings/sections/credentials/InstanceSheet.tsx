@@ -35,6 +35,7 @@ import {
   errorText,
   friendlyErrorMessage,
   fromEnvironment,
+  isEndpointConflict,
   isInstanceRenamePersisted,
   keylessByDesign,
   renameLeavesEnvironmentRow,
@@ -99,6 +100,11 @@ const RENAME_PENDING_SAVE_ERROR =
 // the destination, not the instance on screen.
 const RENAME_PENDING_ACTION_MESSAGE =
   "This rename is still being confirmed; wait for the renamed instance to appear before acting on it.";
+// The hub refused the endpoint this form was seeded from: the name moved since
+// the draft was read, so the save was not applied. The draft is kept for a retry
+// once the listing on screen shows the destination now in effect.
+const ENDPOINT_CHANGED_SAVE_ERROR =
+  "This instance changed to a different endpoint since the form was opened. Review its destination and save again.";
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -346,6 +352,11 @@ export function InstanceSheet({
   // above noticing, so handleSave checks the draft still belongs to the
   // instance it is about to write to.
   const seededIdentity = useRef<string | null>(null);
+  // The endpoint the draft was seeded from, sent with the save as the atomic
+  // assertion the client-side identity check above cannot be: the hub refuses
+  // the edit when another client has re-pointed the name since the draft was
+  // read. Undefined when the row carried no fingerprint - nothing to assert.
+  const seededFingerprint = useRef<string | undefined>(undefined);
 
   const stored = name === null ? undefined : instances.find((i) => i.name === name);
   // The section is on this rename's destination. The listing's row there is
@@ -374,6 +385,7 @@ export function InstanceSheet({
     setDraft(seeded);
     setFormError(null);
     seededIdentity.current = draftIdentity(inst);
+    seededFingerprint.current = inst.endpointFingerprint;
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different instance opens; a refresh of the same instance must not clobber in-progress edits
@@ -494,6 +506,13 @@ export function InstanceSheet({
       setFormError(LITERAL_HEADER_ERROR);
       return;
     }
+    // The endpoint the draft was seeded from travels with the save, so the hub
+    // can refuse an edit whose name another client has re-pointed since - the
+    // atomic counterpart of this sheet's own identity check. An empty
+    // fingerprint asserts nothing.
+    if (seededFingerprint.current !== undefined) {
+      params.expectedEndpointFingerprint = seededFingerprint.current;
+    }
     setFormError(null);
     setBusy(true);
     if (params.newName !== undefined) setRenamingFrom({ entry: instance, params });
@@ -552,6 +571,22 @@ export function InstanceSheet({
           setFormError(CONNECTION_REPLACED_ERROR);
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since the
+        // draft was seeded, so this save was not applied. Keep the draft, say
+        // why, and re-read the listing so a retry asserts the destination now on
+        // screen.
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          setFormError(ENDPOINT_CHANGED_SAVE_ERROR);
+        }
+        toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
         return;
       }
       // A rename that stood but could not carry the instance's OAuth record

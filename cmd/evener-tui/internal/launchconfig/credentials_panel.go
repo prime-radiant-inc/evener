@@ -52,6 +52,12 @@ type CredentialsPanel struct {
 	// formBaseURLWas is the base URL the edited instance already had, so the
 	// form can tell "left blank" from "cleared".
 	formBaseURLWas string
+	// formEndpointFingerprint is the endpoint the edited instance resolved to
+	// when the form was opened (InstanceEntry.EndpointFingerprint). It travels
+	// with the edit so the hub refuses a save whose name another client has
+	// re-pointed since the form was read. Empty (a row the hub could not
+	// fingerprint) asserts nothing.
+	formEndpointFingerprint string
 
 	testPending    map[string]bool
 	testResults    map[string]appwire.AuthTestResponse
@@ -312,6 +318,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formProtocol = ""
 			p.formBaseURL = ""
 			p.formBaseURLWas = ""
+			p.formEndpointFingerprint = ""
 			return p, nil
 		case "e":
 			cur := p.selectedInstance()
@@ -326,6 +333,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formProtocol = cur.Protocol
 			p.formBaseURL = cur.BaseURL
 			p.formBaseURLWas = cur.BaseURL
+			p.formEndpointFingerprint = cur.EndpointFingerprint
 			return p, nil
 		}
 	}
@@ -355,8 +363,9 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.formOpen = false
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
-				Name:     p.formName,
-				Protocol: p.formProtocol,
+				Name:                        p.formName,
+				Protocol:                    p.formProtocol,
+				ExpectedEndpointFingerprint: p.formEndpointFingerprint,
 			}
 			switch {
 			case strings.TrimSpace(p.formBaseURL) == strings.TrimSpace(p.formBaseURLWas):

@@ -116,7 +116,7 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 				"The instance was removed on the hub before a later step failed; the removal stands.",
 				msg.Err,
 			)
-			return m, m.refreshInstanceListAfterAppliedWrite()
+			return m, m.refreshInstanceListAfterMutation()
 		case appwire.ErrorInstanceRenamePersisted:
 			// providers.toml carries the new name, so the save is not a
 			// failure. Follow the instance to the name the edit submitted -
@@ -132,9 +132,19 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 				summary = fmt.Sprintf("The instance is now %q on the hub; a later step failed, but the rename stands.", newName)
 			}
 			m.addInstanceWriteAppliedNotice("Instance rename applied", summary, msg.Err)
-			return m, m.refreshInstanceListAfterAppliedWrite()
+			return m, m.refreshInstanceListAfterMutation()
 		}
 		m.err = msg.Err
+		if instanceEndpointConflict(msg.Err) {
+			// The hub refused the asserted destination: the name no longer
+			// resolves where the row the form was opened on pointed, so the
+			// write did not happen. The refusal is the hub's own clear account
+			// of it; re-read the listing as well, so the retry asserts the
+			// destination now on screen instead of repeating the stale
+			// assertion. Without the re-read this is a plain failure whose
+			// retry cannot succeed.
+			return m, m.refreshInstanceListAfterMutation()
+		}
 		return m, nil
 	}
 	m.err = nil
@@ -148,26 +158,32 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 	return m, nil
 }
 
-// instanceAppliedErrorInfo returns the provider-instance applied-write
-// discriminator err carries (ErrorInstanceRemoveApplied or
-// ErrorInstanceRenamePersisted), or "" for an ordinary failure. A wire error
-// decoded by the client holds its ErrorData as a map, while one built
-// in-process holds the typed struct, so both shapes are read - the same
-// classification isQueuedDrainPartial performs for its own discriminator.
-func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
+// wireErrorInfo returns the appwire.ErrorInfo discriminator an error carries,
+// or "" when it is not a wire error or carries none. A wire error decoded by
+// the client holds its ErrorData as a map, while one built in-process holds the
+// typed struct, so both shapes are read - the same classification
+// isQueuedDrainPartial performs for its own discriminator.
+func wireErrorInfo(err error) appwire.ErrorInfo {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		return ""
 	}
-	var info appwire.ErrorInfo
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
-		info = data.EvenerErrorInfo
+		return data.EvenerErrorInfo
 	case map[string]any:
 		if raw, ok := data["evenerErrorInfo"].(string); ok {
-			info = appwire.ErrorInfo(raw)
+			return appwire.ErrorInfo(raw)
 		}
 	}
+	return ""
+}
+
+// instanceAppliedErrorInfo returns the provider-instance applied-write
+// discriminator err carries (ErrorInstanceRemoveApplied or
+// ErrorInstanceRenamePersisted), or "" for an ordinary failure.
+func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
+	info := wireErrorInfo(err)
 	switch info {
 	case appwire.ErrorInstanceRemoveApplied, appwire.ErrorInstanceRenamePersisted:
 		return info
@@ -175,11 +191,21 @@ func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
 	return ""
 }
 
-// refreshInstanceListAfterAppliedWrite re-reads the instance list an applied
-// mutation could not answer with: the hub returns no listing beside the
-// discriminator. The panel owns the rows, so a model without one has nothing
-// to refresh.
-func (m hubModel) refreshInstanceListAfterAppliedWrite() tea.Cmd {
+// instanceEndpointConflict reports whether err is the hub's refusal of an
+// asserted endpoint (appwire.Conflict, evenerErrorInfo "conflict"): the name no
+// longer resolves to the destination the client showed the user. The
+// discriminator is the wire string, never the code - siblings share
+// CodeConflict.
+func instanceEndpointConflict(err error) bool {
+	return wireErrorInfo(err) == appwire.ErrorConflict
+}
+
+// refreshInstanceListAfterMutation re-reads the instance list after a mutation
+// the hub could not answer with a listing: an applied write answered with a
+// discriminator, or an endpoint-conflict refusal - both leave the panel's rows
+// describing the destination the write was decided against. The panel owns the
+// rows, so a model without one has nothing to refresh.
+func (m hubModel) refreshInstanceListAfterMutation() tea.Cmd {
 	if m.credentialsPanel != nil && m.client != nil {
 		return launchconfig.CmdInstanceList(m.client)
 	}
