@@ -134,21 +134,30 @@ poll_gone() {
 
 // TestRunBoundedLetsACommandHandleTERM pins the wrapper's TERM disposition: a
 // caught no-op keeps the wrapper alive without making the command inherit
-// SIG_IGN, so a command that handles TERM exits on it instead of forcing the
-// whole grace then KILL.
+// SIG_IGN, so a command that handles TERM actually runs its handler. The
+// command's handler writes a marker, so the test fails if the handler never
+// executed -- a command that merely died on the default TERM would also finish
+// inside the grace and must not pass this.
 func TestRunBoundedLetsACommandHandleTERM(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 export EVENER_STOP_TREE_GRACE_SECONDS=4
 . `+gateBoundedLib+`
 dir=$(mktemp -d)
+cat > "$dir/cmd.sh" <<'CMD'
+trap 'printf handled > "$MARK"; exit 0' TERM
+while :; do sleep 0.05; done
+CMD
 start=$SECONDS
-run_bounded 1 unit test "$dir/log" bash -c 'trap "exit 0" TERM; while :; do sleep 0.05; done'
-printf 'rc=%s elapsed=%s\n' "$?" "$((SECONDS - start))"
+MARK="$dir/handled" run_bounded 1 unit test "$dir/log" bash "$dir/cmd.sh"
+printf 'rc=%s elapsed=%s marker=%s\n' "$?" "$((SECONDS - start))" "$(cat "$dir/handled" 2>/dev/null)"
 rm -rf "$dir"
 `)
 	if !strings.Contains(got, "rc=1") {
 		t.Fatalf("run_bounded = %q, want rc=1", got)
+	}
+	if !strings.Contains(got, "marker=handled") {
+		t.Fatalf("run_bounded = %q, want the command's own TERM handler to have run", got)
 	}
 	var elapsed int
 	for f := range strings.FieldsSeq(got) {
