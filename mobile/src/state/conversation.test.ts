@@ -7228,11 +7228,11 @@ describe("ConversationStore", () => {
       // enough that reusing folded.text for the id would be obvious.
       ["a message-less warning with no active turn", { extra: "x".repeat(500) }],
       ["an oversized title", { title: "T".repeat(2000) }],
-    ])("keeps the live row id short for %s", async (_case, extra) => {
+    ])("keeps the live row id short for %s", async (_case, warningFields) => {
       const store = await openProjectedThread(makeThread());
       store.getState().applyNotification({
         method: "warning",
-        params: { ...target, ...extra },
+        params: { ...target, ...warningFields },
       } as AnyNotification);
       const failureRow = store
         .getState()
