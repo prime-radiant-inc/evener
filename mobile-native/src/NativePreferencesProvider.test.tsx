@@ -307,6 +307,102 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		mounted.unmount();
 	});
 
+	it("reconciles known draft outcomes for a same-client disconnected connection", async () => {
+		writeDraft("hub-a", {
+			id: "draft-1",
+			baseRevision: 1,
+			rules: [],
+			writeUncertain: false,
+		});
+		const connection = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(connection);
+		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+		expect(mounted.current.snapshot?.keybindings.draft).toMatchObject({
+			revision: 1,
+			rules: [],
+		});
+
+		writeDraft("hub-a", "{not json");
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: null,
+			draftUnreadable: true,
+			draftError:
+				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			storageUnavailable: true,
+			writeUncertain: false,
+		});
+
+		writeDraft("hub-a", {
+			id: "draft-2",
+			baseRevision: 2,
+			rules: [],
+			writeUncertain: false,
+		});
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "reconnecting",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: { revision: 2, rules: [] },
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+
+		harness.values.delete(draftKey("hub-a"));
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+			writeUncertain: false,
+		});
+
+		writeDraft("hub-a", {
+			id: "live-only",
+			baseRevision: 3,
+			rules: [],
+			writeUncertain: false,
+		});
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "ready",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			confirmed,
+			draft: null,
+			draftUnreadable: false,
+			draftError: null,
+			storageUnavailable: false,
+		});
+		mounted.unmount();
+	});
+
 	it("tracks retained unreadable classification across storage failures and recovery", async () => {
 		writeDraft("hub-a", {
 			id: "draft-1",
