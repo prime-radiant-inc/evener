@@ -386,6 +386,65 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
 });
 
+it("reconciles through the remounted browser after the old browser is disposed", async () => {
+	harness.alerts = [];
+	let listCalls = 0;
+	let releaseRemoval!: () => void;
+	const pendingRemoval = new Promise<never>((_resolve, reject) => {
+		releaseRemoval = () => reject(cloneLitterError(null, false));
+	});
+	const hub = marketplaceClient({
+		list: async () => {
+			listCalls += 1;
+			if (listCalls === 2) throw new Error("browser B initial list failed");
+			return { marketplaces: [marketplace] };
+		},
+		remove: () => pendingRemoval,
+	});
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await browseMarketplace(tree);
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+	});
+	const buttons = harness.alerts.at(-1);
+	const remove = buttons?.find((button) => button.text === "Remove");
+	if (!remove?.onPress) throw new Error("Remove confirmation was not shown");
+	await act(async () => remove.onPress?.());
+
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
+	expect(listCalls).toBe(2);
+	expect(renderedText(tree)).not.toContain("acme github: acme/plugins");
+
+	releaseRemoval();
+	await act(async () => {
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	expect(listCalls).toBe(3);
+	expect(renderedText(tree)).toContain("acme");
+	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+	});
+	await act(async () => {});
+	const removeButton = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(removeButton.props.disabled).toBe(true);
+	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+});
+
 it("leaves ordinary marketplace removal failures retryable", async () => {
 	harness.alerts = [];
 	const hub = marketplaceClient({
