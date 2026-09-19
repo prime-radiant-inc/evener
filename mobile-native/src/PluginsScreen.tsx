@@ -171,6 +171,7 @@ function Plugins({
     setNotice(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(
@@ -191,7 +192,7 @@ function Plugins({
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            if (version === editorVersion.current)
+            if (version === editorVersion.current && canUseConnection())
               void act(() =>
                 state.removePlugin(target.plugin, target.marketplace),
               );

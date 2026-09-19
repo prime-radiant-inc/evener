@@ -136,6 +136,7 @@ export function MarketplaceBrowser({
     setError(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (revision.current !== version) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed") setError(WRITE_FAILED);
   }
@@ -159,7 +160,7 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current !== version) return;
+          if (revision.current !== version || !canUseConnection()) return;
           void act(() => state.removeMarketplace(name));
         },
       },

@@ -70,13 +70,27 @@ export function useConnectionDisplay(
 	fatal: boolean,
 ): ConnectionDisplay {
 	const everReady = useRef(false);
+	const fatalRecovery = useRef(false);
 	const scope = useRef(hubId);
 	if (scope.current !== hubId) {
 		scope.current = hubId;
 		everReady.current = false;
+		fatalRecovery.current = false;
 	}
-	if (state === "ready") everReady.current = true;
-	return connectionDisplay(state, everReady.current, fatal);
+	if (state === "ready") {
+		everReady.current = true;
+		fatalRecovery.current = false;
+	} else if (fatal) {
+		// A fatal close unmounts ready-only children. Keep that wall in place
+		// until the replacement is ready; clearing the fatal flag while it is
+		// still dialing must not remount a child against the closed client.
+		fatalRecovery.current = true;
+	}
+	return connectionDisplay(
+		state,
+		everReady.current,
+		fatal || fatalRecovery.current,
+	);
 }
 
 /** Wraps a handler so it no-ops unless the live readiness predicate is true: the shared guard an

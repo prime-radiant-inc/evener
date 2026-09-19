@@ -149,6 +149,51 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	expect(text).toContain("to manage providers.");
 });
 
+it("keeps the provider wall through a fatal retry until the replacement is ready", async () => {
+	const hub = scriptedClient(rows);
+	const replacement = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	harness.connection = { ...harness.connection, state: "closed", fatal: true };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+
+	harness.connection = {
+		...harness.connection,
+		client: replacement.client,
+		state: "connecting",
+		fatal: false,
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	expect(renderedText(tree)).toContain("Connect to");
+	expect(renderedText(tree)).toContain("to manage providers.");
+	expect(replacement.methods).toEqual([]);
+
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	expect(replacement.methods.length).toBeGreaterThan(0);
+	expect(
+		replacement.methods.every((method) => method === "evener/instance/list"),
+	).toBe(true);
+});
+
 it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = {

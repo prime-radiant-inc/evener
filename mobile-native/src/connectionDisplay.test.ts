@@ -71,6 +71,25 @@ it("useConnectionDisplay: fatal shows the wall even for a hub that was ready a m
 	expect(hook.result.current).toBe("wall");
 });
 
+it("useConnectionDisplay: keeps the wall through a fatal retry until ready", () => {
+	let state: ConnectionState = "ready";
+	let fatal = false;
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal));
+	state = "closed";
+	fatal = true;
+	hook.rerender();
+	expect(hook.result.current).toBe("wall");
+	// A manual retry clears the fatal flag before the replacement client is
+	// ready. The old client must not be remounted in that connecting window.
+	state = "connecting";
+	fatal = false;
+	hook.rerender();
+	expect(hook.result.current).toBe("wall");
+	state = "ready";
+	hook.rerender();
+	expect(hook.result.current).toBe("none");
+});
+
 it("useConnectionDisplay: never having been ready is a wall, not a banner, even before any failure", () => {
 	const state: ConnectionState = "connecting";
 	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
