@@ -66,6 +66,16 @@ type hostManagerConfig struct {
 	// sources per request, and a removed host — no source — contributes no
 	// rows on its own.
 	remoteCache *hubcore.RemoteThreadCache
+	// forgetLastGoodThreads drops the web server's retained last-known-good
+	// rows for a source. Remove calls it in the finish phase beside
+	// remoteCache.RemoveSource: the background walk stores the host's last
+	// successful list under its name, and the removal must take that
+	// retention with it too — left behind, the entry and its thread rows
+	// outlive the host for the process lifetime, and churning distinct host
+	// names grows the map without bound (the round-9 M1 finding). Nil (tests,
+	// embedders without a web server): nothing was ever retained, so there
+	// is nothing to forget.
+	forgetLastGoodThreads func(sourceID string)
 	// manager owns every live SSH channel; removal goes through its atomic
 	// RemoveHost so a concurrent attach cannot publish past deregistration.
 	// Nil in tests that only exercise validation.
@@ -1078,6 +1088,15 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// the host — nothing to prune.
 	if m.cfg.remoteCache != nil {
 		m.cfg.remoteCache.RemoveSource(host.Name)
+	}
+	// The web server's last-known-good retention goes with the removal too:
+	// the background walk stored the host's last successful list under its
+	// name, and the entry is unreachable once the source is gone from the
+	// registry — but the map would keep it, thread rows included, for the
+	// process lifetime, growing without bound as distinct host names churn
+	// (the round-9 M1 finding).
+	if m.cfg.forgetLastGoodThreads != nil {
+		m.cfg.forgetLastGoodThreads(host.Name)
 	}
 	m.cfg.mu.Unlock()
 	return appwire.HostRemoveResponse{Host: appwire.HostRow{

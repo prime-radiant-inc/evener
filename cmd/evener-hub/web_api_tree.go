@@ -648,6 +648,20 @@ func (s *WebServer) storeLastGoodThreads(sourceID string, threads []appwire.Thre
 	s.lastGoodThreads[sourceID] = append([]appwire.Thread(nil), threads...)
 }
 
+// forgetLastGoodThreads drops sourceID's retained last-known-good rows. The
+// host manager's remove finish phase calls it beside
+// remoteCache.RemoveSource, so a removed host's last successful list leaves
+// with every other piece of its per-name state instead of sitting in the map
+// for the process lifetime — nothing else ever deleted an entry, so churning
+// distinct host names grew the map without bound (the round-9 M1 finding).
+// A missing key — a host whose walk never completed a list — is a no-op, as
+// is a nil map: delete treats both alike.
+func (s *WebServer) forgetLastGoodThreads(sourceID string) {
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	delete(s.lastGoodThreads, sourceID)
+}
+
 func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
 	ref, ok := appThreadTreeRef(thread)
 	if !ok {

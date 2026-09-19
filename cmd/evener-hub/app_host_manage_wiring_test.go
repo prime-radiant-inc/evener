@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -683,5 +684,98 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	cache.StoreWalkSnapshot(inFlight, freshGenerations)
 	if metas, live := rowsFor(); metas != 1 || live != 1 {
 		t.Fatalf("tree rows after the re-add's fresh walk = %d metas, %d live; want the re-added host's rows published again", metas, live)
+	}
+}
+
+// TestHostManageRemoveDropsLastGoodThreads pins the round-9 M1 finding: the
+// remove finish phase pruned the remote-thread cache, the source registry,
+// the attach state, and the fan-out, but never the web server's
+// lastGoodThreads map — which the background walk populates for every
+// attached host — so a removed host's last successful list outlived the host
+// for the process lifetime, and churning distinct host names grew the map
+// without bound. The removal now drops the removed host's retained rows with
+// every other piece of its per-name state, while an untouched source's
+// retention survives.
+func TestHostManageRemoveDropsLastGoodThreads(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, _, _ := hostManageWiringConfig(t, configPath,
+		[]hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+		detachRefusingRunner{})
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	// What the background walk retains for each host after a successful
+	// list: one entry per source name.
+	web.storeLastGoodThreads("web-side", []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}})
+	web.storeLastGoodThreads("m4", []appwire.Thread{{ID: "c1", Source: "m4", CWD: "/srv/m4", Name: "configured session"}})
+
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+		t.Fatalf("evener/host/remove: %v", err)
+	}
+
+	if threads := web.lastGoodThreadsForSource("web-side"); len(threads) != 0 {
+		t.Fatalf("lastGoodThreads for the removed host = %+v, want none", threads)
+	}
+	web.lastGoodMu.Lock()
+	_, retained := web.lastGoodThreads["web-side"]
+	live := len(web.lastGoodThreads)
+	web.lastGoodMu.Unlock()
+	if retained {
+		t.Fatal("remove left the removed host's lastGoodThreads entry behind")
+	}
+	if live != 1 {
+		t.Fatalf("lastGoodThreads holds %d entries after the remove, want only the configured host's", live)
+	}
+	if threads := web.lastGoodThreadsForSource("m4"); len(threads) != 1 || threads[0].ID != "c1" {
+		t.Fatalf("lastGoodThreads for the configured host = %+v, want its retained row untouched", threads)
+	}
+}
+
+// TestHostManageRemoveChurnBoundedLastGoodThreads pins the bounded-retention
+// half of the round-9 M1 finding: each removed host's lastGoodThreads entry
+// goes with the removal, so cycling distinct host names through add → walk
+// retention → remove leaves the map holding only the live sources instead of
+// one entry (and its thread rows) per name ever added.
+func TestHostManageRemoveChurnBoundedLastGoodThreads(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, _, _ := hostManageWiringConfig(t, configPath, nil, detachRefusingRunner{})
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	const churn = 3
+	for i := range churn {
+		name := fmt.Sprintf("churn-%d", i)
+		if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: name, Address: "ws.example"}, nil); err != nil {
+			t.Fatalf("evener/host/add %s: %v", name, err)
+		}
+		web.storeLastGoodThreads(name, []appwire.Thread{{ID: "t1", Source: name, CWD: "/srv/ws", Name: "session"}})
+		if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: name}, nil); err != nil {
+			t.Fatalf("evener/host/remove %s: %v", name, err)
+		}
+	}
+	web.lastGoodMu.Lock()
+	retained := len(web.lastGoodThreads)
+	web.lastGoodMu.Unlock()
+	if retained != 0 {
+		t.Fatalf("lastGoodThreads holds %d entries after churning %d removed hosts; removal must not retain per-name state", retained, churn)
 	}
 }
