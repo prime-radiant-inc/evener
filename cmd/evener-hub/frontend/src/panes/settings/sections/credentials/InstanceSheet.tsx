@@ -373,10 +373,26 @@ function renamedInstanceLanded(
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
   if (authoritativeFingerprint === "") return declaredValuesLanded(listed, params) ? newName : undefined;
-  if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
-  if (!credentialValuesLanded(listed, params)) return undefined;
-  return declaredVarsAndSurfaceLanded(listed, params) ? newName : undefined;
+  return authoritativeLandingConfirmed(authoritative, listed, params) ? newName : undefined;
+}
+
+/** The confirmation shared by the plain-save and rename paths when the
+ * mutation's captured row carries an endpoint fingerprint: the listing's
+ * fingerprint must equal it, endpoint clears fail closed, and the fields the
+ * fingerprint does not cover (credentials, surface, declared vars) must match.
+ * One copy, so the two paths cannot drift. */
+function authoritativeLandingConfirmed(
+  authoritative: InstanceEntry | undefined,
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+): boolean {
+  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
+  if (authoritativeFingerprint === "") return false;
+  if (listed.endpointFingerprint !== authoritativeFingerprint) return false;
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (!authoritativeCredentialsMatch(authoritative, listed)) return false;
+  if (!credentialValuesLanded(listed, params)) return false;
+  return declaredVarsAndSurfaceLanded(listed, params);
 }
 
 /** Whether the listed entry carries the non-endpoint values this save declared
@@ -451,24 +467,21 @@ function supersededSaveLanded(
   // (it omits query/userinfo, so a replacement at a different hidden endpoint
   // reads the same), and a destination plainly exists: fail closed rather than
   // re-anchor, and let the caller mark the draft stale.
-  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
-  if (authoritativeFingerprint === "") return undefined;
-  if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
-  // An ENDPOINT clear (baseUrl/protocol/surface) drops the authored override
-  // and the listing then serves the RESOLVED value: two instances whose
-  // overrides differ can resolve to the same effective endpoint and carry the
-  // same fingerprint, so the capture cannot tell this save's clear from a
-  // replacement's override. Fail closed; the caller marks the draft stale.
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
-  // The fingerprint settles the destination; the fields it does not cover are
-  // verified separately. The captured row and the listing must also agree on the
-  // credential fields outright: a replacement that changed a credential to a
-  // value the hub also omits reads the same otherwise, and the retained draft
-  // would be written over it.
-  if ((authoritative?.apiKeyEnv ?? "") !== (listed.apiKeyEnv ?? "")) return undefined;
-  if ((authoritative?.credentialHeader ?? "") !== (listed.credentialHeader ?? "")) return undefined;
-  if (!credentialValuesLanded(listed, params)) return undefined;
-  return declaredVarsAndSurfaceLanded(listed, params) ? listed : undefined;
+  // The fingerprint settles the destination; the fields it does not cover, the
+  // endpoint clears and the credential agreement are confirmed by the shared
+  // helper (the rename path uses the same one).
+  return authoritativeLandingConfirmed(authoritative, listed, params) ? listed : undefined;
+}
+
+/** Whether the mutation's captured post-write row and the store's listing agree
+ * on the credential fields the endpoint fingerprint does not cover. The hub
+ * omits an authored value it cannot serve, so a replacement whose own hidden
+ * credential the hub also omits would read the same otherwise. Shared by the
+ * plain-save and rename confirmations so the rule cannot drift between them. */
+function authoritativeCredentialsMatch(authoritative: InstanceEntry | undefined, listed: InstanceEntry): boolean {
+  if ((authoritative?.apiKeyEnv ?? "") !== (listed.apiKeyEnv ?? "")) return false;
+  if ((authoritative?.credentialHeader ?? "") !== (listed.credentialHeader ?? "")) return false;
+  return true;
 }
 
 export interface InstanceSheetProps {
@@ -682,13 +695,19 @@ export function InstanceSheet({
         // the connection's serial worker), so the listing sampled right now is
         // still the PRE-save one. Settle a read that started after the write
         // before comparing the listing against the mutation's own captured row.
-        // The read is non-fatal: a confirmation read that cannot run must not be
-        // reported as a failed save - the store's own scheduled refetch lands
-        // the state.
-        await credentialsStore
-          .getState()
-          .fetch()
-          .catch(() => {});
+        // The read is non-fatal - a torn-down connection must not be reported as
+        // a failed save - but its RESULT matters: `edit` already scheduled the
+        // store's own debounced refetch, and that read can start later and
+        // supersede this one, resolving false without applying anything. Re-read
+        // until a read applies (bounded), so the listing sampled is a post-write
+        // one.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const settled = await credentialsStore
+            .getState()
+            .fetch()
+            .catch(() => false);
+          if (settled) break;
+        }
         listedInstances = credentialsStore.getState().instances;
       }
       // Except when the store's own list holds this save's rename: the same
@@ -741,7 +760,7 @@ export function InstanceSheet({
               current === null
                 ? current
                 : {
-                    name: declared.has("name") ? current.name : landedDraft.name,
+                    name: landedDraft.name,
                     baseUrl: declared.has("baseUrl") ? current.baseUrl : landedDraft.baseUrl,
                     protocol: declared.has("protocol") ? current.protocol : landedDraft.protocol,
                     surface: declared.has("surface") ? current.surface : landedDraft.surface,

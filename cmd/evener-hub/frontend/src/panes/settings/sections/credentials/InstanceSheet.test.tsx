@@ -1869,11 +1869,11 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
   });
 
-  // The two URL libraries disagree on host case and explicit default ports, so
-  // a representable Base URL has to be reduced through one parser on both
-  // sides. Comparing raw strings (or only the declared side) would refuse the
-  // retry on a URL the listing plainly carries.
-  test("a superseded save whose URL differs only in host case or default port still re-anchors", async () => {
+  // endpointMatches is reached only on the rename fallback with no authoritative
+  // fingerprint. The two URL libraries disagree on host case and explicit
+  // default ports, so a representable Base URL has to be reduced through one
+  // parser on both sides; comparing raw strings would refuse the rename.
+  test("a superseded rename with an unkeyable listing still confirms a URL differing only in host case or default port", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -1882,31 +1882,33 @@ describe("the form", () => {
       endpointFingerprint: "fp-before",
     });
     const { fake, finish } = deferredEdit();
-    renderSheet(before, {}, [OPENAI]);
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
     const user = userEvent.setup();
+    await user.type(field("Name"), "2");
     await user.clear(field("Base URL"));
     await user.type(field("Base URL"), "https://GW.example.test:443/v1");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
       name: "work",
+      newName: "work2",
       baseUrl: "https://GW.example.test:443/v1",
       originClientId: "test-tab",
     });
 
-    // The hub serves Go's net/url form, which preserves the host case and the
-    // default port this URL was authored with. The draft equals the landed row,
-    // so the re-anchor leaves Save clean rather than re-sending.
-    const landed = {
+    // Unkeyable (no fingerprint), so the rename confirmation goes through
+    // endpointMatches on the sanitized display URL, in a different host case
+    // and with the default port dropped.
+    const renamed = {
       ...before,
-      baseUrl: "https://GW.example.test:443/v1",
-      endpointFingerprint: "fp-after",
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "",
     };
-    await refreshList(fake, [landed]);
-    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
 
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(saveButton().disabled).toBe(true);
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
   });
 
   // Clearing an endpoint override drops the authored value, and the listing
@@ -3027,6 +3029,53 @@ describe("the form", () => {
 
     // The undeclared variable takes the landed (foreign) value; nothing pending.
     expect(field("GOOGLE_VERTEX_LOCATION").value).toBe("loc-client");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  // The store already schedules its own debounced refetch on a superseded write;
+  // if that read starts later it supersedes the sheet's confirmation read, which
+  // then resolves without applying anything. The sheet must re-read until one
+  // applies, not sample the pre-save listing.
+  test("a superseded save re-reads when the store's own refetch supersedes the confirmation read", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    const resolvers: ((value: InstanceListResponse) => void)[] = [];
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>((resolve) => resolvers.push(resolve)));
+
+    // The read that supersedes the edit.
+    void credentialsStore.getState().fetch();
+    await act(async () => {
+      finish({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    // The sheet's confirmation read, then the store's own later refetch that
+    // supersedes it so it resolves without applying.
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
+    void credentialsStore.getState().fetch();
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(3));
+    await act(async () => {
+      resolvers[1]?.({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    // The re-read applies the post-write listing.
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(4));
+    await act(async () => {
+      resolvers[3]?.({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
     expect(saveButton().disabled).toBe(true);
   });
 });
