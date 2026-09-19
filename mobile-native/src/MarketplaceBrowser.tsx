@@ -15,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
+  MarketplaceEntry,
   PluginRefParams,
 } from "@evener/appwire-client";
 import {
@@ -43,7 +44,7 @@ const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
 export const INSTALLED_PLUGINS_FAILED =
   "Could not load installed plugins. Try again when connected.";
 const WRITE_FAILED =
-  "Could not confirm the change. Refresh and check its status before trying again.";
+  "Could not confirm the change. Check its status before trying again.";
 
 export function MarketplaceBrowser({
   client,
@@ -51,6 +52,10 @@ export function MarketplaceBrowser({
   installed,
   gate,
   onOpenPlugin,
+  appliedRemovalNames,
+  onAppliedRemoval,
+  onAuthoritativeMarketplaces,
+  onMarketplaceAdded,
 }: {
   client: ConversationClientLike;
   hubName: string;
@@ -61,6 +66,34 @@ export function MarketplaceBrowser({
   // installed list sees a marketplace write as busy too, and vice versa.
   gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
+  /** The applied removals this client already recorded: a name in it is one
+   * the hub says is already gone, so the write that would remove it again
+   * stays fenced. */
+  appliedRemovalNames: ReadonlySet<string>;
+  /** Records an applied removal with the screen. `notice` is
+   * appliedRemovalNotice's answer - the cleanup warning, or null when only
+   * the list read failed - and becomes the screen-level warning; the name
+   * joins the guard only while `asOf` - the registration the write removed -
+   * is still the one the hub's truth carries; the return value says whether
+   * `owner` was still the current client, false meaning a replaced client's
+   * late result is dropped whole. */
+  onAppliedRemoval(
+    name: string,
+    notice: string | null,
+    owner: ConversationClientLike,
+    asOf: MarketplaceEntry["lastUpdated"],
+  ): boolean;
+  /** Reports every authoritative list read, so the screen can prune guard
+   * names the hub no longer carries. */
+  onAuthoritativeMarketplaces(
+    marketplaces: readonly MarketplaceEntry[],
+    owner: ConversationClientLike,
+  ): void;
+  /** Reports a name this browser's own successful add just registered: the
+   * write replaced whatever registration the screen had fenced, so the
+   * fence clears for it. A blank name (the hub assigns one) is not reported
+   * and reconciles through the authoritative lists instead. */
+  onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => createMarketplacesStore(client), [client]);
@@ -74,6 +107,10 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  useEffect(() => {
+    if (state.marketplaces !== null)
+      onAuthoritativeMarketplaces(state.marketplaces, client);
+  }, [client, onAuthoritativeMarketplaces, state.marketplaces]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();
@@ -114,27 +151,16 @@ export function MarketplaceBrowser({
       setSelected(null);
   }, [selected, state.marketplaces]);
   // Every write goes through the gate; a refusal reads as busy, a throw as
-  // failure. A write whose rejection carries its own shape (a marketplace
-  // removal the hub can report as already applied) hands onFailed the caught
-  // error and chooses what the error slot shows - the generic write-failed
-  // copy by default.
-  async function act(
-    action: () => Promise<void>,
-    onFailed?: (error: unknown) => string | null,
-  ) {
+  // failure. remove() runs its own copy of this shape below, because an
+  // applied removal must reach the parent's guard and warning rather than
+  // this view's error slot.
+  async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    let caught: unknown;
-    const outcome = await runGatedMutation(gate, () =>
-      action().catch((error: unknown) => {
-        caught = error;
-        throw error;
-      }),
-    );
+    const outcome = await runGatedMutation(gate, action);
     if (revision.current !== version) return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
-    else if (outcome === "failed")
-      setError(onFailed ? onFailed(caught) : WRITE_FAILED);
+    else if (outcome === "failed") setError(WRITE_FAILED);
   }
   function install(target: PluginRefParams) {
     void act(() => plugins.installPlugin(target.plugin, target.marketplace));
@@ -147,8 +173,12 @@ export function MarketplaceBrowser({
     void act(() => state.refreshMarketplace(marketplace.name));
   }
   function remove() {
-    if (!marketplace || busy) return;
+    if (!marketplace || busy || appliedRemovalNames.has(marketplace.name)) return;
     const name = marketplace.name;
+    // The registration this write targets: the outcome fences the name only
+    // while the hub's truth still carries this registration, never the one
+    // a re-add put in its place.
+    const target = marketplace.lastUpdated;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
@@ -156,16 +186,34 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current !== version) return;
-          // An applied removal (appliedRemovalNotice's doc) never reads as
-          // a failed write: reconcile a stale list, show at most the litter
-          // warning, never a retry hint.
-          void act(() => state.removeMarketplace(name), (error) => {
-            const notice = appliedRemovalNotice(error);
-            if (notice === undefined) return WRITE_FAILED;
+          if (revision.current !== version || appliedRemovalNames.has(name)) return;
+          void (async () => {
+            setError(null);
+            let caught: unknown;
+            const outcome = await runGatedMutation(gate, () =>
+              state.removeMarketplace(name).catch((error: unknown) => {
+                caught = error;
+                throw error;
+              }),
+            );
+            if (revision.current !== version) return;
+            if (outcome === "refused") {
+              setError(PLUGIN_MUTATION_BUSY);
+              return;
+            }
+            if (outcome !== "failed") return;
+            // An applied removal (appliedRemovalNotice's doc) never reads as
+            // a failed write: record it with the parent's guard - the notice
+            // becomes the screen-level warning, null shows nothing - and
+            // reconcile a stale list, never a retry hint.
+            const notice = appliedRemovalNotice(caught);
+            if (notice === undefined) {
+              setError(WRITE_FAILED);
+              return;
+            }
+            if (!onAppliedRemoval(name, notice, client, target)) return;
             if (refetchAfterRemoval(model, name)) void state.fetchMarketplaces();
-            return notice;
-          });
+          })();
         },
       },
     ]);
@@ -202,7 +250,10 @@ export function MarketplaceBrowser({
             <Action disabled={busy} onPress={refresh}>
               Refresh source
             </Action>
-            <Action disabled={busy} onPress={remove}>
+            <Action
+              disabled={busy || appliedRemovalNames.has(marketplace?.name ?? "")}
+              onPress={remove}
+            >
               Remove marketplace
             </Action>
           </View>
@@ -350,7 +401,10 @@ export function MarketplaceBrowser({
           hubName={hubName}
           gate={gate}
           onClose={() => setAdding(false)}
-          onAdd={(params) => state.addMarketplace(params)}
+          onAdd={async (params) => {
+            await state.addMarketplace(params);
+            if (params.name) onMarketplaceAdded(params.name, client);
+          }}
         />
       )}
     </>

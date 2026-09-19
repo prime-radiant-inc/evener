@@ -1,9 +1,12 @@
 // Screen-level tests for the removal paths the model tests cannot reach: how
 // the browser reports a rejection the hub says already stood (never the
 // generic failed write), when it refetches the list, and what a clone-litter
-// rejection leaves on screen. Mirrors ProvidersScreen.recovery.test.tsx's
+// rejection leaves on screen. The browser reports an applied outcome through
+// the guard slot PluginsScreen wires around it in production, so the mount
+// carries that wiring too. Mirrors ProvidersScreen.recovery.test.tsx's
 // mocking: every native edge the screen reaches is mocked here, and the
 // stores are driven through the SDK's FakeClient.
+import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { MarketplaceEntry } from "@evener/appwire-client";
@@ -16,6 +19,7 @@ import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { createPluginMutationGate } from "./pluginMutationGate";
+import { ErrorMessage } from "./ui";
 import {
   alertRequests,
   nativeModuleMock,
@@ -40,6 +44,43 @@ beforeEach(() => {
   alertRequests.length = 0;
 });
 
+/** The guard PluginsScreen wires around the browser, in the minimal shape
+ * these browser-level tests need: the names the browser reports applied
+ * (fenced from removing again), the warning slot the applied outcome's
+ * notice renders in, and a client that never gets replaced. The guard's own
+ * client scoping and remount survival is PluginsScreen.test.tsx's to pin. */
+function GuardedBrowser({ client }: { client: ConversationClientLike }) {
+  const [names, setNames] = useState<ReadonlySet<string>>(() => new Set());
+  const [warning, setWarning] = useState<string | null>(null);
+  return (
+    <>
+      <ErrorMessage message={warning} />
+      <MarketplaceBrowser
+        client={client}
+        hubName="Work hub"
+        installed={createPluginsStore(client)}
+        gate={createPluginMutationGate()}
+        onOpenPlugin={() => {}}
+        appliedRemovalNames={names}
+        onAppliedRemoval={(name, notice) => {
+          setNames((current) => new Set([...current, name]));
+          if (notice !== null) setWarning(notice);
+          return true;
+        }}
+        onAuthoritativeMarketplaces={() => {}}
+        onMarketplaceAdded={(name) => {
+          setNames((current) => {
+            if (!current.has(name)) return current;
+            const next = new Set([...current]);
+            next.delete(name);
+            return next;
+          });
+        }}
+      />
+    </>
+  );
+}
+
 // Mounts the browser against `reject` as the hub's answer to the removal.
 // The list answers the mount read with acme and every later read as already
 // removed, the way a hub that applied the removal would.
@@ -54,15 +95,7 @@ async function removalUnderTest(fake: FakeClient, reject: () => Error) {
     throw reject();
   });
   const client = fake as unknown as ConversationClientLike;
-  const tree = render(
-    <MarketplaceBrowser
-      client={client}
-      hubName="Work hub"
-      installed={createPluginsStore(client)}
-      gate={createPluginMutationGate()}
-      onOpenPlugin={() => {}}
-    />,
-  );
+  const tree = render(<GuardedBrowser client={client} />);
   await act(async () => {});
   const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
   if (!row) throw new Error("no acme row");

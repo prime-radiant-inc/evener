@@ -20,7 +20,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { PluginRefParams } from "@evener/appwire-client";
+import type { MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -36,6 +36,20 @@ import {
 } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+/** The applied marketplace removals one client's writes reported, keyed by
+ * name to the hub's last-seen `lastUpdated` for that registration: names the
+ * hub says are already gone, held with the client whose write said so because
+ * a fresh browser must not offer Remove again for any of them. The recorded
+ * identity is what tells a stale row - the same registration the removal
+ * applied to - from a re-add, which the hub stamps with a fresh lastUpdated
+ * on every registration (internal/plugins/marketplaces.go). */
+type AppliedRemovalGuard = {
+  client: ConversationClientLike | null;
+  entries: ReadonlyMap<string, MarketplaceEntry["lastUpdated"] | null>;
+};
+
+const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
 export function PluginsScreen({
   route,
@@ -53,6 +67,121 @@ export function PluginsScreen({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, retry } = useConnection();
+  // An applied marketplace removal's residue lives beside the gate, above the
+  // early returns below, for the same reason it does: they unmount and remount
+  // the ready-only child on every connection transition, and the browser that
+  // asked for the write does not outlive even a tab switch - a remount
+  // replaces its store, and its select() clears the slot an outcome rendered
+  // into. The guard fences a name the hub already removed and the warning
+  // survives every one of those remounts, both scoped to the client whose
+  // write reported them, so a replaced client's late result changes nothing
+  // (currentClient's checks below).
+  const currentClient = useRef<ConversationClientLike | null>(null);
+  currentClient.current = client ?? null;
+  // The latest registration identities the browser reported as authoritative,
+  // held so a late record can reconcile against them (markAppliedRemoval
+  // below).
+  const authoritativeIdentities = useRef<
+    ReadonlyMap<string, MarketplaceEntry["lastUpdated"]> | null
+  >(null);
+  const [marketplaceWarning, setMarketplaceWarning] = useState<{
+    client: ConversationClientLike;
+    text: string;
+  } | null>(null);
+  const [appliedRemovalGuard, setAppliedRemovalGuard] =
+    useState<AppliedRemovalGuard>(() => ({
+      client: null,
+      entries: new Map(),
+    }));
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === client
+      ? new Set(appliedRemovalGuard.entries.keys())
+      : EMPTY_APPLIED_REMOVALS;
+  const visibleMarketplaceWarning =
+    marketplaceWarning?.client === client ? marketplaceWarning.text : null;
+  useEffect(() => {
+    authoritativeIdentities.current = null;
+    setAppliedRemovalGuard((current) =>
+      current.client === (client ?? null)
+        ? current
+        : { client: client ?? null, entries: new Map() },
+    );
+    setMarketplaceWarning((current) =>
+      current?.client === client ? current : null,
+    );
+  }, [client]);
+  // A guard name the hub's own list no longer carries is fully reconciled -
+  // its row is gone with it - and one it carries under a NEW registration
+  // identity is a re-add, a write someone made after the removal this fence
+  // guards. The guard forgets both, so neither a reconciled name nor a
+  // re-added one is fenced forever.
+  const reconcileAppliedRemovals = useCallback(
+    (
+      marketplaces: readonly MarketplaceEntry[],
+      owner: ConversationClientLike,
+    ): void => {
+      if (currentClient.current !== owner) return;
+      const currentEntries = new Map(
+        marketplaces.map((item) => [item.name, item.lastUpdated] as const),
+      );
+      authoritativeIdentities.current = currentEntries;
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        let changed = false;
+        const next = new Map(current.entries);
+        for (const [name, asOf] of current.entries) {
+          const seen = currentEntries.get(name);
+          if (seen === asOf) continue;
+          next.delete(name);
+          changed = true;
+        }
+        return changed ? { client: owner, entries: next } : current;
+      });
+    },
+    [],
+  );
+  // The browser's recording path for an applied removal: fences the name
+  // while the hub's truth still carries the exact registration the write
+  // removed (the list already omitting it, or carrying a newer one, means
+  // the removal is reconciled or the name re-registered - guard nothing),
+  // raises the warning (nothing, when only the list read failed), and
+  // answers whether `owner` was still current - false means the outcome
+  // came from a client this screen has replaced.
+  const markAppliedRemoval = useCallback(
+    (
+      name: string,
+      notice: string | null,
+      owner: ConversationClientLike,
+      asOf: MarketplaceEntry["lastUpdated"],
+    ): boolean => {
+      if (currentClient.current !== owner) return false;
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner) return current;
+        if (authoritativeIdentities.current?.get(name) !== asOf) return current;
+        const entries = new Map(current.entries);
+        entries.set(name, asOf);
+        return { client: owner, entries };
+      });
+      if (notice !== null) setMarketplaceWarning({ client: owner, text: notice });
+      return true;
+    },
+    [],
+  );
+  // A name this screen's own add just registered: the write replaced the
+  // registration the fence guards - which the wire's whole-second
+  // timestamps can fail to distinguish - so the fence clears for it here.
+  const clearAddedMarketplace = useCallback(
+    (name: string, owner: ConversationClientLike): void => {
+      if (currentClient.current !== owner) return;
+      setAppliedRemovalGuard((current) => {
+        if (current.client !== owner || !current.entries.has(name)) return current;
+        const entries = new Map(current.entries);
+        entries.delete(name);
+        return { client: owner, entries };
+      });
+    },
+    [],
+  );
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -70,6 +199,11 @@ export function PluginsScreen({
       client={client}
       hubName={activeProfile.name}
       gate={gate}
+      appliedRemovalNames={appliedRemovalNames}
+      marketplaceWarning={visibleMarketplaceWarning}
+      onAppliedRemoval={markAppliedRemoval}
+      onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+      onMarketplaceAdded={clearAddedMarketplace}
     />
   );
 }
@@ -78,10 +212,28 @@ function Plugins({
   client,
   hubName,
   gate,
+  appliedRemovalNames,
+  marketplaceWarning,
+  onAppliedRemoval,
+  onAuthoritativeMarketplaces,
+  onMarketplaceAdded,
 }: {
   client: ConversationClientLike;
   hubName: string;
   gate: PluginMutationGate;
+  appliedRemovalNames: ReadonlySet<string>;
+  marketplaceWarning: string | null;
+  onAppliedRemoval(
+    name: string,
+    notice: string | null,
+    owner: ConversationClientLike,
+    asOf: MarketplaceEntry["lastUpdated"],
+  ): boolean;
+  onAuthoritativeMarketplaces(
+    marketplaces: readonly MarketplaceEntry[],
+    owner: ConversationClientLike,
+  ): void;
+  onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
@@ -178,6 +330,7 @@ function Plugins({
           Browse
         </Action>
       </View>
+      <ErrorMessage message={marketplaceWarning} />
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
@@ -188,6 +341,10 @@ function Plugins({
             close();
             setSelected(target);
           }}
+          appliedRemovalNames={appliedRemovalNames}
+          onAppliedRemoval={onAppliedRemoval}
+          onAuthoritativeMarketplaces={onAuthoritativeMarketplaces}
+          onMarketplaceAdded={onMarketplaceAdded}
         />
       ) : (
         <FlatList
