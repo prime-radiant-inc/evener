@@ -1889,6 +1889,8 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	// TRIPWIRE: scripted provider and local temporary transcript files use real
+	// I/O; 30s is a generous hang guard, and this test makes no network requests.
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer parentCancel()
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -1980,7 +1982,21 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 			t.Fatal("unrecorded interrupt marker appeared in live history")
 		}
 	}
+	var terminalEvents int
 	for _, ev := range drainPendingEvents(sess) {
+		if ev.Kind == events.EventSessionEnd {
+			data, ok := ev.Data.(events.SessionEndData)
+			if !ok {
+				t.Fatalf("session-end event data = %#v, want SessionEndData", ev.Data)
+			}
+			terminalEvents++
+			if data.Reason == "interrupted" || data.Interrupted {
+				t.Fatalf("failed interrupt marker emitted interrupted session end: %+v", data)
+			}
+			if data.Reason != "turn_failed" || data.State != string(SessionAwaiting) {
+				t.Fatalf("failed interrupt marker session end = %+v, want turn_failed/Awaiting", data)
+			}
+		}
 		if ev.Kind != events.EventSteeringInjected {
 			continue
 		}
@@ -1988,6 +2004,9 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 		if ok && data.Kind == events.SteeringKindInterrupted {
 			t.Fatal("unrecorded interrupt marker was announced to live subscribers")
 		}
+	}
+	if terminalEvents != 1 {
+		t.Fatalf("failed interrupt marker emitted %d session-end events, want exactly one turn_failed/Awaiting", terminalEvents)
 	}
 
 	meta := sess.Meta()
@@ -2018,10 +2037,13 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 
 // TestAskUser_InterruptMarkerRetainedWriteIsAdopted covers the other durable
 // pair outcome: the whole marker line remains after its first sync and rollback
-// both fail, so the recovery barrier confirms it and the owner adopts it once.
+// both fail, and the recovery barrier is also unavailable, so the owner adopts
+// the ErrRetainedUnsynced record once.
 func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	// TRIPWIRE: scripted provider and local temporary transcript files use real
+	// I/O; 30s is a generous hang guard, and this test makes no network requests.
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer parentCancel()
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -2044,15 +2066,14 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) { return "cancel after the tool results are durable", nil })
-	fs := attachEnvironmentFailureFS(t, sess)
 	syncFailure := errors.New("retained interrupt marker sync failure")
 	rollbackFailure := errors.New("retained interrupt marker rollback failure")
+	durabilityFailure := errors.New("retained interrupt marker barrier failure")
 	processCtx := context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
 		beforeSteering: func() {
-			fs.mu.Lock()
-			fs.failure = syncFailure
-			fs.rollbackFailure = rollbackFailure
-			fs.mu.Unlock()
+			// Attach and arm only after ask_user's successful tool-results turn
+			// has been persisted, so the injected outcome belongs to the marker.
+			attachEnvironmentUnverifiableWrite(t, sess, syncFailure, rollbackFailure, durabilityFailure)
 			cancel()
 		},
 	})
@@ -2061,8 +2082,10 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	if !errors.Is(processErr, context.Canceled) {
 		t.Fatalf("ProcessInput err = %v, want context.Canceled", processErr)
 	}
-	if errors.Is(processErr, syncFailure) {
-		t.Fatalf("retained marker was rejected instead of adopted: %v", processErr)
+	for _, injected := range []error{syncFailure, rollbackFailure, durabilityFailure} {
+		if errors.Is(processErr, injected) {
+			t.Fatalf("retained marker was rejected instead of adopted: %v", processErr)
+		}
 	}
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("live pending count after retained interrupt marker = %d, want 0", got)
@@ -2070,23 +2093,30 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("live state after retained interrupt marker = %q, want %q", got, SessionIdle)
 	}
-	marker := false
+	markerCount := 0
 	for _, turn := range sessionHistory(sess) {
 		if turn.SteeringKind == events.SteeringKindInterrupted {
-			marker = true
+			markerCount++
 		}
 	}
-	if !marker {
-		t.Fatal("retained interrupt marker was not adopted into live history")
+	if markerCount != 1 {
+		t.Fatalf("live retained interrupt markers = %d, want exactly one", markerCount)
 	}
-	markerEvent := false
+	markerEventCount := 0
+	durabilityWarning := false
 	for _, ev := range drainPendingEvents(sess) {
 		if data, ok := ev.Data.(events.SteeringInjectedData); ev.Kind == events.EventSteeringInjected && ok && data.Kind == events.SteeringKindInterrupted {
-			markerEvent = true
+			markerEventCount++
+		}
+		if warning, ok := ev.Data.(events.WarningData); ev.Kind == events.EventWarning && ok && strings.Contains(warning.Message, durabilityFailure.Error()) {
+			durabilityWarning = true
 		}
 	}
-	if !markerEvent {
-		t.Fatal("retained interrupt marker emitted no interrupted steering event")
+	if markerEventCount != 1 {
+		t.Fatalf("live retained interrupted steering events = %d, want exactly one", markerEventCount)
+	}
+	if !durabilityWarning {
+		t.Fatal("retained interrupt marker barrier failure was not surfaced as a warning")
 	}
 
 	meta := sess.Meta()
@@ -2099,12 +2129,18 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored state after retained interrupt marker = %q, want %q", got, SessionIdle)
 	}
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored pending count after retained interrupt marker = %d, want 0", got)
+	}
+	restoredMarkerCount := 0
 	for _, turn := range sessionHistory(restored) {
 		if turn.SteeringKind == events.SteeringKindInterrupted {
-			return
+			restoredMarkerCount++
 		}
 	}
-	t.Fatal("retained interrupt marker was not present after restore")
+	if restoredMarkerCount != 1 {
+		t.Fatalf("restored retained interrupt markers = %d, want exactly one", restoredMarkerCount)
+	}
 }
 
 // TestAskUser_RestoreResolvesAcrossUserSteer covers the accepted-user-steer
