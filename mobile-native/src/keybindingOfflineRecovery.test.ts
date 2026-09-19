@@ -5,9 +5,9 @@ import {
 	unreadableDraftDiscardDisabled,
 } from "./keybindingOfflineRecovery";
 
-// This screen has no rendering test harness (no React Testing Library in
-// this package); every decision it renders JSX around is a pure function
-// tested directly here instead.
+// These helpers remain pure so the decisions can be tested without importing
+// React Native; the screen's JSX wiring has focused coverage in
+// KeybindingPreferencesScreen.render.test.tsx.
 
 describe("offlineAwareDraftUnreadable", () => {
 	it("prefers the offline probe over a stale domain snapshot while disconnected", () => {

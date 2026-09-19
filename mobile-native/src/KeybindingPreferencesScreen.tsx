@@ -181,7 +181,11 @@ export function KeybindingPreferencesScreen({
 						message={
 							error ??
 							domain?.error ??
-							offlineStorageErrorMessage(preferences.offlineStorageUnavailable)
+							(!preferences.connected
+								? offlineStorageErrorMessage(
+										preferences.offlineStorageUnavailable,
+									)
+								: null)
 						}
 					/>
 					{domain?.writeUncertain && (
