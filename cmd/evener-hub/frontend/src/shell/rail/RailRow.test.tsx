@@ -48,6 +48,7 @@ import type {
   SessionRailNode,
   WatchRailNode,
 } from "./railNodes";
+import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
@@ -1588,6 +1589,37 @@ describe("session row", () => {
       />,
     );
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
+  });
+
+  // The stamp is a CLOCK, not a snapshot. An idle session produces no further
+  // navigation data, so a label derived only when its summary arrives freezes
+  // at the value it read then ("now") until a full page refresh. The row has to
+  // derive it from the summary's updated_at anchor against the rail clock.
+  test("an idle row's age advances with the rail clock, with no new data", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      // One second old at mount: the label reads "now"...
+      const session = apiNode({
+        state: "idle",
+        age: "now",
+        updated_at: new Date(start - 1_000).toISOString(),
+      });
+      render(
+        <RailTickProvider>
+          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
+        </RailTickProvider>,
+      );
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+      // ...and a minute later it must have clicked forward on its own.
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("menu offers 'Pin this session…' for an unassigned top-level session, assigning through onPinSession", async () => {

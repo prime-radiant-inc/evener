@@ -100,6 +100,7 @@ import {
   sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
+import { RailTickProvider } from "./railNow";
 import { applyPending, buildPinSourceIndex, type PendingOp, type RailResources } from "./railPending";
 
 const CLASS = {
@@ -1654,94 +1655,96 @@ function NavigationRail({
           </Button>
         </div>
       </div>
-      <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
-        {loading && !displayed && <Skeleton lines={6} />}
-        {!loading && !displayed && loadError && (
-          <EmptyState
-            title="Couldn't load sessions"
-            hint={loadError}
-            action={
-              <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
-                Retry
-              </Button>
-            }
-          />
-        )}
-        {!loading && !displayed && !loadError && manifest && (
-          <EmptyState title="No sessions yet" hint="Start one with the button above." />
-        )}
-        {displayed && (
-          <>
-            <RailSection
-              title="Live"
-              nodes={liveNodes}
-              open={isExpanded(LIVE_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
+      <RailTickProvider>
+        <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
+          {loading && !displayed && <Skeleton lines={6} />}
+          {!loading && !displayed && loadError && (
+            <EmptyState
+              title="Couldn't load sessions"
+              hint={loadError}
+              action={
+                <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
+                  Retry
+                </Button>
+              }
             />
-            {pinSections.map((section) => (
-              <PinnedRailSection
-                key={section.id}
-                section={section}
-                open={isExpanded(pinSectionDisclosureID(section.id), true)}
-                onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
-                onRename={() => openSectionRename(section)}
-                onDelete={() => void requestSectionDelete(section)}
-                isExpanded={isExpanded}
+          )}
+          {!loading && !displayed && !loadError && manifest && (
+            <EmptyState title="No sessions yet" hint="Start one with the button above." />
+          )}
+          {displayed && (
+            <>
+              <RailSection
+                title="Live"
+                nodes={liveNodes}
+                open={isExpanded(LIVE_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
                 projectRetryCallback={projectRetryCallback}
               />
-            ))}
-            <RailSection
-              title="Projects"
-              nodes={projectRailNodes(
-                resources.projects,
-                resources.catalogOverflow?.projects,
-                "catalog:projects",
-                "projects",
-              )}
-              open={isExpanded(PROJECTS_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
-            />
-            <RailSection
-              title="Test runs"
-              nodes={projectRailNodes(
-                resources.testRuns,
-                resources.catalogOverflow?.test_runs,
-                "catalog:test_runs",
-                "test_runs",
-              )}
-              open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
-            />
-            {archivedNodes.length > 0 && (
-              <ArchivedSection
-                count={archivedCount(resources.archivedProjects, unarchived)}
-                open={archivedOpen}
-                onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
-                nodes={archivedNodes}
+              {pinSections.map((section) => (
+                <PinnedRailSection
+                  key={section.id}
+                  section={section}
+                  open={isExpanded(pinSectionDisclosureID(section.id), true)}
+                  onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
+                  onRename={() => openSectionRename(section)}
+                  onDelete={() => void requestSectionDelete(section)}
+                  isExpanded={isExpanded}
+                  onToggle={handleToggle}
+                  onActivate={handleActivate}
+                  actions={rowActions}
+                  projectRetryCallback={projectRetryCallback}
+                />
+              ))}
+              <RailSection
+                title="Projects"
+                nodes={projectRailNodes(
+                  resources.projects,
+                  resources.catalogOverflow?.projects,
+                  "catalog:projects",
+                  "projects",
+                )}
+                open={isExpanded(PROJECTS_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
                 projectRetryCallback={projectRetryCallback}
               />
-            )}
-          </>
-        )}
-      </div>
+              <RailSection
+                title="Test runs"
+                nodes={projectRailNodes(
+                  resources.testRuns,
+                  resources.catalogOverflow?.test_runs,
+                  "catalog:test_runs",
+                  "test_runs",
+                )}
+                open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
+                onToggle={handleToggle}
+                onActivate={handleActivate}
+                actions={rowActions}
+                projectRetryCallback={projectRetryCallback}
+              />
+              {archivedNodes.length > 0 && (
+                <ArchivedSection
+                  count={archivedCount(resources.archivedProjects, unarchived)}
+                  open={archivedOpen}
+                  onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
+                  nodes={archivedNodes}
+                  onToggle={handleToggle}
+                  onActivate={handleActivate}
+                  actions={rowActions}
+                  projectRetryCallback={projectRetryCallback}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </RailTickProvider>
       {sectionRenameTarget && (
         <Dialog
           open

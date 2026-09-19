@@ -49,7 +49,7 @@ import {
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { selectDisplaySources } from "../../stores/navigation/selectors";
+import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -78,6 +78,7 @@ import {
   type WatchRailNode,
   watchCountLabel,
 } from "./railNodes";
+import { useRailNow } from "./railNow";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
 
@@ -528,6 +529,27 @@ function useHostOnline(hostId: string): boolean {
   });
 }
 
+// RailAge is the row's live "last update" stamp: the one leaf that subscribes
+// to the rail clock. It sits BELOW the memoized SessionRow on purpose (the
+// boundary ActivityTree.tsx draws with LiveMetaSegments) so a tick re-renders
+// only the stamps, never every row that carries one.
+//
+// The label is derived from updated_at against the ticking clock, never from
+// the model's preformatted `age`: that string is computed when the summary
+// arrives, so an idle session - which never sends another summary - froze at
+// its build value. `age` survives only as the reading for a session whose
+// summary carries no parseable anchor.
+function RailAge({ updatedAt, age }: { updatedAt?: string; age?: string }): ReactNode {
+  const now = useRailNow();
+  const label = relativeAge(updatedAt, now) ?? age;
+  if (label === undefined || label === "") return null;
+  return (
+    <span data-testid="rail-row-time" className={CLASS.time}>
+      {label}
+    </span>
+  );
+}
+
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   // A non-local row names its host on the title line (a LABEL, not a tree
@@ -702,12 +724,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             Not started
           </span>
         ) : (
-          session.age !== undefined &&
-          session.age !== "" && (
-            <span data-testid="rail-row-time" className={CLASS.time}>
-              {session.age}
-            </span>
-          )
+          <RailAge updatedAt={session.updated_at} age={session.age} />
         )}
         <span className={CLASS.actions}>
           <SessionMenuRow session={session} actions={actions} />
