@@ -298,10 +298,11 @@ client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
-  // The eleven storage-port methods neither outbox fixture exercises: the
+  // The twelve storage-port methods neither outbox fixture exercises: the
   // type-use program and the smoke script embed this one definition and add the
   // two calls each of them actually makes (enqueueIntent, listTargetRefs).
   const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  enqueueInterruptAndCancel: () => Promise.reject(new Error("inert")),
   getOptimistic: () => Promise.resolve(undefined),
   listOptimistic: () => Promise.resolve([]),
   getRecovery: () => Promise.resolve(undefined),

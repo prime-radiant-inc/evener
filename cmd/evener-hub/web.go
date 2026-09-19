@@ -176,7 +176,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 // serializing concurrent resume requests on the same session_id. It shares the
 // registry the RPC auto-resume path uses (cfg.ResumeLocks) so the two paths
 // serialize against each other.
-func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
+func (s *WebServer) lockForSession(sessionID string) *hubcore.ResumeMutex {
 	if s.cfg.ResumeLocks == nil {
 		s.cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}

@@ -200,9 +200,15 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// The read is under the transcript door, so no session append can poison the
 	// writer between here and the entries below -- every one of them goes
 	// through this lock.
-	if s.attachedTranscript().Poisoned() {
+	//
+	// A closed writer is refused the same way: its ordinary appends are silent
+	// no-ops, so the entries that make the fold survive a restart would not land
+	// either, and the fold would be announced and lost exactly as it is under
+	// poison. Both facts come from the one helper so the gate cannot know fewer
+	// than the claims do.
+	if refusal := refuseOnUnhealthyTranscript(s.attachedTranscript()); refusal != nil {
 		s.attentionMu.Unlock()
-		return nil, false, errTranscriptRefusesRecords()
+		return nil, false, refusal
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)

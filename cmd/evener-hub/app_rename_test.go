@@ -456,7 +456,7 @@ func TestLiveRenameRejectsRecoveryAdmission(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted("owner", cfg.ResumeLocks.RecoveryState("owner").Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -491,7 +491,7 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"}, "02wMz5Txv1C3Hut0M8GCeB"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	server := newHubAppServer(cfg, appsource.NewRegistry())
 	if _, err := exactDispatch(ctx, t, server, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:02wMz5Txv1C3Hut0M8GCeB", Name: "saved"}); err != nil {
 		t.Fatal(err)

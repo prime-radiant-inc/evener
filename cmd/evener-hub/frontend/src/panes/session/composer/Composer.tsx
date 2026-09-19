@@ -54,7 +54,13 @@ import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
-import { controlsFor, liveThreadModel, pressRefusal } from "../../../stores/liveControls";
+import {
+  controlsFor,
+  isLocalRecoveryFenced,
+  liveThreadModel,
+  pressLocalRecoveryFenced,
+  pressRefusal,
+} from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
@@ -204,8 +210,23 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
+// Why a Steer press is refused while the local recovery fence stands: the
+// explicit Resume action is the only thing that clears it, so the refusal
+// names that path instead of a generic unavailability.
+const STEER_RECOVERY_FENCED_REASON = "Steer isn't available until this session is resumed";
+
+// The local recovery fence lives in stores/liveControls.ts (one predicate for
+// every surface that owes it - this module's availability/card/Steer gates and
+// QueueStrip's press gates): QueueStrip cannot import from this module
+// (Composer imports QueueStrip), and a per-file copy of a fence this
+// load-bearing would drift. A LOCAL session carrying a restart-blocking
+// obligation (a Stop, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) cannot be acted on at all until the explicit
+// Resume action clears the fence.
+
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
@@ -809,6 +830,13 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Read here rather than inside the handlers below, which close over `model`
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
+  const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
+  // A stopped local session is recovery-fenced. It keeps its follow-up card so
+  // the retained draft and the recovery notice's explicit Resume action stay
+  // reachable, but Send and Queue are NOT offered: turn/start no longer carries
+  // an implicit resume on this branch, and the wire already advertises
+  // send=false for this snapshot. The explicit Resume action is what resumes it.
+  const recoveryFencedLocal = isLocalRecoveryFenced(ref, recoveryRequired) && model.status.type === "notLoaded";
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -843,14 +871,52 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Reading routing off the presentation source therefore lost tier 6 for the
   // sender at exactly the moment the daemon confirmed it had the send - the
   // next message went to turn/start and bounced.
-  const ownPendingSend = (entries: readonly PendingTurnEntry[]) => entries.some((entry) => entry.fromThisClient);
+  //
+  // blockedUnknown counts too: it is this client's own send whose response was
+  // lost, so the turn may already be running. Dropping it dropped tier 6 for
+  // exactly the uncertain window, and the next message bounced on the turn
+  // that send had applied.
+  //
+  // A canceled row does not count: Stop wrote its cancellation before dispatch
+  // (stop-cancellation-outbox §4), so it is provably not in flight and no turn
+  // can be running because of it. Counting it parked the next message in queue
+  // mode behind a turn that never started.
+  const ownPendingSend = (entries: readonly PendingTurnEntry[]) =>
+    entries.some((entry) => entry.fromThisClient && entry.state !== "canceled");
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send: read
   // at render for the button and its tooltip, and again at submit from the
   // stores' live model and live pending entries, so a status frame or a
   // pending send that landed (or cleared) between the two routes the submit
   // rather than the render.
-  function availabilityFor(target: ThreadModel, pendingSend: boolean): { canSend: boolean; canQueue: boolean } {
+  //
+  // The restart-blocking obligation arrives as a parameter: the render passes
+  // the subscribed value (so the availability updates with the store instead of
+  // reading it behind the subscription's back), the submit passes a live store
+  // read like the rest of its re-derivation. It is the raw obligation, not the
+  // render's recoveryFencedLocal: the fence here covers every status, active
+  // included, not only the stopped one.
+  function availabilityFor(
+    target: ThreadModel,
+    pendingSend: boolean,
+    restartObligated: boolean,
+  ): { canSend: boolean; canQueue: boolean } {
+    // A recovery-fenced local session has no send/queue until the user resumes
+    // it, in WHATEVER status the snapshot carries - active included. The
+    // fence's own window is exactly one where an ACTIVE snapshot can carry
+    // it: a live read during a Stop relays the daemon's still-active status
+    // while the hub overlays resumeRequired beside it
+    // (applyThreadResumeRequirement), and the store arms the obligation on
+    // that very hydration. The hub's recovery admission then refuses
+    // turn/start AND turn/queue for the whole window
+    // (sessionActionRecoveryError keys on the resume locks, never the
+    // projected status), so the availability table's queue-mode answer for
+    // the still-running turn could only mint durable intent that parks
+    // until the explicit Resume action clears the fence. The explicit
+    // Resume action is the only thing that resumes it.
+    if (isLocalRecoveryFenced(target.ref, restartObligated)) {
+      return { canSend: false, canQueue: false };
+    }
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
       capabilities: target.capabilities,
@@ -875,12 +941,18 @@ export function Composer({ ref, focused }: ComposerProps) {
       ? { canSend: true, canQueue: false }
       : tableAvailability;
   }
-  const availability = availabilityFor(model, hasPendingSend);
+  const availability = availabilityFor(model, hasPendingSend, recoveryRequired);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
   const showStop = controls.stop;
   const showSteer = controls.steer;
+  // The Steer control's own reading of the recovery fence (see
+  // availabilityFor's fence above): the hub refuses turn/steer for the
+  // obligation's whole window, so the control must not offer a press that
+  // could only park durable intent. Read from the subscribed obligation here
+  // for the render; the press re-reads it live.
+  const steerRecoveryFenced = isLocalRecoveryFenced(ref, recoveryRequired);
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -911,12 +983,12 @@ export function Composer({ ref, focused }: ComposerProps) {
   // card for exactly the sessions the hub says are resumable. When the wire
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
-  const showFollowUpCard = ended && canSendWhenEnded;
+  const showFollowUpCard = ended && (canSendWhenEnded || recoveryFencedLocal);
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not
   // strand a typed message with no visible way to send it.
-  const followUpEngaged = followUpFocused || hasContent;
+  const followUpEngaged = localNotLoaded || followUpFocused || hasContent;
   // While the card rests, its control row - and with it the composer chrome
   // that opts into initial activity discovery - is not mounted. A saved
   // notLoaded session with send enabled is exactly that shape, so mount a
@@ -1233,6 +1305,20 @@ export function Composer({ ref, focused }: ComposerProps) {
   // clearIfUnchanged is, so a clear on success never clobbers an edit made
   // while the RPC was still in flight.
   async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
+    // The recovery fence, re-read live at the press (the same render-vs-press
+    // rule as handleSteerClick): a fenced command's run mints a durable
+    // mutation the hub's recovery admission refuses for the obligation's
+    // whole window, so running it here could only mint intent that parks
+    // until the explicit Resume action clears the fence - the same harm the
+    // Send/Steer/queue-strip fences exist to prevent, reached by typing
+    // instead of clicking. Which commands carry the fence is declared on the
+    // command itself (commands.ts's recoveryFenced); the refusal names the
+    // Resume path and preserves the draft, ahead of the busy churn so a
+    // refusal never reports busy state.
+    if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
+      toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
+      return;
+    }
     const submittedText = textRef.current;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedRevision = draftEditRevisionRef.current;
@@ -1289,6 +1375,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       availability: availabilityFor(
         liveThreadModel(ref) ?? renderedModel,
         ownPendingSend(pendingTurnEntries(ref, "send")),
+        threadsStore.getState().restartBlockingObligations.has(ref),
       ),
     });
     if (route === "none") {
@@ -1311,6 +1398,15 @@ export function Composer({ ref, focused }: ComposerProps) {
 
   function handleSteerClick(): void {
     if (actionPending) return;
+    // The recovery fence, re-read live at the press: a Stop can arm it after
+    // the render that offered this button, and the hub refuses turn/steer
+    // (and turn/drainAsSteer on the drain route) for the whole window, so an
+    // offered press could only mint durable intent that parks until the
+    // explicit Resume action clears the fence.
+    if (pressLocalRecoveryFenced(ref)) {
+      toasts.push("error", STEER_RECOVERY_FENCED_REASON);
+      return;
+    }
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
@@ -1659,7 +1755,17 @@ export function Composer({ ref, focused }: ComposerProps) {
                           // the authority there, the same way it is for whether
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
-                          disabled={actionPending || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
+                          // The capability alone does not lift the recovery fence:
+                          // availabilityFor refuses every fenced status, so a
+                          // fenced session whose snapshot still
+                          // advertises send:true (the hub stamps it on closed
+                          // frames too) renders a disabled Send, not a refusal
+                          // toast.
+                          disabled={
+                            actionPending ||
+                            !hasContent ||
+                            !(ended ? canSendWhenEnded && !isLocalRecoveryFenced(ref, recoveryRequired) : canCompose)
+                          }
                         >
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
@@ -1667,9 +1773,11 @@ export function Composer({ ref, focused }: ComposerProps) {
                       {showSteer && (
                         <Tooltip
                           label={
-                            enterToSend
-                              ? "Interrupt and redirect now"
-                              : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
+                            steerRecoveryFenced
+                              ? STEER_RECOVERY_FENCED_REASON
+                              : enterToSend
+                                ? "Interrupt and redirect now"
+                                : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
                           }
                         >
                           <Button
@@ -1679,8 +1787,11 @@ export function Composer({ ref, focused }: ComposerProps) {
                             data-testid="composer-steer"
                             onClick={handleSteerClick}
                             // Same as Stop above: busy + the steer capability
-                            // already gate this control's existence.
-                            disabled={actionPending}
+                            // already gate this control's existence. The recovery
+                            // fence gates the press the same way the Send button's
+                            // does, and the tooltip says why (kata 2f41) instead of
+                            // describing an action the fence refuses.
+                            disabled={actionPending || steerRecoveryFenced}
                           >
                             Steer
                           </Button>

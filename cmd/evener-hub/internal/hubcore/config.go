@@ -189,6 +189,12 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+
+	// CompletionOwned is set only by explicit thread/resume. Automatic resume
+	// retains the configured startup budget; explicit restore awaits readiness,
+	// child exit, or caller/Stop cancellation instead of guessing its duration.
+	CompletionOwned bool
+	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

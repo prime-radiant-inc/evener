@@ -129,7 +129,7 @@ func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"recovering"}, "recovering"); err != nil {
 		t.Fatal(err)
 	}
-	finish(false)
+	finish.Finish(false)
 	deliveries <- appsource.RelayDelivery{Notification: appwire.Notification{
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: testRawJSON(t, appwire.ThreadStatusChangedParams{ThreadID: thread.ID, Ref: thread.Evener.Ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}}),

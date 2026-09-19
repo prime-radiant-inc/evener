@@ -179,27 +179,198 @@ function baseCarriedByRename(before: InstanceEntry, listed: InstanceEntry): bool
   return beforeBase === "" && listed.base === before.name;
 }
 
+/** Whether the variables the store's listing carries are the ones this save
+ * left alone. A save's params name only the variables it changed - the wire
+ * leaves every other authored variable untouched - so comparing `vars` as one
+ * field cannot see an untouched variable's change and would mistake a
+ * different instance for this save's own landing. Compare key-by-key across
+ * both sides, skipping only the keys this save declared. */
+function varsCarriedOver(before: InstanceEntry, listed: InstanceEntry, params: InstanceEditParams): boolean {
+  const declared = params.vars ?? {};
+  const keys = new Set([...Object.keys(before.vars ?? {}), ...Object.keys(listed.vars ?? {})]);
+  for (const key of keys) {
+    if (key in declared) continue;
+    if ((before.vars?.[key] ?? "") !== (listed.vars?.[key] ?? "")) return false;
+  }
+  return true;
+}
+
+/** Whether the listed entry carries every identity field this save did not
+ * touch - the confirmation a superseded rename and a superseded plain save
+ * share. `vars` is compared key-by-key (see varsCarriedOver); the derived
+ * fields are not compared when this save edited a field they derive from
+ * (ENDPOINT_AFFECTING_FIELDS): `endpointFingerprint` is the digest of the
+ * resolved endpoint, and `baseUrl` is the RESOLVED URL (the hub substitutes
+ * this instance's vars into the provider's template), so editing a var or a
+ * URL-affecting field moves both. `base` is the one field whose comparison
+ * differs by path - a rename may legitimately pin it, a plain save may not -
+ * so the caller supplies that comparison. */
+function untouchedIdentityMatches(
+  before: InstanceEntry,
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+  matchesBase: (before: InstanceEntry, listed: InstanceEntry) => boolean,
+): boolean {
+  const changed = changedFields(params);
+  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
+  const untouched = RENAME_IDENTITY_FIELDS.filter(
+    (field) =>
+      field !== "vars" &&
+      !changed.has(field) &&
+      !(endpointChanged && (field === "endpointFingerprint" || field === "baseUrl")),
+  );
+  const matches = untouched.every((field) =>
+    field === "base" ? matchesBase(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
+  );
+  return matches && varsCarriedOver(before, listed, params);
+}
+
+/** The credential header reduced the way the hub stores it: the hub splits on
+ * the first `=` and trims the name and value before joining them with no
+ * surrounding spaces (app_instances.go's credentialHeaderFrom), so a declared
+ * `Authorization = Bearer $X` has to be reduced the same way to match the
+ * listing's normalized form. */
+function normalizedCredentialHeader(raw: string): string {
+  const eq = raw.indexOf("=");
+  if (eq < 0) return raw.trim();
+  return `${raw.slice(0, eq).trim()}=${raw.slice(eq + 1).trim()}`;
+}
+
 /** The name this save's rename landed under, or undefined when the store's own
  * listing cannot say that it did: the new name has to be held by the instance
- * this save renamed, not by a later tenant of the freed name. */
+ * this save renamed - matching on the fields this save left alone and carrying
+ * the values it declared - not by a later tenant of the freed name that
+ * differs in a field this rename also edited.
+ *
+ * The confirmation requires the mutation's captured new-name row to carry an
+ * endpointFingerprint and the listing to carry the same one: that is the only
+ * proof of the renamed destination (the sanitized display URL cannot show its
+ * hidden parts). Without a fingerprint there is nothing to compare against, so
+ * the rename fails closed exactly like the plain path - the user gets a
+ * stale-save warning and a reseed rather than the sheet steering onto a name
+ * that might be a replacement. */
 function renamedInstanceLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
   params: InstanceEditParams,
+  authoritative: InstanceEntry | undefined,
 ): string | undefined {
   const newName = params.newName;
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
-  const changed = changedFields(params);
-  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
-  const untouched = RENAME_IDENTITY_FIELDS.filter(
-    (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
-  );
-  const matches = untouched.every((field) =>
-    field === "base" ? baseCarriedByRename(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
-  );
-  return matches ? newName : undefined;
+  if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
+  // A capture with no fingerprint cannot prove the renamed destination, so the
+  // shared confirmation fails closed and the caller keeps the stale-save path.
+  return authoritativeLandingConfirmed(authoritative, listed, params) ? newName : undefined;
+}
+
+/** The confirmation shared by the plain-save and rename paths when the
+ * mutation's captured row carries an endpoint fingerprint: the listing's
+ * fingerprint must equal it, endpoint clears fail closed, and the fields the
+ * fingerprint does not cover (credentials, surface, declared vars) must match.
+ * One copy, so the two paths cannot drift. */
+function authoritativeLandingConfirmed(
+  authoritative: InstanceEntry | undefined,
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+): boolean {
+  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
+  if (authoritativeFingerprint === "") return false;
+  if (listed.endpointFingerprint !== authoritativeFingerprint) return false;
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (!authoritativeCredentialsMatch(authoritative, listed)) return false;
+  if (!credentialValuesLanded(listed, params)) return false;
+  return declaredVarsAndSurfaceLanded(listed, params);
+}
+
+/** Whether the listed entry carries the non-endpoint values this save declared
+ * for fields the endpoint fingerprint does not cover. The hub's destination
+ * identity excludes `surface` and the variables that do not feed the endpoint,
+ * so a matching fingerprint alone cannot confirm them; each declared value has
+ * to match the listing directly. */
+function declaredVarsAndSurfaceLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
+  if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
+  for (const [key, value] of Object.entries(params.vars ?? {})) {
+    if ((listed.vars?.[key] ?? "") !== value) return false;
+  }
+  return true;
+}
+
+/** Whether the listed entry carries the credential fields this save declared.
+ * The endpoint fingerprint proves the DESTINATION, not the credential
+ * metadata: apiKeyEnv and credentialHeader are authored fields the listing
+ * serves directly (or omits), and a concurrent write can carry the same
+ * endpoint but different credential metadata. A declared value has to match
+ * after the hub's normalization; a credential clear is unverifiable (the hub
+ * omits an authored value it cannot serve, whether this save cleared it or a
+ * replacement insists on its own), so it always fails closed. */
+function credentialValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.clearApiKeyEnv || params.clearCredentialHeader) return false;
+  if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
+  if (
+    params.credentialHeader !== undefined &&
+    normalizedCredentialHeader(listed.credentialHeader ?? "") !== normalizedCredentialHeader(params.credentialHeader)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** The entry the store's own listing carries for a plain (non-rename) save
+ * whose response it superseded, or undefined when the listing cannot be shown
+ * to carry this save's own landing. A refresh that starts after a save answers
+ * first, and the store discards the save's response as superseded while its
+ * listing already holds the change the save declared. The seeded identity
+ * anchor was taken before the save, so the derived endpointFingerprint the
+ * save produced no longer matches it, and the next save would refuse with the
+ * replacement error for an instance nothing replaced.
+ *
+ * The listing has to match on the fields this save left alone (with the
+ * derived baseUrl/endpointFingerprint excused when an endpoint-affecting field
+ * changed), and its destination has to be the one this save produced. That
+ * destination comes from the mutation's own discarded answer - `authoritative`
+ * - whose endpointFingerprint is the hub's keyed identity for the complete
+ * resolved endpoint. Comparing that settles vars/protocol/surface-only edits,
+ * stripped query/userinfo parts, and path-normalization differences at once,
+ * none of which survive in the listing's sanitized baseUrl. When that
+ * authoritative row carries no fingerprint (an unkeyable instance) there is no
+ * such proof, so the match fails closed. Editing an implicit instance authors a
+ * shadow under the same name, so implicit legitimately falls true -> false
+ * here; the other direction is a different instance. */
+function supersededSaveLanded(
+  instances: InstanceEntry[],
+  before: InstanceEntry,
+  params: InstanceEditParams,
+  authoritative: InstanceEntry | undefined,
+): InstanceEntry | undefined {
+  if (params.newName !== undefined) return undefined;
+  const listed = instances.find((instance) => instance.name === before.name);
+  if (listed === undefined) return undefined;
+  if (listed.implicit !== before.implicit && !(before.implicit && !listed.implicit)) return undefined;
+  const plainBase = (a: InstanceEntry, b: InstanceEntry): boolean => fieldValue(a, "base") === fieldValue(b, "base");
+  if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
+  // The destination identity is the mutation's own captured fingerprint. When
+  // it is unavailable the listing's sanitized baseUrl cannot stand in for it
+  // (it omits query/userinfo, so a replacement at a different hidden endpoint
+  // reads the same), and a destination plainly exists: fail closed rather than
+  // re-anchor, and let the caller mark the draft stale.
+  // The fingerprint settles the destination; the fields it does not cover, the
+  // endpoint clears and the credential agreement are confirmed by the shared
+  // helper (the rename path uses the same one).
+  return authoritativeLandingConfirmed(authoritative, listed, params) ? listed : undefined;
+}
+
+/** Whether the mutation's captured post-write row and the store's listing agree
+ * on the credential fields the endpoint fingerprint does not cover. The hub
+ * omits an authored value it cannot serve, so a replacement whose own hidden
+ * credential the hub also omits would read the same otherwise. Shared by the
+ * plain-save and rename confirmations so the rule cannot drift between them. */
+function authoritativeCredentialsMatch(authoritative: InstanceEntry | undefined, listed: InstanceEntry): boolean {
+  if ((authoritative?.apiKeyEnv ?? "") !== (listed.apiKeyEnv ?? "")) return false;
+  if ((authoritative?.credentialHeader ?? "") !== (listed.credentialHeader ?? "")) return false;
+  return true;
 }
 
 export interface InstanceSheetProps {
@@ -395,12 +566,44 @@ export function InstanceSheet({
       // this response as superseded. Its listing is then a document nothing
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
-      const applied = await credentialsStore.getState().edit(params);
+      // The discarded answer is still the hub's authoritative post-write row
+      // for this instance, though, so keep it to compare against the listing
+      // now held (see supersededSaveLanded).
+      let authoritative: InstanceEntry | undefined;
+      const authoritativeName = params.newName ?? instance.name;
+      const applied = await credentialsStore.getState().edit(params, {
+        onSuperseded: (response) => {
+          authoritative = response.instances.find((entry) => entry.name === authoritativeName);
+        },
+      });
+      let listedInstances = credentialsStore.getState().instances;
+      if (!applied) {
+        // The verdict says a newer read won the ordering race. That read was
+        // issued after this write, but its response arrives AFTER this write's
+        // (evener/instance/list is not a concurrent method - it runs inline on
+        // the connection's serial worker), so the listing sampled right now is
+        // still the PRE-save one. Settle a read that started after the write
+        // before comparing the listing against the mutation's own captured row.
+        // The read is non-fatal - a torn-down connection must not be reported as
+        // a failed save - but its RESULT matters: `edit` already scheduled the
+        // store's own debounced refetch, and that read can start later and
+        // supersede this one, resolving false without applying anything. Re-read
+        // until a read applies (bounded), so the listing sampled is a post-write
+        // one.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const settled = await credentialsStore
+            .getState()
+            .fetch()
+            .catch(() => false);
+          if (settled) break;
+        }
+        listedInstances = credentialsStore.getState().instances;
+      }
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can
       // take - so the entry is checked against the instance this save renamed.
-      const listedRename = renamedInstanceLanded(credentialsStore.getState().instances, instance, params);
+      const listedRename = renamedInstanceLanded(listedInstances, instance, params, authoritative);
       if (applied || listedRename !== undefined) toast.push("success", `Saved ${params.newName ?? instance.name}`);
       // The sheet may have moved on while the request was in flight: dismissed,
       // or pointed at another row. The write stands and the toast above is
@@ -415,6 +618,64 @@ export function InstanceSheet({
         if (listedRename !== undefined) {
           onRenamed(listedRename);
         } else {
+          // The store's listing may already hold this plain save's own change:
+          // a refresh that started after the save answers first, and the store
+          // discards the response as superseded while its entry carries what
+          // this save declared. The draft is still the user's, but the seeded
+          // identity anchor predates the change, so re-anchor it to the entry
+          // the save landed as — without reseeding, which would discard the
+          // draft. The next Save then compares like against like instead of
+          // refusing an instance that was never replaced.
+          const landed = supersededSaveLanded(listedInstances, instance, params, authoritative);
+          if (landed !== undefined) {
+            seededIdentity.current = draftIdentity(landed);
+            // Rebase the diff baseline to what landed, keeping the draft: "draft
+            // equals landed" is then correctly not dirty, and a user reverting a
+            // field to its pre-save value becomes correctly dirty and writable
+            // (the pre-save baseline alone left params null and Save disabled).
+            const landedTemplate = credentialsStore
+              .getState()
+              .availableProviders.find((p) => p.id === landed.providerId);
+            const landedDraft = draftFor(landed, landedTemplate);
+            setInitial(landedDraft);
+            // Rebase the baseline to what landed, but carry the DRAFT forward
+            // only where this save declared the field. Every other field takes
+            // the landed value, so a value another client changed under the
+            // draft - or a derived field like the resolved Base URL - cannot
+            // masquerade as a pending overwrite; the fields the user did edit
+            // keep their draft values, so a revert stays correctly dirty.
+            const declared = changedFields(params);
+            setDraft((current) =>
+              current === null
+                ? current
+                : {
+                    name: landedDraft.name,
+                    baseUrl: declared.has("baseUrl") ? current.baseUrl : landedDraft.baseUrl,
+                    protocol: declared.has("protocol") ? current.protocol : landedDraft.protocol,
+                    surface: declared.has("surface") ? current.surface : landedDraft.surface,
+                    // `vars` is a map, not a scalar: the draft only keeps the
+                    // keys THIS save declared, and takes every other key from
+                    // the landed row - otherwise a variable another client
+                    // changed under the draft resurfaces as a pending overwrite.
+                    vars: Object.fromEntries([
+                      ...Object.entries(landedDraft.vars),
+                      ...Object.entries(params.vars ?? {}).map(([key]) => [key, current.vars[key] ?? ""] as const),
+                    ]),
+                    apiKeyEnv: declared.has("apiKeyEnv") ? current.apiKeyEnv : landedDraft.apiKeyEnv,
+                    credentialHeader: declared.has("credentialHeader")
+                      ? current.credentialHeader
+                      : landedDraft.credentialHeader,
+                  },
+            );
+          } else {
+            // The save was superseded and its landing could not be confirmed.
+            // The fields a draft edits are deliberately excluded from
+            // draftIdentity, so a same-name, same-endpoint replacement whose
+            // surface, variables or credentials differ would pass the next
+            // pre-write check and then be overwritten by the retained draft.
+            // Mark the draft stale so that next Save refuses and re-seeds.
+            seededIdentity.current = null;
+          }
           setRenamingFrom(undefined);
           toast.push("warning", STALE_SAVE_WARNING);
         }
