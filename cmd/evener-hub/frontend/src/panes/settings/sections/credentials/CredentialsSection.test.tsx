@@ -2,6 +2,7 @@ import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListR
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
@@ -994,7 +995,7 @@ describe("credential verification", () => {
       return { instances: [WORK_FP], availableProviders: [] };
     });
     fake.on("evener/auth/test", () => {
-      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: ErrorEndpointConflict });
     });
     render(
       <>

@@ -9,7 +9,7 @@
 // every credential flow presents the same way - no rendering, no store
 // access, easily unit-tested in isolation.
 
-import { WireError } from "./errors";
+import { ErrorEndpointConflict, WireError } from "./errors";
 import type { AuthTestResponse, InstanceEntry } from "./types.gen";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
@@ -212,12 +212,14 @@ export function safeCredentialTestMessage(status: string): string {
 }
 
 // isEndpointConflict recognizes the hub's refusal of an asserted destination
-// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"): the
-// name no longer resolves where the client asserting it was told it does. Every
-// credential flow presents this as a changed connection rather than a failure
-// of the endpoint itself.
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "endpointConflict"):
+// the name no longer resolves where the client asserting it was told it does.
+// The discriminant, never the code: a genuine conflict (a create/rename name
+// collision, an expired flow) shares CodeConflict and must keep its own message
+// and the form the user typed. Every credential flow presents this as a changed
+// connection rather than a failure of the endpoint itself.
 export function isEndpointConflict(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+  return err instanceof WireError && err.evenerErrorInfo === ErrorEndpointConflict;
 }
 
 // ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub

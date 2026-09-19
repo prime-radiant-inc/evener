@@ -192,12 +192,13 @@ func instanceAppliedErrorInfo(err error) appwire.ErrorInfo {
 }
 
 // instanceEndpointConflict reports whether err is the hub's refusal of an
-// asserted endpoint (appwire.Conflict, evenerErrorInfo "conflict"): the name no
-// longer resolves to the destination the client showed the user. The
+// asserted endpoint (appwire.Conflict, evenerErrorInfo "endpointConflict"): the
+// name no longer resolves to the destination the client showed the user. The
 // discriminator is the wire string, never the code - siblings share
-// CodeConflict.
+// CodeConflict, and a genuine conflict (a rename onto an occupied name) must
+// keep its own refusal rather than be reconciled as a moved endpoint.
 func instanceEndpointConflict(err error) bool {
-	return wireErrorInfo(err) == appwire.ErrorConflict
+	return wireErrorInfo(err) == appwire.ErrorEndpointConflict
 }
 
 // refreshInstanceListAfterMutation re-reads the instance list after a mutation

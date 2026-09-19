@@ -4,7 +4,7 @@ import type {
   InstanceListResponse,
   ProviderDescriptor,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1214,7 +1214,7 @@ describe("ApiKeyDialog", () => {
         throw new WireError(
           "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
           -32013,
-          { evenerErrorInfo: "conflict" },
+          { evenerErrorInfo: ErrorEndpointConflict },
         );
       }
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -1298,7 +1298,7 @@ describe("ApiKeyDialog", () => {
       throw new WireError(
         "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
         -32013,
-        { evenerErrorInfo: "conflict" },
+        { evenerErrorInfo: ErrorEndpointConflict },
       );
     });
     resetToastStoreForTests();

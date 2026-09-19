@@ -139,6 +139,7 @@ export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./e
 export {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   errorKind,

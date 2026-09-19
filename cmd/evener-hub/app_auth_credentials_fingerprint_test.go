@@ -54,6 +54,28 @@ func assertConflict(t *testing.T, err error) {
 	}
 }
 
+// assertEndpointConflict fails unless err carries the endpoint-conflict
+// discriminant: CodeConflict alone is shared with genuine conflicts (a name
+// collision, an expired flow), so a client matching only the code would read
+// those as a moved endpoint.
+func assertEndpointConflict(t *testing.T, err error) {
+	t.Helper()
+	wireErr, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %v (%T), want appwire.WireError", err, err)
+	}
+	if wireErr.Code != appwire.CodeConflict {
+		t.Fatalf("error code = %d (%q), want conflict", wireErr.Code, wireErr.Message)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("error data = %#v, want appwire.ErrorData", wireErr.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorEndpointConflict {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorEndpointConflict)
+	}
+}
+
 func TestAuthTestCredentialsRefusesMismatchedAssertionWithoutDialing(t *testing.T) {
 	instances := map[string]registry.Provider{"custom": {
 		Base:      "openai-compatible",
@@ -68,7 +90,7 @@ func TestAuthTestCredentialsRefusesMismatchedAssertionWithoutDialing(t *testing.
 		Provider:                    "custom",
 		ExpectedEndpointFingerprint: "an-endpoint-this-name-does-not-resolve-to",
 	})
-	assertConflict(t, err)
+	assertEndpointConflict(t, err)
 	if got := client.callCount(); got != 0 {
 		t.Fatalf("probe calls=%d, want 0: a mismatched assertion must be refused before the probe dials", got)
 	}

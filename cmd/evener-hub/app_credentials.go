@@ -145,22 +145,22 @@ func (c *hubAuthController) TestCredentials(ctx context.Context, params appwire.
 func (c *hubAuthController) verifyProbeEndpoint(client credentialProbeClient, name, asserted string) error {
 	r := client.Registry()
 	if r == nil {
-		return appwire.Conflict(name + " cannot be checked: the probe cannot say where it would connect, so review its destination and run the check again")
+		return appwire.EndpointConflict(name + " cannot be checked: the probe cannot say where it would connect, so review its destination and run the check again")
 	}
 	inst, ok := r.Instance(name)
 	if !ok {
 		resolved, err := r.ResolveInstance(name)
 		if err != nil {
-			return appwire.Conflict(name + " cannot be checked: it does not resolve on the configuration the check would use, so review its destination and run the check again")
+			return appwire.EndpointConflict(name + " cannot be checked: it does not resolve on the configuration the check would use, so review its destination and run the check again")
 		}
 		inst = registry.Instance{Name: name, Auth: resolved.Transport.Auth, CredentialSource: resolved.Credential.Source}
 	}
 	current := destinationFingerprint(c.stateDir, r, inst)
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this check was started for: the probe cannot describe that destination, so review it and run the check again")
+		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this check was started for: the probe cannot describe that destination, so review it and run the check again")
 	}
 	if current != asserted {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this check was started for: review its destination and run the check again")
+		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this check was started for: review its destination and run the check again")
 	}
 	return nil
 }

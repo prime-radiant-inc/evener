@@ -8,6 +8,7 @@ import type {
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorEndpointConflict,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
@@ -1218,7 +1219,7 @@ describe("ConnectProviderDialog", () => {
     // state the row settles into rather than a loading purgatory.
     fake.on("evener/instance/list", () => listing);
     fake.on("evener/auth/test", () => {
-      throw new WireError("instance changed", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("instance changed", -32013, { evenerErrorInfo: ErrorEndpointConflict });
     });
     render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
     const chooser = await screen.findByRole("dialog", { name: "Connect provider" });

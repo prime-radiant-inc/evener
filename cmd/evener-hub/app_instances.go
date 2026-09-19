@@ -1476,7 +1476,44 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// change every other client's status for this name is stale
 			// against - restoreFailedRemoval wraps its own result in that
 			// case.
-			_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured", supplyAny)
+			//
+			// Which layer the restore has to put back - and so what a failed
+			// restore means - depends on what was in the file before this
+			// write. An authored entry never moved: the write that would have
+			// deleted it failed, so the instance resolves from the config
+			// whatever happens to its credentials, and the configured frame
+			// with supplyAny's strict question is the honest report. An
+			// implicit instance has no entry to fall back on, and the change
+			// this write failed to make - dropping the `default` pointer - is
+			// not a layer it resolves from: the layer supplyOf names is. When
+			// that layer is a credential this call deleted, a restore that
+			// cannot put it back leaves the instance unresolvable, so the
+			// removal stands and the frame has to say so; the discriminator
+			// goes with it, because instanceRemoveError reads it to tell the
+			// client the removal applied instead of leaving it to retry a
+			// removal that stands. supplyConfig is the provider carrying the
+			// row, with no credential of the user's at stake, so it keeps the
+			// configured frame.
+			frame, supplies := "the instance is still configured", supplyAny
+			if !authored {
+				supplies = supplyOf(locked)
+				if supplies != supplyConfig {
+					frame = "the removal stands"
+				}
+			}
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, frame, supplies)
+			if restored {
+				// The carrying layer is back, so the removal did not stand, and
+				// restoreFailedRemoval answers such a rollback with the
+				// leftovers when a stray other layer stayed deleted. The write
+				// failure and the applied mark - that deletion is what every
+				// other client's status for this name is stale against - are
+				// folded in here, the way the reload rollback below folds the
+				// same leftovers into its own report.
+				if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
+					return writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers))
+				}
+			}
 			return restoreErr
 		}
 	}

@@ -86,8 +86,21 @@ func TestInstanceEditSubmitsTheShownEndpointFingerprint(t *testing.T) {
 // is re-read so the next save asserts the destination now on screen. A plain
 // failure would leave the stale row in the panel and the same refusal waiting
 // on the retry.
+// TestInstanceEndpointConflictRejectsAGenuineConflict: the assertion refusal has
+// its own discriminant because CodeConflict is shared with genuine conflicts. A
+// rename onto an occupied name must not be reconciled as a moved endpoint - it
+// keeps the hub's own refusal on the error line and leaves the rows alone.
+func TestInstanceEndpointConflictRejectsAGenuineConflict(t *testing.T) {
+	if instanceEndpointConflict(appwire.Conflict(`instance "personal" already exists`)) {
+		t.Fatal("a name-collision conflict must not classify as an endpoint conflict")
+	}
+	if !instanceEndpointConflict(appwire.EndpointConflict("old no longer resolves to the endpoint this form was opened on")) {
+		t.Fatal("an asserted-endpoint refusal must classify as an endpoint conflict")
+	}
+}
+
 func TestInstanceEditEndpointConflictRefusalRefreshesTheList(t *testing.T) {
-	refusal := appwire.Conflict("old no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+	refusal := appwire.EndpointConflict("old no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
 	listCalls := 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, _ appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {

@@ -5,6 +5,7 @@ import appwireErrorsGo from "../../appwire/errors.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   errorKind,
@@ -57,6 +58,16 @@ describe("the applied-removal discriminator is bound to appwire/errors.go", () =
       isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
     ).toBe(false);
     expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
+  });
+});
+
+// The endpoint-conflict discriminant is what separates a moved destination from
+// a genuine conflict (a name collision) that shares CodeConflict. A hub-side
+// rename of it must break this binding rather than silently read collisions as
+// endpoint conflicts.
+describe("the endpoint-conflict discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorEndpointConflict).toBe(goErrorInfo("ErrorEndpointConflict"));
   });
 });
 

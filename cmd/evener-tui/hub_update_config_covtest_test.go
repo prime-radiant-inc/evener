@@ -207,7 +207,7 @@ func TestHandleInstanceRemoveReportsAStaleFingerprintRefusal(t *testing.T) {
 			if got.ExpectedEndpointFingerprint != "fp-stale" {
 				t.Errorf("params.ExpectedEndpointFingerprint = %q, want the shown fingerprint", got.ExpectedEndpointFingerprint)
 			}
-			return appwire.InstanceListResponse{}, appwire.Conflict(`inst1 no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again`)
+			return appwire.InstanceListResponse{}, appwire.EndpointConflict(`inst1 no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again`)
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceList, func(context.Context, appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 			listCalls++

@@ -9,10 +9,14 @@ import { act } from "react-test-renderer";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import {
+	ErrorEndpointConflict,
 	ErrorInstanceRemoveApplied,
 	WireError,
+	type ProviderDescriptor,
 	type InstanceListResponse,
 } from "@evener/appwire-client";
+import { ProviderEditor } from "./ProviderEditor";
+import type { ProviderInstances } from "./providerInstances";
 import { ProvidersScreen } from "./ProvidersScreen";
 import {
 	alertRequests,
@@ -154,7 +158,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	alertRequests.length = 0;
 	const hub = scriptedClient(rows, {
 		"evener/instance/remove": [
-			new WireError("work no longer resolves to the endpoint this form was opened on", -32013, {
+			new WireError("removal refused: work is still referenced by a launch config", -32013, {
 				evenerErrorInfo: "conflict",
 			}),
 		],
@@ -193,7 +197,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 			new WireError(
 				"work no longer resolves to the endpoint this form was opened on",
 				-32013,
-				{ evenerErrorInfo: "conflict" },
+				{ evenerErrorInfo: ErrorEndpointConflict },
 			),
 		],
 		"evener/instance/list": [rows, rows],
@@ -236,4 +240,48 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	// The editor cleared like a completed save; the instance's detail remains.
 	expect(text).not.toContain("Save instance");
 	expect(text).toContain("Edit instance");
+});
+
+// Finding 1: a create collision is a genuine hub conflict (evenerErrorInfo
+// "conflict"), not an asserted-destination refusal. Create takes no endpoint
+// assertion, so it can never carry the endpoint discriminant; the editor must
+// keep the form the user typed and show its own generic line, never the
+// moved-endpoint warning that clears the editor.
+it("keeps the create form for a name-collision conflict", async () => {
+	const collision = new WireError('instance "work" already exists', -32013, { evenerErrorInfo: "conflict" });
+	const create = vi.fn(async () => {
+		throw collision;
+	});
+	const model = { create, edit: vi.fn() } as unknown as ProviderInstances;
+	const onEndpointConflict = vi.fn();
+	const tree = render(
+		<ProviderEditor
+			providers={[{ id: "anthropic", name: "Anthropic" } as ProviderDescriptor]}
+			model={model}
+			disabled={false}
+			onSaved={() => {}}
+			onEndpointConflict={onEndpointConflict}
+			onCancel={() => {}}
+		/>,
+	);
+	await act(async () => {});
+	press(tree, (label) => label === "Choose base provider");
+	act(() => {});
+	press(tree, (label) => label === "Anthropic");
+	act(() => {});
+	const nameInput = tree.root.find((node) => node.props.accessibilityLabel === "Instance name");
+	act(() => {
+		nameInput.props.onChangeText("work");
+	});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	expect(create).toHaveBeenCalledTimes(1);
+	expect(onEndpointConflict).not.toHaveBeenCalled();
+	const text = renderedText(tree);
+	expect(text).toContain("Save could not be confirmed");
+	expect(text).not.toContain("changed to a different endpoint");
+	// The form survives for the correction.
+	expect(text).toContain("Save instance");
 });

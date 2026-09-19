@@ -1,5 +1,10 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
-import { FINGERPRINT_UNAVAILABLE_ERROR, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import {
+  ErrorEndpointConflict,
+  FINGERPRINT_UNAVAILABLE_ERROR,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1292,7 +1297,7 @@ test("the flow's own recovery read carries its commitment and leaves the flow us
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
   client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
@@ -1321,7 +1326,7 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
   // What the recovery re-read finds: the moved endpoint, nothing stored.
@@ -1416,7 +1421,7 @@ test("a refused assertion is reported as a changed connection, not an endpoint f
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
 

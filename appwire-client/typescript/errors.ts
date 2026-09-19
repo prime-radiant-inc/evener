@@ -83,6 +83,15 @@ export function isInstanceRemoveApplied(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemoveApplied;
 }
 
+// ErrorEndpointConflict is the hub's discriminant for a refusal of an asserted
+// destination (appwire.ErrorEndpointConflict, appwire/errors.go): the name no
+// longer resolves to the endpoint the client showed the user. It shares
+// CodeConflict with genuine conflicts (a name collision, an expired flow), so
+// matching the code would read a create collision as a moved endpoint; this
+// string is the one definition every credential flow matches against. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorEndpointConflict = "endpointConflict";
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

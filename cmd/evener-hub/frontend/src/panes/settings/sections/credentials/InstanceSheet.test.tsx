@@ -1,5 +1,5 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
-import { ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
+import { ErrorEndpointConflict, ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1039,7 +1039,7 @@ describe("the form", () => {
       throw new WireError(
         "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
         -32013,
-        { evenerErrorInfo: "conflict" },
+        { evenerErrorInfo: ErrorEndpointConflict },
       );
     });
     connectionStore.getState().connect(fake);
@@ -1060,6 +1060,28 @@ describe("the form", () => {
     // The draft survives for the retry, and the listing is re-read.
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+  });
+
+  // The hub's generic conflict is shared by genuine refusals. A rename onto an
+  // occupied name is one: the sheet must surface the hub's own message and keep
+  // the draft, not dress it up as a moved endpoint and refresh.
+  test("a rename onto an occupied name surfaces the hub's refusal, not an endpoint conflict", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError('instance "work2" already exists', -32013, { evenerErrorInfo: "conflict" });
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
+    expect(screen.queryByText(/changed to a different endpoint/)).toBeNull();
+    // Not the endpoint-conflict recovery: no listing read was asked for.
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBe(listingsBefore);
   });
 
   test("a rename toasts the new name, calls onRenamed, and does not close the sheet", async () => {

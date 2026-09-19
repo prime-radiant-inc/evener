@@ -44,6 +44,13 @@ const (
 	// - dropping the confirmation and any state retained for the name - rather
 	// than report a failed remove whose retry targets a missing instance.
 	ErrorInstanceRemoveApplied ErrorInfo = "instanceRemoveApplied"
+	// ErrorEndpointConflict marks the hub's refusal of an asserted destination:
+	// the name no longer resolves to the endpoint the client showed the user (an
+	// edit or removal assertion, a credential write or test, or a sign-in flow's
+	// captured endpoint). It shares CodeConflict with genuine conflicts (a name
+	// collision, an expired flow), so clients must match this discriminant, never
+	// the code - otherwise a create collision reads as a moved endpoint.
+	ErrorEndpointConflict ErrorInfo = "endpointConflict"
 )
 
 type MutationOutcome string
@@ -223,5 +230,17 @@ func InstanceRemoveApplied(message string) WireError {
 		Code:    CodeInternalError,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemoveApplied},
+	}
+}
+
+// EndpointConflict reports a refusal of an asserted destination: the name does
+// not resolve where the client asserted it does. Distinct from Conflict so a
+// client can tell a moved endpoint from a genuine conflict such as a name
+// collision, which must keep its own message and the form the user typed.
+func EndpointConflict(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
 	}
 }
