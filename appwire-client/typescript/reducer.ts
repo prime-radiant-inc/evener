@@ -994,13 +994,18 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 // here. `message` wins when non-blank; otherwise `warning` counts when it is
 // itself a non-blank string, or an object (and not an array) whose own
 // `message` is a non-blank string. Every other shape carries no message.
+// Returned strings are bounded from their first non-whitespace content so the
+// fold does not scan and bound the selected message a second time.
 function warningMessage(params: WarningParams): string {
-  if (typeof params.message === "string" && hasWarningText(params.message)) return params.message;
+  const message = boundedWarningText(params.message);
+  if (message !== undefined) return message;
   const warning = params.warning;
-  if (typeof warning === "string" && hasWarningText(warning)) return warning;
+  const warningText = boundedWarningText(warning);
+  if (warningText !== undefined) return warningText;
   if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
     const nested = (warning as { message?: unknown }).message;
-    if (typeof nested === "string" && hasWarningText(nested)) return nested;
+    const nestedMessage = boundedWarningText(nested);
+    if (nestedMessage !== undefined) return nestedMessage;
   }
   return "";
 }
@@ -1010,15 +1015,12 @@ function warningMessage(params: WarningParams): string {
 // title/hint, so the raw-frame fallback below and the structured fields it
 // would otherwise duplicate never disagree about which one has something to
 // show. A type predicate so a caller narrows `unknown` in one step instead of
-// repeating the typeof/trim check to get the same narrowing. A regex test
-// scans for the first non-whitespace character without allocating a copy of
-// the candidate (unlike bounding-then-trimming, which also answered wrong
-// for a value with more than RAW_WARNING_FRAME_MAX_CHARS leading blank code
-// points followed by real content — the bound never reached it). Bounding
-// happens separately, only when a value is actually stored (boundedCodePoints
-// below, applied at each call site that assigns into the model).
+// repeating the typeof/trim check to get the same narrowing. Built on
+// boundedWarningText below, which answers the same "is there content" scan
+// as part of also bounding the value — so a caller that needs both (every
+// foldWarningParams field) pays for one walk, not two.
 export function hasWarningText(value: unknown): value is string {
-  return typeof value === "string" && /\S/.test(value);
+  return boundedWarningText(value) !== undefined;
 }
 
 // A frame with no message anywhere is surfaced as the frame itself
@@ -1028,12 +1030,7 @@ export function hasWarningText(value: unknown): value is string {
 // can carry anything; this is package-level code feeding both hosts, and
 // neither host's own display bound can be assumed to run before something
 // else reads item.text.
-const RAW_WARNING_FRAME_MAX_CHARS = 2000;
-// Generous bounds for the pre-stringify prune below: comfortably above what
-// any real warning frame carries, but small enough that a transport-sized
-// (up to 128 MiB) malformed frame can never make JSON.stringify walk more
-// than a tiny fraction of it.
-const RAW_WARNING_FRAME_MAX_FIELD_CHARS = RAW_WARNING_FRAME_MAX_CHARS;
+export const RAW_WARNING_FRAME_MAX_CHARS = 2000;
 const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
 const RAW_WARNING_FRAME_MAX_OBJECT_KEYS = 50;
 const RAW_WARNING_FRAME_MAX_DEPTH = 6;
@@ -1045,7 +1042,7 @@ const RAW_WARNING_FRAME_MAX_DEPTH = 6;
 const RAW_WARNING_FRAME_MAX_NODES = 500;
 
 // Prunes a value to a small bound before it ever reaches JSON.stringify:
-// every string truncated to RAW_WARNING_FRAME_MAX_FIELD_CHARS UTF-16 units,
+// every string truncated to RAW_WARNING_FRAME_MAX_CHARS code points,
 // every array/object to its first 50 items/keys, nesting cut off at 6
 // levels, and the whole walk cut off after RAW_WARNING_FRAME_MAX_NODES
 // entries regardless of shape. Without this, JSON.stringify(params) itself
@@ -1064,7 +1061,7 @@ const RAW_WARNING_FRAME_MAX_NODES = 500;
 // `start` lets a caller bound a WINDOW rather than always the leading
 // prefix: the string from `start` onward is what's kept, sliced in one
 // already-bounded copy (at most maxCodePoints * 2 UTF-16 units), never the
-// whole `start`-to-end remainder — boundedContent below relies on this to
+// whole `start`-to-end remainder — boundedWarningText below relies on this to
 // stay bounded even when `start` is itself deep into a multi-megabyte
 // string.
 function boundedPrefix(s: string, maxCodePoints: number, start = 0): string {
@@ -1093,7 +1090,7 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
   if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
   budget.remaining -= 1;
   if (typeof value === "string") {
-    const bounded = boundedPrefix(value, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
+    const bounded = boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS);
     return bounded === value ? value : `${bounded}…`;
   }
   if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
@@ -1129,8 +1126,17 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
       // says nothing about how long any one property NAME is — an
       // oversized key would otherwise ride through verbatim, the same
       // vector the value-length bound above closes for string values.
-      const boundedKeyPrefix = boundedPrefix(key, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
-      const boundedKey = boundedKeyPrefix === key ? key : `${boundedKeyPrefix}…`;
+      const boundedKeyPrefix = boundedPrefix(key, RAW_WARNING_FRAME_MAX_CHARS);
+      let boundedKey = boundedKeyPrefix === key ? key : `${boundedKeyPrefix}…`;
+      // Two distinct keys can share their first RAW_WARNING_FRAME_MAX_CHARS
+      // code points and truncate to the identical boundedKey - assigning
+      // straight into `pruned` would then have the second key's value
+      // silently overwrite the first's. Suffix a collision with a counter
+      // until it lands on a key `pruned` doesn't already own, so both
+      // survive (as two visibly-truncated keys) instead of one vanishing.
+      for (let collision = 2; Object.hasOwn(pruned, boundedKey); collision++) {
+        boundedKey = `${boundedKeyPrefix}…#${collision}`;
+      }
       pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
     }
     return pruned;
@@ -1146,18 +1152,28 @@ function boundedCodePoints(s: string): string {
   return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS);
 }
 
-// hasWarningText finds non-blank content anywhere in a string, but
 // boundedCodePoints alone always keeps the LEADING RAW_WARNING_FRAME_MAX_CHARS
 // code points — a message, title, hint, or source with more than that many
-// leading blank code points followed by real content would pass
-// hasWarningText yet be stored as nothing but the blank prefix, rendering
-// as nothing to every consumer. /\S/.exec finds the first non-whitespace
-// index without copying anything; boundedPrefix then takes its own single,
+// leading blank code points followed by real content would then be stored as
+// nothing but the blank prefix, rendering as nothing to every consumer.
+// boundedWarningText answers "is there content" and bounds it starting from
+// that content in the same walk: /\S/.exec finds the first non-whitespace
+// index without copying anything, then boundedPrefix takes its own single,
 // already-bounded slice starting there, so the window kept always contains
-// the actual content instead of the padding in front of it.
-function boundedContent(s: string): string {
-  const start = /\S/.exec(s)?.index ?? 0;
-  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS, start);
+// the actual content instead of the padding in front of it. undefined when
+// value isn't a non-blank string at all — hasWarningText and the fold are both
+// built on this one walk, instead of each asking "is there content" and
+// "bound it" as two separate scans. The fast
+// path only skips leading padding when truncation is actually needed
+// (matching boundedPrefix's own fast path): a short value already within the
+// bound is returned unchanged, leading whitespace included, since nothing
+// about it needs to be bounded away from at all.
+function boundedWarningText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /\S/.exec(value);
+  if (match === null) return undefined;
+  if (value.length <= RAW_WARNING_FRAME_MAX_CHARS) return value;
+  return boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS, match.index);
 }
 
 function rawWarningFrame(params: WarningParams): string {
@@ -1181,27 +1197,26 @@ export interface WarningFold {
 }
 
 export function foldWarningParams(params: WarningParams): WarningFold {
-  const text =
-    warningMessage(params) ||
-    (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params));
+  const text = warningMessage(params);
+  const title = boundedWarningText(params.title);
+  const hint = boundedWarningText(params.hint);
+  const source = boundedWarningText(params.source);
+  const foldedText = text || (title !== undefined || hint !== undefined ? "" : rawWarningFrame(params));
   return {
-    // Bounded even though rawWarningFrame's own branch already is: a huge
-    // message (warningMessage's own return) is a separate, previously
-    // unbounded path into the model — one call here covers both. Stored
-    // warning strings are the bounded prefix of the CONTENT, never of the
-    // padding in front of it — boundedContent, not boundedCodePoints, keeps
-    // that true when a value has more leading blank code points than the
-    // bound itself.
-    text: boundedContent(text),
+    // warningMessage and rawWarningFrame already bound the selected text;
+    // keeping that result avoids rescanning it during the fold.
+    text: foldedText,
     // Blank is absent too, not just "not a string" — hasWarningText's own
     // reading, which every consumer must apply anyway. Normalizing it here
     // means a future reader is never one missed hasWarningText call away
     // from rendering blank content. Bounded for the same reason as text:
     // an oversized title/hint/source reaching ItemModel.warning verbatim is
     // the same class of vector rawWarningFrame closes for the fallback.
-    title: hasWarningText(params.title) ? boundedContent(params.title) : undefined,
-    hint: hasWarningText(params.hint) ? boundedContent(params.hint) : undefined,
-    source: hasWarningText(params.source) ? boundedContent(params.source) : undefined,
+    // These values are reused for the title/hint presence check above, so
+    // each field is scanned and bounded once.
+    title,
+    hint,
+    source,
   };
 }
 
