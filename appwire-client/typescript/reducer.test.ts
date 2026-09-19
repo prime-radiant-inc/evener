@@ -2758,6 +2758,49 @@ test("mergeOlderItemPage places an unpositioned warning run with its next positi
   expect(result.turns.map((turn) => turn.id)).toEqual(["fresh-a", "old-warning", "old-b", "fresh-d", "fresh-c"]);
 });
 
+test.each([
+  { gap: "prefix", freshEntry: 1 },
+  { gap: "prefix", freshEntry: 3 },
+  { gap: "interior", freshEntry: 1 },
+  { gap: "interior", freshEntry: 3 },
+  { gap: "suffix", freshEntry: 1 },
+  { gap: "suffix", freshEntry: 3 },
+])(
+  "mergeOlderItemPage honors positions past a fresh announcement in a $gap gap at $freshEntry",
+  ({ gap, freshEntry }) => {
+    const before = gap === "prefix" ? [] : [positionedFragmentTurn("fresh-a", [["a", 0]])];
+    const after = gap === "suffix" ? [] : [positionedFragmentTurn("fresh-c", [["c", 4]])];
+    const model = testHydrate({
+      turns: [...before, positionedFragmentTurn("fresh-d", [["d", freshEntry]]), ...after],
+    });
+    model.turns.splice(before.length, 0, {
+      id: "announcement",
+      status: "completed",
+      items: [{ id: "u", turnId: "announcement", type: "systemMessage", text: "notice", status: "completed" }],
+    });
+    const freshIds = model.turns.map((turn) => turn.id);
+    const result = mergeOlderItemPage(model, {
+      data: [...before, positionedFragmentTurn("old-b", [["b", 2]]), ...after],
+    });
+    const turnIds = result.turns.map((turn) => turn.id);
+    const itemIds = result.turns.flatMap((turn) => turn.items.map((item) => item.id));
+
+    expect(turnIds.filter((id) => freshIds.includes(id))).toEqual(freshIds);
+    expect(turnIds.filter((id) => !freshIds.includes(id))).toEqual(["old-b"]);
+    expect(itemIds.sort()).toEqual([
+      ...(gap === "prefix" ? [] : ["a"]),
+      "b",
+      ...(gap === "suffix" ? [] : ["c"]),
+      "d",
+      "u",
+    ]);
+    if (before.length > 0) expect(turnIds.indexOf("fresh-a")).toBeLessThan(turnIds.indexOf("old-b"));
+    if (after.length > 0) expect(turnIds.indexOf("old-b")).toBeLessThan(turnIds.indexOf("fresh-c"));
+    if (freshEntry < 2) expect(turnIds.indexOf("fresh-d")).toBeLessThan(turnIds.indexOf("old-b"));
+    else expect(turnIds.indexOf("old-b")).toBeLessThan(turnIds.indexOf("fresh-d"));
+  },
+);
+
 test("mergeOlderItemPage keeps retained turns ordered across interleaved collapsed anchors", () => {
   const model = testHydrate({
     turns: [

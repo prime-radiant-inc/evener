@@ -782,14 +782,18 @@ function weaveTurnGap(
 ): CoalescedTurn[] {
   const result: CoalescedTurn[] = [];
   let olderIndex = 0;
-  for (const freshTurn of fresh) {
+  for (const [freshIndex, freshTurn] of fresh.entries()) {
+    const freshComparisonTurn =
+      firstTurnPosition(freshTurn.turn) === undefined ? nextPositionedTurn(fresh, freshIndex) : freshTurn;
     while (olderIndex < older.length) {
       const olderTurn = older[olderIndex];
       if (olderTurn === undefined) break;
       const comparisonTurn =
         firstTurnPosition(olderTurn.turn) === undefined ? nextPositionedTurn(older, olderIndex) : olderTurn;
       const comparison =
-        comparisonTurn === undefined ? undefined : compareTurnPositions(comparisonTurn.turn, freshTurn.turn);
+        comparisonTurn === undefined || freshComparisonTurn === undefined
+          ? undefined
+          : compareTurnPositions(comparisonTurn.turn, freshComparisonTurn.turn);
       if (comparison !== undefined ? comparison < 0 : preferOlderWithoutPositions) {
         result.push(olderTurn);
         olderIndex += 1;
