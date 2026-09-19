@@ -125,6 +125,51 @@ it("clears target A while target B is loading and ignores A completion", async (
 	});
 });
 
+it("clears the old runtime snapshot before a replacement runtime read", async () => {
+	const first = fakeRuntime();
+	const initialA = deferred<NativeMutationPersistenceSnapshot>();
+	const lateA = deferred<NativeMutationPersistenceSnapshot>();
+	first.reads
+		.mockReturnValueOnce(initialA.promise)
+		.mockReturnValueOnce(lateA.promise);
+	let runtime = first.runtime;
+	const hook = renderHook(() =>
+		useNativeMutationRecovery(runtime, TARGET_A),
+	);
+
+	const oldSnapshot = snapshot();
+	await act(async () => {
+		initialA.resolve(oldSnapshot);
+		await initialA.promise;
+	});
+	expect(hook.result.current.snapshot).toBe(oldSnapshot);
+
+	first.emit([TARGET_A]);
+	const replacement = fakeRuntime();
+	const readB = deferred<NativeMutationPersistenceSnapshot>();
+	replacement.reads.mockReturnValueOnce(readB.promise);
+	runtime = replacement.runtime;
+	hook.rerender();
+	expect(hook.result.current).toMatchObject({
+		targetKey: TARGET_A,
+		loading: true,
+		snapshot: null,
+	});
+
+	await act(async () => {
+		lateA.resolve(snapshot());
+		await lateA.promise;
+	});
+	expect(hook.result.current.snapshot).toBeNull();
+
+	const currentSnapshot = snapshot();
+	await act(async () => {
+		readB.resolve(currentSnapshot);
+		await readB.promise;
+	});
+	expect(hook.result.current.snapshot).toBe(currentSnapshot);
+});
+
 it("unsubscribes on unmount and ignores a late read", async () => {
 	const read = deferred<NativeMutationPersistenceSnapshot>();
 	const fake = fakeRuntime();
