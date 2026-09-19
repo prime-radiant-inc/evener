@@ -47,6 +47,8 @@ export interface MarketplacesState {
   /** The failed list request's own text (errorText), for the host to
    * translate at render; null once a list succeeds. */
   marketplacesError: string | null;
+  /** Advances only when an accepted whole-list writer publishes a snapshot. */
+  marketplacesPublicationVersion: number;
   fetchMarketplaces(): Promise<void>;
   addMarketplace(params: MarketplaceAddParams): Promise<void>;
   removeMarketplace(name: string): Promise<void>;
@@ -132,6 +134,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // store has forgotten what it read, and a browse since then is about the
   // state the reset left behind, not the one an older reply belongs to.
   let generation = 0;
+  let nextMarketplacesPublicationVersion = 0;
 
   /** Drops these names' cached catalogs and retires their keys, returning
    * the next browseCatalogs map. Called only once a mutation has landed: a bump
@@ -160,6 +163,16 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       catalogs,
       [...catalogs.keys()].filter((name) => !present.has(name)),
     );
+  }
+
+  function publishMarketplaceSnapshot(marketplaces: MarketplaceEntry[]) {
+    nextMarketplacesPublicationVersion += 1;
+    return {
+      marketplaces,
+      marketplacesPublicationVersion: nextMarketplacesPublicationVersion,
+      marketplacesLoading: false,
+      marketplacesError: null,
+    };
   }
 
   const lifecycle = createStoreLifecycle<MarketplacesState>(client, {
@@ -196,6 +209,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         return { marketplacesLoading: false, browseCatalogs };
       });
     },
+    resetState: (state) => ({ marketplacesPublicationVersion: state.marketplacesPublicationVersion }),
     // A mutation issued before any fetchMarketplaces call touches none of
     // these three fields; the lifecycle ORs listRevision.hasLive() in for that
     // case (see storeLifecycle.ts's revision option).
@@ -230,9 +244,8 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           // see plugins.ts's mutate for why the live answer owns all three.
           return () =>
             set((s) => ({
-              marketplaces: resp.marketplaces,
+              ...publishMarketplaceSnapshot(resp.marketplaces),
               marketplacesLoading: false,
-              marketplacesError: null,
               browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
             }));
         },
@@ -243,9 +256,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
               return () => {
                 if (issuedIn !== generation) return;
                 set((s) => ({
-                  marketplaces: applied,
-                  marketplacesLoading: false,
-                  marketplacesError: null,
+                  ...publishMarketplaceSnapshot(applied),
                   browseCatalogs: retireCatalogsAbsentFrom(
                     retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
                     applied,
@@ -264,6 +275,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       marketplaces: null,
       marketplacesLoading: false,
       marketplacesError: null,
+      marketplacesPublicationVersion: 0,
 
       fetchMarketplaces() {
         set({ marketplacesLoading: true, marketplacesError: null });
@@ -275,9 +287,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         return readRevisioned(listRevision, () => client.request("evener/marketplace/list", {}), {
           onAnswer: (resp) => () =>
             set((s) => ({
-              marketplaces: resp.marketplaces,
-              marketplacesLoading: false,
-              marketplacesError: null,
+              ...publishMarketplaceSnapshot(resp.marketplaces),
               browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
             })),
           onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),

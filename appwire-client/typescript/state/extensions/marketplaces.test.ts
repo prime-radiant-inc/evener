@@ -492,6 +492,102 @@ describe("list ordering", () => {
   });
 });
 
+describe("marketplace publication version", () => {
+  test("advances once for each accepted list writer", async () => {
+    const { fake, store } = storeWithFake();
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().addMarketplace({ source: LOCAL.source });
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+
+    fake.on("evener/marketplace/remove", () => {
+      throw cloneLitterError([LOCAL]);
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toBeInstanceOf(WireError);
+    expect(store.getState().marketplacesPublicationVersion).toBe(3);
+  });
+
+  test("does not advance for failed reads, ordinary failures, or unconfirmed applied data", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, failing("list failed"));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    fake.on("evener/marketplace/add", failing("add failed"));
+    await expect(store.getState().addMarketplace({ source: LOCAL.source })).rejects.toThrow("add failed");
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    for (const error of [
+      cloneLitterError(null),
+      cloneLitterError({ malformed: true }),
+      cloneLitterError(null, { appliedUnavailable: true }),
+    ]) {
+      fake.on("evener/marketplace/remove", () => {
+        throw error;
+      });
+      await expect(store.getState().removeMarketplace("acme")).rejects.toBe(error);
+      expect(store.getState().marketplacesPublicationVersion).toBe(0);
+    }
+  });
+
+  test("a held applied failure advances only when a newer failed write releases it", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    settlements[1]?.reject(new Error("newer failed"));
+    await expect(newer).rejects.toThrow("newer failed");
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+  });
+
+  test("fences, reset, and dispose preserve the last publication version", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    const releaseFenced = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const fenced = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    store.connectionChanged(new FakeClient("connecting"), "connecting");
+    releaseFenced({ marketplaces: [LOCAL] });
+    await fenced;
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    const resetVersions: number[] = [];
+    const unsubscribe = store.subscribe((state) => resetVersions.push(state.marketplacesPublicationVersion));
+    store.reset();
+    unsubscribe();
+    expect(resetVersions.length).toBeGreaterThan(0);
+    expect(resetVersions.every((version) => version === 1)).toBe(true);
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+    fake.on(LIST, () => ({ marketplaces: [LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+
+    const releaseDisposed = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const disposed = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    store.dispose();
+    releaseDisposed({ marketplaces: [ACME] });
+    await disposed;
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+  });
+});
+
 describe("notifications", () => {
   beforeEach(() => {
     vi.useFakeTimers();
