@@ -1,6 +1,9 @@
 package hubcore
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestExplicitResumePreservesNewerAliasRecovery(t *testing.T) {
 	for _, complete := range []bool{false, true} {
@@ -187,6 +190,83 @@ func TestRejectForceStopOverlappingFencesRestoreTruePreFenceSequence(t *testing.
 		if state.Epoch != 0 || state.Stopping != 0 {
 			t.Fatalf("refused overlapping force stops left alias %s fenced: %+v", id, state)
 		}
+	}
+}
+
+// TestForceStopRejectKeepsConfirmedStoppedInvalidation is the Medium RoboRev
+// reported against the refused force-stop fence's epoch rollback: Reject
+// unconditionally decremented each fenced alias's Epoch without recording the
+// value the fence started from, so the rollback also erased an intervening
+// advance by another actor — a confirmed-stopped no-op's
+// InvalidateResumeAdmission, which advances epochs without installing a fence.
+// A registration that had snapshotted the fence-advanced epoch and parked on
+// the no-op's held alias token was then admitted on that stale pre-decision
+// snapshot after shutdown had already reported the session stopped.
+func TestForceStopRejectKeepsConfirmedStoppedInvalidation(t *testing.T) {
+	locks := NewResumeLocks()
+	// The confirmed-stopped no-op holds the alias token across its decision
+	// and success return, exactly like checkConfirmedStoppedWithoutClaim.
+	token := locks.For("A")
+	token.Lock()
+	// A concurrent force stop installs its fence: Epoch 0→1, Stopping 0→1.
+	fence := locks.BeginForceStop([]string{"A"})
+	// A resume registration snapshots the fence-advanced epoch and parks on
+	// the alias token the no-op holds.
+	captured := locks.RecoveryState("A").Epoch
+	ctx := t.Context()
+	registration := make(chan error, 1)
+	go func() {
+		_, err := locks.RegisterResume(ctx, "A", []string{"A"}, map[string]uint64{"A": captured})
+		registration <- err
+	}()
+	// The no-op reports the session stopped and invalidates admission while
+	// it still holds the alias token: Epoch 1→2 with no fence of its own.
+	locks.InvalidateResumeAdmission([]string{"A"})
+	// The concurrent force stop is refused — it canceled nothing — and rolls
+	// its fence back before the no-op releases the token.
+	fence.Reject()
+	fence.Finish(false)
+	// The parked registration acquires the released token and must re-admit
+	// on a post-decision snapshot, not launch on the pre-invalidation one.
+	token.Unlock()
+	if err := <-registration; !errors.Is(err, ErrResumeInvalidated) {
+		t.Fatalf("registration admitted on the pre-invalidation epoch after the refused fence rolled back the no-op's invalidation: %v", err)
+	}
+}
+
+// TestForceStopRejectEpochAncestryKeepsInvalidationAdvanced pins the epoch
+// side of the same conditional rollback: a newer held fence records the epoch
+// it began from as its restore target, which an older fence's write — or a
+// confirmed-stopped no-op's invalidation — may have advanced. Rejecting the
+// older fence must retire its written epoch wherever a newer held fence still
+// saves it as a restore target, so the newer fence's own refusal rolls back
+// to the true pre-fence value, and an invalidation published between the two
+// fences is never erased by either refusal.
+func TestForceStopRejectEpochAncestryKeepsInvalidationAdvanced(t *testing.T) {
+	locks := NewResumeLocks()
+	// The older fence advances A: Epoch 0→1.
+	fenceOlder := locks.BeginForceStop([]string{"A"})
+	// A confirmed-stopped no-op publishes its decision between the fences:
+	// Epoch 1→2 with no fence of its own.
+	locks.InvalidateResumeAdmission([]string{"A"})
+	// The newer fence advances A past the invalidation: Epoch 2→3.
+	fenceNewer := locks.BeginForceStop([]string{"A"})
+	// The older refusal cannot touch the epoch its write is buried under.
+	fenceOlder.Reject()
+	fenceOlder.Finish(false)
+	if got := locks.RecoveryState("A").Epoch; got != 3 {
+		t.Fatalf("older fence's refusal rolled back an epoch a newer actor advanced: got %d, want 3", got)
+	}
+	// The newer refusal rolls back only its own write: the invalidation
+	// published between the fences must survive both refusals.
+	fenceNewer.Reject()
+	fenceNewer.Finish(false)
+	state := locks.RecoveryState("A")
+	if state.Epoch != 2 {
+		t.Fatalf("refused fences erased the invalidation published between them: epoch %d, want 2", state.Epoch)
+	}
+	if state.Stopping != 0 {
+		t.Fatalf("refused fences left the alias fenced: %+v", state)
 	}
 }
 
