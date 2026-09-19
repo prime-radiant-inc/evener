@@ -48,3 +48,12 @@ func TestResearchDispatchUnknownSubcommand(t *testing.T) {
 		t.Errorf("stderr does not name the unknown subcommand: %q", stderr)
 	}
 }
+
+func TestResearchOracleCmd_MissingStateDirFails(t *testing.T) {
+	// No --state-dir and no default resolution in this environment:
+	// the cmd must fail with exit 1 and a message, not panic.
+	code := researchOracleCmd([]string{"--state-dir", "/nonexistent-definitely-missing"})
+	if code == 0 {
+		t.Fatal("oracle on missing state dir returned 0")
+	}
+}

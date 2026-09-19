@@ -1,8 +1,12 @@
 package dev
 
 import (
+	"flag"
 	"fmt"
 	"os"
+
+	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/research"
 )
 
 // researchUsageDoc is the usage text for the research subcommand family.
@@ -32,8 +36,30 @@ func runResearch(args []string) int {
 	}
 }
 
-// researchOracleCmd and researchRolloutCmd are wired in by their tasks.
-var (
-	researchOracleCmd  = func(args []string) int { _, _ = fmt.Fprint(os.Stderr, researchUsageDoc); return 2 }
-	researchRolloutCmd = func(args []string) int { _, _ = fmt.Fprint(os.Stderr, researchUsageDoc); return 2 }
-)
+// researchRolloutCmd is wired in by its task.
+var researchRolloutCmd = func(args []string) int { _, _ = fmt.Fprint(os.Stderr, researchUsageDoc); return 2 }
+
+// researchOracleCmd implements `evener-dev research oracle`: measure harness
+// overhead signals in real session transcripts and print the ranked report.
+func researchOracleCmd(args []string) int {
+	fs := flag.NewFlagSet("evener-dev research oracle", flag.ContinueOnError)
+	stateDir := fs.String("state-dir", "", "state base to walk (default: resolved like evener doctor)")
+	limit := fs.Int("limit", 30, "newest N sessions (0 = all)")
+	out := fs.String("out", "", "append the report record to this JSONL path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	base := *stateDir
+	if base == "" {
+		base = doctor.ResolveStateBase("")
+	}
+	rep, err := research.RunOracle(research.OracleOptions{
+		StateBase: base, Limit: *limit, OutPath: *out, Stdout: os.Stdout,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_ = rep
+	return 0
+}
