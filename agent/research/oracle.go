@@ -27,31 +27,58 @@ type sessionTranscript struct {
 	ModTime   time.Time
 }
 
-// walkSessionTranscripts finds transcript files under
-// <stateBase>/projects/*/sessions/*.transcript.jsonl, newest first.
-func walkSessionTranscripts(stateBase string, limit int) ([]sessionTranscript, error) {
-	pattern := filepath.Join(stateBase, "projects", "*", "sessions", "*.transcript.jsonl")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("walk transcripts: %w", err)
-	}
-	out := make([]sessionTranscript, 0, len(matches))
-	for _, p := range matches {
-		st, err := os.Stat(p)
+// transcriptLayouts are the on-disk session layouts walkSessionTranscripts
+// tries, in order, mirroring doctor's state-base auto-detection
+// (agent/doctor/locate.go resolveBuckets): the plain projects-bucket shape
+// first, then the XDG state home (one more evener/ segment, e.g.
+// ~/.local/state/evener/projects/*/sessions), then a base that is itself
+// an override / scratch bucket with sessions/ directly under it.
+var transcriptLayouts = []string{
+	"projects/*/sessions",
+	"evener/projects/*/sessions",
+	"sessions",
+}
+
+// walkSessionTranscripts finds transcript files under stateBase, newest
+// first, trying each layout in transcriptLayouts in order and taking the
+// first that resolves any transcript. It returns the matched layout so the
+// operator can see what was walked. Zero transcripts from every layout is
+// an error naming the base and each pattern tried: an empty corpus is a
+// hard failure, never a confident zero-verdict.
+func walkSessionTranscripts(stateBase string, limit int) ([]sessionTranscript, string, error) {
+	var tried []string
+	for _, layout := range transcriptLayouts {
+		pattern := filepath.Join(stateBase, layout, "*.transcript.jsonl")
+		tried = append(tried, pattern)
+		matches, err := filepath.Glob(pattern)
 		if err != nil {
-			continue // raced with deletion; skip
+			return nil, "", fmt.Errorf("walk transcripts: %w", err)
 		}
-		out = append(out, sessionTranscript{
-			Path:      p,
-			SessionID: strings.TrimSuffix(filepath.Base(p), ".transcript.jsonl"),
-			ModTime:   st.ModTime(),
-		})
+		if len(matches) == 0 {
+			continue
+		}
+		out := make([]sessionTranscript, 0, len(matches))
+		for _, p := range matches {
+			st, err := os.Stat(p)
+			if err != nil {
+				continue // raced with deletion; skip
+			}
+			out = append(out, sessionTranscript{
+				Path:      p,
+				SessionID: strings.TrimSuffix(filepath.Base(p), ".transcript.jsonl"),
+				ModTime:   st.ModTime(),
+			})
+		}
+		if len(out) == 0 {
+			continue // every match raced away; try the next layout
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
+		if limit > 0 && len(out) > limit {
+			out = out[:limit]
+		}
+		return out, layout, nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return nil, "", fmt.Errorf("no session transcripts under %s: tried %s", stateBase, strings.Join(tried, ", "))
 }
 
 // loadEntries decodes one transcript file. The first line must be the v2
@@ -463,10 +490,11 @@ func RunOracle(opts OracleOptions) (*OracleReport, error) {
 	if _, err := os.Stat(opts.StateBase); err != nil {
 		return nil, fmt.Errorf("stat state base: %w", err)
 	}
-	transcripts, err := walkSessionTranscripts(opts.StateBase, opts.Limit)
+	transcripts, layout, err := walkSessionTranscripts(opts.StateBase, opts.Limit)
 	if err != nil {
 		return nil, err
 	}
+	_, _ = fmt.Fprintf(opts.Stdout, "corpus: %d sessions under %s (layout %s)\n", len(transcripts), opts.StateBase, layout)
 	var (
 		totalEntries, totalSkipped int
 		adj                        AdjacencyStats

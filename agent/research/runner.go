@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/liveeval"
@@ -68,7 +69,34 @@ type ExecExecutor struct {
 	Live   bool
 }
 
+// childEnv returns the environment for the child processes the runner
+// execs (verify.sh and the harness binary), with GOWORK=off. Run
+// directories live inside the repo's go.work tree — and the operator's
+// environment may export GOWORK outright — so an inherited workspace would
+// make every go invocation in the child fail at workspace setup and get
+// recorded as a genuine task failure (verify_pass=false), silently
+// poisoning the ledger. Any inherited GOWORK is dropped first so the
+// override cannot lose to a stale exported value under POSIX first-match
+// env semantics.
+func childEnv() []string {
+	environ := os.Environ()
+	env := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "GOWORK=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "GOWORK=off")
+}
+
 func (e ExecExecutor) Run(ctx context.Context, run SessionRun) error {
+	// Defense in depth for the live opt-in: this method executes the real
+	// harness binary, so no code path may reach it without the opt-in,
+	// not even a caller that bypasses RunRollouts's liveGuard.
+	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
+		return fmt.Errorf("executing the harness binary requires %s=1", liveeval.OptInEnv)
+	}
 	args := []string{
 		"--state-dir", run.StateDir,
 		"--max-rounds", strconv.Itoa(run.MaxRounds),
@@ -80,6 +108,7 @@ func (e ExecExecutor) Run(ctx context.Context, run SessionRun) error {
 	args = append(args, run.Prompt)
 	cmd := exec.CommandContext(ctx, e.Binary, args...)
 	cmd.Dir = run.WorkDir
+	cmd.Env = childEnv()
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run()
@@ -112,13 +141,13 @@ type RolloutOptions struct {
 	Stdout      io.Writer
 }
 
-// liveGuard refuses a live rollout pass without the explicit opt-in.
-func liveGuard(live bool) error {
-	if !live {
-		return nil
-	}
+// liveGuard refuses any rollout pass without the explicit live opt-in.
+// Slice 1 has no offline rollout mode: every pass, --live flag or not,
+// executes the real harness binary, whose sessions issue live provider
+// calls. The env var is the gate; the flag only declares intent.
+func liveGuard() error {
 	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
-		return fmt.Errorf("live rollouts require %s=1", liveeval.OptInEnv)
+		return fmt.Errorf("rollouts require %s=1: every rollout pass executes the real harness binary and issues live provider calls", liveeval.OptInEnv)
 	}
 	return nil
 }
@@ -153,8 +182,11 @@ func copyTree(dst, src string) error {
 }
 
 func RunRollouts(ctx context.Context, opts RolloutOptions, ex sessionExecutor) error {
-	if err := liveGuard(opts.Live); err != nil {
+	if err := liveGuard(); err != nil {
 		return err
+	}
+	if opts.MaxRounds <= 0 {
+		return fmt.Errorf("max rounds must be positive (got %d): the harness treats --max-rounds 0 as unlimited, so a non-positive cap would remove the round limit", opts.MaxRounds)
 	}
 	if len(opts.Envs) == 0 {
 		return errors.New("no environments selected")
@@ -233,6 +265,7 @@ func runOnce(ctx context.Context, opts RolloutOptions, env environment, rep int,
 	row.AtifPath = atifPath
 	row.Metrics, _ = ExtractAtifMetrics(atifPath)
 	verify := exec.CommandContext(ctx, env.VerifyPath, workDir)
+	verify.Env = childEnv()
 	if err := verify.Run(); err != nil {
 		row.VerifyPass = false
 	} else {

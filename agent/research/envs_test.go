@@ -35,6 +35,11 @@ func TestCommittedEnvironmentsValid(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "repo", "go.mod")); err != nil {
 			t.Errorf("%s: repo/go.mod missing", e.Name())
 		}
+		// Environment-pool contract: alongside task.md + executable
+		// verify.sh + repo/go.mod, the rollout runner guarantees GOWORK=off
+		// on the environment of every verify.sh and harness child it
+		// execs (runner.go childEnv), so verify.sh may rely on the fixture
+		// building as a standalone module.
 		// The fixture repo must build offline.
 		cmd := exec.Command("go", "build", "./...")
 		cmd.Dir = filepath.Join(dir, "repo")

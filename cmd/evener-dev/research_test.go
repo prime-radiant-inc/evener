@@ -3,6 +3,7 @@ package dev
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,5 +78,40 @@ func TestResearchRolloutCmd_FlagErrorsFailFast(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "EVENER_LIVE_TESTS") {
 		t.Errorf("stderr does not name the guard env var: %q", stderr)
+	}
+}
+
+func TestResearchRolloutCmd_NonLivePassRequiresOptIn(t *testing.T) {
+	// The missing-binary evidence: without the guard, a rollout launched
+	// WITHOUT --live still execs the harness binary, records an infra-fail
+	// row, and exits 0. With the guard the refusal is a hard stop: nonzero
+	// exit, the guard's message on stderr, and no row written.
+	t.Setenv("EVENER_LIVE_TESTS", "")
+	runDir := t.TempDir()
+	code, stderr := captureResearchStderr(t, []string{
+		"rollout", "--env-dir", "../../research/environments",
+		"--env", "smoke-fix",
+		"--binary", "/nonexistent/definitely-missing-evener",
+		"--run-dir", runDir,
+	})
+	if code == 0 {
+		t.Fatal("non-live rollout without EVENER_LIVE_TESTS must not exit 0")
+	}
+	if !strings.Contains(stderr, "EVENER_LIVE_TESTS") {
+		t.Errorf("stderr does not name the guard env var: %q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "runs.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("runs.jsonl was written despite the refusal")
+	}
+}
+
+func TestResearchOracleCmd_EmptyStateBaseFails(t *testing.T) {
+	// An existing-but-empty base must refuse (nonzero) with a message
+	// naming the layouts tried — never emit a verdict on an empty corpus.
+	// The existing missing-directory case is covered by
+	// TestResearchOracleCmd_MissingStateDirFails.
+	code := researchOracleCmd([]string{"--state-dir", t.TempDir()})
+	if code == 0 {
+		t.Fatal("oracle on an existing-but-empty state base returned 0")
 	}
 }

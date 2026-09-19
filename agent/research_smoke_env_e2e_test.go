@@ -43,6 +43,16 @@ func TestResearchSmokeFix_SolvableByScriptedSession(t *testing.T) {
 	if !strings.Contains(string(fixture), bugSpan) {
 		t.Fatalf("fixture calc.go no longer carries the bugged span:\n%s", fixture)
 	}
+	// NEGATIVE CONTROL: the committed verifier must FAIL against the
+	// pristine (unfixed) workdir copy. Every other path in this suite runs
+	// verify.sh only against already-fixed code, so a vacuously-green
+	// verifier (exit 0 on anything) would pass the whole suite and silently
+	// invalidate every gate verdict — and verifier-driven scoring is this
+	// loop's core oracle. This one assertion is the discrimination proof.
+	negative := exec.Command(filepath.Join(envDir, "verify.sh"), filepath.Join(work, "repo"))
+	if out, err := negative.CombinedOutput(); err == nil {
+		t.Fatalf("verify.sh passed against the pristine unfixed workdir; it cannot discriminate a real fix:\n%s", out)
+	}
 	fixed := strings.Replace(string(fixture), bugSpan, fixSpan, 1)
 	calcPath := filepath.Join(work, "repo", "calc", "calc.go")
 

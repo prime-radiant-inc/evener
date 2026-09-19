@@ -62,7 +62,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "Usage: evener-dev <subcommand> [flags]\n\nSubcommands:\n")
-	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, check-gate-flags, covstmt, list-build-flags, module-lint, root-test-flags)\n")
+	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, check-gate-flags, covstmt, list-build-flags, module-lint, research, root-test-flags)\n")
 	_, _ = fmt.Fprintf(tw, "  module-lint\t\tRun golangci-lint across workspace modules in parallel waves\n")
 	_, _ = fmt.Fprintf(tw, "  agent-shards\t\tRun agent test shards in parallel\n")
 	_, _ = fmt.Fprintf(tw, "  list-build-flags\t\tPrint the go test flags that also belong on the go list that enumerates packages\n")

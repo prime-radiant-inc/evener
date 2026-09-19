@@ -8,7 +8,7 @@ import (
 const devHelp = `Usage: evener-dev <subcommand> [flags]
 
 Subcommands:
-  dev                        Dev tooling (agent-shards, check-gate-flags, covstmt, list-build-flags, module-lint, root-test-flags)
+  dev                        Dev tooling (agent-shards, check-gate-flags, covstmt, list-build-flags, module-lint, research, root-test-flags)
   module-lint              Run golangci-lint across workspace modules in parallel waves
   agent-shards             Run agent test shards in parallel
   list-build-flags         Print the go test flags that also belong on the go list that enumerates packages
