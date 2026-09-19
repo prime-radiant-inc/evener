@@ -2712,6 +2712,140 @@ test("mergeOlderItemPage prefers the fresh result even when an older result is v
   expect(item).toMatchObject({ output: "fresh result", completedAt: new Date(20).toISOString() });
 });
 
+test("mergeOlderItemPage preserves an older empty metadata turn beside an unrelated result", () => {
+  const model = testHydrate({
+    turns: [toolWireTurn("fresh-result", "item_tool_result_2_0", "unrelated-call", { output: "fresh" })],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "older-empty",
+        status: "completed",
+        itemsView: "full",
+        startedAt: 10,
+        completedAt: 20,
+        durationMs: 10,
+        usage: { inputTokens: 3 },
+        cost: "0.03",
+        error: { message: "older turn error" },
+        items: [],
+      },
+    ],
+  });
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["older-empty", "fresh-result"]);
+  expect(merged.turns[0]).toMatchObject({
+    startedAt: new Date(10).toISOString(),
+    completedAt: new Date(20).toISOString(),
+    durationMs: 10,
+    usage: { inputTokens: 3 },
+    cost: "0.03",
+    error: { message: "older turn error" },
+  });
+});
+
+test("mergeOlderItemPage preserves a fresh empty metadata turn beside an unrelated older result", () => {
+  const model = testHydrate({
+    turns: [
+      {
+        id: "fresh-empty",
+        status: "completed",
+        itemsView: "full",
+        items: [],
+        startedAt: 30,
+        completedAt: 40,
+        durationMs: 10,
+        usage: { outputTokens: 4 },
+        cost: "0.04",
+        error: { message: "fresh turn error" },
+      },
+    ],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [toolWireTurn("older-result", "item_tool_result_0_0", "unrelated-call", { output: "old" })],
+  });
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["older-result", "fresh-empty"]);
+  expect(merged.turns[1]).toMatchObject({
+    startedAt: new Date(30).toISOString(),
+    completedAt: new Date(40).toISOString(),
+    durationMs: 10,
+    usage: { outputTokens: 4 },
+    cost: "0.04",
+    error: { message: "fresh turn error" },
+  });
+});
+
+test("mergeOlderItemPage preserves metadata on a consumed result-only turn", () => {
+  const model = testHydrate({
+    turns: [toolWireTurn("fresh-call", "item_tool_1_0", "call-with-metadata", { status: "inProgress" })],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "older-result",
+        status: "completed",
+        itemsView: "full",
+        startedAt: 50,
+        completedAt: 60,
+        durationMs: 10,
+        usage: { inputTokens: 5 },
+        cost: "0.05",
+        error: { message: "consumed turn error" },
+        items: [
+          {
+            id: "item_tool_result_0_0",
+            turnId: "older-result",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-with-metadata",
+            output: "old result",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["older-result", "fresh-call"]);
+  expect(merged.turns[0]).toMatchObject({
+    items: [],
+    startedAt: new Date(50).toISOString(),
+    completedAt: new Date(60).toISOString(),
+    durationMs: 10,
+    usage: { inputTokens: 5 },
+    cost: "0.05",
+    error: { message: "consumed turn error" },
+  });
+  expect(merged.turns[1]?.items[0]).toMatchObject({
+    id: "item_tool_1_0",
+    callId: "call-with-metadata",
+    toolName: "shell",
+    output: "old result",
+    status: "inProgress",
+  });
+});
+
+test("mergeOlderItemPage drops a metadata-free consumed result-only turn", () => {
+  const model = testHydrate({
+    turns: [toolWireTurn("fresh-call", "item_tool_1_0", "call-without-metadata", { status: "inProgress" })],
+  });
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      toolWireTurn("older-result", "item_tool_result_0_0", "call-without-metadata", {
+        output: "old result",
+        status: "completed",
+      }),
+    ],
+  });
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["fresh-call"]);
+});
+
 test("mergeOlderItemPage preserves same-source call/result folding", () => {
   const merged = mergeOlderItemPage(testHydrate(), {
     data: [

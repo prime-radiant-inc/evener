@@ -404,7 +404,7 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // entry). Collapse them the way the live path already produces a single item:
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
-// dropped so its TurnSeparator does not survive. (zrzr)
+// dropped unless it was already empty or carries canonical turn metadata. (zrzr)
 // Item payloads lose page ownership during retained placement. Keep the
 // original source values beside the folded turns so inherited fields do not
 // acquire the freshness of the item that carried them. The merge tree records
@@ -578,7 +578,9 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
       }
       items.push(item);
     }
-    if (items.length > 0) merged.push({ ...turn, items });
+    if (items.length > 0 || turn.items.length === 0 || turnCoverageFields.some((field) => turn[field] !== undefined)) {
+      merged.push({ ...turn, items });
+    }
   }
   return merged;
 }
