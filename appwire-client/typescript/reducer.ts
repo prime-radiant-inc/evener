@@ -821,15 +821,25 @@ function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnM
   for (const group of retained) {
     const olderIndex = group.olderIndexes[0];
     if (olderIndex === undefined) continue;
+    // Coalesced fresh groups can consume noncontiguous older anchors. Keep the
+    // retained gaps moving forward by the greatest fresh rank seen so far,
+    // then choose the earliest later rank that remains compatible with it.
     const previousAnchor = oldAnchorFreshIndexes
       .slice(0, olderIndex)
-      .reverse()
-      .find((freshIndex) => freshIndex !== -1);
-    const nextDistinctAnchor =
-      previousAnchor === undefined
+      .reduce((greatest, freshIndex) => Math.max(greatest, freshIndex), -1);
+    const nextCompatibleAnchor =
+      previousAnchor === -1
         ? undefined
-        : oldAnchorFreshIndexes.slice(olderIndex + 1).find((freshIndex) => freshIndex > previousAnchor);
-    const gap = previousAnchor === undefined ? 0 : (nextDistinctAnchor ?? fresh.length);
+        : oldAnchorFreshIndexes
+            .slice(olderIndex + 1)
+            .reduce<number | undefined>(
+              (earliest, freshIndex) =>
+                freshIndex > previousAnchor && (earliest === undefined || freshIndex < earliest)
+                  ? freshIndex
+                  : earliest,
+              undefined,
+            );
+    const gap = previousAnchor === -1 ? 0 : (nextCompatibleAnchor ?? fresh.length);
     const run = retainedByFreshGap.get(gap) ?? [];
     run.push(group);
     retainedByFreshGap.set(gap, run);
