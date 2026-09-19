@@ -364,6 +364,31 @@ function renamedInstanceLanded(
   return declaredValuesLanded(listed, params, false) ? newName : undefined;
 }
 
+/** Whether the listed entry carries the credential fields this save declared.
+ * The endpoint fingerprint proves the DESTINATION, not the credential
+ * metadata: apiKeyEnv and credentialHeader are authored fields the listing
+ * serves directly (or omits), and a concurrent write can carry the same
+ * endpoint but different credential metadata. A declared value has to match
+ * after the hub's normalization; a credential clear is unverifiable (the hub
+ * omits an authored value it cannot serve, whether this save cleared it or a
+ * replacement insists on its own), so it fails closed where the caller needs
+ * proof. */
+function credentialValuesLanded(
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+  failClosedOnClear: boolean,
+): boolean {
+  if (failClosedOnClear && (params.clearApiKeyEnv || params.clearCredentialHeader)) return false;
+  if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
+  if (
+    params.credentialHeader !== undefined &&
+    normalizedCredentialHeader(listed.credentialHeader ?? "") !== normalizedCredentialHeader(params.credentialHeader)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** The entry the store's own listing carries for a plain (non-rename) save
  * whose response it superseded, or undefined when the listing cannot be shown
  * to carry this save's own landing. A refresh that starts after a save answers
@@ -400,7 +425,10 @@ function supersededSaveLanded(
   if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
   if (authoritativeFingerprint !== "") {
-    return listed.endpointFingerprint === authoritativeFingerprint ? listed : undefined;
+    if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
+    // The fingerprint settles the destination; the credential fields it does
+    // not cover are verified (and their clears fail closed) separately.
+    return credentialValuesLanded(listed, params, true) ? listed : undefined;
   }
   return declaredValuesLanded(listed, params, true) ? listed : undefined;
 }

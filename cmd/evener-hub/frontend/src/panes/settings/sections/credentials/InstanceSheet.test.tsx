@@ -2357,4 +2357,51 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
+
+  // The endpoint fingerprint proves the destination, not the credential fields
+  // it excludes. A replacement at the same endpoint (matching fingerprint) that
+  // carries different credential metadata must not be re-anchored over.
+  test("a superseded endpoint-plus-credential clear is not re-anchored onto conflicting credential metadata", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // Same endpoint, so the same fingerprint; the replacement keeps its own
+    // credential metadata.
+    const ours = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      apiKeyEnv: "",
+    };
+    const foreign = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      apiKeyEnv: "OTHER_KEY",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
 });
