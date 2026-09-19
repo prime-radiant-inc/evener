@@ -119,10 +119,21 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return err
 	}
 	fenced := make(map[string]bool)
-	var descendantFinishes []func(bool)
+	var descendantFences []*hubcore.ForceStopFence
+	// A refusal that has canceled nothing must not leave the descendant
+	// fences' advanced admission epochs and connection sequences behind
+	// either: existing descendant clients stay valid despite the refusal.
+	// Fences installed after the cancellation — the post-termination scan —
+	// are never rejected: termination was attempted and the stop's
+	// follow-through must stale connections admitted before it.
+	rejectDescendants := func() {
+		for _, fence := range descendantFences {
+			fence.Reject()
+		}
+	}
 	defer func() {
-		for _, finish := range descendantFinishes {
-			finish(false)
+		for _, fence := range descendantFences {
+			fence.Finish(false)
 		}
 	}()
 	fenceDescendants := func(scanCtx context.Context) error {
@@ -141,7 +152,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			}
 		}
 		if len(added) != 0 {
-			descendantFinishes = append(descendantFinishes, cfg.ResumeLocks.BeginForceStop(added).Finish)
+			descendantFences = append(descendantFences, cfg.ResumeLocks.BeginForceStop(added))
 		}
 		return nil
 	}
@@ -173,7 +184,9 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		acquired = len(aliases)
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
 			// The refusal canceled nothing, so it must not leave the epochs
-			// this fence advanced either.
+			// this fence advanced — or the descendant fences advanced —
+			// either.
+			rejectDescendants()
 			fenceRecovery.Reject()
 			return err
 		}
@@ -192,9 +205,10 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if params.ExpectedDaemon != nil {
 		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
 			// Refused before any cancellation: give back the admission epochs
-			// this fence advanced, so the in-flight Resume the refusal
-			// preserves still completes its recovery clear against the epoch
-			// it was admitted under.
+			// this fence advanced — and the descendant fences advanced — so
+			// the in-flight Resume the refusal preserves still completes its
+			// recovery clear against the epoch it was admitted under.
+			rejectDescendants()
 			fenceRecovery.Reject()
 			return err
 		}
