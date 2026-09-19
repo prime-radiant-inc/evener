@@ -1435,18 +1435,6 @@ func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroad
 	})
 }
 
-// newWiredPluginManager constructs a *plugins.Manager rooted at root and
-// wires it to broadcaster in one step, for a caller that already has a live
-// broadcaster to hand it (main_background.go's three background-maintenance
-// sites, each with web.appRPC in hand): the construct-then-wire pair
-// wirePluginStoreBroadcast's own doc comment describes, without repeating it
-// at every call site.
-func newWiredPluginManager(root string, broadcaster hostNotificationBroadcaster) *plugins.Manager {
-	mgr := plugins.NewManager(root)
-	wirePluginStoreBroadcast(mgr, broadcaster)
-	return mgr
-}
-
 // recentProjectDirsLimit is the session creation flows' path-dropdown option
 // count (issue #35): the 15 most recently used projects.
 const recentProjectDirsLimit = 15
