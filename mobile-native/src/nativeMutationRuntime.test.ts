@@ -155,6 +155,57 @@ test("readTargetRecords and storage subscriptions expose a scoped rejection with
 	await runtime.stop();
 });
 
+test("an attempted non-authoritative read notifies the storage projection after blocking a record", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await runtime.submit(request("send"));
+	await runtime.storage.markAttempted("mutation-1");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+
+	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe(
+		"reconciled",
+	);
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	unsubscribe();
+	await runtime.stop();
+});
+
+test("a stale lease still notifies after its non-authoritative blocking write commits", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	const replacement = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await runtime.submit(request("send"));
+	await runtime.storage.markAttempted("mutation-1");
+	const markUnknown = runtime.storage.markUnknown.bind(runtime.storage);
+	runtime.storage.markUnknown = async (clientMutationId, state, options) => {
+		const changed = await markUnknown(clientMutationId, state, options);
+		runtime.registerTarget("hub-1", "ref-1", replacement);
+		return changed;
+	};
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+
+	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe("stale");
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	unsubscribe();
+	await runtime.stop();
+});
+
 test.each([
 	["non-authoritative", { authoritative: false }],
 	["not-loaded", { status: "notLoaded" }],
