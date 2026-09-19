@@ -744,6 +744,7 @@ func TestManagedRecoveryPairsBeforeInterveningInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	disableSessionNaming(restored)
 	assertPair := func(session *Session) {
 		t.Helper()
 		session.repairOrphanedToolResults(t.Context(), "test next input")
@@ -802,7 +803,7 @@ func TestManagedRecoveryPairsBeforeInterveningInput(t *testing.T) {
 	if err := restored.Compact(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if summaryCalls == 0 || restored.history[0].Kind != schema.TurnSummary {
+	if summaryCalls != 1 || restored.history[0].Kind != schema.TurnSummary {
 		t.Fatal("did not reach an actual summarized fold")
 	}
 	assertPair(restored)
