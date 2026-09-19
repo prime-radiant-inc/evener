@@ -70,6 +70,15 @@ recovered results. The finding was ruled unsubstantiated without a reachable
 failing interleaving; no production change or new test run was made for it. The
 external review body remains recorded, rather than described as a clean review.
 
+The exact-head external authority review of PR #1987 identified production
+delete hooks and child grant revocation, both already assigned to the next
+lifecycle slice. Its entropy-error finding does not apply to the pinned Go 1.27
+`crypto/rand.Read`, which fills the buffer or terminates. Its suggestion to
+accept unsupported directory sync would weaken the required durability
+guarantee and was rejected; unsupported filesystems remain unqualified. Two
+small cleanup findings are retained for the lifecycle slice. This disposition
+is source analysis, not a new test run or a clean external-review claim.
+
 ## Remaining gates
 
 Durable Hub authority is reviewed and assembled with the runtime. Private daemon bootstrap,
