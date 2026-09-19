@@ -1727,29 +1727,38 @@ func describeImplicit(inst registry.Instance) string {
 
 // removalRemedy names the action that really takes an environment-backed
 // instance away, keyed on what makes it exist. The refusal beside describeImplicit
-// reads it, so a remedy has to name something that exists for this instance: the
-// variable it reads, the ADC credentials the host supplies, the stored credential
-// a keyless instance holds, or - when it holds none and needs none - that the row
-// belongs to its provider.
+// reads it, so a remedy has to name something that exists for this instance and
+// would take the row with it: the variable a credential-required scheme reads,
+// the ADC credentials the host supplies, the stored credential a keyless
+// instance holds, or - for a keyless scheme - the provider endpoint the row is
+// derived from.
 func removalRemedy(inst registry.Instance) string {
-	// The variable comes first: it is what supplies the credential the removal
-	// cannot take away, whether or not the scheme also resolves without one - a
-	// keyless gateway reading OLLAMA_API_KEY is refused for the variable it
-	// reads, not for the credential it does not need.
-	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
-		return fmt.Sprintf("unset %s instead", varName)
-	}
-	// No source at all - a keyless instance, or one the registry derives from
-	// its provider alone - holds no credential this removal could take away, so
-	// naming one to remove would send the caller after something that does not
-	// exist.
-	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
-		return "it comes back with its provider and holds no credential of its own to clear"
-	}
+	// A keyless scheme comes first: it resolves without any credential, so the
+	// registry derives its instance whether or not a variable is set
+	// (computeInstances). Unsetting the variable an active env source names
+	// would only drop the optional key and leave the row - a keyless gateway
+	// reading OLLAMA_API_KEY keeps coming back from its provider endpoint - so
+	// the endpoint is what the remedy has to name instead.
 	if keylessScheme(inst.Auth) {
+		if strings.HasPrefix(inst.CredentialSource, "env:") {
+			return "the provider endpoint is what keeps it, so remove or disable that endpoint instead"
+		}
 		if inst.CredentialSource == "store" {
 			return "clear the stored credential instead"
 		}
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	// For a credential-required scheme the variable comes first: it is what
+	// supplies the credential the removal cannot take away, and unsetting it
+	// takes the instance with it.
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
+	// No source at all - a credential-required instance the registry derives
+	// from its provider alone - holds no credential this removal could take
+	// away, so naming one to remove would send the caller after something that
+	// does not exist.
+	if inst.CredentialSource == "none" || inst.CredentialSource == "" {
 		return "it comes back with its provider and holds no credential of its own to clear"
 	}
 	if inst.CredentialSource == "adc" {

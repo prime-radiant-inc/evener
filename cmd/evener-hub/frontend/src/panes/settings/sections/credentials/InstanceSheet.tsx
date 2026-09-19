@@ -87,6 +87,18 @@ const STALE_SAVE_WARNING =
 // edits onto its replacement.
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
+// The rename persisted but the listing cannot yet confirm the destination row,
+// so the sheet still shows the held original while the section's selection names
+// the destination. A second Save would resubmit the completed rename against
+// the old name, which the config no longer carries; the form says so rather than
+// sending it.
+const RENAME_PENDING_SAVE_ERROR =
+  "This rename is still being confirmed; wait for the renamed instance to appear before saving again.";
+// The same gap for every other per-instance action: the sheet's callbacks target
+// the section's selected name, so firing one now would act on whatever occupies
+// the destination, not the instance on screen.
+const RENAME_PENDING_ACTION_MESSAGE =
+  "This rename is still being confirmed; wait for the renamed instance to appear before acting on it.";
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -344,7 +356,13 @@ export function InstanceSheet({
   const atRenameDestination = renamingFrom !== undefined && name === renamingFrom.params.newName;
   const renameLandedHere =
     atRenameDestination && renamedInstanceLanded(instances, renamingFrom.entry, renamingFrom.params) === name;
-  const instance = atRenameDestination && !renameLandedHere ? renamingFrom.entry : (stored ?? renamingFrom?.entry);
+  // The reconciliation gap: the section has selected this rename's destination,
+  // but the listing's row there is not this rename's own (absent, implicit, or a
+  // different instance). The sheet's subject stays the held original while every
+  // callback the section passes targets the destination name - so any action
+  // fired now would act on whatever occupies that name, not the instance shown.
+  const renameGap = atRenameDestination && !renameLandedHere;
+  const instance = renameGap ? renamingFrom.entry : (stored ?? renamingFrom?.entry);
   const template = instance === undefined ? undefined : availableProviders.find((p) => p.id === instance.providerId);
 
   function seed(inst: InstanceEntry): void {
@@ -427,6 +445,14 @@ export function InstanceSheet({
   function updateVar(key: string, value: string): void {
     setDraft((current) => (current === null ? current : { ...current, vars: { ...current.vars, [key]: value } }));
   }
+  // A per-instance action is refused while the rename gap persists: the section
+  // callback it would run targets the selected destination, not the held
+  // instance on screen. A toast, not a dead control: Button drops the click
+  // entirely for aria-disabled/disabled (widgets/button), so a disabled control
+  // would refuse in silence where this explains the wait.
+  function refuseDuringRename(): void {
+    toast.push("warning", RENAME_PENDING_ACTION_MESSAGE);
+  }
 
   async function handleSave(): Promise<void> {
     // The action carries its own write gate rather than borrowing the Save
@@ -434,6 +460,15 @@ export function InstanceSheet({
     // in-flight write must not go out through that door either.
     if (busy || writesRefused) return;
     if (instance === undefined) return;
+    // The rename persisted but the listing has not confirmed its destination:
+    // the form still holds the user's dirty rename draft, and resubmitting it
+    // would send the completed rename against the old name, which is gone.
+    // Refuse with the reason (the file's pressable-refusal precedent) and send
+    // nothing - the button and the form's own submit door both land here.
+    if (renameGap) {
+      setFormError(RENAME_PENDING_SAVE_ERROR);
+      return;
+    }
     // The draft belongs to the instance it was seeded from. A removal and
     // recreation under the freed name, or another instance renamed onto it,
     // leaves the name the sheet is on while handing it a different instance:
@@ -730,8 +765,16 @@ export function InstanceSheet({
               <div className={CLASS.fullRow}>
                 {/* Refresh is a read: the RPC deliberately skips
                     refuseWhenBroken, so it stays available while
-                    providers.toml cannot be written. */}
-                <Button variant="quiet" onClick={onRefreshModels} aria-disabled={modelsRefreshing} disabled={busy}>
+                    providers.toml cannot be written. The rename gap is
+                    different - it would read the row the selection names,
+                    not the instance on screen, and cache another instance's
+                    models under a name this sheet cannot yet trust. */}
+                <Button
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onRefreshModels}
+                  aria-disabled={modelsRefreshing}
+                  disabled={busy}
+                >
                   {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
                 </Button>
               </div>
@@ -743,7 +786,7 @@ export function InstanceSheet({
                       checked={!row.disabled}
                       pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
                       disabled={busy || writesRefused}
-                      onChange={(checked) => onToggleModel(row.id, !checked)}
+                      onChange={(checked) => (renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked))}
                     />
                   </div>
                 ))}
@@ -754,7 +797,7 @@ export function InstanceSheet({
             <div className={CLASS.fullRow}>
               <Button
                 variant="quiet"
-                onClick={onTestCredentials}
+                onClick={renameGap ? refuseDuringRename : onTestCredentials}
                 aria-disabled={testCredentialsPending}
                 disabled={busy}
               >
@@ -768,28 +811,32 @@ export function InstanceSheet({
             )}
             {supportsApiKey && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetApiKey} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
                   {instance.hasStoredFile ? "Replace key" : "Set key"}
                 </Button>
               </div>
             )}
             {supportsCredentialJson && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetCredentialJson} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetCredentialJson} disabled={busy}>
                   {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                 </Button>
               </div>
             )}
             {supportsOAuth && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onOAuthStart} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
                   {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
                 </Button>
               </div>
             )}
             {!instance.isDefault && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetDefault} disabled={busy || writesRefused}>
+                <Button
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onSetDefault}
+                  disabled={busy || writesRefused}
+                >
                   ★ make default
                 </Button>
               </div>
@@ -801,21 +848,29 @@ export function InstanceSheet({
               <div className={CLASS.actionRows}>
                 {showClearStoredKey && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="dangerQuiet" onClick={onClearStoredKey} disabled={busy}>
+                    <Button
+                      variant="dangerQuiet"
+                      onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                      disabled={busy}
+                    >
                       {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
                     </Button>
                   </div>
                 )}
                 {showClear && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="dangerQuiet" onClick={onClear} disabled={busy}>
+                    <Button variant="dangerQuiet" onClick={renameGap ? refuseDuringRename : onClear} disabled={busy}>
                       Clear
                     </Button>
                   </div>
                 )}
                 {!fromEnvironment(instance) && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="danger" onClick={onRemove} disabled={busy || writesRefused}>
+                    <Button
+                      variant="danger"
+                      onClick={renameGap ? refuseDuringRename : onRemove}
+                      disabled={busy || writesRefused}
+                    >
                       Remove
                     </Button>
                   </div>

@@ -2428,6 +2428,100 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
   });
 
+  // A persisted rename whose listing omits the row leaves the user's dirty
+  // rename draft in place. Save stays pressable (the file's pressable-refusal
+  // precedent), but resubmitting now would send the completed rename against
+  // the old name - gone from the config - so it must refuse before any write.
+  test("a persisted rename in the listing gap refuses a second save without a request", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    await screen.findByText(/OAuth record not read/);
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+
+    // The draft is still dirty and Save pressable; pressing must refuse.
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    expect(edits()).toHaveLength(1);
+    expect(within(inspector).getByRole("alert").textContent).toMatch(/still being confirmed/);
+
+    // The form's own submit door refuses too.
+    fireEvent.submit(within(inspector).getByRole("form", { name: "Edit work" }));
+    expect(edits()).toHaveLength(1);
+  });
+
+  // During the gap the section's selection names the destination, and every
+  // action the sheet forwards targets that name - whatever occupies it, here an
+  // impostor row. Remove and Clear must refuse rather than mutate the wrong
+  // instance, and must work again the instant the real row arrives.
+  test("a persisted rename in the listing gap refuses Remove and Clear, and they work once it reconciles", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    const IMPOSTOR = instance({
+      name: "work2",
+      providerId: "openai",
+      baseUrl: "https://impostor.example.test",
+      implicit: true,
+      activeSource: "env:WORK2_KEY",
+    });
+    let listing: InstanceListResponse = LIST;
+    fake.on("evener/instance/list", () => listing);
+    fake.on("evener/instance/edit", () => {
+      listing = { instances: [IMPOSTOR, PERSONAL], availableProviders: [] };
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    await screen.findByText(/OAuth record not read/);
+    // The gap: the sheet shows the held original while the destination holds
+    // the impostor.
+    expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
+
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(0);
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    expect(screen.queryByRole("dialog", { name: "Clear credentials" })).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "evener/auth/logout")).toHaveLength(0);
+    // The user is told why, and the impostor is untouched.
+    expect((await screen.findAllByText(/still being confirmed/)).length).toBeGreaterThan(0);
+    expect(credentialsStore.getState().instances.some((i) => i.name === "work2")).toBe(true);
+
+    // The real row arrives: the actions work again.
+    listing = { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await screen.findByRole("dialog", { name: "work2" });
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("dialog", { name: "Remove instance" })).toBeTruthy();
+  });
+
   // A refusal carries no such discriminator, so it stays the plain save failure
   // it was, with the sheet left where it was.
   test("a rename error without the persisted discriminator stays a plain failure", async () => {

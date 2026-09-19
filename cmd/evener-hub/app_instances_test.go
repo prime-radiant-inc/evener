@@ -4608,7 +4608,10 @@ func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
 // CLI and direct RPC callers, so each remedy has to name an action this
 // instance can actually take - the variable it reads, the host's ADC
 // credentials, the stored credential a keyless instance holds, or nothing when
-// it holds none and needs none.
+// it holds none and needs none. A keyless instance whose active source is a
+// variable is the exception: the variable supplies an optional credential, so
+// the remedy names the provider endpoint that keeps the row instead of sending
+// the caller to unset a key the scheme never needed.
 func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -4640,10 +4643,10 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
 		},
 		{
-			name:    "a keyless instance the environment supplies names its variable",
+			name:    "a keyless instance the environment supplies names its endpoint, not the optional variable",
 			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
-			want:    "unset OLLAMA_API_KEY instead",
-			refuses: []string{"holds no credential of its own to clear", "clear the stored credential"},
+			want:    "remove or disable that endpoint instead",
+			refuses: []string{"unset", "OLLAMA_API_KEY", "holds no credential of its own to clear", "clear the stored credential"},
 		},
 		{
 			name:    "a non-keyless instance with no credential source names none to remove",
@@ -4700,6 +4703,13 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 			want:    "unset OPENAI_API_KEY instead",
 			refuses: "OAuth record",
 		},
+		{
+			name:    "a keyless optional-bearer row whose optional key is set",
+			env:     map[string]string{"OLLAMA_API_KEY": "gk"},
+			remove:  "ollama",
+			want:    "remove or disable that endpoint instead",
+			refuses: "unset",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, tt.env)
@@ -4725,6 +4735,29 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 				t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, tt.refuses)
 			}
 		})
+	}
+}
+
+// TestInstances_KeylessRowOutlivesUnsettingItsOptionalKey is the premise of the
+// keyless row's remedy: computeInstances derives a curated keyless provider
+// whether or not a credential resolves, so unsetting the variable its active
+// source names drops the optional key and leaves the row where it was. The
+// refusal must not send the caller there; its provider endpoint is what keeps
+// the row.
+func TestInstances_KeylessRowOutlivesUnsettingItsOptionalKey(t *testing.T) {
+	env := map[string]string{"OLLAMA_API_KEY": "gk"}
+	f := newInstancesFixture(t, env)
+	if got := entry(t, f.ctl.List(), "ollama"); got.ActiveSource != "env:OLLAMA_API_KEY" {
+		t.Fatalf("ollama activeSource = %q, want the variable to resolve first", got.ActiveSource)
+	}
+
+	delete(env, "OLLAMA_API_KEY")
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	got := entry(t, f.ctl.List(), "ollama")
+	if !got.Implicit || got.ActiveSource != "none" {
+		t.Fatalf("ollama after unsetting OLLAMA_API_KEY = %+v, want the same implicit row with no credential", got)
 	}
 }
 
