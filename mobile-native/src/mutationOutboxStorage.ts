@@ -1,10 +1,7 @@
-// D25d-1: the phone's implementation of the package's MutationOutboxStorage
-// port (appwire-client/typescript/state/mutation/outbox.ts) - the 13 calls
-// the outbox's discovery and the dispatcher make - over expo-sqlite, the
-// same storage draftRepository.ts already persists drafts through. No host
-// global is named in the package; this adapter is where the sqlite handle
-// lives. Landed as two stacked PRs (1a the write path, 1b the read path)
-// once the whole port measured over the ~150-line target for one PR.
+// Native implementation of the package's MutationOutboxStorage port
+// (appwire-client/typescript/state/mutation/outbox.ts) over expo-sqlite. The
+// adapter owns the SQLite handle because the package port names no host
+// storage global.
 //
 // Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
 // describe("MutationOutboxIndexedDB", ...) block. This mirrors its
@@ -127,6 +124,7 @@ export interface Row {
 }
 
 export function fromRow<A extends MutationAttachmentRef, T extends MutationRecord<A>>(row: Row): T {
+	const optimisticDisplay = JSON.parse(row.optimistic_display);
 	return {
 		version: row.version as 1,
 		clientMutationId: row.client_mutation_id,
@@ -136,12 +134,12 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		method: row.method,
 		payload: JSON.parse(row.payload),
 		attachments: JSON.parse(row.attachments),
-		optimisticDisplay: JSON.parse(row.optimistic_display),
+		optimisticDisplay: optimisticDisplay === null ? undefined : optimisticDisplay,
 		composerText: row.composer_text ?? undefined,
 		intentSequence: row.intent_sequence,
 		createdAt: row.created_at,
 		state: row.state as MutationOutboxState,
-		attempted: row.attempted === 1,
+		...(row.state === "accepted" ? {} : { attempted: row.attempted === 1 }),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
 	} as unknown as T;
 }
@@ -329,7 +327,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		});
 	}
 
-	// D25d-1b: the read path.
+	// Read methods required by MutationOutboxStorage.
 
 	async listTargetRefs(): Promise<string[]> {
 		const rows = this.db.getAllSync<{ target_ref: string }>(
@@ -393,8 +391,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return rows.map((row) => fromRow<A, T>(row));
 	}
 
-	// Below: shared plumbing D25d-1a's write methods above call (D25d-1b's
-	// read methods, stacked on this, reuse insertValues/get/list too).
+	// Shared row plumbing used by the write and read methods above.
 	// A fresh clientMutationId has never been seen before, so a primary-key
 	// collision (the id generator repeating, the documented insecure
 	// fallback under adversarial conditions) means something is wrong with
