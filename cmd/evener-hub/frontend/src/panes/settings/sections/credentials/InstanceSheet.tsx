@@ -369,18 +369,30 @@ function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams)
  * listing cannot say that it did: the new name has to be held by the instance
  * this save renamed - matching on the fields this save left alone and carrying
  * the values it declared - not by a later tenant of the freed name that
- * differs in a field this rename also edited. */
+ * differs in a field this rename also edited.
+ *
+ * When the mutation's captured new-name row carries an endpointFingerprint, the
+ * listing must carry the same one: that proves the renamed destination even when
+ * the sanitized display URL cannot show its hidden parts. Without it (an
+ * unkeyable instance) the declared sanitized values are the only check, and the
+ * derived-endpoint cases there fail closed (see declaredValuesLanded). */
 function renamedInstanceLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
   params: InstanceEditParams,
+  authoritative: InstanceEntry | undefined,
 ): string | undefined {
   const newName = params.newName;
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
-  return declaredValuesLanded(listed, params) ? newName : undefined;
+  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
+  if (authoritativeFingerprint === "") return declaredValuesLanded(listed, params) ? newName : undefined;
+  if (listed.endpointFingerprint !== authoritativeFingerprint) return undefined;
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return undefined;
+  if (!credentialValuesLanded(listed, params, true)) return undefined;
+  return declaredVarsAndSurfaceLanded(listed, params) ? newName : undefined;
 }
 
 /** Whether the listed entry carries the non-endpoint values this save declared
@@ -677,9 +689,10 @@ export function InstanceSheet({
       // for this instance, though, so keep it to compare against the listing
       // now held (see supersededSaveLanded).
       let authoritative: InstanceEntry | undefined;
+      const authoritativeName = params.newName ?? instance.name;
       const applied = await credentialsStore.getState().edit(params, {
         onSuperseded: (response) => {
-          authoritative = response.instances.find((entry) => entry.name === instance.name);
+          authoritative = response.instances.find((entry) => entry.name === authoritativeName);
         },
       });
       const listedInstances = credentialsStore.getState().instances;
@@ -687,7 +700,7 @@ export function InstanceSheet({
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can
       // take - so the entry is checked against the instance this save renamed.
-      const listedRename = renamedInstanceLanded(listedInstances, instance, params);
+      const listedRename = renamedInstanceLanded(listedInstances, instance, params, authoritative);
       if (applied || listedRename !== undefined) toast.push("success", `Saved ${params.newName ?? instance.name}`);
       // The sheet may have moved on while the request was in flight: dismissed,
       // or pointed at another row. The write stands and the toast above is

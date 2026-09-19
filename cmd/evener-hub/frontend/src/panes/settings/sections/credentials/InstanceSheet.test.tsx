@@ -2029,7 +2029,9 @@ describe("the form", () => {
       endpointFingerprint: "fp-other",
     };
     await refreshList(fake, [foreign]);
-    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+    await act(async () =>
+      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
+    );
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
@@ -2209,7 +2211,9 @@ describe("the form", () => {
       endpointFingerprint: "fp-other",
     };
     await refreshList(fake, [foreign]);
-    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+    await act(async () =>
+      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
+    );
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
@@ -2374,7 +2378,9 @@ describe("the form", () => {
       endpointFingerprint: "fp-other",
     };
     await refreshList(fake, [foreign]);
-    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+    await act(async () =>
+      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
+    );
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
@@ -2545,7 +2551,9 @@ describe("the form", () => {
       endpointFingerprint: "fp-other",
     };
     await refreshList(fake, [foreign], [VERTEX]);
-    await act(async () => finish({ instances: [foreign], availableProviders: [VERTEX] }));
+    await act(async () =>
+      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [VERTEX] }),
+    );
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
@@ -2769,7 +2777,9 @@ describe("the form", () => {
       endpointFingerprint: "fp-other",
     };
     await refreshList(fake, [foreign]);
-    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+    await act(async () =>
+      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
+    );
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
@@ -2819,5 +2829,90 @@ describe("the form", () => {
     // The unedited apiKeyEnv takes the landed (foreign) value; nothing pending.
     expect(field("API key environment variable").value).toBe("FOREIGN");
     expect(saveButton().disabled).toBe(true);
+  });
+
+  // The rename path now proves the destination from the rename's own captured
+  // row: a replacement under the new name at the same sanitized URL but a
+  // different hidden endpoint (a query the listing strips) must not be confirmed.
+  test("a superseded rename is not confirmed by a same-URL entry at a different hidden endpoint", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://old.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      originClientId: "test-tab",
+    });
+
+    const ours = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-ours",
+    };
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-foreign",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // A rename that only changes a variable has no declared Base URL, but the
+  // rename's own captured row carries the new-name fingerprint, so it confirms
+  // rather than failing closed.
+  test("a superseded rename that only changes a variable is confirmed by the authoritative fingerprint", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      newName: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...before,
+      name: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("v2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved v2")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 });
