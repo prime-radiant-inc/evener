@@ -199,7 +199,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   function applyHubChange(change: TranscriptDisplayChange): void {
     if (!isViewportClass(change.layout) || !isRevision(change.revision)) return;
-    if (getState().hubSupport === "unsupported") return;
+    if (!fence.liveHub(fence.generation)) return;
     if (changeArrivedBeforeConfirmation()) return;
     let config: TranscriptDisplayConfigV1;
     try {
