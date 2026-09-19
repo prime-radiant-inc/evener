@@ -54,21 +54,12 @@ var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-
 // consumesValue reports whether name's value is the next argument, and so must
 // be skipped over rather than read as a flag. -tags is a selection flag this
 // walker forwards, not a skip, and -args/-- terminate the flags; all three are
-// handled by the walker itself. A caller that only needs to know whether a flag
-// takes a separate value (not which flags are forwarded) wants takesValue.
+// handled by the walker itself.
 func consumesValue(name string) bool {
 	if name == "-tags" || name == "-args" || name == "--" {
 		return false
 	}
 	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
-}
-
-// takesValue reports whether name's value is the next argument for any flag the
-// gate may carry, including the selection flags packageSelectionFlags handles by
-// name and so leaves out of consumesValue. It is the predicate for a walker that
-// must consume every value, such as the gate's argument validator.
-func takesValue(name string) bool {
-	return consumesValue(name) || packageSelectionValueFlags[name]
 }
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given,
