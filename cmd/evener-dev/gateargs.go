@@ -1,37 +1,105 @@
 package dev
 
 // check-gate-flags validates the test gate's caller argv and effective GOFLAGS
-// before any module runs.
+// before any module runs, and root-test-flags prints the same argv with short
+// mode removed for the root module under ROOT_FULL.
 //
-// It exists so the gate does not carry a second flag parser in shell. The gate
-// appends its own -run/-skip filters and package list after the caller's flags,
-// so a caller flag that ends flag parsing (or a -C that moves the command out of
-// the module directory the gate anchored) must be refused. Detecting either
-// correctly means knowing which flags take a value -- `-run -args` is a regex;
-// `-args` alone is a terminator -- and GOFLAGS needs Go's own quoting rules.
-// Both answers already live here: consumesValue is the shared value-taking
-// table (and goFlag the shared spelling), and goflagsEntries is Go's
-// quoted.Split, so this is the same knowledge, not a copy of the tables.
+// Both exist so the gate does not carry a second flag parser in shell. They walk
+// the arguments with walkFlags, the shared value-aware walker shardplan.go
+// already uses: it normalises spellings (-test.run is -run, --tags is -tags),
+// consumes each value with the full tables, and fails on a flag whose value is
+// missing rather than indexing past it. goflagsEntries is Go's own quoted.Split,
+// so GOFLAGS is read the way go reads it.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 )
+
+// errRefused stops a walk at the first token the caller wants to report.
+var errRefused = errors.New("refused")
 
 func checkGateFlagsMain(args []string) int {
 	return checkGateFlags(args, os.Stdout, os.Stderr)
 }
 
+func checkGateFlags(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("check-gate-flags", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	goflags := fs.String("goflags", "", "the effective GOFLAGS value to validate")
+	fs.Usage = func() {
+		_, _ = fmt.Fprint(stderr, "usage: evener-dev check-gate-flags --goflags <GOFLAGS> -- <go test flags...>\n\n"+
+			"Fails if the gate cannot carry the caller's flags: a value-taking flag with\n"+
+			"no value, a flag terminator (-args, --), or a -C anywhere, including inside\n"+
+			"GOFLAGS under Go's own quoting.\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	// GOFLAGS is applied to every go command the gate runs, so a -C there moves
+	// the enumeration and the tests out of the module directory alike.
+	if name, found, err := firstRefusedArg(goflagsEntries(*goflags), false); err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: GOFLAGS: %v\n", err)
+		return 2
+	} else if found {
+		_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: GOFLAGS carries %s, which would move the gate out of the module directory it anchors; remove it\n", name)
+		return 2
+	}
+
+	name, found, err := firstRefusedArg(fs.Args(), true)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: %v\n", err)
+		return 2
+	}
+	if found {
+		if name == "-C" {
+			_, _ = fmt.Fprintln(stderr, "evener-dev check-gate-flags: -C is not supported: the gate anchors each module's enumeration and its tests to that module's own directory")
+		} else {
+			_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: %s ends flag parsing, which this gate cannot honour: it appends its own -run/-skip filters and package list after the caller's flags\n", name)
+		}
+		return 2
+	}
+	return 0
+}
+
+// firstRefusedArg walks a `go test` argument list with the shared value-aware
+// walker and reports the first -C or, when terminators are refused, the first
+// -args/-- . A walk error (a flag whose value is missing) is returned too, so
+// the caller reports it instead of a later command crashing on it.
+func firstRefusedArg(args []string, refuseTerminators bool) (string, bool, error) {
+	var found string
+	err := walkFlags(args, func(tok flagToken) error {
+		if tok.name == "-C" {
+			found = tok.name
+			return errRefused
+		}
+		if refuseTerminators && (tok.name == "-args" || tok.name == "--") {
+			found = tok.name
+			return errRefused
+		}
+		return nil
+	})
+	if errors.Is(err, errRefused) {
+		return found, true, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return "", false, nil
+}
+
 // rootTestFlagsMain prints the caller's `go test` flags with short mode removed,
-// one per line, for the root module under ROOT_FULL. It is value-aware, so a
-// value that happens to spell -short (`-run -short`) is kept, and it normalises
-// spellings, so -short=true and -test.short are removed too.
+// one per line, for the root module under ROOT_FULL.
 func rootTestFlagsMain(args []string) int {
 	return rootTestFlags(args, os.Stdout, os.Stderr)
 }
+
+// errWriteFailed stops the walk once an output write has failed.
+var errWriteFailed = errors.New("write failed")
 
 func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("root-test-flags", flag.ContinueOnError)
@@ -44,87 +112,51 @@ func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	rest := fs.Args()
-	for i := 0; i < len(rest); i++ {
-		whole := goFlag(rest[i])
-		name := whole
-		inline := false
-		if j := strings.IndexByte(name, '='); j > 0 {
-			name = name[:j]
-			inline = true
+	write := func(s string) error {
+		line := s + "\n"
+		n, err := io.WriteString(stdout, line)
+		if err == nil && n != len(line) {
+			err = io.ErrShortWrite
 		}
-		if name == "-short" {
-			continue
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "evener-dev root-test-flags: writing flags: %v\n", err)
+			return errWriteFailed
 		}
-		_, _ = fmt.Fprintln(stdout, whole)
-		if takesValue(name) && !inline {
-			i++
-			_, _ = fmt.Fprintln(stdout, rest[i])
+		return nil
+	}
+	// walkFlags consumes each value with the shared tables and fails on a flag
+	// whose value is missing, so a value that spells -short is emitted as the
+	// value it is and a dangling flag is a usage error, not a panic.
+	err := walkFlags(fs.Args(), func(tok flagToken) error {
+		if tok.name == "-short" {
+			// A bare or inline boolean: dropping it drops short mode, and it
+			// takes no separate value to keep.
+			return nil
 		}
-	}
-	return 0
-}
-
-func checkGateFlags(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("check-gate-flags", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	goflags := fs.String("goflags", "", "the effective GOFLAGS value to validate")
-	fs.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: evener-dev check-gate-flags --goflags <GOFLAGS> -- <go test flags...>\n\n"+
-			"Fails if the gate cannot carry the caller's flags: a flag terminator\n"+
-			"(-args, --), or a -C anywhere, including inside GOFLAGS under Go's own\n"+
-			"quoting.\n")
-	}
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-
-	// GOFLAGS is applied to every go command the gate runs, so a -C there moves
-	// the enumeration and the tests out of the module directory alike. It is
-	// split with Go's own quoting before the walk.
-	if name, found := firstRefusedArg(goflagsEntries(*goflags), false); found {
-		_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: GOFLAGS carries %s, which would move the gate out of the module directory it anchors; remove it\n", name)
-		return 2
-	}
-
-	if name, found := firstRefusedArg(fs.Args(), true); found {
-		switch name {
-		case "-C":
-			_, _ = fmt.Fprintln(stderr, "evener-dev check-gate-flags: -C is not supported: the gate anchors each module's enumeration and its tests to that module's own directory")
-		default:
-			_, _ = fmt.Fprintf(stderr, "evener-dev check-gate-flags: %s ends flag parsing, which this gate cannot honour: it appends its own -run/-skip filters and package list after the caller's flags\n", name)
+		// Every token and value here is handed back one per line, so neither can
+		// carry a newline.
+		if err := checkValue(tok.name, tok.whole); err != nil {
+			return err
 		}
+		if err := write(tok.whole); err != nil {
+			return err
+		}
+		if tok.hasValue && !tok.inline {
+			if err := checkValue(tok.name, tok.value); err != nil {
+				return err
+			}
+			if err := write(tok.value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, errWriteFailed) {
+		return 1
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-dev root-test-flags: %v\n", err)
 		return 2
 	}
 	return 0
-}
-
-// firstRefusedArg walks a `go test` argument list once, consuming the value of
-// every flag that takes one (the shared consumesValue table) so a value that
-// happens to spell -C or -args is not read as a flag, and reports the first -C
-// or, when terminators are refused, the first -args/-- .
-func firstRefusedArg(args []string, refuseTerminators bool) (string, bool) {
-	for i := 0; i < len(args); i++ {
-		whole := goFlag(args[i])
-		name := whole
-		inline := false
-		if j := strings.IndexByte(name, '='); j > 0 {
-			name = name[:j]
-			inline = true
-		}
-		if name == "-C" {
-			return name, true
-		}
-		if refuseTerminators && (name == "-args" || name == "--") {
-			return name, true
-		}
-		// Only a value written as the next argument is consumed; an inline
-		// value (`-count=1`) must not swallow the flag after it. takesValue
-		// includes -tags, which consumesValue leaves out because
-		// packageSelectionFlags handles that flag by name.
-		if takesValue(name) && !inline {
-			i++
-		}
-	}
-	return "", false
 }

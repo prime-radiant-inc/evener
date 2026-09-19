@@ -113,7 +113,9 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "a whitespace value on a non-selection flag survives", args: []string{"-run", "Smoke -race"}},
 		{name: "a glob value on a non-selection flag survives", args: []string{"-run", "Test*"}},
 		{name: "a separate empty value on a non-selection flag survives", args: []string{"-run", ""}},
-		{name: "a newline value on a non-selection flag is refused", args: []string{"-run", "a\nb"}, wantErr: true},
+		// A non-selection value is never emitted, so it needs no
+		// representability check: go test gets the original argv as an array.
+		{name: "a newline value on a non-selection flag survives", args: []string{"-run", "a\nb"}},
 		{name: "a dangling non-selection value flag is refused", args: []string{"-short", "-run"}, wantErr: true},
 		// A plain non-selection value is still consumed without complaint.
 		{name: "an ordinary non-selection value is fine", args: []string{"-run", "TestFoo", "-race"}, want: []string{"-race"}},

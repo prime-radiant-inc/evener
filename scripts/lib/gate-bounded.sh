@@ -179,7 +179,14 @@ run_bounded() {
 	set +m
 	started_at=$SECONDS
 	deadline=$((started_at + bound))
-	while [ ! -f "${log_file}.status" ]; do
+	# The deadline is evaluated together with the status: a status observed
+	# strictly before the deadline is a success, and at or after it the timeout
+	# is final even if the status landed just then -- otherwise a command that
+	# finished after the bound could be accepted as a success.
+	while :; do
+		if [ -f "${log_file}.status" ] && [ "$SECONDS" -lt "$deadline" ]; then
+			break
+		fi
 		if [ "$SECONDS" -ge "$deadline" ]; then
 			stop_command "$pid"
 			if declare -F run_bounded_timeout_diagnostic >/dev/null 2>&1; then

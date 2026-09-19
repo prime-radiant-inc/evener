@@ -102,18 +102,15 @@ func packageSelectionFlags(args []string) ([]string, error) {
 		case packageSelectionBareFlags[name]:
 			out = append(out, whole)
 		case consumesValue(name):
-			// A value-taking flag this walker does not forward still has its
-			// value checked, so the line-oriented handoff cannot be broken by a
-			// value it cannot represent.
+			// A value-taking flag this walker does not forward is consumed so
+			// its value is not read as a flag, but its value is not emitted, so
+			// it needs no representability check: the gate hands the original
+			// argv to go test as a quoted array, newlines and all.
 			if !inline {
 				if i+1 >= len(args) {
 					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
 				}
 				i++
-				value = args[i]
-			}
-			if err := checkValue(name, value); err != nil {
-				return nil, err
 			}
 		}
 	}
