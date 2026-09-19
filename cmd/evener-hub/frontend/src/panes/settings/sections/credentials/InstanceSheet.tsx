@@ -720,7 +720,15 @@ export function InstanceSheet({
             const landedTemplate = credentialsStore
               .getState()
               .availableProviders.find((p) => p.id === landed.providerId);
-            setInitial(draftFor(landed, landedTemplate));
+            const landedDraft = draftFor(landed, landedTemplate);
+            setInitial(landedDraft);
+            // When this save did not author or clear the Base URL, the draft's
+            // copy is the OLD resolved URL (a variable or protocol/surface change
+            // moved the listing's). Leaving it would make the next Save emit that
+            // stale URL as an explicit override, so take the landed resolution.
+            if (params.baseUrl === undefined && !params.clearBaseUrl) {
+              setDraft((current) => (current === null ? current : { ...current, baseUrl: landedDraft.baseUrl }));
+            }
           } else {
             // The save was superseded and its landing could not be confirmed.
             // The fields a draft edits are deliberately excluded from

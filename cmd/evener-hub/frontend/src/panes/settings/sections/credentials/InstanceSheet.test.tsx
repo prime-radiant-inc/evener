@@ -2157,9 +2157,23 @@ describe("the form", () => {
     await refreshList(fake, [landed], [VERTEX]);
     await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
 
-    await user.click(saveButton());
+    // The re-anchor takes the landed resolution and leaves the draft clean.
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
-    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+    expect(field("Base URL").value).toBe("https://new.example.test/v1");
+    expect(saveButton().disabled).toBe(true);
+
+    // A further variable edit must not carry the stale pre-save URL as an
+    // explicit baseUrl override.
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p3");
+    await user.click(saveButton());
+    const edits = fake.calls.filter((c) => c.method === "evener/instance/edit");
+    expect(edits).toHaveLength(2);
+    expect(edits[1]?.params).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p3" },
+      originClientId: "test-tab",
+    });
   });
 
   // The hub preserves meaningful path differences (a trailing slash), so a
