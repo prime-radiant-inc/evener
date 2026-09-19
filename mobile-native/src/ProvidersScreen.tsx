@@ -1,11 +1,5 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,13 +13,24 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import type { InstanceEntry } from "@evener/appwire-client";
 import {
   activeSourceLabel,
+  CONNECTION_REPLACED_ERROR,
   credentialLayers,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
   groupByProvider,
+  isEndpointConflict,
+  sessionActionError,
   styleInfoText,
 } from "@evener/appwire-client";
-import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import {
+  type CredentialInstancesStore,
+  isStaleListingRefusal,
+  staleListingHeld,
+} from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
 import {
@@ -36,11 +41,28 @@ import {
 } from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
+import { useProviderSurface } from "./providerSurface";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { ProviderInstances } from "./providerInstances";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+// What a credential save says when the hub refuses the destination it was
+// asserted against: the name moved since the row was read, so nothing honest
+// was saved and the user re-enters against the destination now on screen.
+const ENDPOINT_CHANGED_SAVE_MESSAGE =
+  "This connection changed to a different endpoint, so the change was not saved. Check its destination and try again.";
+
+// What clearing a credential or removing an instance says when the hub cannot
+// fingerprint the destination: no key is being sent, so it does not reuse the
+// save-specific wording.
+const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
+  "The hub cannot check this endpoint right now, so the action was not run. Review its destination and try again once it can be checked.";
+
+// What a credential save (a key or a JSON blob) says for the same condition;
+// neutral about which credential kind, unlike the key-specific package copy.
+const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
+  "The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
 
 export function ProvidersScreen({
   route,
@@ -68,8 +90,8 @@ export function ProvidersScreen({
       setSignIn(null);
       return;
     }
-    signIn.flow.setConnection(ready ? client : null);
-  }, [signIn, activeProfile?.id, client, state, ready]);
+    signIn.flow.setConnection(canUseConnection() ? client : null);
+  }, [signIn, activeProfile?.id, client, state, canUseConnection]);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -91,13 +113,9 @@ export function ProvidersScreen({
         ready={ready}
         canUseConnection={canUseConnection}
         onSignIn={(name) => {
+          if (!canUseConnection()) return;
           const flow = new ProviderSignIn(store, name);
-          // Signing in must not start on a connection this screen would
-          // otherwise refuse a mutation on (null while a manual retry
-          // dials, or a closed client the same generation guard keeps set) -
-          // see the effect above, which applies the same rule on every later
-          // transition.
-          flow.setConnection(canUseConnection() ? client : null);
+          flow.setConnection(client);
           setSignIn({ hubId: activeProfile.id, name, flow });
           void flow.start();
         }}
@@ -107,7 +125,7 @@ export function ProvidersScreen({
           flow={signIn.flow}
           name={signIn.name}
           hubName={activeProfile.name}
-          connected={ready}
+          connected={canUseConnection()}
           onClose={() => {
             signIn.flow.dispose();
             setSignIn(null);
@@ -133,60 +151,144 @@ function Providers({
   onSignIn(name: string): void;
 }) {
   const colors = useColors();
-  const model = useMemo(() => new ProviderInstances(store), [store]);
-  const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  // The store triple is what binds React to the credential core: every field
+  // read below is the core's own state, with no projection in between.
+  const core = useSyncExternalStore(
+    store.subscribe,
+    store.getState,
+    store.getInitialState,
+  );
   const editorVersion = useRef(0);
+  // A screen the user has left must not act on a write that outlives it: the
+  // bump makes every captured version stale, so a late `act` continuation or
+  // probe result neither reports an error nor issues a listing read.
+  useEffect(
+    () => () => {
+      editorVersion.current += 1;
+    },
+    [],
+  );
+  // The write gate and the credential probe are the screen's own state; the
+  // listing fields below are the core's.
+  const surface = useProviderSurface(store);
+  // The rows on screen belong to a replaced connection: the core refuses every
+  // write to them, so the controls that would issue one are disabled here too.
+  const stale = staleListingHeld(core);
   const [selected, setSelected] = useState<string | null>(null);
   const [configuration, setConfiguration] = useState<"create" | "edit" | null>(
     null,
   );
   const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
+  // The instance the credential editor was opened for, with the endpoint it
+  // resolved to then: a key typed for that destination is never saved against a
+  // different one, and a move re-anchors the editor.
+  const [credentialTarget, setCredentialTarget] = useState<{
+    name: string;
+    fingerprint?: string;
+  } | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
-  const instance = state.data?.instances.find((item) => item.name === selected);
-  useEffect(() => {
-    model.start();
-    return () => {
-      editorVersion.current += 1;
-      model.dispose();
-    };
-  }, [model]);
+  const instance = core.instances.find((item) => item.name === selected);
+  const loadError =
+    core.error === null
+      ? null
+      : sessionActionError("Could not load providers", core.error);
+
   useEffect(() => {
     if (editingCredential && !instance?.authModes?.includes(editingCredential)) {
       setEditingCredential(null);
+      setCredentialTarget(null);
       setKey("");
     }
     if (!instance) {
       setConfiguration((value) => (value === "edit" ? null : value));
       setSelected(null);
       setEditingCredential(null);
+      setCredentialTarget(null);
+      setKey("");
+      return;
+    }
+    // The row the editor was opened for changed - another instance was picked,
+    // or this one's endpoint moved - so re-anchor: a key typed for the old
+    // target must never be saved against a different one.
+    if (
+      editingCredential &&
+      credentialTarget !== null &&
+      (credentialTarget.name !== instance.name ||
+        credentialTarget.fingerprint !== instance.endpointFingerprint)
+    ) {
+      setEditingCredential(null);
+      setCredentialTarget(null);
       setKey("");
     }
-  }, [instance, editingCredential]);
+  }, [instance, editingCredential, credentialTarget]);
+  function editCredential(
+    kind: "apiKey" | "credentialJson",
+    target: InstanceEntry,
+  ) {
+    setActionError(null);
+    setEditingCredential(kind);
+    setCredentialTarget({
+      name: target.name,
+      fingerprint: target.endpointFingerprint,
+    });
+    setKey("");
+  }
   function close() {
     editorVersion.current += 1;
     setSelected(null);
     setConfiguration(null);
     setEditingCredential(null);
+    setCredentialTarget(null);
     setKey("");
     setActionError(null);
   }
-  async function act(action: () => Promise<void>, secret = false) {
-    // The single place every mutation below (save key/JSON, make-default,
-    // clear stored key, logout, remove) checks readiness: AppWire rejects
-    // the request anyway, and bailing before touching any state here is
-    // what keeps a request that cannot be sent from clearing input the user
-    // may still want once ready again.
+  async function act(
+    action: () => Promise<unknown>,
+    {
+      secret = false,
+      endpointAsserted = false,
+    }: { secret?: boolean; endpointAsserted?: boolean } = {},
+  ) {
+    // Deferred confirmations and editor callbacks must recheck the raw
+    // connection at invocation time; a ready render can outlive a flap.
     if (!canUseConnection()) return;
     const version = editorVersion.current;
     setActionError(null);
     try {
-      await action();
+      const applied = await action();
       if (version !== editorVersion.current) return;
+      // An instance mutation answers false when a newer request superseded the
+      // listing it answered with: the write may have landed, but this screen
+      // cannot confirm it, so it does not report success. The surface that
+      // issued the write owns the recovery read.
+      if (applied === false) {
+        setActionError(
+          "The operation could not be confirmed. Refresh and check the current state before trying again.",
+        );
+        return;
+      }
       setEditingCredential(null);
+      setCredentialTarget(null);
       setKey("");
-    } catch {
+    } catch (err) {
       if (version !== editorVersion.current) return;
+      // A refusal for rows of a replaced connection, or a destination that
+      // moved since the row was read, is not an unconfirmed operation: say what
+      // changed and re-read so the action is retryable against the rows now on
+      // screen.
+      if (isStaleListingRefusal(err)) {
+        setActionError(CONNECTION_REPLACED_ERROR);
+        refresh();
+        return;
+      }
+      // Only an operation that asserted a destination can be refused for a
+      // changed one; a generic conflict (a duplicate name) is not that.
+      if (endpointAsserted && isEndpointConflict(err)) {
+        setActionError(ENDPOINT_CHANGED_SAVE_MESSAGE);
+        refresh();
+        return;
+      }
       // Provider/transport errors may echo submitted credentials. Keep the
       // editor's error independent of upstream response text.
       setActionError(
@@ -196,7 +298,11 @@ function Providers({
       );
     }
   }
-  function confirm(title: string, action: () => Promise<void>) {
+  function confirm(
+    title: string,
+    action: () => Promise<unknown>,
+    options: { endpointAsserted?: boolean } = {},
+  ) {
     if (!canUseConnection()) return;
     Alert.alert(title, `${selected} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
@@ -204,30 +310,71 @@ function Providers({
         text: "Confirm",
         style: "destructive",
         onPress: () => {
-          void act(action);
+          void act(action, options);
         },
       },
     ]);
   }
-  const sections = groupByProvider(state.data?.instances ?? []).map(
-    (group) => ({ title: group.providerId, data: group.instances }),
-  );
+
+  // probeCredentials asserts the endpoint the row was read from; a name the hub
+  // cannot fingerprint has no destination to assert, so the probe is refused
+  // here rather than dialing whatever the name resolves to now.
+  function probeCredentials(name: string) {
+    if (!canUseConnection()) return;
+    // Only the current probe's outcome is shown: a new probe drops whatever the
+    // last one said before it reports its own.
+    setActionError(null);
+    const row = core.instances.find((item) => item.name === name);
+    if (fingerprintUnavailable(row)) {
+      setActionError(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+      return;
+    }
+    // The error belongs to the provider the user is looking at when it lands:
+    // selecting another row bumps editorVersion, so a probe whose row was left
+    // behind neither names this row nor reports on the one just picked.
+    const version = editorVersion.current;
+    void surface
+      .testCredentials(name, row?.endpointFingerprint)
+      .catch((err) => {
+        if (version !== editorVersion.current) return;
+        if (isEndpointConflict(err)) setActionError(ENDPOINT_CHANGED_TEST_MESSAGE);
+      });
+  }
+
+  function refresh() {
+    if (canUseConnection()) surface.refresh();
+  }
+
+  function create(params: Parameters<typeof surface.create>[0]) {
+    return canUseConnection() ? surface.create(params) : Promise.resolve(false);
+  }
+
+  function edit(params: Parameters<typeof surface.edit>[0]) {
+    return canUseConnection() ? surface.edit(params) : Promise.resolve(false);
+  }
+
+  const sections = groupByProvider(core.instances).map((group) => ({
+    title: group.providerId,
+    data: group.instances,
+  }));
   return (
     <SafeAreaView edges={["bottom", "left", "right"]} style={styles.fill}>
       <SectionList
         sections={sections}
         keyExtractor={(item) => item.name}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
-        refreshing={state.loading}
-        onRefresh={() => {
-          if (canUseConnection()) void model.refresh();
-        }}
+        refreshing={core.loading}
+        onRefresh={refresh}
         ListHeaderComponent={
           <View style={{ gap: 8, paddingBottom: 12 }}>
             <Copy muted>{hubName}</Copy>
             <Action
               disabled={
-                !state.data || state.busy || state.data.writesRefused || !ready
+                !core.listingEstablished ||
+                surface.busy ||
+                core.writesRefused ||
+                stale ||
+                !ready
               }
               onPress={whenReady(canUseConnection, () => {
                 close();
@@ -236,17 +383,17 @@ function Providers({
             >
               Add provider instance
             </Action>
-            <ErrorMessage message={state.error} />
-            {state.data?.diagnostics?.map((message) => (
+            <ErrorMessage message={loadError} />
+            {core.diagnostics.map((message) => (
               <Copy key={message}>{message}</Copy>
             ))}
-            {state.loading && !state.data && (
+            {core.loading && !core.listingEstablished && (
               <ActivityIndicator accessibilityLabel="Loading providers" />
             )}
           </View>
         }
         ListEmptyComponent={
-          !state.loading ? <Copy>No provider instances available.</Copy> : null
+          !core.loading ? <Copy>No provider instances available.</Copy> : null
         }
         renderSectionHeader={({ section }) => (
           <Text
@@ -322,11 +469,10 @@ function Providers({
                 <ProviderEditor
                   key={configuration === "create" ? "create" : instance?.name}
                   instance={configuration === "edit" ? instance : undefined}
-                  providers={state.data?.availableProviders ?? []}
-                  model={model}
-                  disabled={
-                    state.busy || !!state.data?.writesRefused || !ready
-                  }
+                  providers={core.availableProviders}
+                  onCreate={create}
+                  onEdit={edit}
+                  disabled={surface.busy || core.writesRefused || stale || !ready}
                   onSaved={(name) => {
                     setConfiguration(null);
                     setSelected(name);
@@ -364,7 +510,7 @@ function Providers({
                       <Copy key={message}>{message}</Copy>
                     ))}
                     <ErrorMessage message={actionError} />
-                    {state.busy && (
+                    {surface.busy && (
                       <ActivityIndicator accessibilityLabel="Updating provider" />
                     )}
                     {editingCredential ? (
@@ -381,7 +527,7 @@ function Providers({
                           autoCorrect={false}
                           value={key}
                           onChangeText={setKey}
-                          editable={!state.busy}
+                          editable={!surface.busy}
                           style={[
                             styles.input,
                             { color: colors.text, borderColor: colors.border },
@@ -389,25 +535,38 @@ function Providers({
                         />
                         <View style={styles.row}>
                           <Action
-                            disabled={state.busy || !key.trim() || !ready}
+                            disabled={surface.busy || stale || !ready || !key.trim()}
                             onPress={() => {
-                              // The clear happens on act()'s own success path
-                              // (below), never here: clearing before knowing
-                              // whether the request could even be sent would
-                              // lose input act() is about to refuse to send.
+                              // A destination the hub cannot fingerprint has no
+                              // endpoint to assert, so the save is refused here
+                              // rather than stored without an assertion.
+                              if (fingerprintUnavailable(instance)) {
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+                                );
+                                return;
+                              }
                               const value = key.trim();
                               void act(
                                 () => editingCredential === "credentialJson"
-                                  ? model.setCredentialJson(instance.name, value)
-                                  : model.setApiKey(instance.name, value),
-                                true,
+                                  ? surface.setCredentialJson(
+                                      instance.name,
+                                      value,
+                                      credentialTarget?.fingerprint,
+                                    )
+                                  : surface.setApiKey(
+                                      instance.name,
+                                      value,
+                                      credentialTarget?.fingerprint,
+                                    ),
+                                { secret: true, endpointAsserted: true },
                               );
                             }}
                           >
                             {editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"}
                           </Action>
                           <Action
-                            disabled={state.busy}
+                            disabled={surface.busy}
                             onPress={() => {
                               setEditingCredential(null);
                               setKey("");
@@ -421,33 +580,34 @@ function Providers({
                       <>
                         <Action
                           disabled={
-                            state.busy ||
-                            state.loading ||
-                            !!state.credentialTest?.pending ||
-                            !ready
+                            surface.busy ||
+                            core.loading ||
+                            stale ||
+                            !ready ||
+                            !!surface.credentialTest?.pending
                           }
-                          onPress={whenReady(canUseConnection, () => {
-                            void model.testCredentials(instance.name);
-                          })}
+                          onPress={() => {
+                            probeCredentials(instance.name);
+                          }}
                         >
-                          {state.credentialTest?.provider === instance.name &&
-                          state.credentialTest.pending
+                          {surface.credentialTest?.provider === instance.name &&
+                          surface.credentialTest.pending
                             ? "Testing credentials…"
                             : "Test credentials"}
                         </Action>
-                        {state.credentialTest?.provider === instance.name &&
-                          state.credentialTest.result && (
-                            <Copy>{state.credentialTest.result.message}</Copy>
+                        {surface.credentialTest?.provider === instance.name &&
+                          surface.credentialTest.result && (
+                            <Copy>{surface.credentialTest.result.message}</Copy>
                           )}
                         <Action
-                          disabled={state.busy || state.data?.writesRefused || !ready}
+                          disabled={surface.busy || core.writesRefused || stale || !ready}
                           onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
                         >
                           Edit instance
                         </Action>
                         {instance.authModes?.includes("oauth") && (
                           <Action
-                            disabled={state.busy || !ready}
+                            disabled={surface.busy || stale || !ready}
                             onPress={whenReady(canUseConnection, () => {
                               const name = instance.name;
                               close();
@@ -461,25 +621,25 @@ function Providers({
                         )}
                         {instance.authModes?.includes("apiKey") && (
                           <Action
-                            disabled={state.busy || !ready}
-                            onPress={whenReady(canUseConnection, () => setEditingCredential("apiKey"))}
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
                           >
                             {instance.hasStoredFile ? "Replace key" : "Set key"}
                           </Action>
                         )}
                         {instance.authModes?.includes("credentialJson") && (
                           <Action
-                            disabled={state.busy || !ready}
-                            onPress={whenReady(canUseConnection, () => setEditingCredential("credentialJson"))}
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
                           >
                             {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                           </Action>
                         )}
                         {!instance.isDefault && (
                           <Action
-                            disabled={state.busy || state.data?.writesRefused || !ready}
+                            disabled={surface.busy || core.writesRefused || stale || !ready}
                             onPress={() => {
-                              void act(() => model.setDefault(instance.name));
+                              void act(() => surface.setDefault(instance.name));
                             }}
                           >
                             Make default
@@ -488,36 +648,66 @@ function Providers({
                         {instance.hasStoredFile &&
                           instance.activeSource !== "store" && (
                             <Action
-                              disabled={state.busy || !ready}
-                              onPress={() =>
+                              disabled={surface.busy || stale || !ready}
+                              onPress={whenReady(canUseConnection, () => {
+                                // A destination the hub cannot fingerprint has
+                                // no endpoint to assert: refuse with a reason
+                                // rather than grey the control out silently.
+                                if (fingerprintUnavailable(instance)) {
+                                  setActionError(
+                                    FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                  );
+                                  return;
+                                }
                                 confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
-                                  model.clearStoredKey(instance.name),
-                                )
-                              }
+                                  surface.clearStoredKey(
+                                    instance.name,
+                                    instance.endpointFingerprint,
+                                  ),
+                                { endpointAsserted: true });
+                              })}
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
                           )}
                         {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
-                            disabled={state.busy || !ready}
-                            onPress={() =>
+                            disabled={surface.busy || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => {
+                              if (fingerprintUnavailable(instance)) {
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                );
+                                return;
+                              }
                               confirm("Clear active credentials?", () =>
-                                model.logout(instance.name),
-                              )
-                            }
+                                surface.logout(
+                                  instance.name,
+                                  instance.endpointFingerprint,
+                                ),
+                              { endpointAsserted: true });
+                            })}
                           >
                             Clear credentials
                           </Action>
                         )}
                         {!instance.implicit && (
                           <Action
-                            disabled={state.busy || state.data?.writesRefused || !ready}
-                            onPress={() =>
+                            disabled={surface.busy || core.writesRefused || stale || !ready}
+                            onPress={whenReady(canUseConnection, () => {
+                              if (fingerprintUnavailable(instance)) {
+                                setActionError(
+                                  FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+                                );
+                                return;
+                              }
                               confirm("Remove provider instance?", () =>
-                                model.remove(instance.name),
-                              )
-                            }
+                                surface.remove(
+                                  instance.name,
+                                  instance.endpointFingerprint,
+                                ),
+                              { endpointAsserted: true });
+                            })}
                           >
                             Remove instance
                           </Action>
