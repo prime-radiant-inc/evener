@@ -2034,6 +2034,133 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	}
 }
 
+// TestAskUser_StreamedSalvageBeforeFailedInterruptMarkerPreservesBoundary
+// covers a cancellation that has already streamed a partial response. The
+// salvage explanation is recorded before the round loop's durable interrupt
+// marker; when that marker is rejected, restore must treat the explanation as
+// non-resolving and retain the pending ask exactly as the live session does.
+func TestAskUser_StreamedSalvageBeforeFailedInterruptMarkerPreservesBoundary(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// TRIPWIRE: scripted provider and local temporary transcript files use real
+	// I/O; 30s is a generous hang guard, and this test makes no network requests.
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer parentCancel()
+	turnCtx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	ask := askUserCall("ask1", askUserArgsValid())
+	var fs *environmentSyncFailureFS
+	markerFailure := errors.New("injected streamed interrupt marker write failure")
+	markerFaultHit := false
+	var rounds int
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		script: map[string]func(*llm.ChanStream){
+			"gpt-5.2": func(st *llm.ChanStream) {
+				rounds++
+				if rounds == 1 {
+					streamAskUserThenFinish(ask)(st)
+					return
+				}
+				fs.mu.Lock()
+				// The carrier's durable steer has landed before this model
+				// request. Let the cancellation salvage persistence settle,
+				// then reject only the round loop's main interrupt marker.
+				fs.syncsBeforeFailure = 2
+				fs.failure = markerFailure
+				fs.onFailure = func() { markerFaultHit = true }
+				fs.mu.Unlock()
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "partial"})
+				st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "partial", Delta: "draft before cancellation"})
+				cancel()
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: context.Canceled})
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(a)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if _, err := sess.ProcessInput(parentCtx, "which db should we use?", nil); err != nil {
+		t.Fatalf("initial ask ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pending count before streamed cancellation = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state before streamed cancellation = %q, want %q", got, SessionAwaiting)
+	}
+	if _, err := sess.SetHumanNote("note-streamed-cancel", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+
+	fs = attachEnvironmentFailureFS(t, sess)
+
+	_, ran, processErr := sess.ProcessPendingUserInput(turnCtx, nil)
+	if !ran {
+		t.Fatalf("ProcessPendingUserInput ran=%v, want the human-note carrier to run", ran)
+	}
+	if !errors.Is(processErr, context.Canceled) {
+		t.Fatalf("streamed cancellation err = %v, want context.Canceled", processErr)
+	}
+	if !markerFaultHit {
+		t.Fatal("the injected filesystem failure did not reach the main interrupt marker")
+	}
+	if !errors.Is(processErr, markerFailure) {
+		t.Fatalf("streamed cancellation err = %v, want the interrupt marker write failure", processErr)
+	}
+	if got := len(a.Requests()); got != 2 {
+		t.Fatalf("streamed model requests = %d, want exactly 2", got)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after failed main marker = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after failed main marker = %q, want %q", got, SessionAwaiting)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("live wire state after failed main marker = %q, want %q", got, SessionAwaiting)
+	}
+	hist := sessionHistory(sess)
+	salvageFound := false
+	markerFound := false
+	for _, turn := range hist {
+		if turn.Kind != schema.TurnSteering {
+			continue
+		}
+		if turn.SteeringKind == events.SteeringKindInterruptedSalvage && turn.Message.Text() == interruptSalvageSteering {
+			salvageFound = true
+		} else if turn.SteeringKind == events.SteeringKindInterrupted {
+			markerFound = true
+		}
+	}
+	if !salvageFound {
+		t.Fatal("streamed cancellation did not persist its salvage explanation")
+	}
+	if markerFound {
+		t.Fatal("failed main interrupt marker appeared in live history")
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 1 {
+		t.Fatalf("restored pending count after failed main marker = %d, want 1", got)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after failed main marker = %q, want %q", got, SessionAwaiting)
+	}
+}
+
 // TestAskUser_InterruptMarkerRetainedWriteIsAdopted covers the other durable
 // pair outcome: the whole marker line remains after its first sync and rollback
 // both fail, and the recovery barrier is also unavailable, so the owner adopts

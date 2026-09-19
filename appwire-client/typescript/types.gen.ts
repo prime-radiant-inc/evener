@@ -3467,6 +3467,7 @@ export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
 export const STEERING_KINDS = [
   "interrupted",
+  "interrupted-salvage",
   "agent-message",
   "hook-context",
   "precompact-hook",
