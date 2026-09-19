@@ -1891,9 +1891,9 @@ func describeImplicit(inst registry.Instance) string {
 // instance away, keyed on what makes it exist. The refusal beside describeImplicit
 // reads it, so a remedy has to name something that exists for this instance and
 // would take the row with it: the variable a credential-required scheme reads,
-// the ADC credentials the host supplies, the stored credential a keyless
-// instance holds, or - for a keyless scheme - the provider endpoint the row is
-// derived from.
+// the ADC credentials the host supplies, or - for a keyless scheme - the
+// provider endpoint the row is derived from, since a stored credential such a
+// row holds is the user's to clear but does not take the row away.
 func removalRemedy(inst registry.Instance) string {
 	// A keyless scheme comes first: it resolves without any credential, so the
 	// registry derives its instance whether or not a variable is set
@@ -1906,7 +1906,12 @@ func removalRemedy(inst registry.Instance) string {
 			return "the provider endpoint is what keeps it, so remove or disable that endpoint instead"
 		}
 		if inst.CredentialSource == "store" {
-			return "clear the stored credential instead"
+			// The stored credential is the user's to clear, but it is not what
+			// removes the row: keylessScheme makes the registry re-derive the
+			// instance from its provider endpoint, so clearing the credential
+			// leaves the row and reads as the advised action having failed. The
+			// endpoint is the remedy, exactly as in the env: branch above.
+			return "the provider endpoint is what keeps it, so remove or disable that endpoint instead (clearing the stored credential does not remove the row)"
 		}
 		return "it comes back with its provider and holds no credential of its own to clear"
 	}

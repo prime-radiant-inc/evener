@@ -4832,10 +4832,16 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 			refuses: []string{"unset", "OAuth record"},
 		},
 		{
-			name:    "a keyless instance holding a stored key names that key",
+			name:    "a keyless instance holding a stored key names its endpoint, not the clear",
 			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "store"},
-			want:    "clear the stored credential instead",
-			refuses: []string{"unset", "OAuth record"},
+			want:    "remove or disable that endpoint instead",
+			refuses: []string{"unset", "OAuth record", "clear the stored credential instead"},
+		},
+		{
+			name:    "a credential-required instance whose stored key carries it keeps its wording",
+			inst:    registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"},
+			want:    "remove the credential that supplies it instead",
+			refuses: []string{"remove or disable that endpoint", "unset", "OAuth record"},
 		},
 		{
 			name:    "a keyless instance holding nothing does not invent one",
@@ -4888,28 +4894,28 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 		store   string
 		remove  string
 		want    string
-		refuses string
+		refuses []string
 	}{
 		{
 			name:    "a keyless optional-bearer row with a stored key",
 			store:   "ollama",
 			remove:  "ollama",
-			want:    "clear the stored credential instead",
-			refuses: "OAuth record",
+			want:    "remove or disable that endpoint instead",
+			refuses: []string{"OAuth record", "clear the stored credential instead"},
 		},
 		{
 			name:    "an environment-supplied bearer row",
 			env:     map[string]string{"OPENAI_API_KEY": "env-key"},
 			remove:  "openai",
 			want:    "unset OPENAI_API_KEY instead",
-			refuses: "OAuth record",
+			refuses: []string{"OAuth record"},
 		},
 		{
 			name:    "a keyless optional-bearer row whose optional key is set",
 			env:     map[string]string{"OLLAMA_API_KEY": "gk"},
 			remove:  "ollama",
 			want:    "remove or disable that endpoint instead",
-			refuses: "unset",
+			refuses: []string{"unset"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4932,8 +4938,10 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Remove(%q) = %v, want the remedy %q", tt.remove, err, tt.want)
 			}
-			if strings.Contains(err.Error(), tt.refuses) {
-				t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, tt.refuses)
+			for _, refuses := range tt.refuses {
+				if strings.Contains(err.Error(), refuses) {
+					t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, refuses)
+				}
 			}
 		})
 	}
