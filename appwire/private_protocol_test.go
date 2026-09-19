@@ -170,3 +170,51 @@ func TestOrdinaryWSTransportDoesNotRecordAttemptedPrivateRequest(t *testing.T) {
 		t.Fatalf("ordinary frame was not recorded: %s", recorded)
 	}
 }
+
+func TestOrdinaryWSTransportDoesNotRecordMalformedPrivateRequest(t *testing.T) {
+	recordingPath := filepath.Join(t.TempDir(), "frames.jsonl")
+	recorder, err := NewFrameRecorder(recordingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousRecorder := appwireFrameRecorder
+	appwireFrameRecorder = recorder
+	t.Cleanup(func() { appwireFrameRecorder = previousRecorder })
+
+	const sentinel = "malformed-private-sentinel"
+	malformed := []byte(`{"jsonrpc":"2.0","id":1,"method":"evener/artifacts/broker/authenticate","params":{"capability":"` + sentinel + `"`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, acceptErr := websocket.Accept(w, r, nil)
+		if acceptErr != nil {
+			t.Errorf("accept: %v", acceptErr)
+			return
+		}
+		defer conn.CloseNow() //nolint:errcheck
+		if writeErr := conn.Write(r.Context(), websocket.MessageText, malformed); writeErr != nil {
+			t.Errorf("write malformed private frame: %v", writeErr)
+		}
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &privateFrameObserver{}
+	transport := NewObservedWSTransport(conn, observer)
+	defer transport.Close() //nolint:errcheck
+	if _, err := transport.Recv(t.Context()); err == nil {
+		t.Fatal("malformed private frame decoded successfully")
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recordedFile, err := os.ReadFile(recordingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := append(bytes.Join(observer.frames, nil), recordedFile...)
+	if bytes.Contains(recorded, []byte(sentinel)) || bytes.Contains(recorded, []byte(MethodBrokerAuthenticate)) {
+		t.Fatalf("malformed private payload reached raw recording: %s", recorded)
+	}
+}

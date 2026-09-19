@@ -116,10 +116,6 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 	}
 	var msg Message
 	if err := unmarshalWSMessage(data, &msg); err != nil {
-		t.rec.RecordRecv(data)
-		if t.observer != nil {
-			t.observer.RecordRecv(data)
-		}
 		return Message{}, err
 	}
 	if shouldRecordFrame(msg) {
