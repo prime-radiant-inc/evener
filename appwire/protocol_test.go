@@ -27,7 +27,7 @@ func TestMethodCatalogWellFormed(t *testing.T) {
 			t.Errorf("method %q has nil Result", m.Name)
 		}
 		switch m.Scope {
-		case ScopeBoth, ScopeHub, ScopeDaemon, ScopeConnection, ScopeUnimplemented:
+		case ScopeBoth, ScopeHub, ScopeDaemon, ScopeDaemonBootstrap, ScopeDaemonBroker, ScopeConnection, ScopeUnimplemented:
 		default:
 			t.Errorf("method %q has invalid scope %q", m.Name, m.Scope)
 		}

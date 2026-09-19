@@ -17,6 +17,11 @@ const (
 	ScopeHub MethodScope = "hub"
 	// ScopeDaemon: handled only by the evener serve daemon engine.
 	ScopeDaemon MethodScope = "daemon"
+	// ScopeDaemonBootstrap is the private launch/install and ownership
+	// establishment surface shared only by an owned Hub and daemon.
+	ScopeDaemonBootstrap MethodScope = "daemon-bootstrap"
+	// ScopeDaemonBroker is the private daemon-to-Hub artifact authority surface.
+	ScopeDaemonBroker MethodScope = "daemon-broker"
 	// ScopeConnection: handled by the connection itself on every server,
 	// outside the method router (initialize, ping).
 	ScopeConnection MethodScope = "connection"
@@ -29,7 +34,7 @@ const (
 // request router (so the catalog↔router cross-check applies). Connection-level
 // and unimplemented methods are intentionally absent from the routers.
 func (s MethodScope) Routed() bool {
-	return s == ScopeBoth || s == ScopeHub || s == ScopeDaemon
+	return s == ScopeBoth || s == ScopeHub || s == ScopeDaemon || s == ScopeDaemonBootstrap || s == ScopeDaemonBroker
 }
 
 // ConnectionMethodNames returns the wire names of connection-level methods
@@ -53,7 +58,7 @@ func ConnectionMethodNames() []string {
 func CatalogMethodNames(scope MethodScope) []string {
 	var out []string
 	for _, m := range Methods {
-		if m.Scope == scope || m.Scope == ScopeBoth {
+		if m.Scope == scope || (m.Scope == ScopeBoth && (scope == ScopeHub || scope == ScopeDaemon)) {
 			out = append(out, m.Name)
 		}
 	}
@@ -217,6 +222,11 @@ var Methods = []MethodSpec{
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
+	{MethodBrokerLaunchHello, BrokerLaunchHelloParams{}, BrokerLaunchHelloResponse{}, ScopeDaemonBootstrap, "Begins an owned inherited-channel daemon launch using the constructed root identity."},
+	{MethodBrokerLaunchInstall, BrokerLaunchInstallParams{}, BrokerLaunchInstallResponse{}, ScopeDaemonBootstrap, "Installs a launch-bound artifact broker epoch and root association on the owned daemon channel."},
+	{MethodBrokerFinalizeOwnership, BrokerFinalizeOwnershipParams{}, BrokerFinalizeOwnershipResponse{}, ScopeDaemonBootstrap, "Finalizes the launch epoch against the daemon's complete current rendezvous ownership."},
+	{MethodBrokerInstall, BrokerInstallParams{}, BrokerInstallResponse{}, ScopeDaemonBootstrap, "Installs a fresh broker epoch during authenticated direct daemon rebootstrap."},
+	{MethodBrokerAuthenticate, BrokerAuthenticateParams{}, BrokerAuthenticateResponse{}, ScopeDaemonBroker, "Authenticates the daemon's reversed broker role with its connection-bound capability."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition

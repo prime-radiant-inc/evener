@@ -269,6 +269,87 @@ export interface AuthTestResponse {
   message: string;
 }
 
+export interface BrokerAssociation {
+  realmId: string;
+  humanOwnerId: string;
+  rootSessionId: string;
+  principalId: string;
+  namespaceId: string;
+  projectId: string;
+}
+
+export interface BrokerAuthenticateParams {
+  daemonEpoch: string;
+  capability: string;
+}
+
+export interface BrokerAuthenticateResponse {
+  daemonEpoch: string;
+}
+
+export interface BrokerDaemonIdentity {
+  pid: number;
+  address: string;
+  endpoint: string;
+  protocol: string;
+  sourceId: string;
+  threadId: string;
+  sessionId: string;
+  instanceId: string;
+  workspaceRef: string;
+  workingDir: string;
+  stateDir: string;
+  startedAt: string;
+}
+
+export interface BrokerFinalizeOwnershipParams {
+  launchId: string;
+  actualDaemonIdentity: BrokerDaemonIdentity;
+}
+
+export interface BrokerFinalizeOwnershipResponse {
+  daemonEpoch: string;
+}
+
+export interface BrokerInstallParams {
+  hubEpoch: string;
+  daemonEpoch: string;
+  capability: string;
+  association: BrokerAssociation;
+  expectedDaemonIdentity: BrokerDaemonIdentity;
+}
+
+export interface BrokerInstallResponse {
+  actualDaemonIdentity: BrokerDaemonIdentity;
+  rootSessionId: string;
+  associationDigest: string;
+  daemonEpoch: string;
+}
+
+export interface BrokerLaunchHelloParams {
+  launchId: string;
+  actualRootSessionId: string;
+  runtimeGeneration: number;
+}
+
+export interface BrokerLaunchHelloResponse {
+}
+
+export interface BrokerLaunchInstallParams {
+  launchId: string;
+  hubEpoch: string;
+  daemonEpoch: string;
+  capability: string;
+  association: BrokerAssociation;
+}
+
+export interface BrokerLaunchInstallResponse {
+  launchId: string;
+  rootSessionId: string;
+  associationDigest: string;
+  daemonEpoch: string;
+}
+
 export interface Capabilities {
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
@@ -3389,6 +3470,11 @@ export const METHOD_NAMES = [
   "evener/sandbox/escalation/resolve",
   "evener/host/request",
   "evener/host/attach",
+  "evener/artifacts/broker/launchHello",
+  "evener/artifacts/broker/launchInstall",
+  "evener/artifacts/broker/finalizeOwnership",
+  "evener/artifacts/broker/install",
+  "evener/artifacts/broker/authenticate",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3592,6 +3678,11 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
+  "evener/artifacts/broker/launchHello": { params: BrokerLaunchHelloParams; result: BrokerLaunchHelloResponse };
+  "evener/artifacts/broker/launchInstall": { params: BrokerLaunchInstallParams; result: BrokerLaunchInstallResponse };
+  "evener/artifacts/broker/finalizeOwnership": { params: BrokerFinalizeOwnershipParams; result: BrokerFinalizeOwnershipResponse };
+  "evener/artifacts/broker/install": { params: BrokerInstallParams; result: BrokerInstallResponse };
+  "evener/artifacts/broker/authenticate": { params: BrokerAuthenticateParams; result: BrokerAuthenticateResponse };
 }
 
 export interface NotificationTypes {

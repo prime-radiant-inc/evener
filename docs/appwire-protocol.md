@@ -192,6 +192,11 @@ no router (reserved).
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
+| `evener/artifacts/broker/launchHello` | daemon-bootstrap | `BrokerLaunchHelloParams` | `BrokerLaunchHelloResponse` | Begins an owned inherited-channel daemon launch using the constructed root identity. |
+| `evener/artifacts/broker/launchInstall` | daemon-bootstrap | `BrokerLaunchInstallParams` | `BrokerLaunchInstallResponse` | Installs a launch-bound artifact broker epoch and root association on the owned daemon channel. |
+| `evener/artifacts/broker/finalizeOwnership` | daemon-bootstrap | `BrokerFinalizeOwnershipParams` | `BrokerFinalizeOwnershipResponse` | Finalizes the launch epoch against the daemon's complete current rendezvous ownership. |
+| `evener/artifacts/broker/install` | daemon-bootstrap | `BrokerInstallParams` | `BrokerInstallResponse` | Installs a fresh broker epoch during authenticated direct daemon rebootstrap. |
+| `evener/artifacts/broker/authenticate` | daemon-broker | `BrokerAuthenticateParams` | `BrokerAuthenticateResponse` | Authenticates the daemon's reversed broker role with its connection-bound capability. |
 
 ## Notifications (server → client)
 
@@ -477,6 +482,92 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `status` | `string` |  |  |
 | `message` | `string` |  |  |
+
+
+### `BrokerAuthenticateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `daemonEpoch` | `string` |  |  |
+| `capability` | `string` |  |  |
+
+
+### `BrokerAuthenticateResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `daemonEpoch` | `string` |  |  |
+
+
+### `BrokerFinalizeOwnershipParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `launchId` | `string` |  |  |
+| `actualDaemonIdentity` | `appwire.BrokerDaemonIdentity` |  |  |
+
+
+### `BrokerFinalizeOwnershipResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `daemonEpoch` | `string` |  |  |
+
+
+### `BrokerInstallParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubEpoch` | `string` |  |  |
+| `daemonEpoch` | `string` |  |  |
+| `capability` | `string` |  |  |
+| `association` | `appwire.BrokerAssociation` |  |  |
+| `expectedDaemonIdentity` | `appwire.BrokerDaemonIdentity` |  |  |
+
+
+### `BrokerInstallResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `actualDaemonIdentity` | `appwire.BrokerDaemonIdentity` |  |  |
+| `rootSessionId` | `string` |  |  |
+| `associationDigest` | `string` |  |  |
+| `daemonEpoch` | `string` |  |  |
+
+
+### `BrokerLaunchHelloParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `launchId` | `string` |  |  |
+| `actualRootSessionId` | `string` |  |  |
+| `runtimeGeneration` | `uint64` |  |  |
+
+
+### `BrokerLaunchHelloResponse`
+
+_(no fields)_
+
+
+### `BrokerLaunchInstallParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `launchId` | `string` |  |  |
+| `hubEpoch` | `string` |  |  |
+| `daemonEpoch` | `string` |  |  |
+| `capability` | `string` |  |  |
+| `association` | `appwire.BrokerAssociation` |  |  |
+
+
+### `BrokerLaunchInstallResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `launchId` | `string` |  |  |
+| `rootSessionId` | `string` |  |  |
+| `associationDigest` | `string` |  |  |
+| `daemonEpoch` | `string` |  |  |
 
 
 ### `CommandListResponse`
