@@ -405,53 +405,85 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
 // dropped so its TurnSeparator does not survive. (zrzr)
-// Item payloads lose page ownership during retained placement, so keep the
-// source beside each result while folding calls instead of inferring it from
-// the final traversal order.
-type ToolResultEntry = { item: ItemModel; fresh: boolean };
+// Item payloads lose page ownership during retained placement. Keep the
+// original source values beside the folded turns so inherited fields do not
+// acquire the freshness of the item that carried them.
+type ToolItemSources = { fresh: readonly TurnModel[]; older: readonly TurnModel[] };
+type ToolResultField =
+  | "output"
+  | "error"
+  | "prevalOnly"
+  | "exitCode"
+  | "completedAt"
+  | "status"
+  | "outputImages"
+  | "raw";
+type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
-function preferredToolResultField<T>(result: T | undefined, call: T | undefined, resultFirst: boolean): T | undefined {
-  // Within one source the result settles the call; across sources, defined
-  // fields from the fresh side win and the other side only fills omissions.
-  return resultFirst ? (result ?? call) : (call ?? result);
+function collectToolCandidates(items: ItemModel[]): Map<string, ToolCandidates> {
+  const candidates = new Map<string, ToolCandidates>();
+  for (const item of items) {
+    if (!item.callId) continue;
+    const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
+    if (isToolResultId(item.id)) entry.results.push(item);
+    else if (isToolCallId(item.id)) entry.calls.push(item);
+    candidates.set(item.callId, entry);
+  }
+  return candidates;
 }
 
-function mergeToolCallsByCallId(turns: TurnModel[], freshItemIds?: ReadonlySet<string>): TurnModel[] {
+function preferredToolField<K extends ToolResultField>(
+  item: ItemModel,
+  field: K,
+  ...sources: readonly (readonly ItemModel[])[]
+): ItemModel[K] | undefined {
+  for (const candidates of sources) {
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const value = candidates[index]?.[field];
+      if (value !== undefined) return value;
+    }
+  }
+  return item[field];
+}
+
+function mergeToolCallsByCallId(turns: TurnModel[], sources?: ToolItemSources): TurnModel[] {
   const callIds = new Set<string>();
-  const resultByCallId = new Map<string, ToolResultEntry>();
   for (const turn of turns) {
     for (const item of turn.items) {
       if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
-      if (item.callId && isToolResultId(item.id)) {
-        const entry = { item, fresh: freshItemIds?.has(item.id) ?? false } satisfies ToolResultEntry;
-        const existing = resultByCallId.get(item.callId);
-        if (existing === undefined || entry.fresh || !existing.fresh) resultByCallId.set(item.callId, entry);
-      }
     }
   }
-  if (resultByCallId.size === 0) return turns;
+  const freshCandidates = collectToolCandidates((sources?.fresh ?? turns).flatMap((turn) => turn.items));
+  const olderCandidates = collectToolCandidates(sources?.older?.flatMap((turn) => turn.items) ?? []);
+  const resultCallIds = new Set(
+    [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
+      candidates.results.length > 0 ? [callId] : [],
+    ),
+  );
+  if (resultCallIds.size === 0) return turns;
 
   const merged: TurnModel[] = [];
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
       if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
-      if (item.callId && isToolCallId(item.id)) {
-        const resultEntry = resultByCallId.get(item.callId);
-        if (resultEntry) {
-          const result = resultEntry.item;
-          const resultFirst = freshItemIds === undefined || !freshItemIds.has(item.id) || resultEntry.fresh;
+      if (item.callId && isToolCallId(item.id) && resultCallIds.has(item.callId)) {
+        const fresh = freshCandidates.get(item.callId) ?? { calls: [], results: [] };
+        const older = olderCandidates.get(item.callId) ?? { calls: [], results: [] };
+        if (fresh.results.length > 0 || older.results.length > 0) {
+          const field = <K extends ToolResultField>(name: K) =>
+            preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
           items.push(
             copyItemTextPresence(item, {
               ...item,
-              output: preferredToolResultField(result.output, item.output, resultFirst),
-              error: preferredToolResultField(result.error, item.error, resultFirst),
-              prevalOnly: preferredToolResultField(result.prevalOnly, item.prevalOnly, resultFirst),
-              exitCode: preferredToolResultField(result.exitCode, item.exitCode, resultFirst),
-              completedAt: preferredToolResultField(result.completedAt, item.completedAt, resultFirst),
-              status: preferredToolResultField(result.status, item.status, resultFirst),
-              outputImages: preferredToolResultField(result.outputImages, item.outputImages, resultFirst),
-              raw: preferredToolResultField(result.raw, item.raw, resultFirst),
+              output: field("output"),
+              error: field("error"),
+              prevalOnly: field("prevalOnly"),
+              exitCode: field("exitCode"),
+              completedAt: field("completedAt"),
+              status: field("status"),
+              outputImages: field("outputImages"),
+              raw: field("raw"),
             }),
           );
           continue;
@@ -891,11 +923,13 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
   const coalesced = coalesceTurnFragments(olderTurns, model.turns);
-  const freshItemIds = new Set(model.turns.flatMap((turn) => turn.items.map((item) => item.id)));
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length), freshItemIds),
+    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length), {
+      fresh: model.turns,
+      older: olderTurns,
+    }),
     olderCursor: resp.nextCursor,
   };
 }
