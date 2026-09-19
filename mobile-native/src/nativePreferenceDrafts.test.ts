@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
+	draftUnreadableAfterDiscard,
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
 	matchesStoredBytes,
@@ -9,6 +10,9 @@ import {
 	nativeTranscriptDrafts,
 	parseDraftBytes,
 	readDraftOutcome,
+	readDraftOutcomeWithValue,
+	type RawStringStorage,
+	rawStringDraftBackend,
 } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
@@ -20,42 +24,18 @@ import {
 // reporting a refusal as if it had written the record (or vice versa).
 const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
 
-// Mirrors the real backend's own get() (NativePreferencesProvider.tsx), which
+// The real backend's own get/deleteIf/replaceIf (NativePreferencesProvider.tsx)
 // is Storage-backed and cannot be reached directly from this package's tests
-// - a Map of raw bytes plus parseDraftBytes stands in for it, the same
-// round-trip the real backend runs on stringified values. Shared by both
-// drafts' describe blocks: keybindings and transcript drafts go through the
-// SAME backend.get() in production.
+// - a Map of raw bytes stands in for Storage, and rawStringDraftBackend is the
+// same function production calls over it, not a parallel reimplementation.
 function rawBytesBackend() {
 	const raw = new Map<string, string>();
-	const b = {
-		createId: () => "draft-1",
-		get: (key: string) => {
-			const value = raw.get(key);
-			return value === undefined ? null : parseDraftBytes(value);
-		},
-		set: (key: string, value: unknown) => {
-			raw.set(key, JSON.stringify(value));
-		},
-		insertIfAbsent: (key: string, value: unknown): boolean => {
-			if (raw.has(key)) return false;
-			raw.set(key, JSON.stringify(value));
-			return true;
-		},
-		delete: (key: string) => {
-			raw.delete(key);
-		},
-		deleteIf: (key: string, value: unknown): boolean => {
-			if (!matchesStoredBytes(raw.get(key) ?? null, value)) return false;
-			raw.delete(key);
-			return true;
-		},
-		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
-			if (!matchesStoredBytes(raw.get(key) ?? null, expected)) return false;
-			raw.set(key, JSON.stringify(next));
-			return true;
-		},
+	const storage: RawStringStorage = {
+		getItemSync: (key) => raw.get(key) ?? null,
+		setItemSync: (key, value) => raw.set(key, value),
+		removeItemSync: (key) => raw.delete(key),
 	};
+	const b = rawStringDraftBackend(storage, () => "draft-1");
 	return { raw, b };
 }
 
@@ -167,6 +147,18 @@ describe("nativeKeybindingDrafts", () => {
 		expect(storage.replaceIf(checkpoint, next)).toBe(true);
 		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(next);
 	});
+
+	it("removes a stored record through the shared backend with a different key order", () => {
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeKeybindingDrafts("hub", b);
+		raw.set(
+			"evener.native.keybinding-draft.hub",
+			JSON.stringify({ writeUncertain: false, rules: [], baseRevision: 3, id: "draft-1" }),
+		);
+
+		expect(storage.removeIf(checkpoint)).toBe(true);
+		expect(raw.has("evener.native.keybinding-draft.hub")).toBe(false);
+	});
 });
 
 describe("nativeTranscriptDrafts", () => {
@@ -249,6 +241,45 @@ describe("readDraftOutcome", () => {
 	});
 });
 
+describe("readDraftOutcomeWithValue", () => {
+	const isReadable = (value: unknown) =>
+		typeof value === "object" && value !== null && "id" in value;
+
+	it("returns the classification and the exact value from one read", () => {
+		const record = { id: "d1" };
+		expect(readDraftOutcomeWithValue({ load: () => record }, isReadable)).toEqual({
+			outcome: "readable",
+			value: record,
+		});
+		expect(readDraftOutcomeWithValue({ load: () => null }, isReadable)).toEqual({
+			outcome: "absent",
+			value: null,
+		});
+	});
+
+	it("calls load once and degrades a throwing port", () => {
+		let calls = 0;
+		const storage = {
+			load: () => {
+				calls++;
+				return { id: "d1" };
+			},
+		};
+		expect(readDraftOutcomeWithValue(storage, isReadable).outcome).toBe("readable");
+		expect(calls).toBe(1);
+		expect(
+		readDraftOutcomeWithValue(
+			{
+				load: () => {
+					throw new Error("disk unavailable");
+				},
+			},
+			isReadable,
+		),
+	).toEqual({ outcome: "storageUnavailable", value: undefined });
+	});
+});
+
 describe("matchesStoredBytes", () => {
 	it("is false when nothing is stored", () => {
 		expect(matchesStoredBytes(null, "{not json")).toBe(false);
@@ -294,6 +325,16 @@ describe("matchesStoredBytes", () => {
 
 	it("does not match a genuinely different value", () => {
 		expect(matchesStoredBytes(JSON.stringify({ id: "d1" }), { id: "d2" })).toBe(false);
+	});
+
+	it("does not collide with valid JSON shaped like the unreadable marker", () => {
+		const identity = parseDraftBytes("{not json");
+		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
+	});
+
+	it("does not collide with valid JSON shaped like the stored-null marker", () => {
+		const identity = parseDraftBytes("null");
+		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
 	});
 });
 
@@ -361,5 +402,16 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+});
+
+describe("draftUnreadableAfterDiscard", () => {
+	it("keeps the notice when the current record is still unreadable", () => {
+		expect(draftUnreadableAfterDiscard("unreadable")).toBe(true);
+	});
+
+	it("clears the notice when the current record is readable or absent", () => {
+		expect(draftUnreadableAfterDiscard("readable")).toBe(false);
+		expect(draftUnreadableAfterDiscard("absent")).toBe(false);
 	});
 });

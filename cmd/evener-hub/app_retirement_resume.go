@@ -182,26 +182,39 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
+	// This path is context-aware, so it acquires each alias through the context
+	// and releases the prefix it holds if a later alias blocks past
+	// cancellation; an ordinary Lock here would hang behind a long-running
+	// explicit Resume and retain every earlier alias.
+	acquired := 0
+	var heldStarted time.Time
 	lockDone := trace.stage(ctx, "lock_wait")
-	for _, id := range aliases {
-		cfg.ResumeLocks.For(id).Lock()
-	}
-	lockDone(nil)
-	heldStarted := time.Now()
-	trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
 	defer func() {
-		for _, id := range slices.Backward(aliases) {
+		for _, id := range slices.Backward(aliases[:acquired]) {
 			cfg.ResumeLocks.For(id).Unlock()
 		}
-		trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
+		if !heldStarted.IsZero() {
+			trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
+		}
 	}()
 	for _, id := range aliases {
-		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			lockDone(err)
 			return err
 		}
+		acquired++
 	}
-	if target != sessionID {
-		if err := deletionFenceError(cfg, "", target, ""); err != nil {
+	lockDone(nil)
+	heldStarted = time.Now()
+	trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
+	// A deletion record may name any alias in the resolved ownership
+	// group, so the whole group is fenced under the locks that make the
+	// check final, before live-owner reuse or replacement below.
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return err
+	}
+	for _, id := range aliases {
+		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
 			return err
 		}
 	}

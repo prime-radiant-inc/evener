@@ -196,7 +196,26 @@ export class FakeClient implements AppwireClientLike {
     this.retryNowCalls += 1;
   }
 
-  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+  // Mirrors AppwireClient.resumeThread's ordering, which is what makes
+  // "Stop during the resume's reconnect" a testable state: the real class
+  // forces a reconnect, awaits it, and only then runs beforeRequest,
+  // synchronously before the resume RPC (../client.ts). A Stop that lands
+  // inside that await is therefore seen by the guard and cancels the resume.
+  //
+  // This fake owns no socket, so there is nothing to reconnect and no
+  // `connected` promise to await; "after reconnect settles" here means one
+  // microtask hop, which reproduces the only property of that await a caller
+  // can observe: control returns to the caller BEFORE the guard runs, so a
+  // cancellation staged in the same turn is one the guard has to see. It is
+  // deliberately a hop and never a timer - the fake has no clock, and no test
+  // should have to advance one to reach this ordering. Running the guard
+  // synchronously instead (as this fake used to) let a test stage a Stop
+  // "during the reconnect" that the guard had already passed, proving nothing
+  // about production; a test that needs the full reconnect race still belongs
+  // on the real client with FakeSocket (client.test.ts, reconnect.test.ts).
+  async resumeThread(ref: string, options?: { beforeRequest?: () => void }): ReturnType<AppwireClient["resumeThread"]> {
+    await Promise.resolve();
+    options?.beforeRequest?.();
     return this.request("thread/resume", { ref });
   }
 

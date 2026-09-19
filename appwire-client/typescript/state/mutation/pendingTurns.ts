@@ -21,6 +21,7 @@ import type {
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationOutboxState,
   MutationRecoveryRecord,
 } from "./records";
 
@@ -59,8 +60,18 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
   ref: string,
 ): MutationOutboxRecord<A>[] {
+  return outboxEntriesByState(outbox, ref, "blockedUnknown");
+}
+
+// `ref`'s outbox records in the given durable state, oldest first - the one
+// read the blocked-retry and stop-canceled lists share.
+export function outboxEntriesByState<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+  state: MutationOutboxState,
+): MutationOutboxRecord<A>[] {
   return [...outbox.values()]
-    .filter((record) => record.targetRef === ref && record.state === "blockedUnknown")
+    .filter((record) => record.targetRef === ref && record.state === state)
     .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 

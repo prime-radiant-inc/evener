@@ -390,6 +390,86 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 	}
 }
 
+// TestHubRelayPublicationGuardTimeoutBroadcastsResync pins the lost-frame
+// RoboRev finding: the per-frame publication guard waits for the target's
+// ownership alias with a bounded timeout, and an explicit Resume can hold the
+// alias longer than the guard. A publication that times out is skipped but
+// still acknowledged, so without compensation the acknowledged frame is a
+// silent gap in the subscriber's projection. On guard timeout the relay must
+// broadcast a resync naming the target before the delivery is acknowledged.
+func TestHubRelayPublicationGuardTimeoutBroadcastsResync(t *testing.T) {
+	const (
+		ref      = "local:guard-held"
+		threadID = "guard-held"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			parsed, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: parsed.ThreadID, Source: parsed.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(ref)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	locks := hubcore.NewResumeLocks()
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		ResumeLocks:  locks,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	// An explicit Resume holds the session's ownership alias past the guard.
+	locks.For(threadID).Lock()
+	defer locks.For(threadID).Unlock()
+
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: "test/skipped-frame", Params: json.RawMessage(`{"threadId":"` + threadID + `"}`)},
+		Acknowledge:  func() { close(acknowledged) },
+	}
+	<-acknowledged
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerThreadResync {
+			t.Fatalf("subscriber received %q, want the guard-timeout resync %q", got.Method, appwire.NotifyEvenerThreadResync)
+		}
+		var params appwire.ThreadResyncParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("resync params: %v", err)
+		}
+		if params.ThreadID != threadID || params.Ref != ref {
+			t.Fatalf("resync names threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, threadID, ref)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acknowledged publication skipped past the guard with no subscriber resync")
+	}
+}
+
 // A daemon that died leaves its rendezvous file behind. The roster drops a
 // file whose process is gone, and that is what lets the relay tell the
 // subscriber the daemon is gone; the file alone must not keep a dead process
@@ -2927,6 +3007,107 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	case notification := <-client.Notifications():
 		t.Fatalf("deleted target published notification %+v", notification)
 	default:
+	}
+}
+
+// TestHubRelayPublicationWaitsForHeldTargetAlias pins the Medium regression: the
+// per-frame publication guard must not skip an acknowledged frame just because a
+// deletion or a long-running Resume transiently holds the target alias. It waits
+// (bounded) for the alias, then publishes. Held ownership delays the frame but
+// does not drop it.
+func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	thread := appwire.Thread{
+		ID:        threadID,
+		SessionID: threadID,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: ref},
+	}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	source := &relaySessionTestSource{
+		thread: thread,
+		lease: &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
+			},
+			deliveries: deliveries,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	locks := hubcore.NewResumeLocks()
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot:  t.TempDir(),
+		Past:          hubcore.NewPastIndex(""),
+		DeletionStore: store,
+		ResumeLocks:   locks,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       ref,
+		Subscribe: true,
+	}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	// Hold the alias exactly as a long-running Resume request does. The
+	// subscription above must have released it first.
+	held := locks.For(threadID)
+	if !held.TryLock() {
+		t.Fatal("relay subscription retains the target alias; fixture cannot isolate the publication guard")
+	}
+	release := sync.OnceFunc(held.Unlock)
+	defer release()
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				ThreadID: threadID,
+				Ref:      ref,
+				TurnID:   "turn-held",
+				ItemID:   "item-held",
+				Delta:    "delayed not dropped",
+			}),
+		},
+		Acknowledge: func() { close(acknowledged) },
+	}
+	// While the alias is held the frame must be neither acknowledged nor
+	// broadcast: the guard is still waiting for the alias.
+	select {
+	case <-acknowledged:
+		t.Fatal("held target alias acknowledged the frame before it could publish")
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("held target alias published notification %+v", notification)
+	default:
+	}
+	release()
+	select {
+	case <-acknowledged:
+	case <-time.After(time.Second):
+		t.Fatal("released target alias never published the acknowledged frame")
+	}
+	select {
+	case notification := <-client.Notifications():
+		if notification.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("released target alias published %s, want %s", notification.Method, appwire.NotifyAgentMessageDelta)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("released target alias dropped the acknowledged frame")
 	}
 }
 
