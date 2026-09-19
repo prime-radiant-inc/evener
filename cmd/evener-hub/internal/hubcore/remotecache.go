@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"maps"
 	"reflect"
 	"sync"
 
@@ -34,6 +35,14 @@ type RemoteThreadCache struct {
 	mu       sync.RWMutex
 	snapshot RemoteThreadSnapshot
 	onChange func()
+	// removed holds the source IDs RemoveSource pruned, so a refresh that was
+	// walking while the remove committed cannot republish their rows when it
+	// finishes (the round-6 M2 finding): StoreSnapshotData filters every
+	// removed source's rows and per-source entry out at publish time.
+	// RestoreSource clears an entry when the source registers again, so a
+	// remove/re-add churn cannot leave the re-added name permanently
+	// unpublishable.
+	removed map[string]struct{}
 }
 
 // SetOnChange installs the post-commit content-change hook. The callback is
@@ -61,6 +70,7 @@ func (c *RemoteThreadCache) StoreSnapshot(threads []appwire.Thread, complete boo
 // monotonic sequence used by tree memoization.
 func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 	c.mu.Lock()
+	snapshot = c.withoutRemovedSources(snapshot)
 	previous := c.snapshot
 	previous = normalizeRemoteThreadSnapshot(previous)
 	snapshot = normalizeRemoteThreadSnapshot(snapshot)
@@ -82,16 +92,29 @@ func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 // removed at runtime cannot keep rendering its last-refreshed sessions as
 // live until the refresher's next tick rewrites the cache (the round-5 M2
 // finding: the source registry no longer resolves the removed ID, so
-// sourceOnline fail-opens and the stale rows read as live). Row ownership
-// follows the same rule StoreSnapshot's source inference uses: the row's
-// Source when it carries one, else its parsed ref. Nothing happens for an
-// empty ID or a source the cache holds no rows for — a no-op prune publishes
-// no generation, mirroring StoreSnapshotData's no-op discipline.
+// sourceOnline fail-opens and the stale rows read as live). The removal is
+// also recorded, so a refresh that was walking while the remove committed
+// cannot republish the source's rows when it finishes (the round-6 M2
+// finding): StoreSnapshotData filters recorded sources out at publish time,
+// and RestoreSource lifts the record when the source registers again. Row
+// ownership follows the same rule StoreSnapshot's source inference uses: the
+// row's Source when it carries one, else its parsed ref. An empty ID does
+// nothing; a source the cache holds no rows for takes only the removal
+// record — the snapshot rewrite stays a no-op prune that publishes no
+// generation, mirroring StoreSnapshotData's no-op discipline.
 func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 	if sourceID == "" {
 		return
 	}
 	c.mu.Lock()
+	// The record comes before the rows check: the cache may hold nothing for
+	// the source right now, but the in-flight refresh captured its rows
+	// before the remove and publishes after — the record is what stops that
+	// republish, not the prune.
+	if c.removed == nil {
+		c.removed = make(map[string]struct{})
+	}
+	c.removed[sourceID] = struct{}{}
 	previous := normalizeRemoteThreadSnapshot(c.snapshot)
 	threads := make([]appwire.Thread, 0, len(previous.Threads))
 	for _, thread := range previous.Threads {
@@ -118,6 +141,67 @@ func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 	if onChange != nil {
 		onChange()
 	}
+}
+
+// RestoreSource lifts sourceID's removal record, so the source's rows may
+// publish again: RemoveSource records the ID not only to prune the current
+// snapshot but to hold an in-flight refresh back from republishing it
+// (round-6 M2), and a source that registers again — the remove/re-add churn —
+// must clear that hold, or the re-added host's sessions would never render
+// again. A restore for an ID that was never removed is a no-op. No snapshot
+// content changes: the next refresh publish brings the source's fresh rows.
+func (c *RemoteThreadCache) RestoreSource(sourceID string) {
+	if sourceID == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.removed, sourceID)
+	c.mu.Unlock()
+}
+
+// withoutRemovedSources strips every removed source's rows and per-source
+// snapshot entry from the incoming publish. RemoveSource pruned the removed
+// sources' rows from the current snapshot, but a refresh that captured its
+// walk before the remove can finish and publish afterwards, repopulating rows
+// the removal committed to dropping (the round-6 M2 finding). The filter uses
+// RemoveSource's own ownership rule, so what a prune drops cannot come back
+// in through a publish. Callers hold mu.
+func (c *RemoteThreadCache) withoutRemovedSources(snapshot RemoteThreadSnapshot) RemoteThreadSnapshot {
+	if len(c.removed) == 0 {
+		return snapshot
+	}
+	threads := make([]appwire.Thread, 0, len(snapshot.Threads))
+	for _, thread := range snapshot.Threads {
+		owned := false
+		for sourceID := range c.removed {
+			if remoteThreadOwnedBySource(thread, sourceID) {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			threads = append(threads, thread)
+		}
+	}
+	snapshot.Threads = threads
+	// Sources stays the caller's map — the publish must not mutate the
+	// snapshot it was handed — so the removed entries drop from a copy, made
+	// only when there is something to drop.
+	var sources map[string]RemoteSourceSnapshot
+	for sourceID := range c.removed {
+		if _, ok := snapshot.Sources[sourceID]; !ok {
+			continue
+		}
+		if sources == nil {
+			sources = make(map[string]RemoteSourceSnapshot, len(snapshot.Sources))
+			maps.Copy(sources, snapshot.Sources)
+		}
+		delete(sources, sourceID)
+	}
+	if sources != nil {
+		snapshot.Sources = sources
+	}
+	return snapshot
 }
 
 // remoteThreadOwnedBySource reports whether the snapshot walk attributed

@@ -390,6 +390,15 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // source, and the previous loop running beside the new one would
 // double-deliver every notification. The cancelled predecessor stands down on
 // its next wakeup, or as soon as its current relay ends.
+//
+// The replacement's wake channel is registered here, synchronously under the
+// same lifecycle lock that swaps the cancel handle, and handed to the loop:
+// registration used to happen inside the fanOut goroutine, so during
+// remove/re-add churn a cancelled predecessor whose body first ran after the
+// replacement registered could overwrite the replacement's channel and then
+// delete the map entry on exit, leaving the replacement parked on an orphaned
+// channel that missed the host's next attach wakeup and slept through its
+// full backoff (the round-6 M1 finding).
 func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsource.Source) {
 	remote, ok := source.(*appsource.RemoteHubSource)
 	if !ok {
@@ -404,9 +413,10 @@ func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsou
 	if stop, ok := c.fanOuts[remote.ID()]; ok {
 		stop()
 	}
+	wake := c.takeAttachWakeOwnership(remote.ID())
 	c.fanOuts[remote.ID()] = cancel
 	c.fanOutMu.Unlock()
-	go c.fanOut(fanCtx, remote)
+	go c.fanOut(fanCtx, remote, wake)
 }
 
 // stopFanOut ends host's notification fan-out and drops its per-host state:
@@ -430,7 +440,7 @@ func (c *hubHostAdminController) stopFanOut(host string) {
 // removal hook's teardown (stopFanOut): the removal ends every fan-out the
 // host has, so the entry — whatever generation owns it — goes with it. The
 // fan-out loops themselves use clearAttachWakeIfOwned, which spares an entry a
-// replacement generation registered. Both hostAttached and a fan-out's entry
+// replacement generation registered. Both hostAttached and a fan-out's launch
 // create the buffered channel under the host, so a deletion can never strand a
 // live waiter: the next wakeup or backoff re-creates one.
 func (c *hubHostAdminController) clearAttachWake(host string) {
@@ -439,12 +449,15 @@ func (c *hubHostAdminController) clearAttachWake(host string) {
 	c.attachWakeMu.Unlock()
 }
 
-// takeAttachWakeOwnership registers a fresh wake channel under host for this
-// fan-out generation and returns it. The previous entry — a cancelled
-// predecessor's, or an orphan an earlier hostAttached parked for a fan-out
-// that never launched — is replaced: a freshly launched generation checks
-// Online() on its first loop iteration before any backoff, so a wakeup parked
-// before it existed is never needed.
+// takeAttachWakeOwnership registers a fresh wake channel under host for one
+// fan-out generation and returns it. launchFanOut calls it synchronously under
+// the lifecycle lock, before the generation's goroutine exists, so a
+// predecessor scheduled late cannot overwrite the entry (the round-6 M1
+// finding); the goroutine receives the channel and never re-registers. The
+// previous entry — a cancelled predecessor's, or an orphan an earlier
+// hostAttached parked for a fan-out that never launched — is replaced: a
+// freshly launched generation checks Online() on its first loop iteration
+// before any backoff, so a wakeup parked before it existed is never needed.
 func (c *hubHostAdminController) takeAttachWakeOwnership(host string) chan struct{} {
 	ch := make(chan struct{}, 1)
 	c.attachWakeMu.Lock()
@@ -485,12 +498,15 @@ func (c *hubHostAdminController) clearAttachWakeIfOwned(host string, ch chan str
 // interval rather than an SSH preflight every second.
 //
 // Each fan-out generation owns its wake channel for its whole lifetime: the
-// channel is registered under the host when the loop starts (replacing a
-// cancelled predecessor's), passed to every backoff wait below, and cleared on
-// exit only when the entry is still the loop's own (see
+// channel is registered under the host synchronously by the launch
+// (launchFanOut, under the lifecycle lock, replacing a cancelled
+// predecessor's) and handed to the loop here, passed to every backoff wait
+// below, and cleared on exit only when the entry is still the loop's own (see
 // clearAttachWakeIfOwned). The round-4 M5 defect cleared whatever entry the
 // host had on exit, which during remove/re-add churn deleted the channel the
-// REPLACEMENT was parked on.
+// REPLACEMENT was parked on; the round-6 M1 fix moved registration out of the
+// goroutine entirely, so a predecessor scheduled late can no longer overwrite
+// its replacement's entry in the first place.
 //
 // hostAttached wakes this host's fan-out out of backoff: the sshconn
 // EventAttached path calls it once the fresh channel is installed, so the
@@ -501,14 +517,14 @@ func (c *hubHostAdminController) clearAttachWakeIfOwned(host string, ch chan str
 // resolves the fresh client through the source's attached-only lookup, so the
 // r6 liveness refusal stands — a host that dropped between the event and the
 // wakeup resolves to SessionUnavailable and the loop backs off again.
-func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
+func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource, wake chan struct{}) {
 	host := remote.ID()
-	// The loop's own wake channel, owned for the loop's whole lifetime. The
-	// exit clear is ownership-checked: cancellation is asynchronous, so a
-	// cancelled loop (replaced by a re-add, or ended by a removal's
-	// stopFanOut) can exit long after its replacement registered a fresh
-	// channel, and only an entry this loop still owns may go.
-	wake := c.takeAttachWakeOwnership(host)
+	// The loop's own wake channel — registered by the launch under the
+	// lifecycle lock — owned for the loop's whole lifetime. The exit clear is
+	// ownership-checked: cancellation is asynchronous, so a cancelled loop
+	// (replaced by a re-add, or ended by a removal's stopFanOut) can exit long
+	// after its replacement registered a fresh channel, and only an entry this
+	// loop still owns may go.
 	defer c.clearAttachWakeIfOwned(host, wake)
 	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {

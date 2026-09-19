@@ -137,3 +137,125 @@ func TestRemoteThreadCacheRemoveSourceDropsOwnedRowsAndPerSourceSnapshot(t *test
 		t.Fatalf("onChange fired %d times, want still the store's and the prune's", calls.Load())
 	}
 }
+
+// TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish pins the
+// round-6 M2 finding: RemoveSource pruned only the current snapshot, so a
+// remote-thread refresh that started before the remove could finish afterwards
+// and republish the removed source's rows — making the removed host's sessions
+// visible again until the next refresh cycle. The removal now also marks the
+// source as removed, and the publish filters it, so a late publish is a no-op
+// rather than a resurrection.
+func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing.T) {
+	c := &RemoteThreadCache{}
+	var calls atomic.Int32
+	c.SetOnChange(func() { calls.Add(1) })
+	seed := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a1", Source: "host-a"},
+			{ID: "a2", Source: "", Evener: appwire.EvenerThread{Ref: "host-a:a2"}},
+			{ID: "b1", Source: "host-b"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a": {Threads: []appwire.Thread{{ID: "a1", Source: "host-a"}}, Complete: true},
+			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
+		},
+	}
+	c.StoreSnapshotData(seed)
+	if calls.Load() != 1 {
+		t.Fatalf("onChange fired %d times after the seed, want 1", calls.Load())
+	}
+	// The refresh that started before the remove: it captured the full
+	// pre-remove walk, host-a's rows included.
+	inFlight := c.Snapshot()
+
+	// The remove commits while that refresh is still walking.
+	c.RemoveSource("host-a")
+	afterPrune := c.Snapshot()
+	if len(afterPrune.Threads) != 1 || afterPrune.Threads[0].ID != "b1" {
+		t.Fatalf("threads after prune = %+v, want only host-b's row", afterPrune.Threads)
+	}
+
+	// The refresh finishes and publishes its pre-remove walk. The publish
+	// must not resurrect the removed source's rows or per-source snapshot.
+	c.StoreSnapshotData(inFlight)
+
+	got := c.Snapshot()
+	for _, thread := range got.Threads {
+		if remoteThreadOwnedBySource(thread, "host-a") {
+			t.Fatalf("in-flight refresh resurrected thread %q for the removed source", thread.ID)
+		}
+	}
+	if _, ok := got.Sources["host-a"]; ok {
+		t.Fatal("in-flight refresh resurrected the removed source's per-source snapshot")
+	}
+	if len(got.Threads) != 1 || got.Threads[0].ID != "b1" {
+		t.Fatalf("threads after the late publish = %+v, want host-b's row intact and nothing else", got.Threads)
+	}
+	if _, ok := got.Sources["host-b"]; !ok {
+		t.Fatal("late publish dropped host-b's per-source snapshot")
+	}
+	// The filtered publish matches what the prune already published, so it is
+	// a no-op: no new generation, no change hook.
+	if got.Generation != afterPrune.Generation {
+		t.Fatalf("late publish bumped generation to %d, want the prune's %d", got.Generation, afterPrune.Generation)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("onChange fired %d times, want the seed's and the prune's only", calls.Load())
+	}
+}
+
+// TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord pins the other half
+// of the round-6 M2 fix: the removal record RestoreSource clears is a hold,
+// not a permanent ban. A remove/re-add churn re-registers the source, so the
+// re-added name's next refresh must publish its rows again — the hold cannot
+// outlive the registration it guards.
+func TestRemoteThreadCacheRestoreSourceLiftsTheRemovalRecord(t *testing.T) {
+	c := &RemoteThreadCache{}
+	seed := RemoteThreadSnapshot{
+		Threads: []appwire.Thread{
+			{ID: "a1", Source: "host-a"},
+			{ID: "b1", Source: "host-b"},
+		},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a": {Threads: []appwire.Thread{{ID: "a1", Source: "host-a"}}, Complete: true},
+			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
+		},
+	}
+	c.StoreSnapshotData(seed)
+	inFlight := c.Snapshot()
+	c.RemoveSource("host-a")
+
+	// The hold is active: the same publish carries nothing for host-a.
+	c.StoreSnapshotData(inFlight)
+	for _, thread := range c.Snapshot().Threads {
+		if remoteThreadOwnedBySource(thread, "host-a") {
+			t.Fatalf("held publish resurrected thread %q for the removed source", thread.ID)
+		}
+	}
+
+	// The churn re-registers the source: the record lifts, and the next
+	// publish — the same walk again — carries the re-added host's rows.
+	c.RestoreSource("host-a")
+	c.StoreSnapshotData(inFlight)
+	got := c.Snapshot()
+	var hostA int
+	for _, thread := range got.Threads {
+		if remoteThreadOwnedBySource(thread, "host-a") {
+			hostA++
+		}
+	}
+	if hostA != 1 || len(got.Threads) != 2 {
+		t.Fatalf("threads after restore = %+v, want host-a's row published beside host-b's", got.Threads)
+	}
+	if _, ok := got.Sources["host-a"]; !ok {
+		t.Fatal("restore did not re-admit host-a's per-source snapshot")
+	}
+
+	// A restore for a name that was never removed is a no-op.
+	c.RestoreSource("host-b")
+	if same := c.Snapshot(); same.Generation != got.Generation {
+		t.Fatalf("no-op restore changed the snapshot: generation %d, want %d", same.Generation, got.Generation)
+	}
+}

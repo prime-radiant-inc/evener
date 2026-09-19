@@ -54,11 +54,14 @@ type hostManagerConfig struct {
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
 	// remoteCache is the controller's remote-thread snapshot cache. Remove
-	// prunes the removed host's rows from it, so its sessions stop rendering
-	// with the removal instead of lingering live until the refresher's next
-	// tick. Nil (tests, embedders without a cache): every tree read then
-	// walks the live sources per request, and a removed host — no source —
-	// contributes no rows on its own.
+	// prunes the removed host's rows from it — and records the removal, so a
+	// refresh in flight during the remove cannot republish them (round-6 M2)
+	// — so its sessions stop rendering with the removal instead of lingering
+	// live until the refresher's next tick. registerSource lifts the record
+	// when a remove/re-add registers the name again. Nil (tests, embedders
+	// without a cache): every tree read then walks the live sources per
+	// request, and a removed host — no source — contributes no rows on its
+	// own.
 	remoteCache *hubcore.RemoteThreadCache
 	// manager owns every live SSH channel; removal goes through its atomic
 	// RemoveHost so a concurrent attach cannot publish past deregistration.
@@ -690,6 +693,14 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 		return m.cfg.online == nil || m.cfg.online(entry.Name)
 	})
 	m.cfg.sources.Add(source)
+	// A registered source may publish into the remote-thread cache again:
+	// Remove tombstones the name so an in-flight refresh cannot resurrect the
+	// removed host's rows (round-6 M2), and the re-add's registration lifts
+	// the tombstone — without this, a removed-then-re-added host's sessions
+	// would never render again.
+	if m.cfg.remoteCache != nil {
+		m.cfg.remoteCache.RestoreSource(entry.Name)
+	}
 }
 
 // Add registers one sidecar host entry: name + SSH address + key path. It
@@ -910,9 +921,12 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// fail-opens for the now-unregistered source ID, so those rows would
 	// keep rendering the removed host's sessions as live until the tick
 	// rewrote the cache (the round-5 M2 finding). The removal is committed
-	// and the host can serve no future refresh, so the rows go with it. No
-	// configured cache means every tree read walks the live sources, which
-	// no longer list the host — nothing to prune.
+	// and the host can serve no future refresh, so the rows go with it — and
+	// the removal is recorded, so a refresh that was walking while the
+	// remove committed cannot republish the host's rows when it finishes
+	// (the round-6 M2 finding). No configured cache means every tree read
+	// walks the live sources, which no longer list the host — nothing to
+	// prune.
 	if m.cfg.remoteCache != nil {
 		m.cfg.remoteCache.RemoveSource(host.Name)
 	}

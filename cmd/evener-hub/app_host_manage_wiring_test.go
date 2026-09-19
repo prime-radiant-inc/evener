@@ -572,3 +572,99 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 		t.Fatal("cache kept a source snapshot for the removed host")
 	}
 }
+
+// TestHostManageRemoveBlocksInFlightRefreshRepublish pins the round-6 M2
+// finding end to end over the real server construction path: RemoveSource
+// pruned only the cache's current snapshot, so a remote-thread refresh that
+// started before the remove could finish afterwards and republish the removed
+// host's rows — its sessions rendered live again until the refresher's next
+// tick. The removal now marks the source as removed, the late publish filters
+// it, and a remove/re-add — the churn Remove exists for — lifts the hold so
+// the re-added host's next refresh publishes normally.
+func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cfg := hubcore.WebConfig{
+		Past:                 hubcore.NewPastIndex(""),
+		RemoteHostConfigPath: configPath,
+		RemoteThreadCache:    cache,
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// rowsFor counts the host's presence in the tree inputs.
+	rowsFor := func() (metas, live int) {
+		t.Helper()
+		metasList, liveList, _ := web.navigationTreeInputs(context.Background())
+		for _, meta := range metasList {
+			if meta.ProfileID == "web-side" {
+				metas++
+			}
+		}
+		for _, entry := range liveList {
+			if entry.SourceID == "web-side" {
+				live++
+			}
+		}
+		return metas, live
+	}
+
+	// A UI-added host, then the snapshot a refresh that started before the
+	// remove captured for it: one live session row it owns.
+	var added appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
+	inFlight := cache.Snapshot()
+	if metas, live := rowsFor(); metas != 1 || live != 1 {
+		t.Fatalf("tree rows before Remove = %d metas, %d live; want the seeded session rendered live (fixture sanity)", metas, live)
+	}
+
+	// The remove commits while that refresh is in flight.
+	var removed appwire.HostRemoveResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, &removed); err != nil {
+		t.Fatalf("evener/host/remove: %v", err)
+	}
+	if !removed.Host.Removed {
+		t.Fatalf("remove response = %+v, want removed", removed.Host)
+	}
+	if metas, live := rowsFor(); metas != 0 || live != 0 {
+		t.Fatalf("tree rows after Remove = %d metas, %d live; want none", metas, live)
+	}
+
+	// The refresh finishes and publishes its pre-remove walk. Nothing may come
+	// back: not the tree rows, not the cache's rows, not the per-source entry.
+	cache.StoreSnapshotData(inFlight)
+	for _, thread := range cache.Snapshot().Threads {
+		if thread.Source == "web-side" {
+			t.Fatalf("in-flight refresh resurrected thread %q for the removed host", thread.ID)
+		}
+	}
+	if _, ok := cache.Snapshot().Sources["web-side"]; ok {
+		t.Fatal("in-flight refresh resurrected the removed host's per-source snapshot")
+	}
+	if metas, live := rowsFor(); metas != 0 || live != 0 {
+		t.Fatalf("tree rows after the late publish = %d metas, %d live; want none", metas, live)
+	}
+
+	// The churn completes with a re-add: the name registers again, so its
+	// next refresh must publish normally — the hold cannot outlive the name.
+	var readded appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &readded); err != nil {
+		t.Fatalf("evener/host/add (re-add): %v", err)
+	}
+	cache.StoreSnapshotData(inFlight)
+	if metas, live := rowsFor(); metas != 1 || live != 1 {
+		t.Fatalf("tree rows after the re-add = %d metas, %d live; want the re-added host's rows published again", metas, live)
+	}
+}

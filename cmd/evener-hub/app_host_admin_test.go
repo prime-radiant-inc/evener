@@ -708,10 +708,11 @@ func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		controller.fanOut(ctx, source)
+		controller.fanOut(ctx, source, wake)
 	}()
 
 	// Offline: the connector must not be invoked at all, however long we wait.
@@ -822,9 +823,10 @@ func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
 	done := make(chan struct{})
 	go func() {
-		controller.fanOut(ctx, source)
+		controller.fanOut(ctx, source, wake)
 		close(done)
 	}()
 
@@ -1001,10 +1003,11 @@ func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		controller.fanOut(ctx, source)
+		controller.fanOut(ctx, source, wake)
 	}()
 
 	// Let the fan-out enter backoff while the host reports offline: it must
@@ -1054,10 +1057,13 @@ func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 	// Generation one: it parks in backoff while the host reports offline.
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	defer cancel1()
+	// The launch registers the generation's wake channel synchronously, the
+	// way launchFanOut does for a live launch.
+	wake1 := controller.takeAttachWakeOwnership(source.ID())
 	done1 := make(chan struct{})
 	go func() {
 		defer close(done1)
-		controller.fanOut(ctx1, source)
+		controller.fanOut(ctx1, source, wake1)
 	}()
 	time.Sleep(250 * time.Millisecond)
 	if got := source.HostNotificationSubscribers(); got != 0 {
@@ -1070,10 +1076,12 @@ func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 	// predecessor is still winding down.
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
+	// The re-add's launch registers the replacement's channel the same way.
+	wake2 := controller.takeAttachWakeOwnership(source.ID())
 	done2 := make(chan struct{})
 	go func() {
 		defer close(done2)
-		controller.fanOut(ctx2, source)
+		controller.fanOut(ctx2, source, wake2)
 	}()
 	time.Sleep(250 * time.Millisecond)
 
@@ -1100,6 +1108,110 @@ func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the attach event did not wake the replacement fan-out: the predecessor's exit cleared its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminFanOutLateCancelledPredecessorCannotOrphanReplacementWake pins
+// the round-6 M1 finding: wake ownership used to be registered asynchronously
+// inside the fanOut goroutine, so during remove/re-add churn a predecessor
+// whose body first ran AFTER its replacement registered could overwrite the
+// replacement's wake channel and then delete the map entry on exit. The
+// replacement stayed parked on an orphaned channel, missed the host's next
+// attach wakeup, and slept through its full backoff. The predecessor's body is
+// started only once the replacement is parked, so the harmful direction is
+// deterministic rather than a scheduling hope — the round-4 test's early waits
+// always let the predecessor register first and could not see this.
+func TestHostAdminFanOutLateCancelledPredecessorCannotOrphanReplacementWake(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	onlineChecks := make(chan struct{}, 16)
+	source.SetHostOnline(func() bool {
+		select {
+		case onlineChecks <- struct{}{}:
+		default:
+		}
+		return online.Load()
+	})
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// The remove/re-add churn's launch side: generation one's launch registers
+	// its wake channel under the host, the removal cancels generation one and
+	// drops the host's wake entry, and the re-add's launch registers the
+	// replacement's channel.
+	wake1 := controller.takeAttachWakeOwnership("m4")
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	cancel1()
+	controller.stopFanOut("m4")
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	wake2 := controller.takeAttachWakeOwnership("m4")
+
+	// The replacement runs first and parks in backoff while the host reports
+	// offline. Its first Online() check proves it holds the wake entry the
+	// re-add registered and is entering the wait, so everything the predecessor
+	// does below happens after that registration.
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		controller.fanOut(ctx2, source, wake2)
+	}()
+	select {
+	case <-onlineChecks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out never reached its first Online() check")
+	}
+
+	// The cancelled predecessor's body runs only now, after the replacement
+	// registered — the late scheduling the pre-fix asynchronous registration
+	// could not defend against (that body registered over the replacement's
+	// channel and deleted the host's wake entry on the way out). The fixed
+	// launch binds each generation's channel before its goroutine exists, so
+	// all this body can do is exit: its ownership-checked clear spares the
+	// replacement's entry.
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		controller.fanOut(ctx1, source, wake1)
+	}()
+	select {
+	case <-done1:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled predecessor did not exit")
+	}
+
+	// The attach flips the host online and wakes the replacement through the
+	// wake entry under the host. The replacement's first backoff is a full
+	// hostNotificationRetryBase away, so a served wakeup subscribes promptly
+	// while a missed one is still sleeping when the deadline passes.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the late-scheduled predecessor orphaned its wake channel")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
