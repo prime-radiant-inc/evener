@@ -2930,6 +2930,91 @@ test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh
   expect(merged.turns[0]?.items).toHaveLength(1);
 });
 
+function historyTurnWithItems(id: string, itemIds: string[]): TurnModel {
+  return {
+    id,
+    status: "completed",
+    items: itemIds.map((itemId) => ({
+      id: itemId,
+      turnId: id,
+      type: "agentMessage",
+      text: itemId,
+      status: "completed",
+    })),
+  };
+}
+
+test.each([
+  ["collapsed anchor alone", ["F"], ["F", "B"]],
+  ["fresh prefix", ["X", "F"], ["X", "F", "B"]],
+  ["fresh suffix", ["F", "Y"], ["F", "Y", "B"]],
+  ["fresh prefix and suffix", ["X", "F", "Y"], ["X", "F", "Y", "B"]],
+])("mergeTurnHistory retains a run between collapsed anchors with %s", (_name, freshIds, expectedIds) => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      historyTurnWithItems("B", ["item-B"]),
+      historyTurnWithItems("C", ["item-C"]),
+    ],
+    freshIds.map((id) => historyTurnWithItems(id, id === "F" ? ["item-A", "item-C"] : [])),
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(expectedIds);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item-B")).toHaveLength(1);
+});
+
+test("mergeTurnHistory retains a warning-only run between collapsed anchors", () => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      {
+        id: "B",
+        status: "completed",
+        items: [{ id: "warning-B", turnId: "B", type: "warning", text: "live warning", status: "completed" }],
+      },
+      historyTurnWithItems("C", ["item-C"]),
+    ],
+    [historyTurnWithItems("F", ["item-A", "item-C"])],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["F", "B"]);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(merged.turns[1]?.items).toMatchObject([{ id: "warning-B", type: "warning" }]);
+});
+
+test("mergeTurnHistory retains runs across multiple collapsed anchor groups", () => {
+  const merged = mergeTurnHistory(
+    [
+      historyTurnWithItems("A", ["item-A"]),
+      historyTurnWithItems("B", ["item-B"]),
+      historyTurnWithItems("C", ["item-C"]),
+      historyTurnWithItems("D", ["item-D"]),
+      historyTurnWithItems("E", ["item-E"]),
+      historyTurnWithItems("F", ["item-F"]),
+      historyTurnWithItems("G", ["item-G"]),
+    ],
+    [
+      historyTurnWithItems("X", []),
+      historyTurnWithItems("H", ["item-A", "item-C"]),
+      historyTurnWithItems("I", ["item-F", "item-G"]),
+      historyTurnWithItems("Y", []),
+    ],
+  );
+
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["X", "H", "B", "D", "E", "I", "Y"]);
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.transcriptOverlap).toBe(true);
+  expect(
+    merged.turns
+      .flatMap((turn) => turn.items)
+      .map((item) => item.id)
+      .sort(),
+  ).toEqual(["item-A", "item-B", "item-C", "item-D", "item-E", "item-F", "item-G"].sort());
+});
+
 test("mergeTurnHistory preserves fresh ordering when its window extends before retained turns", () => {
   const older: TurnModel[] = [
     { id: "turn-1", status: "completed", items: [], usage: { inputTokens: 1 } },

@@ -701,8 +701,11 @@ function weaveUnmatchedOlderTurns(
       .slice(0, olderIndex)
       .reverse()
       .find((freshIndex) => freshIndex !== -1);
-    const nextAnchor = oldAnchorFreshIndexes.slice(olderIndex + 1).find((freshIndex) => freshIndex !== -1);
-    const gap = previousAnchor === undefined ? 0 : (nextAnchor ?? fresh.length);
+    const nextDistinctAnchor =
+      previousAnchor === undefined
+        ? undefined
+        : oldAnchorFreshIndexes.slice(olderIndex + 1).find((freshIndex) => freshIndex > previousAnchor);
+    const gap = previousAnchor === undefined ? 0 : (nextDistinctAnchor ?? fresh.length);
     const run = olderRunsByFreshGap.get(gap) ?? [];
     run.push(olderTurn);
     olderRunsByFreshGap.set(gap, run);
