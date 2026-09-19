@@ -295,7 +295,7 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	// refused here, before a flow is recorded (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthLoginStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthLoginStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
 	}
 	c.mu.Lock()
 	if c.flows == nil {
@@ -765,7 +765,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// have nothing to compare (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthDeviceStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthDeviceStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
@@ -1065,7 +1065,7 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
 	if asserted == "" {
 		if keyErr != nil {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
 		}
 		return nil
 	}
@@ -1078,10 +1078,10 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	// is nothing to check only while the hub can key a fingerprint or has no
 	// state root at all.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
 	}
 	if current != asserted {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
 	}
 	return nil
 }
@@ -1119,7 +1119,7 @@ func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
 	if started == "" {
 		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
+			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
 		}
 		return nil
 	}
@@ -1128,10 +1128,10 @@ func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key 
 	// can no longer describe is one whose record nobody can place, so it is
 	// refused rather than filed somewhere the user never signed in for.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
+		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
 	}
 	if current != started {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
+		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
 	}
 	return nil
 }

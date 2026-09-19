@@ -59,7 +59,7 @@ export function nativeModuleMock() {
 		);
 	return {
 		ActivityIndicator: "ActivityIndicator",
-		Alert: { alert: () => {} },
+		Alert: { alert: recordAlert },
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
 		Pressable: "Pressable",
@@ -74,23 +74,61 @@ export function nativeModuleMock() {
 	};
 }
 
+/** One Alert.alert call the mounted tree made. */
+export interface AlertRequest {
+	title: string;
+	message?: string;
+	buttons?: { text?: string; style?: string; onPress?: () => void }[];
+}
+
+/** Every Alert.alert call the mounted tree made, oldest first. A test that
+ * drives a confirmation dialog reads the buttons off the request it cares
+ * about and invokes the one it wants; production Alert never returns. */
+export const alertRequests: AlertRequest[] = [];
+
+function recordAlert(
+	title: string,
+	message?: string,
+	buttons?: AlertRequest["buttons"],
+): void {
+	alertRequests.push({ title, message, buttons });
+}
+
 /** The client a test hands the credential store: every request method it is
  * asked for is recorded in `methods`, every answer is `rows`, and
  * `unsubscribes()` counts the times the store released its notification
- * subscription - the observable behind binding and closing a connection. */
-export function scriptedClient(rows: InstanceListResponse) {
+ * subscription - the observable behind binding and closing a connection.
+ *
+ * `script` overrides answers per method: each entry is consumed in order and
+ * the last one repeats, so a test can answer the listing read that mounted the
+ * screen with rows and the post-write refresh with the rows that write left
+ * behind. An Error entry is thrown, which is how a scripted rejection reaches
+ * a caller's catch. */
+export function scriptedClient(
+	rows: InstanceListResponse,
+	script: Record<string, (InstanceListResponse | Error)[]> = {},
+) {
 	const methods: string[] = [];
+	const requests: { method: string; params: unknown }[] = [];
+	const taken = new Map<string, number>();
 	let unsubscribes = 0;
 	const client = {
-		request: async (method: string) => {
+		request: async (method: string, params?: unknown) => {
 			methods.push(method);
-			return rows;
+			requests.push({ method, params });
+			const answers = script[method];
+			if (!answers || answers.length === 0) return rows;
+			const index = Math.min(taken.get(method) ?? 0, answers.length - 1);
+			taken.set(method, index + 1);
+			const answer = answers[index];
+			if (answer instanceof Error) throw answer;
+			return answer;
 		},
 		onNotification: (_handler: (n: AnyNotification) => void) => () => {
 			unsubscribes += 1;
 		},
 	} as ConversationClientLike;
-	return { client, methods, unsubscribes: () => unsubscribes };
+	return { client, methods, requests, unsubscribes: () => unsubscribes };
 }
 
 /** Mounts `element` and flushes its effects, returning the test renderer. */

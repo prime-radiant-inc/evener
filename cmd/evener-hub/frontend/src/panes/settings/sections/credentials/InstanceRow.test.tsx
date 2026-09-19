@@ -73,17 +73,68 @@ describe("the row carries identity and status only", () => {
   });
 });
 
-// implicit is the wire's own "exists from the environment, not from
-// providers.toml" flag (InstanceEntry, appwire/types.go) - removal of an
-// implicit instance is refused server-side (spec §11.3), so the sheet
-// offers no Remove, and this badge tells the user why Edit there writes a
-// shadow instead of changing the instance itself.
-describe("implicit instances", () => {
-  test("a 'from environment' badge marks an implicit instance", () => {
+// The badge names where the instance's credential comes from, not merely
+// that no providers.toml entry shadows it: an implicit instance the user
+// signed in to or stored a key for is their own, and the badge would name a
+// source it never read.
+describe("environment-backed instances", () => {
+  test("a 'from environment' badge marks an instance an environment variable supplies", () => {
     render(
-      <InstanceRow instance={instance({ name: "groq", providerId: "groq", implicit: true })} onSelect={() => {}} />,
+      <InstanceRow
+        instance={instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" })}
+        onSelect={() => {}}
+      />,
     );
     expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a 'from environment' badge marks an instance the ADC file supplies", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "vertex",
+          providerId: "google-vertex",
+          implicit: true,
+          activeSource: "adc",
+          auth: "gcp-adc",
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a stored key through the UI carries no badge", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "groq",
+          providerId: "groq",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
+  test("a signed-in Codex account carries no badge", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          implicit: true,
+          activeSource: "oauth",
+          hasStoredOAuth: true,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 
   test("a non-implicit instance carries no badge", () => {

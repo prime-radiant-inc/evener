@@ -1,4 +1,5 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { ErrorEndpointConflict, ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -119,11 +120,32 @@ describe("visibility", () => {
   });
 
   // The sheet is the whole screen on mobile and the only place Remove would
-  // have been, so the badge explaining an implicit instance has to be here
-  // too - not only on the row behind it.
-  test("an implicit instance is badged 'from environment'", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // have been, so the badge explaining an environment-backed instance has to
+  // be here too - not only on the row behind it.
+  test("an environment-backed instance is badged 'from environment'", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("an implicit instance credentialed through the UI carries no badge", () => {
+    renderSheet(
+      instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
+  test("a signed-in Codex account carries no badge", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 
   test("a non-implicit instance carries no such badge", () => {
@@ -269,28 +291,80 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
-  // Removing an implicit instance is refused server-side (spec §11.3), so
-  // the sheet must not even offer the button; the form stays, since editing
-  // an implicit instance writes a shadow rather than changing it.
-  test("an implicit instance offers the form but no Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // Removing an environment-backed instance is refused server-side: the
+  // variable that makes it exist would put it straight back. The form stays,
+  // since editing it writes a shadow rather than changing the instance.
+  test("an environment-backed instance offers the form but no Remove", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByLabelText("Base URL")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 
+  // The account a user adds through the UI is theirs to remove: the credential
+  // is a file under the instance name (auth/<name>.json, credentials.toml), so
+  // removing the instance is exactly how the account goes away.
+  test("an implicit instance credentialed through the UI offers Remove", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+
+  // An instance that exists without a credential is not the user's to remove,
+  // however its store layer looks: the reload re-derives it and the row comes
+  // back wearing the badge this affordance just said it did not have, with the
+  // key gone. Clear is the action for that key.
+  test("a keyless-capable instance with a stored key keeps the badge and no Remove", () => {
+    renderSheet(
+      instance({
+        name: "ollama",
+        providerId: "ollama",
+        auth: "optional-bearer",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        credentialRequired: false,
+      }),
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+  });
+
   // The danger zone is Clear + Remove under a divider; an implicit instance
-  // with nothing stored offers neither, so the divider must go too rather
-  // than trailing an empty section.
+  // the environment supplies with nothing stored offers neither, so the divider
+  // must go too rather than trailing an empty section.
   test("no danger-zone divider when the instance offers neither Clear nor Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(document.querySelectorAll("hr").length).toBe(0);
   });
 
-  test("the danger-zone divider stays when Clear alone is offered", () => {
+  // The other side of the allow-list: an implicit instance the environment does
+  // NOT supply - a bearer row resolving no credential at all (none/empty/
+  // unknown) - is the user's own, so Remove and its divider stay. The old
+  // deny-list classified `none` as environment-backed and refused Remove with
+  // nothing to say.
+  test("an implicit instance with no environment-supplied source keeps Remove and its divider", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    expect(screen.queryByText("from environment")).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(document.querySelectorAll("hr").length).toBe(1);
+  });
+
+  test("the danger-zone divider stays for a stored-key instance, which offers Clear and Remove", () => {
     renderSheet(
       instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
     );
     expect(document.querySelectorAll("hr").length).toBe(1);
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   test("the danger-zone divider stays when Clear stored key alone is offered", () => {
@@ -531,8 +605,10 @@ describe("writesRefused disables instance-CRUD actions only", () => {
     expect((screen.getByRole("button", { name: "Clear stored key" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  test("an implicit instance under writesRefused still has no Remove button at all", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }), { writesRefused: true });
+  test("an environment-backed implicit instance under writesRefused still has no Remove button at all", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }), {
+      writesRefused: true,
+    });
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });
@@ -755,10 +831,62 @@ describe("the form", () => {
     await act(async () => finish({ instances: [WORK], availableProviders: [OPENAI] }));
   });
 
-  test("an implicit instance's Name is disabled with the environment note", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
-    expect(field("Name").disabled).toBe(true);
-    expect(screen.getByText(/comes from the environment/)).toBeTruthy();
+  // The Name field is editable on every instance. A rename always authors an
+  // entry under the new name; when the hub marks the row as one the environment
+  // re-supplies (renameLeavesRow), the old row stays too, so the note under the
+  // field says that instead of promising a rename that cannot happen.
+  test("a row the hub marks as left behind shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "env:GROQ_API_KEY",
+        renameLeavesRow: true,
+      }),
+    );
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
+  // The same note for a row that only looks like the user's - a stored key
+  // outranking a set variable, with the hub's bit saying the variable supplies
+  // the old name once the key moves.
+  test("a stored key shadowing a set variable shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        shadowedEnvVar: "GROQ_API_KEY",
+        renameLeavesRow: true,
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
+  test("a UI-credentialed instance's Name is editable with the ordinary rename note", async () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/keep the old name/)).toBeTruthy();
+    expect(screen.queryByText(/leaves this one in place/)).toBeNull();
   });
 
   test("changing the name shows the rename note", async () => {
@@ -914,6 +1042,162 @@ describe("the form", () => {
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("read-only"));
     expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(true);
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
+  // The save carries the endpoint the draft was seeded from, and the hub refuses
+  // an edit whose name another client has re-pointed since. The refusal is the
+  // endpoint-conflict class: a clear message, a listing refresh so a retry
+  // asserts the destination now on screen, and the draft kept.
+  test("a save refused for a changed endpoint surfaces the message, refreshes, and keeps the draft", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    // The assertion the hub checks travels with the save.
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-work",
+      originClientId: "test-tab",
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    expect(getToasts().some((t) => t.text.includes("changed to a different endpoint"))).toBe(true);
+    // The draft survives for the retry, and the listing is re-read.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+  });
+
+  // The refusal's message asks the user to "review its destination and save
+  // again", so the retry has to be able to land: once the recovery read has
+  // applied, the sheet must assert the destination the name now resolves to and
+  // keep the edits the user typed. Before the fix the sheet kept both the stale
+  // assertion and the stale seeded identity, so the second Save either re-sent
+  // the refused fingerprint or tripped the identity guard and reseeded over the
+  // draft.
+  test("a retry after an endpoint conflict asserts the refreshed destination and keeps the edits", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const WORK_MOVED = {
+      ...WORK,
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-moved",
+    };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    // The same instance, re-pointed: name/providerId/base/auth unchanged, only
+    // the endpoint (baseUrl + fingerprint) moved.
+    fake.on("evener/instance/list", () => ({ instances: [WORK_MOVED], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    expect(edits()[0]?.params).toMatchObject({ expectedEndpointFingerprint: "fp-work" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    // The recovery read has applied the re-pointed row.
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.endpointFingerprint).toBe(
+        "fp-moved",
+      ),
+    );
+
+    await user.click(saveButton());
+    await waitFor(() => expect(edits()).toHaveLength(2));
+    // The retry lands against the destination now on screen, with the user's
+    // typed field intact - not the refused fingerprint, and not a reseeded form.
+    expect(edits()[1]?.params).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-moved",
+      originClientId: "test-tab",
+    });
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
+  // The re-anchor must not fire for a replacement: when the refreshed row under
+  // the name is a different instance, the sheet's existing identity guard is what
+  // refuses - the edits typed for the old instance must not land on a stranger.
+  test("a replacement at the name is refused, not re-anchored, after an endpoint conflict", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const IMPOSTOR = instance({
+      name: "work",
+      providerId: "anthropic",
+      protocol: "anthropic",
+      baseUrl: "https://gw.example.test/v9",
+      endpointFingerprint: "fp-impostor",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    fake.on("evener/instance/list", () => ({ instances: [IMPOSTOR], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.providerId).toBe("anthropic"),
+    );
+
+    await user.click(saveButton());
+    // The guard refuses and reseeds; nothing is sent to the replacement.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("was replaced under the same name"));
+    expect(edits()).toHaveLength(1);
+  });
+
+  // The hub's generic conflict is shared by genuine refusals. A rename onto an
+  // occupied name is one: the sheet must surface the hub's own message and keep
+  // the draft, not dress it up as a moved endpoint and refresh.
+  test("a rename onto an occupied name surfaces the hub's refusal, not an endpoint conflict", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError('instance "work2" already exists', -32013, { evenerErrorInfo: "conflict" });
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
+    expect(screen.queryByText(/changed to a different endpoint/)).toBeNull();
+    // Not the endpoint-conflict recovery: no listing read was asked for.
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBe(listingsBefore);
   });
 
   test("a rename toasts the new name, calls onRenamed, and does not close the sheet", async () => {
@@ -1416,7 +1700,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+      expectedEndpointFingerprint: "fp-work",
+    });
 
     await refreshList(fake, [renamed]);
     await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
@@ -1424,6 +1713,49 @@ describe("the form", () => {
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename the hub persisted but could not finish (the OAuth record would
+  // not move, or its reload failed) answers as an error carrying the hub's
+  // ErrorInstanceRenamePersisted discriminator. That discriminator is the
+  // authoritative fact - providers.toml already names the new instance - so the
+  // sheet must follow it even when the refreshed listing cannot show the new
+  // row (the hub's fallback registry, a reload that failed). Gating the steer
+  // on the listing strands the sheet on a name the config no longer carries;
+  // replacing the steer with a form error does the same while also blaming the
+  // wrong thing. The listing is still refreshed (the store should catch up),
+  // and the hub's own warning - it names the credential left behind - still
+  // reaches the user.
+  test("a persisted rename whose listing omits the new row still steers to the new name and warns", async () => {
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    const fake = new FakeClient("ready");
+    // The refreshed listing never gains the new row: the hub's registry is on
+    // its fallback listing, so reconciliation can never confirm the landing.
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [OPENAI] }));
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    connectionStore.getState().connect(fake);
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
+
+    // The persisted name is followed regardless of the listing...
+    await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("work2"));
+    // ...the listing was still reconciled...
+    expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
+    // ...the hub's message still warns...
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === HUB_MESSAGE)).toBe(true);
+    // ...and no form error blames the instance the config already renamed.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
   });
 
   // A rename that also edits an endpoint-affecting field necessarily changes
@@ -1559,7 +1891,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work", originClientId: "test-tab" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     const renamed = { ...shadow, name: "openai-work", base: "openai" };
     await refreshList(fake, [renamed]);
@@ -1568,6 +1905,85 @@ describe("the form", () => {
     expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // Renaming an instance that had no authored entry authors one under the new
+  // name, so the row the store's listing holds at that name is an authored one.
+  // Implicit becoming authored is therefore the rename's own outcome, not a
+  // different instance wearing the new name: reading the changed flag as a
+  // difference rejects the store's confirmation and leaves the sheet on a row
+  // that no longer exists.
+  test("a superseded rename of an instance with no authored entry is confirmed as authored", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
+    });
+
+    // What the hub authors: the entry under the new name, pinning the curated
+    // id it was inheriting from, so the listing's row is authored and carries
+    // that base.
+    const renamed = { ...codex, name: "openai-codex-work", base: "openai-codex", implicit: false };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("openai-codex-work");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-codex-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename always authors the entry under the new name, so an implicit row
+  // holding that name is never this rename's result: it is a curated provider
+  // the environment re-derived there, or a later tenant of the freed name.
+  // Landing the sheet on it would title one instance with another's values.
+  test("a superseded rename is not confirmed by an implicit row at the new name", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
+    });
+
+    // Every identity field matches, but the row is implicit - not something a
+    // rename authors.
+    const implicitLookAlike = { ...codex, name: "openai-codex-work", implicit: true };
+    await refreshList(fake, [implicitLookAlike]);
+    await act(async () => finish({ instances: [implicitLookAlike], availableProviders: [] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved openai-codex-work")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // The same rename answered by the store instead of superseded: the edit
@@ -1592,7 +2008,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work", originClientId: "test-tab" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
@@ -1613,7 +2034,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work", originClientId: "test-tab" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
     await refreshList(fake, [lookAlike]);
@@ -1668,6 +2094,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       originClientId: "test-tab",
@@ -1706,6 +2133,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       originClientId: "test-tab",
@@ -1742,6 +2170,7 @@ describe("the form", () => {
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p9");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p9" },
       originClientId: "test-tab",
@@ -1781,6 +2210,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       originClientId: "test-tab",
@@ -1817,6 +2247,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       originClientId: "test-tab",
@@ -1855,6 +2286,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x?token=abc");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x?token=abc",
       originClientId: "test-tab",
@@ -1889,6 +2321,7 @@ describe("the form", () => {
     await user.type(field("Name"), "2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       newName: "work2",
       originClientId: "test-tab",
@@ -1927,6 +2360,7 @@ describe("the form", () => {
     await user.clear(field("Base URL"));
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       clearBaseUrl: true,
       originClientId: "test-tab",
@@ -1973,6 +2407,7 @@ describe("the form", () => {
     await user.type(field("Credential header"), "Authorization = Bearer $NEWKEY");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       credentialHeader: "Authorization = Bearer $NEWKEY",
@@ -2014,6 +2449,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "not a url");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "not a url",
       originClientId: "test-tab",
@@ -2101,6 +2537,7 @@ describe("the form", () => {
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p2" },
       originClientId: "test-tab",
@@ -2131,6 +2568,7 @@ describe("the form", () => {
     expect(edits[1]?.params).toEqual({
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p3" },
+      expectedEndpointFingerprint: "fp-after",
       originClientId: "test-tab",
     });
   });
@@ -2154,6 +2592,7 @@ describe("the form", () => {
     await user.clear(field("API key environment variable"));
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       newName: "work2",
       clearApiKeyEnv: true,
@@ -2196,6 +2635,7 @@ describe("the form", () => {
     await user.clear(field("Base URL"));
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       newName: "work2",
       clearBaseUrl: true,
@@ -2236,6 +2676,7 @@ describe("the form", () => {
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p2" },
       originClientId: "test-tab",
@@ -2280,6 +2721,7 @@ describe("the form", () => {
     await user.clear(field("API key environment variable"));
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       clearApiKeyEnv: true,
@@ -2327,6 +2769,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "https://api.example.test");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       newName: "work2",
       baseUrl: "https://api.example.test",
@@ -2365,6 +2808,7 @@ describe("the form", () => {
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p2" },
       originClientId: "test-tab",
@@ -2410,6 +2854,7 @@ describe("the form", () => {
     await user.type(field("API key environment variable"), "NEW_KEY");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       apiKeyEnv: "NEW_KEY",
       originClientId: "test-tab",
@@ -2444,6 +2889,7 @@ describe("the form", () => {
     await user.selectOptions(select("Surface"), "openai");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       surface: "openai",
       originClientId: "test-tab",
@@ -2477,6 +2923,7 @@ describe("the form", () => {
     await user.selectOptions(select("Surface"), "");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       clearSurface: true,
       originClientId: "test-tab",
@@ -2550,6 +2997,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       baseUrl: "https://gw.example.test/v1/x",
       originClientId: "test-tab",
@@ -2603,6 +3051,7 @@ describe("the form", () => {
     });
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       surface: "openai",
       originClientId: "test-tab",
@@ -2641,6 +3090,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "https://gw.example.test/v1");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "work",
       newName: "work2",
       baseUrl: "https://gw.example.test/v1",
@@ -2687,6 +3137,7 @@ describe("the form", () => {
     await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       newName: "v2",
       vars: { GOOGLE_VERTEX_PROJECT: "p2" },
@@ -2803,6 +3254,7 @@ describe("the form", () => {
     });
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
       name: "v",
       vars: { GOOGLE_VERTEX_PROJECT: "p2" },
       originClientId: "test-tab",

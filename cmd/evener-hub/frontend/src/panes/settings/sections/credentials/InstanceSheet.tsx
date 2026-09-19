@@ -33,7 +33,12 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  friendlyErrorMessage,
+  fromEnvironment,
+  isEndpointConflict,
+  isInstanceRenamePersisted,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
@@ -52,6 +57,7 @@ import {
   SURFACE_OPTIONS,
   varRows,
 } from "./instanceEdit";
+import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
@@ -82,6 +88,23 @@ const STALE_SAVE_WARNING =
 // edits onto its replacement.
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
+// The rename persisted but the listing cannot yet confirm the destination row,
+// so the sheet still shows the held original while the section's selection names
+// the destination. A second Save would resubmit the completed rename against
+// the old name, which the config no longer carries; the form says so rather than
+// sending it.
+const RENAME_PENDING_SAVE_ERROR =
+  "This rename is still being confirmed; wait for the renamed instance to appear before saving again.";
+// The same gap for every other per-instance action: the sheet's callbacks target
+// the section's selected name, so firing one now would act on whatever occupies
+// the destination, not the instance on screen.
+const RENAME_PENDING_ACTION_MESSAGE =
+  "This rename is still being confirmed; wait for the renamed instance to appear before acting on it.";
+// The hub refused the endpoint this form was seeded from: the name moved since
+// the draft was read, so the save was not applied. The draft is kept for a retry
+// once the listing on screen shows the destination now in effect.
+const ENDPOINT_CHANGED_SAVE_ERROR =
+  "This instance changed to a different endpoint since the form was opened. Review its destination and save again.";
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -112,13 +135,30 @@ const RENAME_IDENTITY_FIELDS = [
  * digest cannot be compared as an untouched identity field across such a save. */
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
+/** Every `clear*` flag InstanceEditParams carries, and the entry field each one
+ * empties. An explicit map, not a derived "lowercase the first letter"
+ * conversion: the params type carries more than one capitalised field name
+ * (clearApiKeyEnv among them), so a derivation is one mis-cased flag away from
+ * producing a field name the listing never carries and silently disabling the
+ * identity comparison that decides whether a rename landed. Typed as a total
+ * Record over the flags the type carries, so adding a clear flag to
+ * InstanceEditParams fails to compile here until it is mapped. */
+type ClearFlagKey = Extract<keyof InstanceEditParams, `clear${string}`>;
+export const CLEAR_FIELD_NAMES: Record<ClearFlagKey, string> = {
+  clearBaseUrl: "baseUrl",
+  clearProtocol: "protocol",
+  clearSurface: "surface",
+  clearApiKeyEnv: "apiKeyEnv",
+  clearCredentialHeader: "credentialHeader",
+};
+
 /** The entry fields this save's params changed, whether a field carries a value
  * or a `clear` flag: those are the fields a rename may legitimately differ in. */
-function changedFields(params: InstanceEditParams): Set<string> {
+export function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+    changed.add(key in CLEAR_FIELD_NAMES ? CLEAR_FIELD_NAMES[key as ClearFlagKey] : key);
   }
   return changed;
 }
@@ -162,6 +202,17 @@ function draftIdentity(entry: InstanceEntry): string {
   // instance even while fingerprinting is unavailable.
   if (fieldValue(entry, "endpointFingerprint") === "") fields.push(fieldValue(entry, "baseUrl"));
   return fields.join("\u0000");
+}
+
+/** The same identity with the endpoint fingerprint left out - the fields
+ * draftIdentity carries minus the fingerprint. Two rows that match on this are
+ * the same instance, one re-pointed; a row that differs here (or is absent) is
+ * a replacement wearing the name, and a draft typed for the old instance must
+ * not follow it. */
+function draftIdentityWithoutEndpoint(entry: InstanceEntry): string {
+  return DRAFT_IDENTITY_FIELDS.filter((field) => field !== "endpointFingerprint")
+    .map((field) => fieldValue(entry, field))
+    .join("\u0000");
 }
 
 /** Whether a rename carried `base` over unchanged. Renaming a curated-shadow
@@ -258,7 +309,14 @@ function renamedInstanceLanded(
   const newName = params.newName;
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
-  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
+  if (listed === undefined) return undefined;
+  // Every successful rename authors an entry under the new name
+  // (hubInstancesController.Edit writes [providers.<newName>]), so a landed row
+  // is never implicit: an implicit row holding the new name is a curated
+  // provider the environment (or another client's later change) re-derived
+  // there, not this rename's result, and steering the sheet onto it would
+  // title one instance with another's values. Reject any implicit landing.
+  if (listed.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
   // A capture with no fingerprint cannot prove the renamed destination, so the
   // shared confirmation fails closed and the caller keeps the stale-save path.
@@ -373,6 +431,19 @@ function authoritativeCredentialsMatch(authoritative: InstanceEntry | undefined,
   return true;
 }
 
+/** The note under Name. A rename always leaves the old name behind in launch
+ * config and past sessions; on an instance the environment supplies it also
+ * leaves the instance itself, because the variable that makes it exist is not
+ * the row's to move, so the rename authors a second instance beside it. That
+ * includes a stored key the rename moves away from a set variable it was
+ * shadowing (renameLeavesEnvironmentRow). */
+function renameNote(instance: InstanceEntry): string {
+  const keepsOldName = `Launch config and past sessions that reference "${instance.name}" keep the old name.`;
+  return renameLeavesEnvironmentRow(instance)
+    ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. ${keepsOldName}`
+    : keepsOldName;
+}
+
 export interface InstanceSheetProps {
   name: string | null;
   onClose: () => void;
@@ -438,14 +509,20 @@ export function InstanceSheet({
   const [draft, setDraft] = useState<InstanceDraft | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // The instance a rename of this sheet's own went out for, held for the span
-  // of the request: the old name leaves the store when the response lands, a
-  // beat before the section re-selects the new one, so for that beat the
-  // sheet's subject is in neither place. Keeping it here is what carries the
-  // sheet across - an `open` that dips false unmounts the panel, replaying
-  // its slide-in from off-screen and throwing focus out of the form - and it
-  // is also the guard that keeps that vanish from closing the sheet.
-  const [renamingFrom, setRenamingFrom] = useState<InstanceEntry | undefined>(undefined);
+  // The rename of this sheet's own that went out, held with the request that
+  // carries its destination. The old name leaves the store when the response
+  // lands, a beat before the section re-selects the new one, so for that beat
+  // the sheet's subject is in neither place; keeping the entry is what carries
+  // the sheet across, and an `open` that dips false would unmount the panel,
+  // replaying its slide-in from off-screen and throwing focus out of the form.
+  // The held entry is also the identity the listing's row at the destination
+  // must answer to: the destination name is not reserved, so a row there that
+  // is not this rename's own (an implicit curated row the environment
+  // re-derived, another instance that took the freed name) must not become the
+  // sheet's subject - the held entry stays until the expected row appears.
+  const [renamingFrom, setRenamingFrom] = useState<{ entry: InstanceEntry; params: InstanceEditParams } | undefined>(
+    undefined,
+  );
   // The name the section has the sheet on right now, readable from a save
   // still in flight: handleSave captured `name` from the render it ran in, and
   // the user is free to dismiss the sheet or pick another row before the
@@ -457,9 +534,38 @@ export function InstanceSheet({
   // above noticing, so handleSave checks the draft still belongs to the
   // instance it is about to write to.
   const seededIdentity = useRef<string | null>(null);
+  // The endpoint the draft was seeded from, sent with the save as the atomic
+  // assertion the client-side identity check above cannot be: the hub refuses
+  // the edit when another client has re-pointed the name since the draft was
+  // read. Undefined when the row carried no fingerprint - nothing to assert.
+  const seededFingerprint = useRef<string | undefined>(undefined);
 
   const stored = name === null ? undefined : instances.find((i) => i.name === name);
-  const instance = stored ?? renamingFrom;
+  // The section is on this rename's destination. The listing's row there is
+  // this rename's own only when it passes renamedInstanceLanded's identity
+  // checks; while it does not - absent, an impostor, or an implicit
+  // re-derivation - the held entry stays the subject so edits never target the
+  // wrong configuration.
+  const atRenameDestination = renamingFrom !== undefined && name === renamingFrom.params.newName;
+  /** The listing row that is this rename's own landing, judged at render time:
+   * authored, and carrying every identity field the rename left alone. No
+   * mutation capture is available here, so this is the identity check alone -
+   * the save path proves the destination with the captured endpointFingerprint
+   * (renamedInstanceLanded). */
+  function renameLandingRow(from: { entry: InstanceEntry; params: InstanceEditParams }): InstanceEntry | undefined {
+    const listed = instances.find((i) => i.name === from.params.newName);
+    if (listed === undefined || listed.implicit) return undefined;
+    return untouchedIdentityMatches(from.entry, listed, from.params, baseCarriedByRename) ? listed : undefined;
+  }
+  const renameLandedHere =
+    atRenameDestination && renamingFrom !== undefined && renameLandingRow(renamingFrom) !== undefined;
+  // The reconciliation gap: the section has selected this rename's destination,
+  // but the listing's row there is not this rename's own (absent, implicit, or a
+  // different instance). The sheet's subject stays the held original while every
+  // callback the section passes targets the destination name - so any action
+  // fired now would act on whatever occupies that name, not the instance shown.
+  const renameGap = atRenameDestination && !renameLandedHere;
+  const instance = renameGap ? renamingFrom.entry : (stored ?? renamingFrom?.entry);
   const template = instance === undefined ? undefined : availableProviders.find((p) => p.id === instance.providerId);
 
   function seed(inst: InstanceEntry): void {
@@ -471,6 +577,7 @@ export function InstanceSheet({
     setDraft(seeded);
     setFormError(null);
     seededIdentity.current = draftIdentity(inst);
+    seededFingerprint.current = inst.endpointFingerprint;
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different instance opens; a refresh of the same instance must not clobber in-progress edits
@@ -493,12 +600,34 @@ export function InstanceSheet({
   useEffect(() => {
     if (name !== null && instance === undefined) onClose();
   }, [name, instance, onClose]);
-  // The section moved the selection to the new name: the held instance has
-  // done its job, and holding it any longer would keep a ghost on screen.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: name is a deliberate trigger-only dep - the body only drops the held instance, but must re-run on every name change to release it
+  // The section moved the selection: the held entry has done its job once the
+  // listing can stand in for it, and holding it longer would keep a ghost on
+  // screen. On this rename's destination that means the listing's row must be
+  // this rename's own row (renamedInstanceLanded): an impostor - implicit,
+  // stale, or a different instance wearing the freed name - or an absent row
+  // keeps the held entry as the sheet's subject. Anywhere else the held entry
+  // is released once the store carries the selected name; it is kept while the
+  // rename is still in flight under the held name, which is the gap between the
+  // write landing and the section re-selecting.
   useEffect(() => {
-    setRenamingFrom(undefined);
-  }, [name]);
+    if (renamingFrom === undefined) return;
+    if (name === null) {
+      setRenamingFrom(undefined);
+      return;
+    }
+    if (name === renamingFrom.params.newName) {
+      const listed = instances.find((i) => i.name === renamingFrom.params.newName);
+      if (
+        listed !== undefined &&
+        !listed.implicit &&
+        untouchedIdentityMatches(renamingFrom.entry, listed, renamingFrom.params, baseCarriedByRename)
+      ) {
+        setRenamingFrom(undefined);
+      }
+      return;
+    }
+    if (name !== renamingFrom.entry.name && stored !== undefined) setRenamingFrom(undefined);
+  }, [name, stored, instances, renamingFrom]);
   // A layout effect, not the passive one above: a response can land between
   // the commit that dismissed the sheet and a passive effect, and a mirror
   // that is one beat stale lets exactly the save this guards slip through.
@@ -525,6 +654,14 @@ export function InstanceSheet({
   function updateVar(key: string, value: string): void {
     setDraft((current) => (current === null ? current : { ...current, vars: { ...current.vars, [key]: value } }));
   }
+  // A per-instance action is refused while the rename gap persists: the section
+  // callback it would run targets the selected destination, not the held
+  // instance on screen. A toast, not a dead control: Button drops the click
+  // entirely for aria-disabled/disabled (widgets/button), so a disabled control
+  // would refuse in silence where this explains the wait.
+  function refuseDuringRename(): void {
+    toast.push("warning", RENAME_PENDING_ACTION_MESSAGE);
+  }
 
   async function handleSave(): Promise<void> {
     // The action carries its own write gate rather than borrowing the Save
@@ -532,6 +669,15 @@ export function InstanceSheet({
     // in-flight write must not go out through that door either.
     if (busy || writesRefused) return;
     if (instance === undefined) return;
+    // The rename persisted but the listing has not confirmed its destination:
+    // the form still holds the user's dirty rename draft, and resubmitting it
+    // would send the completed rename against the old name, which is gone.
+    // Refuse with the reason (the file's pressable-refusal precedent) and send
+    // nothing - the button and the form's own submit door both land here.
+    if (renameGap) {
+      setFormError(RENAME_PENDING_SAVE_ERROR);
+      return;
+    }
     // The draft belongs to the instance it was seeded from. A removal and
     // recreation under the freed name, or another instance renamed onto it,
     // leaves the name the sheet is on while handing it a different instance:
@@ -557,9 +703,16 @@ export function InstanceSheet({
       setFormError(LITERAL_HEADER_ERROR);
       return;
     }
+    // The endpoint the draft was seeded from travels with the save, so the hub
+    // can refuse an edit whose name another client has re-pointed since - the
+    // atomic counterpart of this sheet's own identity check. An empty
+    // fingerprint asserts nothing.
+    if (seededFingerprint.current !== undefined) {
+      params.expectedEndpointFingerprint = seededFingerprint.current;
+    }
     setFormError(null);
     setBusy(true);
-    if (params.newName !== undefined) setRenamingFrom(instance);
+    if (params.newName !== undefined) setRenamingFrom({ entry: instance, params });
     try {
       // The store's verdict, not the response, says what landed: a refresh
       // that started after this save answers first, and the store discards
@@ -629,6 +782,12 @@ export function InstanceSheet({
           const landed = supersededSaveLanded(listedInstances, instance, params, authoritative);
           if (landed !== undefined) {
             seededIdentity.current = draftIdentity(landed);
+            // The assertion travels with the save, so it is re-anchored with the
+            // identity: the landed row's endpointFingerprint is the destination
+            // the next save must assert. Leaving the pre-save fingerprint here
+            // would have the hub refuse the next save for a destination that
+            // moved only because this save moved it.
+            seededFingerprint.current = landed.endpointFingerprint;
             // Rebase the diff baseline to what landed, keeping the draft: "draft
             // equals landed" is then correctly not dirty, and a user reverting a
             // field to its pre-save value becomes correctly dirty and writable
@@ -707,6 +866,70 @@ export function InstanceSheet({
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         return;
       }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since the
+        // draft was seeded, so this save was not applied. Keep the draft, say
+        // why, and re-read the listing so a retry asserts the destination now on
+        // screen.
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          setFormError(ENDPOINT_CHANGED_SAVE_ERROR);
+        }
+        toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
+        // The retry this message asks for can only land once the sheet asserts
+        // the destination the name now resolves to, so the read is awaited
+        // rather than left in flight: the re-anchor below has to see a listing
+        // the store actually applied, never the stale row the refusal
+        // described. A read that never applied leaves today's refusal in place.
+        const listed = await confirmListingState(() => true);
+        if (!listed || shownName.current !== instance.name) return;
+        const refreshed = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+        // Re-anchor only when the refreshed row is the same instance re-pointed
+        // - an identity match that ignores the endpoint fingerprint. Then the
+        // draft is left untouched and the next Save carries the user's edits and
+        // the destination now on screen. A replacement (a different
+        // provider/auth/base) or an absent row keeps handleSave's identity guard
+        // as the authority: it reseeds and refuses, because these edits must not
+        // land on a stranger.
+        if (refreshed === undefined) return;
+        if (draftIdentityWithoutEndpoint(refreshed) !== draftIdentityWithoutEndpoint(instance)) return;
+        seededIdentity.current = draftIdentity(refreshed);
+        seededFingerprint.current = refreshed.endpointFingerprint;
+        return;
+      }
+      // A rename that stood but could not carry the instance's OAuth record
+      // comes back carrying the hub's own discriminator for it
+      // (isInstanceRenamePersisted). providers.toml already names the new
+      // instance, so the save is not a failure: follow the instance to its new
+      // name, surfacing the hub's message - it names the credential left behind
+      // - as a warning rather than a plain failure. The discriminator is the
+      // authoritative fact here, so the steer does not depend on the refreshed
+      // listing: the hub's registry can still be a fallback listing that omits
+      // the new row (its own reload or rollback failed), and the config naming
+      // the new instance is enough to follow it. The listing is still refreshed
+      // - the store should catch up, and the bounded retry gives the registry a
+      // chance to - but its verdict is not a gate, and its failure must not
+      // replace the steer with a form error on an instance the config no longer
+      // carries.
+      if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
+        // The read is there to settle the listing, not to gate the steer below:
+        // the discriminator is the authoritative fact, and the mutation's
+        // captured row is out of scope in this catch, so the predicate is the
+        // render-time identity check alone.
+        await confirmListingState((rows) => {
+          const listed = rows.find((i) => i.name === params.newName);
+          return (
+            listed !== undefined &&
+            !listed.implicit &&
+            untouchedIdentityMatches(instance, listed, params, baseCarriedByRename)
+          );
+        });
+        if (shownName.current === instance.name) {
+          onRenamed(params.newName);
+        }
+        toast.push("warning", friendlyErrorMessage(err));
+        return;
+      }
       const message = errorText(err);
       // The toast is owed wherever the user has gone - they asked for a write
       // that did not happen. The form's error line is not: it belongs to the
@@ -739,7 +962,7 @@ export function InstanceSheet({
   // The danger zone is Clear + Clear stored key + Remove under a divider; an
   // implicit instance with nothing stored offers none of them, and a divider
   // over nothing reads as a rendering bug.
-  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
+  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !fromEnvironment(instance));
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   // The sheet's per-model toggles read the registry's own inventory. The
@@ -757,6 +980,7 @@ export function InstanceSheet({
   // on what counts as a rename, and an emptied Name is not one.
   const renaming =
     initial !== null && draft !== null && draft.name.trim() !== "" && draft.name.trim() !== initial.name.trim();
+  const nameHelp = instance !== undefined && renaming ? renameNote(instance) : undefined;
 
   return (
     <Sheet
@@ -778,7 +1002,7 @@ export function InstanceSheet({
           <div className={CLASS.headingRow}>
             <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             {instance.isDefault && <Chip>★ default</Chip>}
-            {instance.implicit && <Chip>from environment</Chip>}
+            {fromEnvironment(instance) && <Chip>from environment</Chip>}
           </div>
           {draft !== null && (
             <form
@@ -789,22 +1013,12 @@ export function InstanceSheet({
                 void handleSave();
               }}
             >
-              <FormRow
-                label="Name"
-                htmlFor={`${ids}-name`}
-                help={
-                  instance.implicit
-                    ? "This instance comes from the environment and cannot be renamed."
-                    : renaming
-                      ? `Launch config and past sessions that reference "${instance.name}" keep the old name.`
-                      : undefined
-                }
-              >
+              <FormRow label="Name" htmlFor={`${ids}-name`} help={nameHelp}>
                 <Input
                   id={`${ids}-name`}
                   value={draft.name}
                   onChange={(event) => update({ name: event.target.value })}
-                  disabled={busy || instance.implicit}
+                  disabled={busy}
                 />
               </FormRow>
               <div className={CLASS.metaRow}>
@@ -905,8 +1119,16 @@ export function InstanceSheet({
               <div className={CLASS.fullRow}>
                 {/* Refresh is a read: the RPC deliberately skips
                     refuseWhenBroken, so it stays available while
-                    providers.toml cannot be written. */}
-                <Button variant="quiet" onClick={onRefreshModels} aria-disabled={modelsRefreshing} disabled={busy}>
+                    providers.toml cannot be written. The rename gap is
+                    different - it would read the row the selection names,
+                    not the instance on screen, and cache another instance's
+                    models under a name this sheet cannot yet trust. */}
+                <Button
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onRefreshModels}
+                  aria-disabled={modelsRefreshing}
+                  disabled={busy}
+                >
                   {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
                 </Button>
               </div>
@@ -918,7 +1140,7 @@ export function InstanceSheet({
                       checked={!row.disabled}
                       pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
                       disabled={busy || writesRefused}
-                      onChange={(checked) => onToggleModel(row.id, !checked)}
+                      onChange={(checked) => (renameGap ? refuseDuringRename() : onToggleModel(row.id, !checked))}
                     />
                   </div>
                 ))}
@@ -929,7 +1151,7 @@ export function InstanceSheet({
             <div className={CLASS.fullRow}>
               <Button
                 variant="quiet"
-                onClick={onTestCredentials}
+                onClick={renameGap ? refuseDuringRename : onTestCredentials}
                 aria-disabled={testCredentialsPending}
                 disabled={busy}
               >
@@ -943,28 +1165,32 @@ export function InstanceSheet({
             )}
             {supportsApiKey && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetApiKey} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
                   {instance.hasStoredFile ? "Replace key" : "Set key"}
                 </Button>
               </div>
             )}
             {supportsCredentialJson && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetCredentialJson} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetCredentialJson} disabled={busy}>
                   {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                 </Button>
               </div>
             )}
             {supportsOAuth && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onOAuthStart} disabled={busy}>
+                <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
                   {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
                 </Button>
               </div>
             )}
             {!instance.isDefault && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetDefault} disabled={busy || writesRefused}>
+                <Button
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onSetDefault}
+                  disabled={busy || writesRefused}
+                >
                   ★ make default
                 </Button>
               </div>
@@ -976,21 +1202,29 @@ export function InstanceSheet({
               <div className={CLASS.actionRows}>
                 {showClearStoredKey && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="dangerQuiet" onClick={onClearStoredKey} disabled={busy}>
+                    <Button
+                      variant="dangerQuiet"
+                      onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                      disabled={busy}
+                    >
                       {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
                     </Button>
                   </div>
                 )}
                 {showClear && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="dangerQuiet" onClick={onClear} disabled={busy}>
+                    <Button variant="dangerQuiet" onClick={renameGap ? refuseDuringRename : onClear} disabled={busy}>
                       Clear
                     </Button>
                   </div>
                 )}
-                {!instance.implicit && (
+                {!fromEnvironment(instance) && (
                   <div className={CLASS.fullRow}>
-                    <Button variant="danger" onClick={onRemove} disabled={busy || writesRefused}>
+                    <Button
+                      variant="danger"
+                      onClick={renameGap ? refuseDuringRename : onRemove}
+                      disabled={busy || writesRefused}
+                    >
                       Remove
                     </Button>
                   </div>
