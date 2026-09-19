@@ -137,10 +137,12 @@ poll_gone() {
 }
 `
 
-// TestStopProcessTreeCatchesALateFork is the reason for rescanning: a parent
-// that ignores TERM and forks a child after cleanup has begun puts that child
-// behind a one-shot snapshot, so a single snapshot would let it escape to init.
-func TestStopProcessTreeCatchesALateFork(t *testing.T) {
+// TestStopCommandReapsALateFork is the reason run_bounded uses a process group:
+// a parent that ignores TERM and forks a child after cleanup has begun puts that
+// child behind any PID snapshot, but the child is still inside the command's
+// process group, so one group KILL reaches it. The job is launched under job
+// control to lead its own group, exactly as run_bounded launches it.
+func TestStopCommandReapsALateFork(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
@@ -159,30 +161,37 @@ bash "$DIR/child.sh" &
 echo $! > "$LATE"
 wait
 PARENT
+set -m
 DIR="$dir" READY="$dir/ready" LATE="$dir/late" bash "$dir/parent.sh" &
 pid=$!
+set +m
 ready=no
 for _ in $(seq 1 100); do [ -f "$dir/ready" ] && { ready=yes; break; }; sleep 0.05; done
 if [ "$ready" != yes ]; then
-	# Stop the whole tree, not just the parent: a child that exists but never
-	# signalled readiness would otherwise survive and hold CombinedOutput's pipe.
-	stop_process_tree "$pid"
+	stop_command "$pid"
 	rm -rf "$dir"
 	echo "parent never signalled readiness"
 	exit 1
 fi
-stop_process_tree "$pid"
+pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+group_leader=no
+[ -n "$pgid" ] && [ "$pgid" = "$pid" ] && group_leader=yes
+stop_command "$pid"
 for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
 late=$(cat "$dir/late" 2>/dev/null)
 state=unknown
 [ -n "$late" ] && { if poll_gone "$late"; then state=gone; else state=alive; fi; }
-printf 'late=%s state=%s\n' "$late" "$state"
-kill -KILL "$pid" "$late" 2>/dev/null || :
+printf 'group_leader=%s late=%s state=%s\n' "$group_leader" "$late" "$state"
+kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || :
+kill -KILL "$late" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 rm -rf "$dir"
 `)
+	if !strings.Contains(got, "group_leader=yes") {
+		t.Fatalf("stop_command = %q, want the job to lead its own process group so the group kill is what reaps the fork", got)
+	}
 	if !strings.Contains(got, "state=gone") {
-		t.Fatalf("stop_process_tree = %q, want the child forked during cleanup reaped, not escaped", got)
+		t.Fatalf("stop_command = %q, want the child forked during cleanup reaped by the group kill", got)
 	}
 }
 
