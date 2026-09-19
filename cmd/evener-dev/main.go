@@ -19,6 +19,7 @@ var subcommands = map[string]func(args []string) int{
 	"covstmt":          covstmtMain,
 	"list-build-flags": listBuildFlagsMain,
 	"module-lint":      lintMain,
+	"research":         runResearch,
 	"root-test-flags":  rootTestFlagsMain,
 }
 
