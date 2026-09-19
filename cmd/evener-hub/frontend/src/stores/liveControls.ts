@@ -12,7 +12,7 @@
 // their own boundaries.
 
 import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { threadsStore } from "./threads";
+import { isLocalRecoveryFenced, threadsStore } from "./threads";
 
 export type SessionControl = keyof SessionControls["reason"];
 
@@ -35,24 +35,15 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
   return controlsFor(model).reason[control];
 }
 
-// The local recovery fence. A LOCAL session carrying a restart-blocking
-// obligation (a Stop in flight, or a snapshot the daemon reports as
-// restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/start,
-// turn/steer, turn/queue and every other fenced mutation for exactly that
-// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
-// never the projected status), so even a still-ACTIVE snapshot is fenced while
-// a Stop drains - a live read relays the daemon's active status with
-// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
-// store arms the obligation on that very hydration. An offered press in that
-// window could only mint durable intent that parks until the explicit Resume
-// action clears the fence. Composer.tsx's availabilityFor and QueueStrip's
+// The local recovery fence's shared predicate lives in threads.ts - beside
+// the obligation state it reads, and where the store's own mutation admission
+// uses it (threads.ts cannot import this module without an import cycle).
+// Re-exported here so the control surfaces keep one import site for the fence
+// and its press-time reading; Composer.tsx's availabilityFor and QueueStrip's
 // press handlers derive from this one predicate (the composer module cannot
-// lend QueueStrip its copy: Composer imports QueueStrip); each call site adds
-// the shape its own surface needs.
-export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
-  return ref.startsWith("local:") && restartObligated;
-}
+// lend QueueStrip its copy: Composer imports QueueStrip), and each call site
+// adds the shape its own surface needs.
+export { isLocalRecoveryFenced };
 
 // The same fence as a press reads it: the obligation as the store holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press

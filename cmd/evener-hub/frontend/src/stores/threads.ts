@@ -1433,6 +1433,24 @@ function composerMutationIntent(
   };
 }
 
+// The local recovery fence. A LOCAL session carrying a restart-blocking
+// obligation (a Stop in flight, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) admits no session action at all while the
+// obligation stands: the hub's recovery admission refuses turn/start,
+// turn/steer, turn/queue and every other fenced mutation for exactly that
+// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
+// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// a Stop drains - a live read relays the daemon's active status with
+// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
+// store arms the obligation on that very hydration. An offered press in that
+// window could only mint durable intent that parks until the explicit Resume
+// action clears the fence. The predicate lives here - beside the obligation
+// state it reads, and where the store's own mutation admission can use it
+// without an import cycle - and liveControls re-exports it for the surfaces.
+export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
+  return ref.startsWith("local:") && restartObligated;
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
@@ -2953,6 +2971,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames) {
+    // The recovery fence, read live at admission: the surfaces that render
+    // their own refusal (Composer's availabilityFor, QueueStrip's press
+    // handlers) check this fence above the action, but the alternate send
+    // paths - the palette's slash fallthrough, the ask dock's batch send, a
+    // failed turn's Retry - call send directly. The hub's recovery admission
+    // refuses turn/start for the obligation's whole window, so an unfenced
+    // enqueue could only mint durable intent that parks until the explicit
+    // Resume action clears the fence; refusing here makes every caller agree.
+    if (isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref)))
+      throw new Error("Send isn't available until this session is resumed");
     await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 

@@ -9902,6 +9902,38 @@ test("clear response fences goal responses from the previous instance", async ()
   expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal?.objective).toBe("new objective");
 });
 
+// RoboRev Medium (PR 1393 fresh review, b04a358): the local recovery fence was
+// enforced only by the surfaces that render their own refusal - Composer's
+// availabilityFor and QueueStrip's press handlers, both of which check above
+// the store's send action. The alternate send paths call threadsStore.send
+// directly - the palette's slash fallthrough and the ask dock's batch send
+// pass text alone, a failed turn's Retry passes text with attachments - and
+// each could enqueue a durable turn/start for a fenced local session: intent
+// the hub's recovery admission refuses for the obligation's whole window, so
+// it could only park until an explicit Resume clears the fence. The store's
+// shared admission must refuse exactly as those surfaces do.
+test("a recovery-fenced local session's send refuses at admission for every caller's shape", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "send-fence" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for. QueueStrip.test seeds
+  // this same obligation directly.
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:session", Symbol()),
+  }));
+  await expect(threadsStore.getState().send("local:session", "/plain text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  await expect(
+    threadsStore
+      .getState()
+      .send("local:session", "retry text", [{ marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" }]),
+  ).rejects.toThrow("Send isn't available until this session is resumed");
+  expect(await storage.listOutbox("local:session")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
   const fake = new FakeClient();
   connectionStore.setState({ client: fake, state: "ready" });
