@@ -167,8 +167,11 @@ func (i *PastIndex) StateGlob() string {
 // on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
-// contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
-// Rebuild can detect a genuine content delta without a deep compare.
+// contentFingerprint hashes the consumer-visible fields of the sorted entries so
+// a publish can detect a genuine content delta without a deep compare. It
+// deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
+// re-saves the meta without moving UpdatedAt, and a fold that adopts such a row
+// must still fire onChange so the Hub bumps/invalidates navigation.
 func contentFingerprint(all []PastEntry) uint64 {
 	h := fnv.New64a()
 	for _, e := range all {
@@ -176,6 +179,12 @@ func contentFingerprint(all []PastEntry) uint64 {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(e.Meta.Name))
 		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(e.Meta.ForkLabel))
+		_, _ = h.Write([]byte{0})
+		for _, observer := range e.Meta.ObservedBy {
+			_, _ = h.Write([]byte(observer))
+			_, _ = h.Write([]byte{0})
+		}
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(e.Meta.UpdatedAt.UnixNano()))
 		_, _ = h.Write(b[:])
@@ -1119,6 +1128,11 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 // miss rather than a stale probe.
 const pastFindProbeAttempts = 3
 
+// pastAfterFindCacheMiss, when non-nil, runs in Find after its top-level
+// findCached miss and before the first probe. Test-only seam for interleaving a
+// Rebuild swap in that window; nil in production.
+var pastAfterFindCacheMiss func()
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1130,17 +1144,21 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	declinedFold := false
+	if pastAfterFindCacheMiss != nil {
+		pastAfterFindCacheMiss()
+	}
 	for range pastFindProbeAttempts {
 		i.mu.RLock()
 		probeRebuildGen := i.rebuildGen
 		probeEvictGen := i.evictGen
 		i.mu.RUnlock()
-		entry, found := i.probeOne(sessionID)
+		entry, found, determinate := i.probeOne(sessionID)
 		if !found {
-			if declinedFold {
-				// A Rebuild published a scan that predates this deletion; evict
-				// the row so a cached Find cannot hand back the deleted session.
+			if determinate {
+				// Every project was listable and the session's meta was
+				// authoritatively absent: drop any row a Rebuild published from a
+				// scan that predated the deletion. An indeterminate miss (corrupt
+				// meta, unlistable dir) must not evict a valid cached row.
 				i.evict(sessionID)
 			}
 			return PastEntry{}, false
@@ -1152,7 +1170,6 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 			// A Rebuild swapped in a new index during the probe; its view is newer
 			// than ours, so re-probe against it rather than guess deletion vs
 			// creation.
-			declinedFold = true
 			continue
 		}
 		// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
@@ -1206,20 +1223,22 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 // disk. Like Rebuild's byID map, a session present in several projects
 // resolves to the LAST project in glob order.
 //
-// A miss here is not proof the session does not exist: a corrupt meta file,
-// a sessions dir that cannot be listed, or an invalid project id skip that
-// project silently — the same paths Rebuild skips (and reports); the 60s
-// rebuild tick remains the authority for those. Find's miss path only needs
-// to surface a session persisted after the last index (the
-// fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss contract).
-func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
+// The bool pair distinguishes an authoritative absence (every matched project
+// was listable and its meta read as not-exist) from an indeterminate miss (a
+// corrupt meta file, an unlistable sessions dir, or an invalid project id was
+// skipped) — the same paths Rebuild skips and reports. Find may evict a cached
+// row on the former but must not on the latter, so a transient read error cannot
+// drop a valid session.
+func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool, bool) {
 	matches, err := filepath.Glob(i.stateGlob)
 	if err != nil {
-		return PastEntry{}, false
+		return PastEntry{}, false, false
 	}
 	var found PastEntry
+	determinate := true
 	for _, project := range matches {
 		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			determinate = false
 			continue
 		}
 		// Rebuild's gate, shared rather than copied: ListSessionMetas skips
@@ -1230,15 +1249,21 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 		// OS fs matches the filesystem LoadSessionMeta below reads through;
 		// PastIndex.fs is a different seam (FTS scaffolding).
 		if !schema.SessionsDirListable(afero.NewOsFs(), project) {
+			determinate = false
 			continue
 		}
 		meta, err := schema.LoadSessionMeta(project, sessionID)
 		if err != nil {
+			// A missing meta is a conclusive "absent here"; any other read or
+			// decode error leaves the project's contribution unknown.
+			if !errors.Is(err, os.ErrNotExist) {
+				determinate = false
+			}
 			continue
 		}
 		found = PastEntry{ID: sessionID, Meta: meta, StateDir: project}
 	}
-	return found, found.ID != ""
+	return found, found.ID != "", determinate
 }
 
 // foldOne inserts a probed entry into the in-memory index with the same

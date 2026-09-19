@@ -392,6 +392,19 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 // the lock is striped, re-entering for a different session self-deadlocks only
 // on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	sessDir := filepath.Join(dir, sessionsSubdir)
+	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
+		return fmt.Errorf("create sessions dir: %w", err)
+	}
+	// The Revision increment is a read-modify-write, and the daemon rewrites the
+	// same session's meta out of process, so the in-process striped lock alone
+	// cannot serialize it. Hold a file lock across the load/increment/rename.
+	release, _, err := lockSessionMetaCrossProcess(fs, dir, meta.ID)
+	if err != nil {
+		return fmt.Errorf("lock session meta: %w", err)
+	}
+	defer release()
+
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
@@ -403,10 +416,6 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return err
 	} else {
 		meta.Revision = 1
-	}
-	sessDir := filepath.Join(dir, sessionsSubdir)
-	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
-		return fmt.Errorf("create sessions dir: %w", err)
 	}
 
 	data, err := marshalSessionMeta(meta)
