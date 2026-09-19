@@ -97,6 +97,9 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 		return nil, err
 	}
 	uri := url.URL{Scheme: "file", Path: absolute}
+	if err := preflightStore(context.Background(), uri); err != nil {
+		return nil, err
+	}
 	query := url.Values{}
 	for _, pragma := range []string{"journal_mode(WAL)", "foreign_keys(ON)", "synchronous(FULL)", "busy_timeout(5000)"} {
 		query.Add("_pragma", pragma)
@@ -133,21 +136,11 @@ func (s *Store) initialize(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var version int
-	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	version, err := acceptedStoreSchema(ctx, tx)
+	if err != nil {
 		return err
 	}
-	if version != 0 && version != StoreSchemaVersion {
-		return fmt.Errorf("unsupported artifact schema version %d", version)
-	}
 	if version == 0 {
-		var tables int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil {
-			return err
-		}
-		if tables != 0 {
-			return errors.New("unversioned artifact database has existing tables")
-		}
 		if _, err := tx.ExecContext(ctx, storeSchema+storeQuotaSchema); err != nil {
 			return err
 		}
@@ -161,8 +154,17 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "SELECT service_id FROM store_identity").Scan(&s.identity); err != nil {
 		return err
 	}
+	// These access paths also belong to reopened, already-supported schema 2.
+	if _, err := tx.ExecContext(ctx, storeIndexes); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
+
+const storeIndexes = `
+ CREATE INDEX IF NOT EXISTS diagnostics_by_artifact_time ON artifact_diagnostics(artifact_id,reported_at);
+ CREATE INDEX IF NOT EXISTS mutations_by_namespace ON artifact_mutations(namespace_id);
+`
 
 const storeSchema = `
  CREATE TABLE store_identity(service_id TEXT NOT NULL);
