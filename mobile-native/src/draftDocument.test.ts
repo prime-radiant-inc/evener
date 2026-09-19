@@ -27,6 +27,147 @@ afterEach(() => {
 });
 
 describe("durable draft lifecycle", () => {
+	it("atomically restores recovered text and images while retaining uncertainty", () => {
+		const { repository, destination } = setup();
+		const uncertainImage = {
+			id: "uncertain-image",
+			marker: 1,
+			mediaType: "image/png",
+		};
+		repository.write(
+			destination,
+			{
+				draft: "",
+				unconfirmed: "still uncertain",
+				unconfirmedImages: [uncertainImage],
+			},
+			[{ ...uncertainImage, data: "AQID" }],
+		);
+		const document = new DraftDocument(() => repository, destination);
+		const recoveredImage = {
+			id: "recovered-image",
+			marker: 2,
+			mediaType: "image/jpeg",
+			name: "recovered.jpg",
+			data: "BAUG",
+		};
+
+		expect(
+			document.restoreRecoveredDraft("recovered [image 2]", [recoveredImage]),
+		).toBe(true);
+		expect(repository.read(destination)).toEqual({
+			draft: "recovered [image 2]",
+			unconfirmed: "still uncertain",
+			images: [
+				{
+					id: "recovered-image",
+					marker: 2,
+					mediaType: "image/jpeg",
+					name: "recovered.jpg",
+				},
+			],
+			unconfirmedImages: [uncertainImage],
+		});
+		expect(
+			repository.imageInputs(destination, [
+				{
+					id: "recovered-image",
+					marker: 2,
+					mediaType: "image/jpeg",
+					name: "recovered.jpg",
+				},
+			])[0]?.data,
+		).toBe("BAUG");
+	});
+
+	it("does not overwrite existing draft text or images during recovery", () => {
+		const { document, repository, destination } = setup();
+		const existingImage = {
+			id: "existing-image",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		};
+		document.edit("current ");
+		document.addImage(existingImage);
+		const before = repository.read(destination);
+
+		expect(
+			document.restoreRecoveredDraft("recovered", [
+				{
+					id: "recovered-image",
+					marker: 2,
+					mediaType: "image/png",
+					data: "BAUG",
+				},
+			]),
+		).toBe(false);
+		expect(repository.read(destination)).toEqual(before);
+		expect(document.getSnapshot().record).toEqual(before);
+	});
+
+	it("does not restore over storage after an image removal save failure", () => {
+		const { db, document, repository, destination } = setup();
+		const existingImage = {
+			id: "existing-image",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		};
+		document.addImage(existingImage);
+		db.exec("PRAGMA query_only = ON");
+		document.removeImage(existingImage.id);
+		const before = repository.read(destination);
+		db.exec("PRAGMA query_only = OFF");
+
+		expect(
+			document.restoreRecoveredDraft("recovered", [
+				{
+					id: "recovered-image",
+					marker: 2,
+					mediaType: "image/png",
+					data: "BAUG",
+				},
+			]),
+		).toBe(false);
+		expect(repository.read(destination)).toEqual(before);
+	});
+
+	it("retains the empty draft and recovery when the atomic restore fails", () => {
+		const { db, document, repository, destination } = setup();
+		db.exec(`
+			CREATE TRIGGER reject_recovered_text BEFORE INSERT ON drafts
+			BEGIN SELECT RAISE(ABORT, 'recovered text rejected'); END
+		`);
+		const recoveredImage = {
+			id: "recovered-image",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		};
+
+		expect(
+			document.restoreRecoveredDraft("recovered", [recoveredImage]),
+		).toBe(false);
+		expect(repository.read(destination)).toEqual({
+			draft: "",
+			unconfirmed: null,
+		});
+		expect(() =>
+			repository.imageInputs(destination, [
+				{
+					id: "recovered-image",
+					marker: 1,
+					mediaType: "image/png",
+				},
+			]),
+		).toThrow();
+		expect(document.getSnapshot().record).toEqual({
+			draft: "",
+			unconfirmed: null,
+		});
+	});
+
 	it("replaces text and images together while preserving an uncertain submission", async () => {
 		const { document, repository, destination } = setup();
 		document.edit("draft");

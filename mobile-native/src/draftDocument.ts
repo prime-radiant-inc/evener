@@ -65,7 +65,11 @@ export class DraftDocument {
 		this.snapshot = { ...this.snapshot, ...update };
 		for (const listener of this.listeners) listener();
 	}
-	private persist(record: DraftRecord, retainOnFailure: boolean) {
+	private persist(
+		record: DraftRecord,
+		retainOnFailure: boolean,
+		additions: DraftImageData[] = [...this.unsavedImages.values()],
+	) {
 		if (this.forgotten) return;
 		try {
 			const referenced = new Set(
@@ -76,9 +80,7 @@ export class DraftDocument {
 			this.repository().write(
 				this.destination,
 				record,
-				[...this.unsavedImages.values()].filter((image) =>
-					referenced.has(image.id),
-				),
+				additions.filter((image) => referenced.has(image.id)),
 			);
 			this.unsavedImages.clear();
 			this.update({ record, error: null });
@@ -138,6 +140,38 @@ export class DraftDocument {
 			this.persist({ draft: text, unconfirmed: null }, true);
 		} catch {
 			/* Keep the replacement visible with an explicit save retry. */
+		}
+	}
+
+	restoreRecoveredDraft(text: string, images: DraftImageData[]): boolean {
+		const { record } = this.snapshot;
+		if (
+			this.forgotten ||
+			!this.snapshot.loaded ||
+			this.snapshot.submitting ||
+			this.snapshot.error !== null ||
+			record.draft !== "" ||
+			(record.images?.length ?? 0) > 0
+		)
+			return false;
+		try {
+			this.persist(
+				{
+					draft: text,
+					unconfirmed: record.unconfirmed,
+					...(record.unconfirmedImages?.length
+						? { unconfirmedImages: record.unconfirmedImages }
+						: {}),
+					...(images.length
+						? { images: images.map(({ data: _data, ...image }) => image) }
+						: {}),
+				},
+				false,
+				images,
+			);
+			return true;
+		} catch {
+			return false;
 		}
 	}
 
