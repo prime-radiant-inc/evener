@@ -3,6 +3,7 @@ package interactiveartifacts
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,5 +163,65 @@ func TestStoreTombstoneOrdersBeforePendingCreation(t *testing.T) {
 	requireNoError(t, s.db.QueryRowContext(ctx, "SELECT count(*) FROM artifact_mutations").Scan(&count))
 	if count != 0 {
 		t.Fatal("pending creation crossed namespace tombstone")
+	}
+}
+
+func TestStoreCanceledRevoke(t *testing.T) {
+	for _, ordering := range []string{"precanceled", "behind writer", "before admission"} {
+		t.Run(ordering, func(t *testing.T) {
+			s, hash, _ := setupStore(t, StoreOptions{})
+			ctx := context.Background()
+			created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
+			requireNoError(t, err)
+			other := sha256.Sum256([]byte("unrelated grant"))
+			requireNoError(t, s.InstallGrant(ctx, other, testScope()))
+			canceled, cancel := context.WithCancel(ctx)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			done := make(chan error, 1)
+			if ordering != "precanceled" {
+				hook := func() { close(entered); <-release }
+				if ordering == "behind writer" {
+					s.hooks.beforeCommit = hook
+				} else {
+					s.hooks.beforeAdmission = hook
+				}
+				go func() {
+					_, err := s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "pending", 1, 1, `{"n":1}`))
+					done <- err
+				}()
+				awaitSignal(t, entered)
+			}
+			revoked := make(chan error, 1)
+			if ordering == "behind writer" {
+				started := make(chan struct{})
+				go func() { close(started); revoked <- s.RevokeGrant(canceled, hash) }()
+				awaitSignal(t, started)
+				cancel()
+				close(release)
+				requireNoError(t, <-done)
+			} else {
+				cancel()
+				revoked <- s.RevokeGrant(canceled, hash)
+			}
+			if err := <-revoked; !errors.Is(err, context.Canceled) {
+				t.Fatalf("revoke cancellation: %v", err)
+			}
+			if ordering == "before admission" {
+				close(release)
+				requireCode(t, <-done, NotFoundOrForbidden)
+			}
+			s.hooks = storeHooks{}
+			_, err = s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "denied", 1, 1, `{}`))
+			requireCode(t, err, NotFoundOrForbidden)
+			requireNoError(t, s.RevokeGrant(ctx, hash))
+			want := Version(1)
+			if ordering == "behind writer" {
+				want = 2
+			}
+			if got := readState(t, s, other, created.ArtifactID); got.StateVersion != want {
+				t.Fatalf("wrong ordered state: %+v", got)
+			}
+		})
 	}
 }

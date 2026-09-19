@@ -284,9 +284,8 @@ func (s *Store) checkNamespace(ctx context.Context, scope Scope) error {
 func (s *Store) RevokeGrant(ctx context.Context, hash [32]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	// Invoked revocation takes effect at the writer fence even if its caller
+	// stopped waiting. Cancellation must not preserve already-received authority.
 	delete(s.grants, hash)
-	return nil
+	return ctx.Err()
 }
