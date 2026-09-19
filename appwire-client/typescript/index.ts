@@ -152,6 +152,7 @@ export {
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";

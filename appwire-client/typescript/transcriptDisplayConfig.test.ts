@@ -9,6 +9,8 @@ import {
   dualWriteLegacyPreferences,
   encodeLocalConfig,
   fromWireConfig,
+  fromWireDefault,
+  fromWireDefaults,
   type LegacyPreferenceKey,
   legacyConfigFromValues,
   legacyWritesFromConfig,
@@ -19,6 +21,8 @@ import {
   resolveEffectiveConfig,
   shippedDefaults,
   toWireConfig,
+  toWireDefault,
+  toWireDefaults,
   visibleCategoryInventory,
 } from "./transcriptDisplayConfig";
 
@@ -167,6 +171,16 @@ describe("transcript display config", () => {
       }),
     ).toBeUndefined();
     expect(fromWireConfig({ ...wire, advanced: { ...wire.advanced, hookExits: undefined } })).toBeUndefined();
+  });
+
+  test("fromWireDefault accepts future top-level fields", () => {
+    const wire = toWireDefault(shippedDefaults.desktop);
+    expect(fromWireDefault({ ...wire, futureField: "ignored" })).toEqual(shippedDefaults.desktop);
+  });
+
+  test("fromWireDefaults accepts future top-level fields", () => {
+    const wire = toWireDefaults(shippedDefaults);
+    expect(fromWireDefaults({ ...wire, futureField: "ignored" })).toEqual(shippedDefaults);
   });
 
   test("resolves local then hub then shipped precedence", () => {

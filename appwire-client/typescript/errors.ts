@@ -44,6 +44,24 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+/** Extracts a payload the hub attached to a rejection under `key` when the
+ * rejection is the `evenerErrorInfo` kind named, decoded by `decode`
+ * (undefined for a malformed or absent payload, the same as a rejection of a
+ * different kind). Every settings-hub store's conflict/post-apply rejection
+ * shares this shape (a durable failure whose write already landed carries the
+ * hub's canonical state under "applied"; a lost revision race carries it
+ * under "current") - only the payload's own decoder differs between stores.
+ * The discriminator is the string, never the code - siblings share a code. */
+export function wireRejectionPayload<T>(
+  error: unknown,
+  info: string,
+  key: string,
+  decode: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  return decode((error.data as Record<string, unknown>)[key]);
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/
