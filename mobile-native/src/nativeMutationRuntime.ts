@@ -3,13 +3,16 @@ import * as Crypto from "expo-crypto";
 import type {
 	AppwireClientLike,
 	MutationReceipt,
+	ThreadReadResponse,
 } from "@evener/appwire-client";
+import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
 	MutationDispatcher,
 	MutationOutbox,
 	type MutationAttachmentRef,
 	type MutationIntent,
+	type MutationOutboxRecord,
 	type MutationOutboxOptions,
 	type MutationOutboxStorage,
 	type SecureRandomSource,
@@ -32,7 +35,18 @@ export interface NativeMutationRuntimeOptions {
 	clearInterval?: MutationOutboxOptions["clearInterval"];
 }
 
-type NativeStorage = MutationOutboxStorage<MutationAttachmentRef>;
+type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
+	listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
+};
+
+export interface NativeMutationReadLease {
+	readonly targetKey: string;
+	readonly targetRef: string;
+	readonly client: AppwireClientLike;
+	readonly registrationToken: symbol;
+	readonly readToken: symbol;
+	readonly expectedThreadId?: string;
+}
 
 // Native storage scopes records by hub and conversation. The wire payload
 // keeps targetRef raw because the daemon knows only the conversation ref.
@@ -84,14 +98,20 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 	readonly #dispatcher: MutationDispatcher;
 	readonly #targets = new Map<
 		string,
-		{ client: AppwireClientLike; token: symbol; unsubscribe: () => void }
+		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
+	readonly #blockedTargets = new Set<string>();
 	#started = false;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
 		if (!this.#started) return undefined;
-		if (targetRef !== undefined) return this.#targets.get(targetRef)?.client;
-		return [...this.#targets.values()].find(({ client }) => client.state === "ready")?.client;
+		if (targetRef !== undefined) {
+			if (this.#blockedTargets.has(targetRef)) return undefined;
+			return this.#targets.get(targetRef)?.client;
+		}
+		return [...this.#targets.entries()].find(
+			([key, { client }]) => !this.#blockedTargets.has(key) && client.state === "ready",
+		)?.[1].client;
 	}
 
 	constructor(database: MutationOutboxDatabase, options: NativeMutationRuntimeOptions = {}) {
@@ -142,15 +162,99 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		current?.unsubscribe();
 		const token = Symbol();
 		const unsubscribe = client.onStateChange((state) => {
-			if (state === "ready" && this.#targets.get(key)?.token === token)
-				void this.connectionReady();
+			const target = this.#targets.get(key);
+			if (target?.token !== token) return;
+			if (state !== "ready") {
+				target.readToken = undefined;
+				this.#blockedTargets.add(key);
+				return;
+			}
+			// A ready transition only permits a new authoritative read. It cannot
+			// release a target by itself after a reconnect.
+			void this.connectionReady();
 		});
 		this.#targets.set(key, { client, token, unsubscribe });
-		if (client.state === "ready") void this.connectionReady();
+		this.#blockedTargets.add(key);
 		return () => {
 			unsubscribe();
-			if (this.#targets.get(key)?.token === token) this.#targets.delete(key);
+			if (this.#targets.get(key)?.token === token) {
+				this.#targets.delete(key);
+				this.#blockedTargets.delete(key);
+			}
 		};
+	}
+
+	beginAuthoritativeRead(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike,
+		expectedThreadId?: string,
+	): NativeMutationReadLease | undefined {
+		const targetKey = nativeMutationTargetKey(hubId, targetRef);
+		const target = this.#targets.get(targetKey);
+		if (!target || target.client !== client || client.state !== "ready") return undefined;
+		const readToken = Symbol();
+		target.readToken = readToken;
+		this.#blockedTargets.add(targetKey);
+		return {
+			targetKey,
+			targetRef,
+			client,
+			registrationToken: target.token,
+			readToken,
+			expectedThreadId,
+		};
+	}
+
+	async reconcileAuthoritativeRead(
+		lease: NativeMutationReadLease,
+		response: ThreadReadResponse,
+	): Promise<"reconciled" | "blocked" | "stale"> {
+		if (!this.#isCurrentRead(lease)) return "stale";
+		if (
+			response.thread.evener.ref !== lease.targetRef ||
+			(lease.expectedThreadId !== undefined && response.thread.id !== lease.expectedThreadId)
+		)
+			return "stale";
+
+		const authoritativeIds = collectAuthoritativeMutationIds(response);
+		if (!this.#isCurrentRead(lease)) return "stale";
+		await this.#dispatcher.reconcileIdentities(authoritativeIds);
+		if (!this.#isCurrentRead(lease)) return "stale";
+
+		const status = response.thread.status.type;
+		const resumeRequired = response.thread.evener.resumeRequired === true;
+		const restartRequired = status === "restartRequired";
+		const notLoaded = status === "notLoaded";
+		const mutationStateAuthoritative = response.thread.evener.mutationStateAuthoritative === true;
+		if (mutationStateAuthoritative && !restartRequired && !notLoaded && !resumeRequired) {
+			await this.#dispatcher.restoreProvenAbsent(lease.targetKey, authoritativeIds);
+			if (!this.#isCurrentRead(lease)) return "stale";
+		} else {
+			const records = await this.storage.listOutbox(lease.targetKey);
+			if (!this.#isCurrentRead(lease)) return "stale";
+			for (const record of records) {
+				if (record.state !== "submitting" || !record.attempted) continue;
+				await this.storage.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+				if (!this.#isCurrentRead(lease)) return "stale";
+			}
+		}
+
+		if (restartRequired || resumeRequired) return "blocked";
+		if (!this.#isCurrentRead(lease)) return "stale";
+		this.#blockedTargets.delete(lease.targetKey);
+		void this.#dispatcher.dispatchTargets([lease.targetKey]).catch(() => undefined);
+		return "reconciled";
+	}
+
+	#isCurrentRead(lease: NativeMutationReadLease): boolean {
+		const target = this.#targets.get(lease.targetKey);
+		return (
+			target?.client === lease.client &&
+			target.token === lease.registrationToken &&
+			target.readToken === lease.readToken &&
+			lease.client.state === "ready"
+		);
 	}
 
 	async connectionReady(): Promise<void> {

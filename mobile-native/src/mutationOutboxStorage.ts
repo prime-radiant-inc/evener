@@ -338,6 +338,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return rows.map((row) => row.target_ref).sort();
 	}
 
+	async listOutbox(targetRef?: string): Promise<MutationOutboxRecord<A>[]> {
+		return this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef);
+	}
+
 	async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord<A> | undefined> {
 		return this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 	}
