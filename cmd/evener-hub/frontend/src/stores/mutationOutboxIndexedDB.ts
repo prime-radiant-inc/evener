@@ -115,6 +115,7 @@ export class MutationOutboxIndexedDB {
   readonly #now: () => number;
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
+  #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
@@ -135,6 +136,20 @@ export class MutationOutboxIndexedDB {
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
+  }
+
+  // §6's note-row supersede discard (below) is the one write this class
+  // performs fire-and-forget: it commits after the settle that spawned it has
+  // already notified, so without a listener of its own its removal would be
+  // invisible to the owning runtime's projections and pins until some
+  // unrelated storage event happens to fire. The owning runtime registers
+  // here; the listener fires when the cleanup's write completes, zero
+  // deletions included (another tab may have removed the rows first — this
+  // tab's cached projection and pin are exactly what zero leaves stale). A
+  // failed write stays silent: the rows remain for the next settle, clear,
+  // or delete, the discard's own best-effort boundary.
+  setSupersededDiscardListener(listener: ((targetRef: string) => void) | undefined): void {
+    this.#supersededDiscardListener = listener;
   }
 
   async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
@@ -467,9 +482,21 @@ export class MutationOutboxIndexedDB {
           await requestResult(store.delete(record.clientMutationId));
         }
       }
-    }).catch(() => {
-      // Left for the next settle, clear, or delete.
-    });
+    })
+      .then(() => {
+        // The cleanup completed, zero deletions included: the owning
+        // runtime's projections and pins last saw this ref before the
+        // removal, and this fire-and-forget write is the only thing that can
+        // tell them.
+        try {
+          this.#supersededDiscardListener?.(source.targetRef);
+        } catch {
+          // A listener cannot change the durable transaction's outcome.
+        }
+      })
+      .catch(() => {
+        // Left for the next settle, clear, or delete.
+      });
   }
 
   // Commit attempt evidence before transport so another tab or a reload cannot

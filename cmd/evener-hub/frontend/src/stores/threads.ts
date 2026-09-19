@@ -819,6 +819,31 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   }
 }
 
+// The pin half of refreshMutationPins alone, for the supersede-discard
+// listener below: its trigger — rows just left the store through a
+// fire-and-forget cleanup — has authority over whether the ref still needs
+// its model pinned, and NONE over whether the ref is dispatchable. An
+// enqueue mid-chain (a parked save replaying against a deadline, exactly the
+// note editor's gated-save staging) re-arms the ref BEFORE its durable write
+// commits, so a full refresh here can read the stores empty and de-arm a
+// dispatch the enqueue chain already scheduled — the pinned-save tests pin
+// that ordering. A pin left armed with no rows costs one no-op dispatch
+// turn on the next discovery; a dispatch killed here costs the user's save.
+async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
+  if (!isCurrentMutationRuntime(runtime)) return;
+  const [outbox, optimistic] = await Promise.all([
+    runtime.storage.listOutbox(targetRef),
+    runtime.storage.listOptimistic(targetRef),
+  ]);
+  if (!isCurrentMutationRuntime(runtime)) return;
+  if (outbox.length > 0 || optimistic.length > 0) {
+    pinnedMutationRefs.add(targetRef);
+    return;
+  }
+  pinnedMutationRefs.delete(targetRef);
+  dropUnpinnedModel(targetRef);
+}
+
 function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set(targetRefs)].filter((targetRef) => dispatchableMutationRefs.has(targetRef));
@@ -885,6 +910,20 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // §6's note-row supersede discard commits fire-and-forget AFTER the settle
+  // that spawned it has already notified — the dispatcher's post-settlement
+  // refresh may have completed before the cleanup's write does, and a
+  // fire-and-forget write no other path observes leaves the removal invisible
+  // to this runtime's projections and pins (the store's supersede-discard
+  // test pins the notification; the pin refresh lets a releaseThread drop a
+  // model whose row just left). Zero-deletion cleanups included: another tab
+  // may have removed the rows, and zero is what leaves this tab's cached
+  // projection and pin stale.
+  storage.setSupersededDiscardListener((targetRef) => {
+    if (!isCurrentMutationRuntime(runtime)) return;
+    notifyMutationPersistence([targetRef]);
+    void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
+  });
   // One client lookup for both halves of the mutation runtime: the dispatcher
   // asks it per target ref, and the outbox asks it ref-less for "is any client
   // ready right now". Wiring them from one function is what keeps the

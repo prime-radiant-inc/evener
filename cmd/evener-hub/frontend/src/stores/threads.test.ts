@@ -11250,6 +11250,94 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // RoboRev PR #1873 medium, the fresh review's fire-and-forget supersede
+  // discard: the post-settle cleanup of superseded canceled note rows
+  // committed with no storage-change notification and no pin refresh, so the
+  // settle's own notification — the dispatcher's post-settlement refresh,
+  // already passed — was the last word on the ref. When the discard commits
+  // after that (its write is asynchronous by design: the settle's commit
+  // boundary must not wait on the scan), the removal is invisible to every
+  // projection and pin this runtime holds until some unrelated storage event
+  // happens to fire. The cleanup's own commit must notify the owning
+  // runtime — the same zero-included rule the discard paths carry — and the
+  // pin refresh follows the notification, so a releaseThread waiting on the
+  // pin drops the model whose row just left.
+  test("the supersede discard's own commit notifies the owning runtime", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let notifies = 0;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_a")) notifies += 1;
+    });
+    try {
+      // The class's own commit-boundary seam announces the discard's moment:
+      // its write body is done, the durable commit event is pending, and every
+      // notification the settle chain emits has already passed.
+      const discardBoundaryReached = deferred<void>();
+      const storage = new MutationOutboxIndexedDB({
+        beforeCommit: (operation) => {
+          if (operation === "discardCanceled") discardBoundaryReached.resolve();
+        },
+      });
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+      fake.on("notes/human/set", (params) => ({
+        note: params.note ?? "",
+        receipt: mutationReceipt(params.clientMutationId),
+      }));
+      // The Stop's canceled note row is the ref's pin (the interrupt's
+      // dispatch tail refreshes the pin with the row still durable).
+      const canceledNote = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "notes/human/set",
+        payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", note: "stopped before saving" },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await threadsStore.getState().interrupt("ref_a");
+      await flushUntilArrived(
+        "the Stop to cancel the note row",
+        async () => (await storage.getOutbox(canceledNote.clientMutationId))?.state === "canceled",
+      );
+      await flushIndexedDBUntil(() => false, 4);
+
+      // The note editor's next save after the Stop — the store's real path:
+      // enqueue, dispatch, settle, and the post-settle supersede discard
+      // (its commit boundary announces through the seam above).
+      const save = threadsStore.getState().setHumanNote("ref_a", "saved after the stop");
+      await save;
+      await discardBoundaryReached.promise;
+      // The settle's own notification has already passed; this is the count
+      // it leaves behind at the discard's commit boundary.
+      const notifiesBeforeCommit = notifies;
+      // The commit must itself notify the owning runtime: nothing else runs
+      // after it — the settle's notification is in the past, and a
+      // fire-and-forget write with no notification of its own leaves the
+      // removal invisible to every projection and pin this runtime holds.
+      await flushUntilArrived(
+        "the discard's commit to notify the owning runtime",
+        () => notifies > notifiesBeforeCommit,
+      );
+      // The superseded row did leave, and the pin the discard took with it
+      // follows the notification's refresh: the pane closes and the model
+      // drops instead of staying pinned for a row that no longer exists.
+      await flushUntilArrived(
+        "the supersede discard to commit",
+        async () => (await storage.getOutbox(canceledNote.clientMutationId)) === undefined,
+      );
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+    } finally {
+      unsubscribe();
+      vi.useRealTimers();
+    }
+  });
+
   // RoboRev PR #1873 low, the notify half: a zero-discard success still has
   // to notify persistence. Zero says what THIS tab's write removed - never what
   // another tab removed from under this tab's cached projection, and the

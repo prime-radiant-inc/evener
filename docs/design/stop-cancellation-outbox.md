@@ -201,6 +201,14 @@ barrier compares against — so the scan and the fence commit as one durable fac
   recovery rows. (After the commit, not inside it: an in-transaction scan delayed
   the commit boundary the note editor's parked-save replay stages against.)
   A failed discard leaves the rows for the next settle, clear, or delete.
+  The discard is fire-and-forget by design, but not silent: the settle's own
+  notification has already passed by the time its write commits, so the
+  storage itself notifies the owning runtime when the cleanup completes —
+  zero-deletion cleanups included, the same rule the removal paths carry —
+  and the pin re-derivation that follows lets a later `releaseThread` drop a
+  model whose row just left. The pin half only: the discard's completion has
+  no authority over whether the ref is dispatchable, and a full pin refresh
+  here can de-arm a dispatch an enqueue mid-chain already scheduled.
   Delivery-uncertain note rows are never discarded this way - a newer save
   supersedes nothing that may already be on the wire.
 - **Display:** `canceled` rows surface in the same UI slot as today's blocked rows

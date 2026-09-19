@@ -306,6 +306,43 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  // RoboRev PR #1873 medium, the fresh review's fire-and-forget finding: the
+  // supersede discard commits with no notification of its own — the settle
+  // that spawned it has already notified — so the storage must tell the
+  // owning runtime when the cleanup's write completes. Zero deletions
+  // included: another tab may have removed the rows first, and this tab's
+  // cached projection is exactly what zero leaves stale. A non-note settle
+  // runs no discard, so it must not fire the listener either.
+  test("the supersede discard notifies the owning runtime when its write completes, zero included", async () => {
+    const storage = store();
+    const notified: string[] = [];
+    storage.setSupersededDiscardListener((targetRef) => notified.push(targetRef));
+
+    const superseded = await storage.enqueueIntent(noteIntent("the stop-canceled note"));
+    await storage.cancelUnattempted(TARGET);
+
+    // Another connection removes the canceled row first — this storage's own
+    // discard will commit with zero deletions.
+    const other = store();
+    await other.discardCanceled(TARGET);
+    other.close();
+
+    const newerNote = await storage.enqueueIntent(noteIntent("the newer save"));
+    expect(await storage.settleReceipt(newerNote.clientMutationId, "reflected")).toBe(true);
+    // A read queued behind the discard's write resolves after it, so the
+    // listener has fired by the time this await returns.
+    await storage.getOutbox(newerNote.clientMutationId);
+    expect(notified).toEqual([TARGET]);
+    expect(await storage.getOutbox(superseded.clientMutationId)).toBeUndefined();
+
+    // A non-note settle runs no supersede discard and notifies nothing.
+    const turn = await storage.enqueueIntent(intent("a turn row"));
+    expect(await storage.settleReceipt(turn.clientMutationId, "reflected")).toBe(true);
+    await storage.getOutbox(turn.clientMutationId);
+    expect(notified).toEqual([TARGET]);
+    storage.close();
+  });
+
   test("a note save reconciled as applied also discards the canceled note rows it supersedes", async () => {
     const storage = store();
     const superseded = await storage.enqueueIntent(noteIntent("the stop-canceled note"));
