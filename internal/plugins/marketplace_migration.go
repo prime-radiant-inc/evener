@@ -267,7 +267,7 @@ func (m *Manager) recoverMarkedRename() error {
 		// rename leaves it — recording that clone would have a later Browse or
 		// Install parse a partial clone instead of clearing and re-cloning.
 		recordedLocation := ref.InstallLocation
-		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg, owners); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, mk, reg, owners, false); err != nil {
 			return fail(err)
 		}
 		if ref.Source.Kind != SourceDirectory && recordedLocation != "" {
@@ -971,7 +971,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 	}
 	var undo []func() error
 	if itsOwn {
-		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, owners); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, owners, false); err != nil {
 			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	} else {
