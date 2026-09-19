@@ -142,17 +142,31 @@ states it explicitly) is a platform seam: move the primitive that
 touches the syscall into a `//go:build linux || darwin` file, and give
 the `!linux && !darwin` counterpart a fail-closed or best-effort
 stand-in with a doc comment saying which and why. Everything above the
-seam stays portable, every package type-checks on every port, and the
-sandboxing floor (`docs/sandboxing.md`) keeps its "refuse, don't
-crash" story on unsupported platforms. Test files are the one
-exception: a test that exercises unix-only behavior just takes the
-`linux || darwin` tag directly.
+seam stays portable, and every package type-checks on every **supported
+target**. The supported Go targets are the shipped `linux` and `darwin`
+(`.goreleaser.yml` builds only those), plus `windows`, which is kept
+whole because it is the cross-vet port below; that is the entire set.
+Other GOOS values are not targets and are not required to compile.
+`solaris` and `aix` are `unix` by build constraint but have no stdlib
+`syscall.Flock` (only `FcntlFlock`), so a `//go:build unix` seam file
+that calls it will not build there — acceptable, and not a defect to fix
+by switching to `golang.org/x/sys/unix` or narrowing the tag. The
+sandboxing floor (`docs/sandboxing.md`) keeps its "refuse, don't crash"
+story on unsupported platforms. Test files are the one exception: a test
+that exercises Unix-only behavior takes a Unix build tag directly
+(`unix`, or the narrower `linux || darwin` when it only needs the
+shipped targets).
 
 Verify a seam with the compiler, not the editor:
 
 ```
 GOOS=windows go vet ./...   # per module; silent means the port is whole
 ```
+
+The cross-vet covers `windows`, where the `!unix` fallback is the source
+in scope. A `//go:build unix` source is outside that port, so a syscall
+that exists on only some Unix GOOS is not caught by CI — by design, given
+the supported set above.
 
 ## Some diagnostics are deliberate. Check before "fixing" them.
 
