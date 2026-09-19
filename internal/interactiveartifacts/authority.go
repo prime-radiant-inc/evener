@@ -324,6 +324,33 @@ func (a *HostAuthority) Policy(context.Context) ([]NamespacePolicy, error) {
 	return slices.Clone(value.policies), nil
 }
 
+// RootAssociation returns one already-durable root association. It never
+// creates authority; direct daemon rebootstrap uses it to prove that the live
+// root was installed by this Hub installation before issuing a fresh epoch.
+func (a *HostAuthority) RootAssociation(ctx context.Context, sessionID string) (RootAssociation, error) {
+	if err := ctx.Err(); err != nil {
+		return RootAssociation{}, err
+	}
+	if err := identifier.ValidateSessionID(sessionID); err != nil {
+		return RootAssociation{}, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.mutationReadyLocked(); err != nil {
+		return RootAssociation{}, err
+	}
+	for _, session := range a.snapshot.Sessions {
+		if session.SessionID != sessionID || session.RootSessionID != sessionID {
+			continue
+		}
+		if a.isDeletedLocked(sessionID) {
+			return RootAssociation{}, fmt.Errorf("%w: root %s", ErrDeleted, sessionID)
+		}
+		return rootAssociation(session), nil
+	}
+	return RootAssociation{}, ErrAssociationMissing
+}
+
 // PrepareRoot idempotently persists the association for one root session.
 func (a *HostAuthority) PrepareRoot(ctx context.Context, request RootRequest) (RootAssociation, error) {
 	if err := ctx.Err(); err != nil {
