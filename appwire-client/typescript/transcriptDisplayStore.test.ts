@@ -296,6 +296,22 @@ describe("hub defaults", () => {
 });
 
 describe("lifecycle fencing", () => {
+  test.each(["endReadyGeneration", "dispose"] as const)(
+    "%s fences relayed changes after the ready generation ends",
+    async (lifecycle) => {
+      const store = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+      if (lifecycle === "endReadyGeneration") store.endReadyGeneration();
+      else store.dispose();
+
+      store.getState().applyHubChange({ layout: "mobile", revision: 9, config: proposed });
+
+      expect(store.getState().hub).toEqual({
+        desktop: hubDefault(3, desktopConfig),
+        mobile: hubDefault(2, mobileConfig),
+      });
+    },
+  );
+
   test("disconnect retires loading but keeps confirmed defaults and fences the late read", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
