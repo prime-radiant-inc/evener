@@ -226,18 +226,17 @@ func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveE
 // alias, or an unconfirmed claim whose process is alive but unverified —
 // "absence from List" is not proof of released ownership for those. Crash
 // markers are the opposite case (a PID confirmed gone) and count as exit
-// evidence, so they never block here.
+// evidence, so they never block here. The unconfirmed side deliberately
+// shares unconfirmedDaemonForThread's predicate — canonicalized workspace
+// matching and the cannot-exclude fallback for an unresolvable identity — so
+// the escape cannot under-refuse a claim the delete path would have kept.
 func recoveryGroupClaimExists(roster *hubcore.Roster, aliases []string) bool {
 	for _, alias := range aliases {
 		if _, ok := liveDaemonForThread(roster, alias); ok {
 			return true
 		}
-	}
-	for _, entry := range roster.UnconfirmedEntries() {
-		for _, alias := range aliases {
-			if entry.SessionID == alias || entry.ThreadID == alias || entry.WorkspaceRef == localAppRef(alias) {
-				return true
-			}
+		if unconfirmedDaemonForThread(roster, alias) {
+			return true
 		}
 	}
 	return false

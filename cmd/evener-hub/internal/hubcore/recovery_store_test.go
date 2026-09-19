@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
 	"time"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 )
 
 func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T) {
@@ -505,5 +506,32 @@ func TestConfirmedExitPersistenceFailureRetainsAdmissionFence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// OwnerStartedAt marshals with its zone offset, and each record's time.Parse
+// builds a fresh FixedZone for non-UTC offsets, so struct equality misjudges
+// two identical records of one group as conflicting. The group-consistency
+// check must compare times with Equal.
+func TestRecoveryStoreLoadsGroupWithNonUTCOwnerTime(t *testing.T) {
+	root := t.TempDir()
+	locks, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := daemonprocess.Target{
+		PID: 4242, SessionID: "B", StateDir: t.TempDir(),
+		StartedAt: time.Date(2026, 9, 19, 12, 0, 0, 0, time.FixedZone("fixture", 3600)),
+	}
+	if err := locks.PersistForceStopWithOwner([]string{"A", "B"}, "B", owner); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatalf("identical group records misjudged as conflicting: %v", err)
+	}
+	got, ok := reopened.RecoveryOwner("A")
+	if !ok || got.PID != owner.PID || !got.StartedAt.Equal(owner.StartedAt) {
+		t.Fatalf("owner identity did not round-trip: %+v ok=%v", got, ok)
 	}
 }
