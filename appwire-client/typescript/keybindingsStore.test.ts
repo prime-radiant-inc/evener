@@ -548,6 +548,32 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  test("refreshing the same classified checkpoint preserves a stale generation after a failed save", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft(rules);
+
+    // The same-revision reconnect makes this draft stale by generation.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ draftConflict: true, draft: { generation: 1 } });
+
+    // The save fails while the classified checkpoint remains unchanged on
+    // disk. Refresh must preserve the old generation instead of treating the
+    // same checkpoint as a newly confirmed draft.
+    drafts.failReplace();
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: false,
+      draftConflict: true,
+      draft: { revision: 3, rules, generation: 1 },
+    });
+  });
+
   test("editDraft's own id-generation failure sets storageUnavailable and draftError, the same as a save failure", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const throwingCreateId: typeof drafts.storage = {

@@ -725,26 +725,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   /** The fields a restored checkpoint (or its absence, or a failed restore)
    * sets; `confirmed` is passed in because the creation-time restore runs
-   * before there is any state to read. */
-  function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
+   * before there is any state to read. `generation` is only supplied by the
+   * identity-aware recovery path below; an ordinary restore always uses null. */
+  function restoreDraft(
+    confirmed: { loaded: boolean; revision: number },
+    generation: number | null = null,
+    checkpointOverride?: KeybindingDraftCheckpoint | null,
+  ): Partial<KeybindingsStoreFields> {
     try {
-      const checkpoint = drafts.load();
-      // Always null, never currentGeneration(): a checkpoint's generation is
-      // never persisted (there is nothing on disk to name a hub session by,
-      // and a fresh app instance's own generation counter restarts at 1
-      // regardless of what the previous instance last confirmed), so a
-      // RESTORE has no generation it can honestly claim - only an
-      // authoritative payload the store has actually just reconciled does.
-      // Stamping the live generation here (as if this call itself confirmed
-      // the draft valid for it) would let a LATER storage recovery
-      // (refreshOverrides's one-more-restore-attempt, or discardDraft's
-      // re-classify after a refused removal) silently re-assert an
-      // already-known-stale draft as current the moment it re-reads the
-      // same bytes under a newer generation. applyHubOverrides' own
-      // stamp-on-first-payload is the only place a generation is ever
-      // actually earned, exactly once, by an authoritative read.
+      const checkpoint = checkpointOverride === undefined ? drafts.load() : checkpointOverride;
+      // A normal restore has no generation it can honestly claim: a
+      // checkpoint's generation is never persisted, and a fresh app
+      // instance's counter restarts independently. The only exception is
+      // reloadDraft's identity check, which carries forward the in-memory
+      // generation already earned by this same classified checkpoint; it
+      // does not stamp the current generation or treat storage recovery as a
+      // new confirmation. applyHubOverrides' stamp-on-first-payload remains
+      // the only way a null-generation draft earns a generation.
       const draft: KeybindingsDraft | null = checkpoint
-        ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation: null }
+        ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation }
         : null;
       return {
         draft,
@@ -774,6 +773,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // whether an earlier unreadable classification still holds, so it
         // is omitted rather than reset to false, which would silently hide
         // the one recovery (discard) an unreadable record allows.
+        ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
+      };
+    }
+  }
+
+  /** Re-reads after a port failure without laundering a stale generation:
+   * only the same checkpoint identity may carry forward the in-memory stamp.
+   * A replacement with equal fields is still a new record and takes the
+   * ordinary null-generation restore path. */
+  function reloadDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
+    try {
+      const { checkpoint, sameIdentity } = drafts.reload();
+      const generation = sameIdentity ? (getState().draft?.generation ?? null) : null;
+      return restoreDraft(confirmed, generation, checkpoint);
+    } catch (error) {
+      const unreadable = error instanceof UnreadableDraftError;
+      return {
+        storageUnavailable: true,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
         ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
       };
     }
@@ -1170,7 +1188,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // the section's shortcuts hostage to it would lock a user out of settings
     // they never edited.
     if (getState().storageUnavailable) {
-      setState(restoreDraft(getState()));
+      setState(reloadDraft(getState()));
       if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;

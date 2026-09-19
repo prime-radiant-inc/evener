@@ -17,6 +17,19 @@ function decode(value: unknown): Checkpoint {
 }
 
 describe("createDraftRepository", () => {
+  it("reports whether a reload saw the same classified identity, not just the same decoded content", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: true });
+
+    // Same decoded content is not enough to preserve state tied to the old
+    // checkpoint: a new writer's identity must be treated as a replacement.
+    drafts.storage.save({ id: "d2", value: "a" });
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d2", value: "a" }, sameIdentity: false });
+  });
+
   it("removeIf on a checkpoint load() returned removes the exact stored bytes, extra fields included", () => {
     const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
     const repo = createDraftRepository(drafts.storage, decode);
