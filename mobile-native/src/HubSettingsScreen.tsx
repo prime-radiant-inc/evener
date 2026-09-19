@@ -25,7 +25,13 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, useConnectionDisplay, useRenderClient, whenReady } from "./connectionDisplay";
+import {
+	isReady,
+	useConnectionDisplay,
+	useLiveReadiness,
+	useRenderClient,
+	whenReady,
+} from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -36,6 +42,7 @@ type Props = NativeStackScreenProps<Routes, "HubSettings">;
 export function HubSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state, fatal, retry } = useConnection();
 	const display = useConnectionDisplay(state, fatal);
+	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
 	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
 	// already; only a manual retry's own token refetch clears it briefly, and
 	// the last client this screen had covers that gap too.
@@ -57,6 +64,7 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			<HubSettings
 				client={renderClient}
 				connectionState={state}
+				canUseConnection={canUseConnection}
 				hubId={activeProfile.id}
 				hubName={activeProfile.name}
 				openTranscript={() =>
@@ -120,6 +128,7 @@ const HUB_OVERVIEW_REFRESH_FAILED =
 function HubSettings({
 	client,
 	connectionState,
+	canUseConnection,
 	hubId,
 	hubName,
 	openTranscript,
@@ -130,6 +139,7 @@ function HubSettings({
 }: {
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
+	canUseConnection: () => boolean;
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
@@ -160,9 +170,10 @@ function HubSettings({
 	useEffect(() => () => model.dispose(), [model]);
 	useFocusEffect(
 		useCallback(() => {
+			if (!canUseConnection()) return;
 			void model.getState().refresh();
 			void upgrade.reconcileAfterReconnect();
-		}, [model, upgrade]),
+		}, [canUseConnection, model, upgrade]),
 	);
 	const data = state.data;
 	const hub = data?.hub;
@@ -177,7 +188,7 @@ function HubSettings({
 					<RefreshControl
 						refreshing={state.loading && !!data}
 						onRefresh={() => {
-							if (ready) void state.refresh();
+							if (canUseConnection()) void state.refresh();
 						}}
 					/>
 				}
@@ -196,13 +207,13 @@ function HubSettings({
 						hubName={hubName}
 						runningIdentity={hub}
 						disabled={!ready}
-						onStart={whenReady(ready, () => {
+						onStart={whenReady(canUseConnection, () => {
 							void upgrade.start();
 						})}
 						onRefresh={() => {
-							void upgrade.reconcileAfterReconnect();
+							if (canUseConnection()) void upgrade.reconcileAfterReconnect();
 						}}
-						onReviewAnother={() => {
+						onReviewAnother={whenReady(canUseConnection, () => {
 							void upgrade.reviewAnotherUpdate().then((reviewed) => {
 								if (!reviewed) return;
 								Alert.alert(
@@ -212,12 +223,14 @@ function HubSettings({
 										{ text: "Cancel", style: "cancel" },
 										{
 											text: "Continue",
-											onPress: () => upgrade.rearm(reviewed),
+											onPress: () => {
+												if (canUseConnection()) upgrade.rearm(reviewed);
+											},
 										},
 									],
 								);
 							});
-						}}
+						})}
 					/>
 				</Section>
 				{state.loading && !data && (
@@ -229,7 +242,7 @@ function HubSettings({
 				{state.error && (
 					<Action
 						disabled={state.loading || !ready}
-						onPress={whenReady(ready, () => {
+						onPress={whenReady(canUseConnection, () => {
 							void state.refresh();
 						})}
 					>

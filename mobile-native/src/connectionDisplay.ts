@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useCallback, useRef } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
@@ -16,6 +16,26 @@ export type ConnectionDisplay = "wall" | "banner" | "none";
  * hand-rolling `state === "ready"`. */
 export function isReady(state: ConnectionState): boolean {
 	return state === "ready";
+}
+
+export type LiveReadiness = () => boolean;
+
+/** Keeps a deferred request tied to the render that opened it: the current
+ * state must still be ready for the same hub and client before it may run. */
+export function useLiveReadiness(
+	scope: string,
+	client: object | null,
+	state: ConnectionState,
+): LiveReadiness {
+	const current = useRef({ scope, client, state });
+	current.current = { scope, client, state };
+	return useCallback(
+		() =>
+			current.current.scope === scope &&
+			current.current.client === client &&
+			current.current.state === "ready",
+		[scope, client],
+	);
 }
 
 /** `everReady` is per-screen-instance state (has THIS mount ever seen
@@ -48,18 +68,18 @@ export function useConnectionDisplay(
 	return connectionDisplay(state, everReady.current, fatal);
 }
 
-/** Wraps a handler so it no-ops unless `ready`: the shared guard an
+/** Wraps a handler so it no-ops unless the live readiness predicate is true: the shared guard an
  * `onPress` that issues a request uses, in place of an ad hoc
  * `if (ready) ...` (or its inverse, `if (!ready) return`) copied at each call
  * site. Pairs with the `disabled` prop reading the same `isReady(state)`, so
  * a missed `disabled` or a programmatic press still cannot start the
  * request. */
 export function whenReady<A extends unknown[]>(
-	ready: boolean,
+	ready: LiveReadiness,
 	handler: (...args: A) => void,
 ): (...args: A) => void {
 	return (...args: A) => {
-		if (ready) handler(...args);
+		if (ready()) handler(...args);
 	};
 }
 
