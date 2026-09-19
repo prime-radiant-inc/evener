@@ -74,7 +74,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
-**Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (deploy-pipeline spec §4); cursor validation reads the mirrored value (§8 there).
+**Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
 
 **Intent.** A durable record the controller writes before acting, so a crash
 leaves recovery instructions on disk. The registry intents are the
@@ -105,8 +105,13 @@ renders, a staged-but-unpersisted change) is never an intent.
   plus all replay metadata until expiry.
 
 **High-water mark.** The greatest generation a name ever carried, surviving
-removals, persisted in the sidecar alongside the tombstone (§15). Re-add
-mints strictly above it. The operation store mirrors it (deploy-pipeline
+removals, persisted in the sidecar alongside the tombstone (§15) as the
+(generation, incarnationId, presenceEpoch) triple — the incarnation id covers
+the historical case, and an expiry prune that deletes the tombstone still
+advances the presence epoch into the entry. Re-add mints strictly above every
+retained mark; a name with no surviving mark and no live history re-adds clean
+at generation 1 with a fresh incarnation id plus an advanced presence epoch
+(§15). The operation store mirrors the triple (deploy-pipeline
 spec §4), which owns the mirrored-generation rule: on a store-newer/sidecar-older split with no matching commit marker boot rolls back to the sidecar mark and keeps the discarded value only as the high-water mark (deploy-pipeline spec §4). This document states no independent maximum rule.
 
 ## 2. PR sequence
@@ -583,7 +588,7 @@ and hits instead of missing as superseded — plus the incarnation id minted
 beside that generation in the same atomic sidecar write), mirroring the
 operation store's (host, kind, client operation ID, generation) scope plus the
 same incarnation id. The (generation, incarnation id) pair is unique and the incarnation id is never reused: generations are strictly monotonic per the §1 glossary —
-no live re-add path reuses a generation — so no two incarnations share a pair. A replay matches only a retained
+no live re-add path reuses a retained generation — so no two incarnations share a pair. A replay matches only a retained
 receipt of the same name, kind, and mutationId. One rule, three arms: the
 first arm is the direct hit — same name, kind, mutationId, current generation,
 AND current incarnation id — returning the recorded receipt; the second arm is
@@ -752,10 +757,14 @@ commit raced a `hub.toml` change across its rename; a concurrent hand edit
 races identically and reconciles identically: `hub.toml` wins, the sidecar
 duplicate drops). A collision with no marker and no armed intent, or with a
 marker whose fingerprint no longer matches the on-disk file (a further hand
-edit superseded the interrupted reconcile), or with an armed intent whose
-validation fingerprint still matches the on-disk file (no race crossed the
-commit — the duplicate is hand-made), stays the hard startup error — the
-marker plus the armed intent scope the recovery to exactly the race the spec
+edit superseded the interrupted reconcile), stays the hard startup error. An
+armed intent whose validation fingerprint still matches the on-disk file while
+a staged sidecar duplicate is present is likewise a hard startup error naming
+both locations and the required explicit recovery (drop the staged duplicate
+or re-stage the mutation): the fingerprint equality proves no race crossed the
+commit, so the duplicate is either a post-crash manual edit or an ambiguous
+crash state the spec refuses to auto-resolve — the marker plus a mismatching
+armed intent scope the silent recovery to exactly the race the spec
 reconciles, never a hand-created duplicate.
 
 The sidecar file also carries the tombstone records (§15), so a removal's
@@ -772,7 +781,9 @@ generation, incarnationId, committedAt, droppedEntry?, winningFingerprint?,
 remnantId?, remnantResolvedAt?, recoveryAttestation?, bootRecovered?}` —
 `recoveryAttestation` (`{operator, statement, observedAt}`) is present exactly
 on receipts resolved through `teardown-recover`, absent otherwise.
-`droppedEntry` (the staged entry the post-rename reconcile dropped) and
+`droppedEntry` (the staged entry the post-rename reconcile dropped, persisted
+in the same lowerCamel effective-config shape as `HostRow`'s config fields —
+§11) and
 `winningFingerprint` (the winning `hub.toml` fingerprint) are present exactly
 on `collision-dropped` receipts — a replay renders the dropped arm from these
 receipt fields, so a lost-response retry, even after restart, reconstructs
@@ -1052,10 +1063,10 @@ across the teardown, re-acquire to finalize). It runs the remnant's pinned
 teardown to completion with no mutation lock held — through the persisted
 `cleanupHandle` after a crash, under a fresh fencing epoch (including its
 bounded kill/wait contexts; the retry's own teardown run carries a bounded
-execution deadline of the same owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time) in the same atomic sidecar write that claims the remnant, and retains the host gate until the attempt's termination is confirmed: on timeout the retry reports
+execution deadline of the same owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic sidecar write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic sidecar write that marks its attempt record timed-out-but-open, then reports
 the terminal `committed-with-teardown-failure` outcome with the remnant still
 open plus its attempt record open for fencing — a stuck remote process therefore surfaces a terminal
-outcome with a live retry handle, never an indefinitely held gate and never a released gate past possibly-live cleanup. A later retry fences the timed-out attempt first: it takes over the prior attempt's fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4) before running the pinned teardown again, so two retries never execute the same cleanup concurrently). The retry
+outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then fences the timed-out attempt first: it takes over the prior attempt's fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4), marks the prior attempt record fenced-closed in the same atomic sidecar write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so two retries never execute the same cleanup concurrently and a wedged gate never blocks repair. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and fences the open attempt record). The retry
 validates against the remnant's OWN pinned identity, never against the
 registry's current values: it re-resolves the pinned teardown target by the
 remnant's recorded `(generation, incarnationId)` plus its persisted
@@ -1073,8 +1084,8 @@ orphan) — (params
 `{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
 cleared `remnantId`): the call try-acquires the host's per-host gate first — the
-same gate `teardown-retry` holds — failing fast with the typed busy error when a
-retry is in flight, and holds it through the clearance. Under the gate it claims
+same gate a live `teardown-retry` attempt holds — failing fast with the typed busy error when a
+retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover fences it first — takeover of its fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4) and a fenced-closed mark in the same atomic sidecar write as the remnant claim — before the safety checks below, so the clearance never lands past possibly-live cleanup. Under the gate it claims
 the remnant atomically (claim under the mutation lock with an attempt token, so a
 concurrent retry racing the claim loses exactly one of the two), then verifies
 the operator attestation is present and well-formed, re-runs the safety checks
@@ -1103,6 +1114,14 @@ Defined in the deploy-pipeline spec §§4–5 and §7: records, dedup scope,
 retention and compaction, the store mutex and lock order, gates, and boot
 recovery. This document cites that store for the `host-removed` mark path,
 the outstanding-token-row purge path, and the mirrored generations.
+The registry owns the per-host boundary record the store mirrors: one record
+per host name — `{generation: number, incarnationId: string, presenceEpoch:
+number}` — written in the same atomic store writes that mirror the
+generation, reconciled by the same boot rule, and rolled back by the same
+rollback rule (deploy-pipeline spec §§4, 8 cite this schema, never restate
+it). A tombstone-expiry prune that deletes the name's last sidecar trace
+still advances the presence epoch into the high-water entry, so the next
+clean-slate re-add carries the advanced epoch.
 
 ## 8. Plan, deploy, restart
 
@@ -1191,7 +1210,7 @@ union; the response unions below (the mutation-result arms, `plan`'s token vs
 no-token shapes) are carried as per-arm interfaces selected at runtime by
 their discriminator (`outcome`, `reason`) —
 the pipeline catalog defines one named Go struct per arm so each generates its own
-interface field-for-field, and the pipeline PR extends the generator with explicit union support so each method's result is typed as the union over the arm names. The contract's one-named-Go-struct-per-arm
+interface field-for-field, and the pipeline PR extends the generator with explicit union support so each method's result is typed as the union over the arm names: the union registration lists arms in discriminator order, the generator emits the method result as a TypeScript union of the arm interface names in that order plus a discriminator-narrowing guard per arm, an unknown discriminator value stays a typed unknown-arm refusal (never a silent first-arm cast), a new arm is additive only (existing arms keep their names, fields, and discriminator values — the protocol-shapes test fails on any rename, removal, or field-type change), and the pipeline protocol-shapes test pins every arm field-for-field including each arm's discriminator. The contract's one-named-Go-struct-per-arm
 rule (mutation-result arms, `plan`'s planned vs no-token arms,
 `teardown-retry`'s six `outcome` x `hostKind` arms — the two success outcomes
 (`teardown-complete`, `already-cleared`) plus the
@@ -1256,7 +1275,7 @@ documents and are cited, never restated):
   explicit value above, so no non-optional field is left unknown.
 - `evener/host/add`: params are one full host entry (all seven `HostConfig`
   fields; `name` required) plus optional `mutationId: string` (opaque,
-  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap); response is the
+  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every sidecar mutation and every boot compacting past either bound in the same atomic write, and riding the 64-tombstone / 16 MiB global sidecar cap in §15 — so keyless-add spam cannot grow the sidecar without limit); response is the
   mutation-result union below.
 - `evener/host/update`: params `{name: string, entry: <the six non-name
   `HostConfig` fields>, mutationId: string, expectedGeneration: number,
@@ -1299,7 +1318,10 @@ documents and are cited, never restated):
   `{outcome: "committed-with-teardown-failure", seam: string, remnantId:
   string, host: HostRow}` (remove's failure arm carries `host: RemovedRow`
   for the same reason) or the dropped arm `{outcome: "collision-dropped",
-  droppedEntry: HostConfig, winningFingerprint: string, host: HostRow}` (the
+  droppedEntry: <the staged effective config in the same lowerCamel shape as
+  `HostRow`'s config fields — never a literal `HostConfig`, whose `toml`-only
+  tags would generate `Name`/`SSH`/`EvenerPath`/… instead of
+  `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host: HostRow}` (the
   dropped arm always carries the authoritative `HostRow` regardless of
   mutation kind — when the post-rename reconcile drops the just-committed
   sidecar entry, the authoritative result is the winning `hub.toml` live
@@ -1700,7 +1722,10 @@ receipts and remnants per removed host) — and drops each tombstone whose
 `removal timestamp + retention period` has passed: the read path omits it from
 the response without taking the lock, and the next mutation-path atomic
 sidecar write under the lock prunes it durably (plus that name's receipts and
-remnants, per the retention rule — §6). Expiry never purges a tombstone whose
+remnants, per the retention rule — §6). The prune advances that name's
+presence epoch in the same atomic write and persists the advanced value in
+the name's high-water entry (§1), so a later clean-slate re-add carries the
+advanced epoch. Expiry never purges a tombstone whose
 name still holds an open teardown remnant — the mutation-path prune skips
 remnant-gated names, and the in-memory filter keeps rendering them — so the
 failed teardown's generation-specific handles are completed through
@@ -1726,9 +1751,10 @@ advances, a per-name generation that is durable: persisted in the managed
 sidecar alongside the host entries (including the per-name high-water mark for
 removed names — bounded below) in the same atomic write as the entry mutation — `add` mints
 generation 1 for a never-seen name, `update` advances the live generation by
-one, and re-add mints a generation strictly greater than any generation that
-name has ever carried, so a re-added byte-identical entry still invalidates
-every pre-remove token. Every `add`/re-add mints a fresh incarnation id in
+one, and re-add mints a generation strictly above every retained high-water
+mark for the name — generation 1 only when no mark survives and no live
+history remains — so a re-added byte-identical entry still invalidates every
+pre-remove token while no surviving referrer keeps the old history alive. Every `add`/re-add mints a fresh incarnation id in
 that same atomic write (opaque, unique per mint, persisted per live entry next
 to the generation — the teardown-targeting identity `teardown-retry` selects
 on; §6). The boot load restores persisted generations before the store serves
@@ -1879,7 +1905,7 @@ refresh from the removed incarnation or a stale name-keyed cache entry can
 never republish rows for the new host.
 ## 16. Testing
 
-Registry tests (all bullets in this section ship with the registry PR, except the union-handler catalog/protocol-shape pins named below, which ship in the pipeline PR where those handlers register — §2):
+Registry tests (all bullets in this section ship with the registry PR, except the union-handler catalog/protocol-shape pins named below plus the pipeline-handler halves named in the remnant-gate and status-after-refusal bullets, which ship in the pipeline PR where those handlers register — §2):
 
 - Registry live-update tests (including the add-time cycle rules),
   manager add/remove-vs-supervisor tests (removing an attached host stops its
@@ -1942,7 +1968,7 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   absent-row keyless `add` retries minting a fresh `mutationId` and committing as a new keyed mutation (never a keyless re-apply — §5), the explicit ambiguous
   outcome once a matching row is observed, `stale-entry` once
   an effective field changed; `update` takes no keyless path — missing either
-  field is a validation refusal; a keyless `add` commit persists the server-keyed audit record with no client idempotency semantics)), remote-origin rejection for
+  field is a validation refusal; a keyless `add` commit persists the server-keyed audit record with no client idempotency semantics, and audit compaction holds (repeated keyless adds converge to the newest 64 per name under the audit TTL — §11)), remote-origin rejection for
   `list`/`status` (the #1603 origin guard refuses
   honestly-marked peer-forwarded requests before admission — the registry surface
   only: `list`/`status` here, `add`/`update`/`remove`/`teardown-retry`/
@@ -1986,7 +2012,7 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   — the live entry may be absent or newer without blocking it — and never acts
 against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
-naming the failed seam and the remnant still open for a later retry — the gate stays held until the timed-out attempt's termination confirms, and the later retry fences the timed-out attempt (takeover, kill/wait, guard advance) before re-running the teardown, so the same cleanup never runs concurrently;
+naming the failed seam and the remnant still open for a later retry — the timed-out retry releases the gate while its open attempt record fences the name (a concurrent live attempt still busy-fails), and the later retry try-acquires the freed gate, fences the timed-out attempt (takeover, kill/wait, guard advance, fenced-closed mark) before re-running the teardown, so the same cleanup never runs concurrently and repair never wedges on a held gate;
 protocol-shape tests pin the `changed-entry` refusal arm, the `concurrent-edit`,
 `tombstone-capacity` catalog entries with their envelope
 code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-arm mutation-result union (including the
@@ -2026,7 +2052,11 @@ lost). Remnant-gate tests:
   is open for a name, `deploy`, `restart`, `Ensure`-triggered work, `plan`
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
   attach all refuse with `remnant-open` naming the blocking `remnantId` — the
-  fence is host-wide, never mutation-only. Status-after-refusal tests: `status`
+  fence is host-wide, never mutation-only; the `deploy`/`restart`/`plan`
+  handler-integration halves of this bullet ship in the pipeline PR where those
+  handlers register, and the registry PR keeps only the registry-level
+  store/fence halves (re-add/update/remove refusal, retention-expiry skip,
+  attach refusal) against fake publishers. Status-after-refusal tests: `status`
   renders the pair-scoped refusal after each of the nine no-token refusal
   reasons (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
   `handler-absent`, plus the four terminal validation refusals
@@ -2034,7 +2064,10 @@ lost). Remnant-gate tests:
   `target-unit-findings`) — one case per reason, each asserting pair-scoped
   publication, `terminal: true` on the four terminal arms and `terminal: false`
   on the five retry arms, `status` rendering of the refusal (never stale data
-  from a superseded pair), and clearing of the refusal by a later success.
+  from a superseded pair), and clearing of the refusal by a later success;
+  the end-to-end plan-publication halves ship in the pipeline PR where `plan`
+  registers, and the registry PR keeps only status-rendering of pair-scoped
+  refusals published via fake publishers.
   Config-path tests: a `--config`
   startup carries the canonical path into the web config and the sidecar +
   fingerprint derive from it. Collision tests: a tombstone/live collision
@@ -2046,8 +2079,10 @@ lost). Remnant-gate tests:
   and the pending marker rides the staging write, so a crash between the
   commit rename and the staging write, or between staging and the cleanup
   rename, still boots covered, never unmarked (while an armed intent whose
-  fingerprint still matches the on-disk file with a duplicate present still
-  boots hard-error — hand-made); the same collision with no marker and no
+  validation fingerprint still matches the on-disk file with a staged duplicate
+  present boots hard-error naming both locations — the equality proves no race
+  crossed the commit, so the duplicate is hand-made or ambiguous and requires
+  explicit recovery); the same collision with no marker and no
   armed intent, or with a marker whose fingerprint no longer matches, boots
   into the hard startup error. Swap-window tests: a marker with `swapStarted:
   false` and `teardownStarted: false` re-applies the staged runtime set to
