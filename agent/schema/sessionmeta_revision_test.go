@@ -31,6 +31,37 @@ func TestTombstoneSessionMetaBlocksWriters(t *testing.T) {
 	}
 }
 
+// TestUntombstoneSessionMetaRestoresWritability pins the failed-deletion
+// rollback: once the tombstone has been rolled back because a deletion failed
+// while the meta survived, a writer must be able to save again. Leaving the
+// marker would fence every later save for a session that still exists.
+func TestUntombstoneSessionMetaRestoresWritability(t *testing.T) {
+	dir := t.TempDir()
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := TombstoneSessionMeta(dir, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "blocked"}); !errors.Is(err, ErrSessionDeleted) {
+		t.Fatalf("save over a tombstone = %v, want ErrSessionDeleted", err)
+	}
+	if err := UntombstoneSessionMeta(dir, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sessions", id+SessionMetaTombstoneSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("tombstone not removed: %v", err)
+	}
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "resumed"}); err != nil {
+		t.Fatalf("save after rollback = %v, want nil", err)
+	}
+	// Removing an absent marker is a no-op.
+	if err := UntombstoneSessionMeta(dir, id); err != nil {
+		t.Fatalf("second untombstone = %v, want nil", err)
+	}
+}
+
 // TestSessionMetaRevisionInitializesAndIncrements pins the invariant hubcore's
 // metaNewer depends on: the first save of a session sets Revision to 1, and every
 // subsequent save (including an observer append) increments it by exactly one.

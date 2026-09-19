@@ -310,8 +310,11 @@ const sessionsSubdir = "sessions"
 const SessionMetaTombstoneSuffix = ".meta.json.deleted"
 
 // ErrSessionDeleted reports a write attempted against a session that has been
-// deleted (tombstoned). Callers should treat it as a benign no-op: the session
-// no longer exists.
+// deleted (tombstoned). The write is dropped, not retried: the session no longer
+// exists, so the metadata change is intentionally lost. Callers own the policy
+// for surfacing it — the hub warns on an autosave and maps it to an internal
+// error on a rename — but none may retry the save, because a retry is refused
+// again by the same marker.
 var ErrSessionDeleted = errors.New("session meta deleted")
 
 // TombstoneSessionMeta writes a session's deletion marker while holding the same
@@ -320,7 +323,8 @@ var ErrSessionDeleted = errors.New("session meta deleted")
 // an in-flight out-of-process autosave cannot resurrect a session the hub is
 // deleting. It does not remove the meta itself: the caller's artifact sweep owns
 // that, so a failed sweep still leaves the metadata for a resume. The tombstone
-// must be left in place by the caller.
+// must be left in place by the caller once the metadata is durably removed;
+// UntombstoneSessionMeta reverses it when the sweep fails first.
 func TombstoneSessionMeta(dir, id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
@@ -332,6 +336,29 @@ func TombstoneSessionMeta(dir, id string) error {
 		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
 			return fmt.Errorf("write session tombstone: %w", err)
+		}
+		return nil
+	})
+}
+
+// UntombstoneSessionMeta removes a session's deletion marker under the same
+// in-process and cross-process locks TombstoneSessionMeta takes. A caller rolls
+// the marker back when a deletion fails before the metadata is durably removed:
+// while the meta still exists the session is still resumable and must stay
+// writable, whereas leaving the marker would make every later save — autosave,
+// rename, observer append — fail with ErrSessionDeleted for a session that was
+// never actually deleted. Removing an absent marker is a no-op.
+func UntombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return withSessionMetaCrossProcessLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove session tombstone: %w", err)
 		}
 		return nil
 	})

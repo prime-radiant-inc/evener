@@ -1134,6 +1134,68 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 }
 
+// TestCleanupProjectDeletionTargetRollsBackTombstoneOnSweepFailure pins the
+// failed-deletion boundary: when the artifact sweep fails while the metadata
+// survives, the tombstone must be rolled back so the still-resumable session
+// stays writable (autosave, rename, observer appends) instead of being fenced
+// forever with ErrSessionDeleted.
+func TestCleanupProjectDeletionTargetRollsBackTombstoneOnSweepFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".future-artifact" {
+			return errors.New("forced sweep failure before metadata removal")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err == nil {
+		t.Fatal("expected the forced sweep failure to surface")
+	}
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+".meta.json")); err != nil {
+		t.Fatalf("metadata must survive a pre-metadata sweep failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+schema.SessionMetaTombstoneSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("tombstone must be rolled back when the metadata survives: %v", err)
+	}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: webTestSessionID, Name: "still writable"}); err != nil {
+		t.Fatalf("metadata survived but the session is not writable: %v", err)
+	}
+}
+
+// TestCleanupProjectDeletionTargetRemovesMetaLockOnSuccess pins the residue fix:
+// once a deletion completes, the per-session lock file is unlinked. The tombstone
+// remains as the resurrection fence, so the lock preserved during the sweep does
+// not need to outlive a successful deletion.
+func TestCleanupProjectDeletionTargetRemovesMetaLockOnSuccess(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+".meta.json.lock")); !os.IsNotExist(err) {
+		t.Fatalf("completed deletion left a meta lock file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+schema.SessionMetaTombstoneSuffix)); err != nil {
+		t.Fatalf("the tombstone fence must remain after a completed deletion: %v", err)
+	}
+}
+
 func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "work")

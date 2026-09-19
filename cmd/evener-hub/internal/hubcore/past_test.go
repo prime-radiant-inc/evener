@@ -504,6 +504,60 @@ func fuzzScenarioPastIndex_EvictingUnrelatedIDPreservesInFlightFold(t *testing.T
 	}
 }
 
+// fuzzScenarioPastIndex_ConfirmedMissPrunesIDGeneration pins the bounded-memory
+// half of the per-id fence: a confirmed miss for a nonexistent id must not leave
+// a permanent idGen entry, nor leave a probe pin behind.
+func fuzzScenarioPastIndex_ConfirmedMissPrunesIDGeneration(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, ok := idx.Find(id); ok {
+		t.Fatal("Find returned a session that does not exist")
+	}
+	idx.mu.RLock()
+	_, pinned := idx.probePins[id]
+	_, fenced := idx.idGen[id]
+	idx.mu.RUnlock()
+	if pinned {
+		t.Fatal("a completed Find left a probe pin")
+	}
+	if fenced {
+		t.Fatal("a confirmed miss left a permanent generation fence")
+	}
+}
+
+// fuzzScenarioPastIndex_RebuildPrunesStaleIDGenerations pins that a Rebuild keeps
+// idGen bounded by the live index: an id the rescan no longer holds loses its
+// generation fence.
+func fuzzScenarioPastIndex_RebuildPrunesStaleIDGenerations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx.SeedForTest([]schema.SessionMeta{{ID: id, Name: "seeded"}})
+	idx.UpdateMeta(id, schema.SessionMeta{ID: id, Name: "renamed", Revision: 2})
+	idx.mu.RLock()
+	_, hasFence := idx.idGen[id]
+	idx.mu.RUnlock()
+	if !hasFence {
+		t.Fatal("UpdateMeta did not advance the id's generation")
+	}
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	idx.mu.RLock()
+	_, still := idx.idGen[id]
+	idx.mu.RUnlock()
+	if still {
+		t.Fatal("Rebuild kept a generation fence for an id it no longer indexes")
+	}
+}
+
 // fuzzScenarioPastIndex_UnreadableGlobRootIsIndeterminate pins Medium 3: an
 // inaccessible projects root makes filepath.Glob return no matches with no
 // error, which must not read as an authoritative absence.

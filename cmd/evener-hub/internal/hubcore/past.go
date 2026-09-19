@@ -71,6 +71,11 @@ type PastIndex struct {
 	// fold of another. Whole-index replacement is covered separately by
 	// rebuildGen.
 	idGen map[string]uint64
+	// probePins counts in-flight Find probes per id. It lets unpinProbe drop an
+	// id's generation entry only once no probe can still compare against it,
+	// keeping idGen bounded by the live index plus active probes rather than
+	// growing without bound on every confirmed miss for a nonexistent id.
+	probePins map[string]int
 
 	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
 	// publish's delta is applied against exactly the snapshot the previous
@@ -132,6 +137,7 @@ func NewPastIndex(projectGlob string) *PastIndex {
 		openDB:    sql.Open,
 		byID:      make(map[string]PastEntry),
 		idGen:     make(map[string]uint64),
+		probePins: make(map[string]int),
 		ftsOwner:  pastIndexOwner(),
 	}
 }
@@ -245,6 +251,14 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		}
 		i.all = all
 		i.byID = byID
+		// Drop generation fences for ids this scan no longer indexes so idGen stays
+		// bounded by the live index rather than by every id ever seen. An in-flight
+		// probe for a pruned id is already invalidated by the rebuildGen bump below.
+		for id := range i.idGen {
+			if _, ok := byID[id]; !ok {
+				delete(i.idGen, id)
+			}
+		}
 		i.gen++
 		i.rebuildGen++
 		gen := i.gen
@@ -1155,6 +1169,10 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if i.afterFindCacheMiss != nil {
 		i.afterFindCacheMiss()
 	}
+	// Hold a pin for the whole probe loop so unpinProbe cannot prune this id's
+	// generation entry while a value captured below may still be compared.
+	i.pinProbe(sessionID)
+	defer i.unpinProbe(sessionID)
 	for range pastFindProbeAttempts {
 		i.mu.RLock()
 		probeRebuildGen := i.rebuildGen
@@ -1196,6 +1214,36 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	}
 	// Contended on every attempt: report a miss rather than a stale probe.
 	return PastEntry{}, false
+}
+
+// pinProbe marks an in-flight probe for id so its per-id generation fence cannot
+// be pruned while a captured value may still be compared. The count lets
+// concurrent probes for the same id coexist; the last one to unpin prunes.
+func (i *PastIndex) pinProbe(id string) {
+	i.mu.Lock()
+	i.probePins[id]++
+	i.mu.Unlock()
+}
+
+// unpinProbe releases a probe's pin. When it was the last in-flight probe for an
+// id that is no longer indexed, the id's generation entry is dropped: with no
+// probe left to compare against it the entry can never be observed again, and a
+// future probe starts from a fresh generation. The id cannot be re-fenced
+// incorrectly after pruning: an entry is dropped only when no probe remains to
+// compare against it, and while any probe is in flight the entry survives
+// untouched by pruning, so every captured value is compared against the very
+// entry it was read from.
+func (i *PastIndex) unpinProbe(id string) {
+	i.mu.Lock()
+	if i.probePins[id] <= 1 {
+		delete(i.probePins, id)
+		if _, ok := i.byID[id]; !ok {
+			delete(i.idGen, id)
+		}
+	} else {
+		i.probePins[id]--
+	}
+	i.mu.Unlock()
 }
 
 // evict removes an id the disk no longer holds, but only while this id's index
