@@ -11177,6 +11177,79 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // RoboRev PR #1873 medium, the fresh review's zero-deletion half: the
+  // cross-tab cleanup refreshed the mutation pin only when it deleted at
+  // least one row, but zero is exactly what another tab's identical cleanup
+  // leaves THIS tab's write — the finding's interleave: the row was this
+  // tab's pin, the other tab removed it, and this tab's own cleanup then
+  // succeeds with nothing to remove. The stale pin keeps releaseThread from
+  // dropping the cleared model, so the refresh must follow every successful
+  // cleanup, zero included — the local discard path's own rule.
+  test("a cross-tab cleanup that removes nothing still refreshes the pin releaseThread waits on", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      // The ref's ONLY durable row is another tab's Stop residue against the
+      // old instance; the tracked model is that old instance, pane-held.
+      const canceled = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_old",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await storage.cancelUnattempted("ref_a");
+      threadsStore.setState({
+        threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
+      });
+      const fake = connectMutationClient();
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // Hold this tab's cleanup at the seam, the finding's order made
+      // deterministic: the re-read publishes the replacement, the cleanup
+      // issues (held), and the hydration's own pin refresh reads the
+      // still-durable row and pins the ref.
+      const realDiscard = storage.discardCanceledOfInstance.bind(storage);
+      const discardReached = deferred<void>();
+      const discardRelease = deferred<void>();
+      storage.discardCanceledOfInstance = (targetRef: string, supersededInstanceId: string) => {
+        discardReached.resolve();
+        return discardRelease.promise.then(() => realDiscard(targetRef, supersededInstanceId));
+      };
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
+      await threadsStore.getState().refreshThread("ref_a");
+      await discardReached.promise;
+      await flushIndexedDBUntil(() => false);
+
+      // The other tab removes the row while this tab's cleanup is still
+      // held: the durable row leaves through the OTHER connection, so the
+      // write this tab finally issues finds nothing to remove — the zero the
+      // finding names.
+      const tabA = new MutationOutboxIndexedDB();
+      await tabA.discardCanceledOfInstance("ref_a", "thr_old");
+      await flushUntilArrived(
+        "the other tab's removal to land",
+        async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+      );
+      discardRelease.resolve();
+
+      // The pane closes. A stale pin makes releaseThread return early and
+      // the cleared thread's model leak; the zero-row cleanup's own pin
+      // refresh must let the release drop it.
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+      tabA.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // RoboRev PR #1873 low, the notify half: a zero-discard success still has
   // to notify persistence. Zero says what THIS tab's write removed - never what
   // another tab removed from under this tab's cached projection, and the
