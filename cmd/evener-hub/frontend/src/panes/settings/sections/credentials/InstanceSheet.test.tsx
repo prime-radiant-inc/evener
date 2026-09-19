@@ -1409,15 +1409,17 @@ describe("the form", () => {
   });
 
   test("a rename the store superseded is a saved rename when the list confirms it", async () => {
+    const before = { ...WORK, endpointFingerprint: "fp-work" };
+    const renamed = { ...before, name: "work2" };
     const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
-    await refreshList(fake, [{ ...WORK, name: "work2" }]);
-    await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
 
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
@@ -1869,11 +1871,11 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
   });
 
-  // endpointMatches is reached only on the rename fallback with no authoritative
-  // fingerprint. The two URL libraries disagree on host case and explicit
-  // default ports, so a representable Base URL has to be reduced through one
-  // parser on both sides; comparing raw strings would refuse the rename.
-  test("a superseded rename with an unkeyable listing still confirms a URL differing only in host case or default port", async () => {
+  // A rename whose captured row has no endpoint fingerprint cannot prove the
+  // renamed destination, so it fails closed like the plain path: a stale-save
+  // warning and no steer onto the new name (rather than a URL comparison that
+  // could never see hidden parts).
+  test("a superseded rename with no authoritative fingerprint fails closed", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -1885,30 +1887,25 @@ describe("the form", () => {
     const { handlers } = renderSheet(before, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
-    await user.clear(field("Base URL"));
-    await user.type(field("Base URL"), "https://GW.example.test:443/v1");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({
       name: "work",
       newName: "work2",
-      baseUrl: "https://GW.example.test:443/v1",
       originClientId: "test-tab",
     });
 
-    // Unkeyable (no fingerprint), so the rename confirmation goes through
-    // endpointMatches on the sanitized display URL, in a different host case
-    // and with the default port dropped.
+    // The rename landed, but the captured row serves no fingerprint.
     const renamed = {
       ...before,
       name: "work2",
-      baseUrl: "https://gw.example.test/v1",
       endpointFingerprint: "",
     };
     await refreshList(fake, [renamed]);
     await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
 
-    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // Clearing an endpoint override drops the authored value, and the listing
@@ -1996,48 +1993,6 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
-  });
-
-  // A rename confirms the store's own listing only when the entry under the new
-  // name also carries the values this rename declared. A different instance
-  // that happens to hold the new name and differs in a field this rename edited
-  // is not this rename's landing; confirming it would steer the sheet onto
-  // another instance's values.
-  test("a superseded rename is not confirmed by a new-name entry differing only in a field it edited", async () => {
-    const before = instance({
-      name: "work",
-      providerId: "openai",
-      protocol: "openai-responses",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-before",
-    });
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(before, {}, [OPENAI]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.type(field("Base URL"), "/x");
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({
-      name: "work",
-      newName: "work2",
-      baseUrl: "https://gw.example.test/v1/x",
-      originClientId: "test-tab",
-    });
-
-    const foreign = {
-      ...before,
-      name: "work2",
-      baseUrl: "https://other.example.test/y",
-      endpointFingerprint: "fp-other",
-    };
-    await refreshList(fake, [foreign]);
-    await act(async () =>
-      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
-    );
-
-    expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // A malformed or hostless URL is stored verbatim by the hub but sanitizes to
@@ -2180,48 +2135,6 @@ describe("the form", () => {
     });
   });
 
-  // The hub preserves meaningful path differences (a trailing slash), so a
-  // rename that moved the endpoint to `/v1/` must not be confirmed by a new-name
-  // entry sitting at `/v1`: normalizing the slash away would steer the sheet
-  // onto a different endpoint.
-  test("a superseded rename is not confirmed by a new-name entry differing only by a trailing slash", async () => {
-    const before = instance({
-      name: "work",
-      providerId: "openai",
-      protocol: "openai-responses",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-before",
-    });
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(before, {}, [OPENAI]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.clear(field("Base URL"));
-    await user.type(field("Base URL"), "https://gw.example.test/v1/");
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({
-      name: "work",
-      newName: "work2",
-      baseUrl: "https://gw.example.test/v1/",
-      originClientId: "test-tab",
-    });
-
-    const foreign = {
-      ...before,
-      name: "work2",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-other",
-    };
-    await refreshList(fake, [foreign]);
-    await act(async () =>
-      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
-    );
-
-    expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
-  });
-
   // A rename riding along with a credential clear cannot be confirmed: the hub
   // omits an authored value it cannot serve, so a replacement under the new name
   // with different (hidden) credentials reads the same. The rename fails closed.
@@ -2346,47 +2259,6 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
-  });
-
-  // WHATWG parsing collapses dot-segments (`/a/../b` -> `/b`) while the hub's Go
-  // sanitizer preserves the authored path, so a rename to the dot-segment path
-  // must not be confirmed by a new-name entry at its collapsed path.
-  test("a superseded rename is not confirmed by a new-name entry at the collapsed dot-segment path", async () => {
-    const before = instance({
-      name: "work",
-      providerId: "openai",
-      protocol: "openai-responses",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-before",
-    });
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(before, {}, [OPENAI]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.clear(field("Base URL"));
-    await user.type(field("Base URL"), "https://gw.example.test/a/../b");
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({
-      name: "work",
-      newName: "work2",
-      baseUrl: "https://gw.example.test/a/../b",
-      originClientId: "test-tab",
-    });
-
-    const foreign = {
-      ...before,
-      name: "work2",
-      baseUrl: "https://gw.example.test/b",
-      endpointFingerprint: "fp-other",
-    };
-    await refreshList(fake, [foreign]);
-    await act(async () =>
-      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
-    );
-
-    expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // The endpoint fingerprint proves the destination, not the credential fields
@@ -2516,49 +2388,6 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
-  });
-
-  // A rename that only changes a variable (no declared Base URL) moved the
-  // resolved URL, which the listing alone cannot prove and the rename path has
-  // no authoritative fingerprint for: it must not confirm an entry at another
-  // URL that happens to carry the requested variable.
-  test("a superseded rename that only changes a variable is not confirmed by an entry at another URL", async () => {
-    const before = instance({
-      name: "v",
-      providerId: "google-vertex-anthropic",
-      protocol: "anthropic",
-      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
-      baseUrl: "https://resolved.example.test/v1",
-      endpointFingerprint: "fp-before",
-    });
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(before, {}, [VERTEX]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
-    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({
-      name: "v",
-      newName: "v2",
-      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
-      originClientId: "test-tab",
-    });
-
-    const foreign = {
-      ...before,
-      name: "v2",
-      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
-      baseUrl: "https://elsewhere.example.test/v1",
-      endpointFingerprint: "fp-other",
-    };
-    await refreshList(fake, [foreign], [VERTEX]);
-    await act(async () =>
-      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [VERTEX] }),
-    );
-
-    expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // draftIdentity excludes the credential fields, so a credential-only save
@@ -2745,46 +2574,6 @@ describe("the form", () => {
       baseUrl: "https://gw.example.test/v1",
       originClientId: "test-tab",
     });
-  });
-
-  // A bare trailing `?` is endpoint identity the hub preserves but WHATWG parses
-  // as an empty query, so a rename declaration carrying one must not match a
-  // listing without it.
-  test("a superseded rename is not confirmed by a listing that drops a bare query delimiter", async () => {
-    const before = instance({
-      name: "work",
-      providerId: "openai",
-      protocol: "openai-responses",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-before",
-    });
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(before, {}, [OPENAI]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.clear(field("Base URL"));
-    await user.type(field("Base URL"), "https://gw.example.test/v1?");
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({
-      name: "work",
-      newName: "work2",
-      baseUrl: "https://gw.example.test/v1?",
-      originClientId: "test-tab",
-    });
-
-    const foreign = {
-      ...before,
-      name: "work2",
-      baseUrl: "https://gw.example.test/v1",
-      endpointFingerprint: "fp-other",
-    };
-    await refreshList(fake, [foreign]);
-    await act(async () =>
-      finish({ instances: [{ ...foreign, endpointFingerprint: "" }], availableProviders: [OPENAI] }),
-    );
-
-    expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // The baseline rebase must not manufacture a pending change: a field the save

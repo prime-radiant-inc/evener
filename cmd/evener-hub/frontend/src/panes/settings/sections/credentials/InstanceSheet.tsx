@@ -225,82 +225,6 @@ function untouchedIdentityMatches(
   return matches && varsCarriedOver(before, listed, params);
 }
 
-/** An authored URL reduced to the endpoint identity the listing serves. The hub
- * strips userinfo, query and fragment before a Base URL crosses the appwire
- * boundary (cmd/evener-hub/app_instances.go's sanitizeEndpointURL) and serves
- * Go's net/url form; both sides are reduced through this one parser so host
- * case and explicit default ports (where the two libraries disagree) cannot
- * make a representable URL refuse. A URL that does not parse or carries no
- * host reduces to empty, as the hub's does. The path is kept verbatim: the hub
- * preserves meaningful path differences such as a trailing slash, so stripping
- * it here would let `/v1/` and `/v1` match each other. */
-function listedEndpoint(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed === "") return "";
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return "";
-  }
-  if (parsed.protocol === "" || parsed.host === "") return "";
-  parsed.username = "";
-  parsed.password = "";
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString();
-}
-
-/** Whether WHATWG parsing leaves this URL's path exactly as authored. It
- * collapses dot-segments (`/a/../b` -> `/b`) and supplies a `/` for a bare
- * authority, while the hub's Go sanitizer preserves the authored path exactly.
- * When parsing changes the path the two libraries can disagree about two
- * distinct endpoints, so a match built on the parsed form is refused. */
-function pathPreservedByParser(raw: string): boolean {
-  const trimmed = raw.trim();
-  if (trimmed === "") return false;
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol === "" || parsed.host === "") return false;
-  const authoredPath = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/.exec(trimmed)?.[1] ?? "";
-  // A pathless URL is not a disagreement: the hub serves `https://host` and
-  // WHATWG supplies the root path `/`; treat that one case as preserved while
-  // still rejecting genuine rewrites such as dot-segment collapsing.
-  return authoredPath === parsed.pathname || (authoredPath === "" && parsed.pathname === "/");
-}
-
-/** Whether the listed endpoint is the one this save declared. The listed URL
- * cannot carry userinfo, query or fragment (the hub strips them), so a
- * declaration that has any of them is indistinguishable from a concurrent
- * write that differs only there: the match fails closed on a lossy declaration
- * rather than re-anchor the draft onto a foreign endpoint. A declaration the
- * hub cannot key (malformed or hostless) reduces to empty, exactly like any
- * other unkeyable listing, so two distinct invalid destinations would compare
- * equal: the match fails closed on those too. Either side whose path WHATWG
- * parsing rewrites also fails closed, so distinct Go paths cannot be conflated
- * (see pathPreservedByParser). */
-function endpointMatches(declared: string, listed: string | undefined): boolean {
-  const trimmed = declared.trim();
-  if (trimmed === "") return false;
-  const listedRaw = (listed ?? "").trim();
-  // A raw query/fragment delimiter is endpoint identity the hub keeps but the
-  // sanitized listing cannot show; a bare `?` or `#` parses to an empty
-  // component, so refuse any declaration (or listing) that carries one.
-  if (trimmed.includes("?") || trimmed.includes("#")) return false;
-  if (listedRaw.includes("?") || listedRaw.includes("#")) return false;
-  const want = listedEndpoint(trimmed);
-  if (want === "") return false;
-  if (want !== listedEndpoint(listedRaw)) return false;
-  if (!pathPreservedByParser(trimmed) || !pathPreservedByParser(listedRaw)) return false;
-  // want !== "" means listedEndpoint parsed this URL with a scheme and host.
-  const parsed = new URL(trimmed);
-  return parsed.search === "" && parsed.hash === "" && parsed.username === "" && parsed.password === "";
-}
-
 /** The credential header reduced the way the hub stores it: the hub splits on
  * the first `=` and trims the name and value before joining them with no
  * surrounding spaces (app_instances.go's credentialHeaderFrom), so a declared
@@ -312,54 +236,19 @@ function normalizedCredentialHeader(raw: string): string {
   return `${raw.slice(0, eq).trim()}=${raw.slice(eq + 1).trim()}`;
 }
 
-/** Whether the listed entry carries the values a superseded RENAME declared for
- * the fields it changed. The plain-save path verifies through the authoritative
- * fingerprint instead (see supersededSaveLanded). Without this a concurrent
- * write that differs only in those very fields reads as this rename's landing,
- * and confirming it steers the sheet onto a foreign instance.
- *
- * A declared Base URL is compared as the sanitized endpoint the listing serves
- * (and fails closed when it carries parts the listing strips, or cannot be
- * keyed at all - see endpointMatches). An ENDPOINT clear (baseUrl/protocol/
- * surface) drops the authored value and the listing then serves the RESOLVED
- * one, which proves nothing about the clear: it always fails closed. A
- * credential clear does too - the hub omits an authored value it cannot serve,
- * so a replacement under the new name with different (hidden) credentials reads
- * the same. A declared header is compared after the hub's own normalization. A
- * declared var has to be present and equal, key by key. */
-function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  // Endpoint clears and the derived-endpoint rule belong to this path; the
-  // credential and protocol/surface/vars rules live in the shared helpers, so a
-  // fix to one (header normalization, key-by-key vars) cannot miss another copy.
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
-  // A save that changed vars/protocol/surface without declaring a Base URL moved
-  // the RESOLVED URL, which the listing alone cannot prove - the client does not
-  // resolve the provider's template. Without an authoritative fingerprint the
-  // confirmation fails closed rather than accept a same-name entry at whatever
-  // URL it now resolves.
-  const changed = changedFields(params);
-  if (
-    params.baseUrl === undefined &&
-    ENDPOINT_AFFECTING_FIELDS.some((field) => field !== "baseUrl" && changed.has(field))
-  ) {
-    return false;
-  }
-  if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
-  if (!credentialValuesLanded(listed, params)) return false;
-  return declaredVarsAndSurfaceLanded(listed, params);
-}
-
 /** The name this save's rename landed under, or undefined when the store's own
  * listing cannot say that it did: the new name has to be held by the instance
  * this save renamed - matching on the fields this save left alone and carrying
  * the values it declared - not by a later tenant of the freed name that
  * differs in a field this rename also edited.
  *
- * When the mutation's captured new-name row carries an endpointFingerprint, the
- * listing must carry the same one: that proves the renamed destination even when
- * the sanitized display URL cannot show its hidden parts. Without it (an
- * unkeyable instance) the declared sanitized values are the only check, and the
- * derived-endpoint cases there fail closed (see declaredValuesLanded). */
+ * The confirmation requires the mutation's captured new-name row to carry an
+ * endpointFingerprint and the listing to carry the same one: that is the only
+ * proof of the renamed destination (the sanitized display URL cannot show its
+ * hidden parts). Without a fingerprint there is nothing to compare against, so
+ * the rename fails closed exactly like the plain path - the user gets a
+ * stale-save warning and a reseed rather than the sheet steering onto a name
+ * that might be a replacement. */
 function renamedInstanceLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
@@ -371,8 +260,8 @@ function renamedInstanceLanded(
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
-  const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
-  if (authoritativeFingerprint === "") return declaredValuesLanded(listed, params) ? newName : undefined;
+  // A capture with no fingerprint cannot prove the renamed destination, so the
+  // shared confirmation fails closed and the caller keeps the stale-save path.
   return authoritativeLandingConfirmed(authoritative, listed, params) ? newName : undefined;
 }
 
