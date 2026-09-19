@@ -1608,10 +1608,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 // fired — emits once.
 //
 // The state is read rather than asserted, the way the settled tail below reads
-// it. The failure exit settles to idle before calling this and so still reports
-// idle; a refusal can arrive with a question pending or a message still queued,
-// and a client told idle there would show a thread that is finished with
-// neither.
+// it. The failure exit settles through the pending-aware boundary before
+// calling this; a refusal can arrive with a question pending or a message
+// still queued, and a client told idle there would show a thread that is
+// finished with neither.
 func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1646,7 +1646,7 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	if !s.attachedTranscript().Poisoned() {
 		return nil
 	}
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return errTranscriptRefusesRecords()
 }

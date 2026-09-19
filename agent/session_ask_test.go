@@ -4023,6 +4023,69 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore(t *tes
 	}
 }
 
+// TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore covers a
+// pending human-note carrier whose non-terminal tool result poisons the
+// transcript. The next round is refused by the poisoned-transcript guard after
+// a turn has already entered Processing; live state must use the same awaiting
+// boundary that restore derives from the durable ask and note records.
+func TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	var fs *environmentSyncFailureFS
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response {
+				armEnvironmentPartialWriteAfter(fs, 1)
+				return toolCallResponse(loop)
+			},
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	// TRIPWIRE: scripted model and deterministic local transcript harness; this only trips on a genuine lifecycle deadlock.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+	if _, err := sess.SetHumanNote("note-poisoned-transcript", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	fs = attachEnvironmentFailureFS(t, sess)
+	_, ran, err := sess.ProcessPendingUserInput(ctx, nil)
+	if !ran || !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a poisoned-transcript refusal after the carrier round", ran, err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state after poisoned-transcript refusal = %q, want %q", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state after poisoned-transcript refusal = %q, want %q", got, SessionAwaiting)
+	}
+}
+
 // TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
 // covers the provider-owned terminal path: a human-note carrier preserves the
 // pending ask, and handleModelError must leave the live session awaiting just
