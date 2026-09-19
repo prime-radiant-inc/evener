@@ -862,6 +862,125 @@ function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnM
   return result.map((group) => group.turn);
 }
 
+export interface TurnHistoryMergeResult {
+  // When olderCoverage is false, this can still include older local
+  // observations; when it is true, it includes persisted transcript fields.
+  turns: TurnModel[];
+  // Coverage is persisted transcript evidence. Local observations can still
+  // be folded into turns while this remains false.
+  olderCoverage: boolean;
+  // A turn id alone is not overlap evidence; a non-warning item identity is.
+  transcriptOverlap: boolean;
+}
+
+const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
+const itemIdentityFields = new Set(["id", "turnId", "transcriptKey", "clientMutationId"]);
+const itemNonCoverageFields = new Set([
+  ...itemIdentityFields,
+  "pendingText",
+  "reasoningSummaries",
+  "warning",
+  "observedStartedAt",
+  "observedCompletedAt",
+]);
+
+function sameModelFields(left: object, right: object): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every((key) => {
+    const leftValue = (left as Record<string, unknown>)[key];
+    const rightValue = (right as Record<string, unknown>)[key];
+    return leftValue === rightValue || (leftValue === undefined && rightValue === undefined);
+  });
+}
+
+function olderItemContributes(older: ItemModel, newer: ItemModel): boolean {
+  const merged = mergePageItem(older, newer);
+  return !sameModelFields(merged, newer) || itemTextPresence(merged) !== itemTextPresence(newer);
+}
+
+function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean {
+  if (matches.length === 0) return true;
+  if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
+    return true;
+  }
+  return Object.keys(older).some((field) => {
+    if (itemNonCoverageFields.has(field)) return false;
+    return (
+      (older as unknown as Record<string, unknown>)[field] !== undefined &&
+      matches.every((item) => (item as unknown as Record<string, unknown>)[field] === undefined)
+    );
+  });
+}
+
+function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
+  if (matches.length === 0) return older.items.length === 0 || older.items.some((item) => item.type !== "warning");
+  if (
+    turnCoverageFields.some((field) => older[field] !== undefined && matches.every((turn) => turn[field] === undefined))
+  ) {
+    return true;
+  }
+  return older.items.some((olderItem) => {
+    if (olderItem.type === "warning") return false;
+    const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
+    return olderItemAddsCoverage(olderItem, matchingItems);
+  });
+}
+
+function foldTurnFragments(turns: TurnModel[]): TurnModel | undefined {
+  const first = turns[0];
+  return first === undefined
+    ? undefined
+    : turns.slice(1).reduce((current, turn) => mergePageTurn(current, turn), first);
+}
+
+function olderTurnContributes(merged: TurnModel, fresh: TurnModel): boolean {
+  for (const field of ["id", "status", ...turnCoverageFields] as const) {
+    if (merged[field] !== fresh[field]) return true;
+  }
+  return merged.items.some((item) => {
+    const freshItem = fresh.items.find((candidate) => itemIdentityMatches(candidate, item));
+    return freshItem === undefined || olderItemContributes(item, freshItem);
+  });
+}
+
+export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
+  const groups = coalesceTurnFragments(older, newer);
+  let olderContributed = false;
+  let olderCoverage = false;
+  let transcriptOverlap = false;
+
+  for (const turn of older) {
+    const matches = newer.filter((candidate) => turnsMatch(candidate, turn));
+    if (
+      turn.items.some(
+        (item) =>
+          item.type !== "warning" &&
+          matches.some((candidate) => candidate.items.some((next) => itemIdentityMatches(item, next))),
+      )
+    ) {
+      transcriptOverlap = true;
+    }
+    if (olderTurnAddsCoverage(turn, matches)) olderCoverage = true;
+  }
+
+  for (const group of groups) {
+    if (group.olderIndexes.length === 0) continue;
+    if (group.freshIndexes.length === 0) {
+      olderContributed = true;
+      continue;
+    }
+    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
+    const fresh = foldTurnFragments(freshTurns);
+    if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
+  }
+
+  return {
+    turns: olderContributed ? mergeToolCallsByCallId(placeCoalescedTurns(groups, older.length)) : newer,
+    olderCoverage,
+    transcriptOverlap,
+  };
+}
+
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
@@ -869,11 +988,18 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   // before that field existed re-derives it from its own thread id.
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
-  const coalesced = coalesceTurnFragments(olderTurns, model.turns);
+  const merged = mergeTurnHistory(olderTurns, model.turns);
+  // The public merge keeps a no-op fresh array by reference. Pagination has
+  // historically normalized fresh fragment chains whenever a page arrives,
+  // so retain that adapter behavior without changing the public no-op result.
+  const turns =
+    merged.turns === model.turns && olderTurns.length > 0
+      ? mergeToolCallsByCallId(placeCoalescedTurns(coalesceTurnFragments(olderTurns, model.turns), olderTurns.length))
+      : merged.turns;
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length)),
+    turns,
     olderCursor: resp.nextCursor,
   };
 }
