@@ -237,7 +237,8 @@ func TestDirectRebootstrapAuthenticatesCurrentOwnedDaemonAndReplacesConnection(t
 		Transport: appwire.NewStreamTransportWithLimit(launchDaemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "launch",
 	})
 	defer daemon.Close() //nolint:errcheck
-	go func() { _ = launchHub.Serve(t.Context()) }()
+	launchDone := make(chan error, 1)
+	go func() { launchDone <- launchHub.Serve(t.Context()) }()
 	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -281,5 +282,81 @@ func TestDirectRebootstrapAuthenticatesCurrentOwnedDaemonAndReplacesConnection(t
 	}
 	if generation != 10 {
 		t.Fatalf("generation = %d, want completed candidate", generation)
+	}
+	// TRIPWIRE: successful replacement closes the former launch client, so its
+	// single in-memory reader must finish without wall-clock pacing.
+	select {
+	case <-launchDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseded launch connection remained usable")
+	}
+}
+
+func TestDirectRebootstrapRejectsReplacedGenerationWithoutReplacingConnection(t *testing.T) {
+	authority, err := OpenHostAuthority(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close() //nolint:errcheck
+	rootID := identifier.MustNewSessionID()
+	identity := completeBrokerIdentity(rootID)
+
+	launchHubSide, launchDaemonSide := net.Pipe()
+	launchHub := NewLaunchBroker(LaunchBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchHubSide, appwire.PrivateBrokerFrameLimit),
+		Authority: authority, LaunchID: "launch", HubEpoch: "hub-one", ProjectID: "project-0123456789", ResumeID: rootID,
+	})
+	daemon := NewDaemonBroker(DaemonBrokerConfig{
+		Transport: appwire.NewStreamTransportWithLimit(launchDaemonSide, appwire.PrivateBrokerFrameLimit), LaunchID: "launch",
+	})
+	defer daemon.Close() //nolint:errcheck
+	go func() { _ = launchHub.Serve(t.Context()) }()
+	if _, err := daemon.EstablishRoot(t.Context(), rootID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := launchHub.ExpectOwnership(identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.InstallOwnership(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	daemon.mu.Lock()
+	prior := daemon.client
+	daemon.mu.Unlock()
+
+	hubSide, daemonSide := net.Pipe()
+	daemonDone := make(chan error, 1)
+	go func() {
+		daemonDone <- daemon.AcceptRebootstrap(t.Context(), appwire.NewStreamTransportWithLimit(daemonSide, appwire.PrivateBrokerFrameLimit), DaemonRebootstrapCallbacks{
+			Validate: func(expected appwire.BrokerDaemonIdentity) (appwire.BrokerDaemonIdentity, uint64, error) {
+				return identity, 7, nil
+			},
+			Complete: func(uint64) error { return ErrBrokerAuthentication },
+		})
+	}()
+	type hubResult struct {
+		connection *HubBrokerConnection
+		err        error
+	}
+	hubDone := make(chan hubResult, 1)
+	go func() {
+		connection, establishErr := EstablishHubRebootstrap(t.Context(), HubRebootstrapConfig{
+			Transport: appwire.NewStreamTransportWithLimit(hubSide, appwire.PrivateBrokerFrameLimit), Authority: authority,
+			HubEpoch: "hub-two", ExpectedIdentity: identity,
+		})
+		hubDone <- hubResult{connection: connection, err: establishErr}
+	}()
+	if err := <-daemonDone; !errors.Is(err, ErrBrokerAuthentication) {
+		t.Fatalf("AcceptRebootstrap error = %v, want authentication rejection", err)
+	}
+	result := <-hubDone
+	if result.connection != nil {
+		_ = result.connection.Close()
+	}
+	daemon.mu.Lock()
+	retained := daemon.client
+	daemon.mu.Unlock()
+	if retained != prior {
+		t.Fatal("rejected generation replaced the prior authenticated connection")
 	}
 }

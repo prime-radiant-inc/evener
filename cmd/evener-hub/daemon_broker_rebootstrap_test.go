@@ -100,4 +100,10 @@ func TestRebootstrapLiveDaemonUsesAuthenticatedPrivateWebSocket(t *testing.T) {
 	if generation != 5 {
 		t.Fatalf("generation = %d, want completed direct install", generation)
 	}
+	stale := entry
+	stale.PID++
+	if staleConnection, err := rebootstrapLiveDaemon(ctx, authority, "hub-three", stale); err == nil {
+		_ = staleConnection.Close()
+		t.Fatal("stale daemon PID authenticated against the current owned process")
+	}
 }
