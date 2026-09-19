@@ -70,12 +70,10 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
-// clearAskPending empties the pending set. Callers: the interrupt branch
-// (session_lifecycle.go, directly) and clearAskPendingForResolvingSteer
-// below (a drained user-sourced steer, mid-round). processOneInput's entry
-// clears the set inline instead (session_lifecycle.go's "Pending asks
-// resolve with this accepted turn"), under a lock it already holds — this
-// helper would deadlock there.
+// clearAskPending empties the pending set. Callers: durable user-input
+// admission, the interrupt branch (session_lifecycle.go, directly), and
+// clearAskPendingForResolvingSteer below (a drained user-sourced steer,
+// mid-round).
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
