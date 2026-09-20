@@ -1879,6 +1879,8 @@ function preserveLiveActiveTurn(snapshot: ThreadModel, live: ThreadModel | undef
   const activeTurnId = snapshot.activeTurnId;
   if (
     activeTurnId === undefined ||
+    live?.threadId !== snapshot.threadId ||
+    threadInstanceID(live) !== threadInstanceID(snapshot) ||
     live?.activeTurnId !== activeTurnId ||
     snapshot.turns.some((turn) => turn.id === activeTurnId)
   )

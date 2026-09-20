@@ -1048,6 +1048,48 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.activeTurnId).toBeUndefined();
   });
 
+  test("a refresh does not preserve a same-numbered turn from a replaced instance", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
+      }
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: {
+          ref: "ref_a",
+          instanceId: "replacement-instance",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          activeTurnId: "turn_m6",
+        },
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_m5"]);
+  });
+
   // The generation is how a mounted consumer notices a WHOLESALE model
   // replacement whose visible fields didn't change - e.g. jobsUpdatedAt is
   // null both before and after a resync, yet activity retained through the
