@@ -42,15 +42,39 @@ building a parallel cleanup system.
 
 ### Environment
 
-Evener sets both:
+Amended 2026-09-20 (Jesse; #495): the `TMPDIR` half of the original "Evener sets
+both" rule is replaced by the shape-dependent rule below. `EVENER_SCRATCH_DIR`
+and the file-tool root are unchanged.
 
-- `TMPDIR=<scratch-path>`;
-- `EVENER_SCRATCH_DIR=<scratch-path>`.
+`EVENER_SCRATCH_DIR=<scratch-path>` is set for every spawned process, and the
+exact path appears in the session's dynamic environment/system-prompt section.
 
-The exact path appears in the session's dynamic environment/system-prompt
-section. `HOME` is not redirected. This feature does not newly redirect
-`GOCACHE`, npm, Cargo, or other durable build caches; sandbox cache policy remains
-a separate concern and must preserve safe shared caches where supported.
+`TMPDIR` is set per spawn shape, because a temp directory has to be usable by the
+process that inherits it and a private scratch is not:
+
+- `TMPDIR=<scratch-path>` for every **sandboxed** spawn and for every unsandboxed
+  spawn whose **file tools are confined** (`FileToolConfined()` — the
+  write-blocked off policy). In those shapes the scratch is the only writable
+  temp the process has, so `TMPDIR` and `EVENER_SCRATCH_DIR` name one directory
+  and a `mktemp`-then-`write_file` workflow stays inside the file tools'
+  writable root.
+- `TMPDIR=<temp-container>/tmp` for an unsandboxed spawn whose file tools are
+  **unconfined**. The container sits in a world-usable host temp (`/tmp` or
+  `/var/tmp`, chosen OS-aware and deliberately *not* `os.TempDir()`, which on
+  macOS is the per-user `0700` directory under `/var/folders/...`), is named
+  under Evener's session-scratch prefix so the existing 24-hour reclaim covers
+  it, and holds a `1777` sticky leaf any uid may create temp files in. An
+  unsandboxed command may spawn a descendant that deliberately becomes another
+  user (`su`, an `env_keep += "TMPDIR"`, a setuid binary); such a descendant
+  cannot write a directory owned by the session user at `0700`, which is exactly
+  why it no longer receives one as `TMPDIR`.
+
+`EVENER_SCRATCH_DIR` and the file-tool root do not vary with the shape: the
+model's file tools and its shell still name the same writable scratch, and that
+scratch stays private to the session. `HOME` is not redirected. This feature does
+not newly redirect `GOCACHE`, npm, Cargo, or other durable build caches; sandbox
+cache policy remains a separate concern and must preserve safe shared caches where
+supported.
 Existing sandbox environment filters for credentials, agents, and external
 configuration remain unchanged. Short-lived execution-environment clones and
 invocation grants preserve the same scratch path as their owning session.
@@ -153,7 +177,9 @@ snapshot or regex-match a large rendered system prompt.
 Cover:
 
 - unique scratch for root, child, sibling, and fork;
-- `TMPDIR`, `EVENER_SCRATCH_DIR`, environment info, and prompt use the same path;
+- `EVENER_SCRATCH_DIR`, environment info, and prompt use the same path, and
+  `TMPDIR` names that path exactly when the spawn is sandboxed or its file tools
+  are confined (see "Environment");
 - sandboxed tools/processes can use only their own scratch;
 - worktree re-root keeps the same live-session scratch;
 - close, spawn failure, and parent teardown clean scratch after process shutdown;
