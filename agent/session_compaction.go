@@ -240,10 +240,13 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// whose write failed cleanly becomes a tombstone in place
 	// (tombstoneLastPairPersistedLocked) precisely so these positions stay
 	// stable across a snapshot taken mid-write; the empty marker turns are
-	// filtered out below and never reach the transcript. The start clamp is
-	// invariant armor, not an expected path.
+	// filtered out below and never reach the transcript. The start clamp
+	// bounds both ends as invariant armor, not an expected path: the floor
+	// keeps a negative index from panicking the slice should the base
+	// invariant ever break, and the ceiling keeps a shrunk log from doing
+	// the same to a stale snapshot's start.
 	tailStart := snapAppends - s.persistedAppendLogBase
-	tailStart = min(tailStart, len(s.persistedAppendLog))
+	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
 	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
