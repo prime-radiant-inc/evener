@@ -68,10 +68,12 @@ export async function measureEditorialTranscript() {
           .map((element) => element.outerHTML.slice(0, 180));
         // Anchor on the fixture-owned delegate identity rather than a status
         // kind a future case could share, so fixture growth cannot silently
-        // re-target the guard.
+        // re-target the guard. Match the card's leading sr-only identity
+        // span exactly - a prefix match would also catch any future
+        // dlg_editorial_running* case id.
         const anchorCard = required(
-          Array.from(host.querySelectorAll<HTMLElement>('[data-testid="subagent-row"]')).find((card) =>
-            card.textContent?.startsWith("Delegate dlg_editorial_running"),
+          Array.from(host.querySelectorAll<HTMLElement>('[data-testid="subagent-row"]')).find(
+            (card) => card.firstElementChild?.textContent === "Delegate dlg_editorial_running",
           ),
         );
         const anchor = required(anchorCard.querySelector<HTMLElement>('[data-testid="subagent-stats"]'));

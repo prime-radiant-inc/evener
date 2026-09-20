@@ -40,7 +40,7 @@ function withTimeout(promise, ms, operation) {
     promise,
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(`timeout calling ${operation} after ${ms}ms`)), ms);
-    })
+    }),
   ]).finally(() => clearTimeout(timer));
 }
 
@@ -169,10 +169,7 @@ export const STARTUP_DEADLINE_MS = 30000;
 
 export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)),
-    ms,
-  );
+  const timer = setTimeout(() => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)), ms);
   return {
     signal: controller.signal,
     clear: () => clearTimeout(timer),
@@ -224,7 +221,8 @@ export async function waitForHttp(
         if (response.ok) return;
         lastAttempt = `answered HTTP ${response.status}`;
       } catch (error) {
-        if (startupFailures.has(error) || deadline.aborted) throw startupFailures.has(error) ? error : abortReason(deadline);
+        if (startupFailures.has(error) || deadline.aborted)
+          throw startupFailures.has(error) ? error : abortReason(deadline);
         // The child process is still starting, or this attempt outlasted its
         // own bound and the next one gets a fresh connection.
         lastAttempt = error.message;
@@ -296,20 +294,21 @@ export async function navigateTo({ ws, send }, url) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
-  const loaded = withTimeout(new Promise((resolve) => {
-    abandonLoad = resolve;
-    handler = (event) => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
-    };
-    ws.addEventListener("message", handler);
-  }), 30000, "navigateTo").finally(() => ws.removeEventListener("message", handler));
+  const loaded = withTimeout(
+    new Promise((resolve) => {
+      abandonLoad = resolve;
+      handler = (event) => {
+        if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+      };
+      ws.addEventListener("message", handler);
+    }),
+    30000,
+    "navigateTo",
+  ).finally(() => ws.removeEventListener("message", handler));
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    await Promise.all([
-      loaded,
-      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
-    ]);
+    await Promise.all([loaded, withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate")]);
   } finally {
     // A failed command may never produce a load event. Release that wait (and
     // its listener/timer) without replacing the error Promise.all observed.
@@ -331,7 +330,7 @@ export async function evaluate(send, expression) {
       returnByValue: true,
     }),
     30000,
-    "Runtime.evaluate"
+    "Runtime.evaluate",
   );
   if (response.result.exceptionDetails) {
     throw new Error(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
@@ -386,8 +385,10 @@ export async function evaluate(send, expression) {
  * stylesheet application that registers the faces misreads "not arrived yet"
  * as "declares none". Under sustained machine load that race fired across
  * guards (overflowguard, then retirementguard) while every case passed
- * standalone. Poll briefly for registration first; a document that truly
- * declares no fonts still trips the fontless check once the wait expires.
+ * standalone. The in-page poll deadline must stay comfortably BELOW the
+ * evaluate() wrapper's 30000ms ceiling, or the outer timer fires first and a
+ * genuinely fontless document reports an opaque Runtime.evaluate timeout
+ * instead of the actionable fontless diagnostic below.
  */
 export async function waitForFonts(send) {
   const documents = await evaluate(
@@ -403,7 +404,7 @@ export async function waitForFonts(send) {
            // Cross-origin: not reachable, and not something a guard builds.
          }
        }
-       const deadline = Date.now() + 30000;
+       const deadline = Date.now() + 20000;
        while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
          await new Promise((resolve) => setTimeout(resolve, 50));
        }
@@ -450,7 +451,7 @@ export async function applyViewport(send, viewport) {
       screenHeight: viewport.height,
     }),
     30000,
-    "Emulation.setDeviceMetricsOverride"
+    "Emulation.setDeviceMetricsOverride",
   );
   // Metrics mobile:true alone does NOT flip the pointer media features; touch
   // emulation is what makes (pointer: coarse)/(hover: none) match, the same
@@ -460,17 +461,21 @@ export async function applyViewport(send, viewport) {
     await withTimeout(
       send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }),
       30000,
-      "Emulation.setTouchEmulationEnabled"
+      "Emulation.setTouchEmulationEnabled",
     );
   }
 }
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
-  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(() => {});
-  await withTimeout(send("Emulation.setTouchEmulationEnabled", { enabled: false }), 30000, "Emulation.setTouchEmulationEnabled").catch(
-    () => {}
+  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(
+    () => {},
   );
+  await withTimeout(
+    send("Emulation.setTouchEmulationEnabled", { enabled: false }),
+    30000,
+    "Emulation.setTouchEmulationEnabled",
+  ).catch(() => {});
 }
 
 /**
@@ -510,12 +515,20 @@ export async function forcePseudoStates(send, states) {
   const doc = await withTimeout(send("DOM.getDocument", { depth: -1 }), 30000, "DOM.getDocument");
   const rootId = doc.result.root.nodeId;
   for (const { selector, pseudoClasses } of states) {
-    const found = await withTimeout(send("DOM.querySelector", { nodeId: rootId, selector }), 30000, "DOM.querySelector");
+    const found = await withTimeout(
+      send("DOM.querySelector", { nodeId: rootId, selector }),
+      30000,
+      "DOM.querySelector",
+    );
     // DOM.querySelector answers with nodeId 0 for "no match" rather than
     // failing - forcing nothing would leave the case measuring the resting
     // state while reporting the forced one, so it stops here instead.
     if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
-    await withTimeout(send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }), 30000, "CSS.forcePseudoState");
+    await withTimeout(
+      send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }),
+      30000,
+      "CSS.forcePseudoState",
+    );
   }
 }
 

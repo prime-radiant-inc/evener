@@ -658,8 +658,12 @@ describe("TranscriptBody", () => {
       expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
     }
 
-    // The dead plumbing fields left the tuple with the card's attention
-    // marker: a snapshot change limited to them never re-renders the row.
+    // Pin the tuple's contents, not production timing: a snapshot change
+    // limited to the dead plumbing fields (which left the tuple with the
+    // card's attention marker) does not move the fingerprint. Production
+    // always pairs such a change with a projectionRevision bump - covered
+    // by the rerender half below - so this pins that the fields never
+    // re-enter the tuple, not that the row never re-renders.
     for (const change of [{ needsAttention: true }, { resumable: false }]) {
       expect(threadFingerprintForItem(delegateItem, onlyChange(change))).toBe(before);
     }
