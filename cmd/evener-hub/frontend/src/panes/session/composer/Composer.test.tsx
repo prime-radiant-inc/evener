@@ -301,9 +301,10 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
 async function mountComposerWithHandle(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean } = {},
+  options: { focused?: boolean; prepare?: (fake: FakeClient) => void } = {},
 ) {
   const fake = connectFakeClient();
+  options.prepare?.(fake);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
@@ -3235,6 +3236,54 @@ test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with n
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   expect(screen.queryByTestId("composer-submit")).toBeNull();
+});
+
+// Issue #1727: a SAVED local session (local: prefix, notLoaded) that still
+// advertises Send is the same resting shape as any other notLoaded snapshot.
+// It must rest as a bare one-line invitation - no submit, no attach, no inline
+// chrome - until the user focuses it or gives it content, exactly like the
+// non-local case above. Session.tsx's own menu/discovery mount requires
+// !controlsFor(model).send (among other conditions), so it never mounts for
+// this send-enabled shape: the composer's chrome-less discovery owner is the
+// one owner while the card rests, and the inline chrome takes over when the
+// card engages.
+test("a saved local notLoaded session with sending enabled rests as a bare invitation", async () => {
+  const user = userEvent.setup();
+  const ref = "local:saved-unfenced";
+  const activityRefs: unknown[] = [];
+  await mountComposerWithHandle(
+    ref,
+    {
+      status: { type: "notLoaded" },
+      evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    },
+    {
+      prepare: (fake) => {
+        fake.on("evener/jobs/list", (params) => {
+          activityRefs.push(params.ref);
+          return { data: emptyActivityTree(ref) };
+        });
+      },
+    },
+  );
+
+  const card = screen.getByTestId("composer-input-card");
+  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
+  expect(card.querySelectorAll("button")).toHaveLength(0);
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  // The chrome-less owner still discovers for the resting card.
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+
+  // Once focused the card grows its control row, and with it the inline chrome
+  // that is now the one discovery owner - the composer's own resting owner
+  // unmounts, so there is never a second.
+  await user.click(textarea());
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
 });
 
 test.each(ENDED_STATUSES)("a %s session's card grows a usable Send once focused", async (type) => {
