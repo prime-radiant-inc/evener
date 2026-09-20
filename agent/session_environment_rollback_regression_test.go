@@ -32,6 +32,7 @@ type environmentSyncFailureFS struct {
 	writesBeforeFailure        int
 	transferBeforeWriteFailure int
 	onFailure                  func()
+	onWriteFailure             func()
 }
 
 type environmentSyncFailureFile struct {
@@ -94,6 +95,7 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 		file.fs.writeFailure = nil
 	}
 	transfer := min(file.fs.transferBeforeWriteFailure, len(p))
+	hook := file.fs.onWriteFailure
 	file.fs.mu.Unlock()
 	if failure == nil {
 		return file.File.Write(p)
@@ -101,6 +103,9 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 	n, err := file.File.Write(p[:transfer])
 	if err != nil {
 		return n, err
+	}
+	if hook != nil {
+		hook()
 	}
 	return n, failure
 }
