@@ -51,3 +51,28 @@ test("the recents sidebar contains and truncates its rows instead of overflowing
   expect(sharedPathBlock?.[1] ?? "").not.toMatch(/white-space:\s*nowrap/);
   expect(sharedPathBlock?.[1] ?? "").toMatch(/overflow-wrap:\s*anywhere/);
 });
+
+// The scroll model: at the panel's height cap the body must stop growing and
+// each column must scroll inside the browser row. Without this, a full
+// 15-item recents list (~930px of single-line rows) is taller than the
+// dialog's body budget on ordinary viewports, and the whole body scrolls
+// while the sidebar's own scrollbar never engages - the dialog grows tall
+// instead of the sidebar scrolling independently.
+test("the picker's body caps the browser row so the columns scroll inside the dialog", () => {
+  const css = pickerCss();
+
+  const bodyBlock = css.match(/\.body\s*\{([^}]*)\}/);
+  expect(bodyBlock, "the picker's .body rule must exist").toBeTruthy();
+  expect(bodyBlock?.[1] ?? "").toMatch(/display:\s*flex/);
+  expect(bodyBlock?.[1] ?? "").toMatch(/flex-direction:\s*column/);
+  expect(bodyBlock?.[1] ?? "").toMatch(/overflow:\s*hidden/);
+
+  const browserBlock = css.match(/\.browser\s*\{([^}]*)\}/);
+  expect(browserBlock, "the .browser rule must exist").toBeTruthy();
+  expect(browserBlock?.[1] ?? "").toMatch(/flex:\s*1/);
+  expect(browserBlock?.[1] ?? "").toMatch(/min-height:\s*340px/);
+
+  const browseBlock = css.match(/\.browse\s*\{([^}]*)\}/);
+  expect(browseBlock, "the .browse rule must exist").toBeTruthy();
+  expect(browseBlock?.[1] ?? "").toMatch(/overflow-y:\s*auto/);
+});

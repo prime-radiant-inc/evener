@@ -1141,10 +1141,11 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	candidates := make([]string, 0, len(i.all))
 	for _, e := range i.all {
 		dir := strings.TrimSpace(e.Meta.EnvInfo.WorkingDir)
+		if e.Meta.IsSubagent {
+			continue
+		}
 		if e.Meta.WorktreeManaged {
 			dir = strings.TrimSpace(e.Meta.WorktreeRestoreRoot)
-		} else if e.Meta.IsSubagent {
-			continue
 		}
 		if dir == "" || seen[dir] {
 			continue

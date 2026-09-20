@@ -9,10 +9,21 @@
 .body {
   padding: 0;
   min-height: 0;
+  /* The browser row fills a bounded body instead of growing it: at the
+   * panel's height cap each column scrolls inside the row (the .recents and
+   * .browse rules below), so a full 15-item recents list (~930px of
+   * single-line rows) cannot make the whole body scroll while the sidebar's
+   * own scrollbar never engages. overflow:hidden overrides the dialog
+   * chassis's overflow:auto; a viewport too short for the 340px row floor
+   * still scrolls here because the row's min-height wins over the shrink. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .browser {
   display: flex;
+  flex: 1;
   min-height: 340px;
 }
 .recents {
@@ -21,10 +32,9 @@
   padding: var(--space-3);
   background: var(--surface-inset);
   border-right: 1px solid var(--edge);
-  /* Scroll the recents inside the dialog instead of stretching it past the
-   * panel's height cap (the folder list beside it can be arbitrarily long
-   * too; the browse column scrolls with the panel, the sidebar scrolls
-   * alone). */
+  /* Stretches to the browser row's height, which the bounded .body above
+   * caps at the panel's height limit; a long recents list scrolls here
+   * instead of stretching the dialog. */
   overflow-y: auto;
 }
 .recents h3 {
@@ -38,6 +48,7 @@
   flex: 1;
   min-width: 0;
   padding: var(--space-4);
+  overflow-y: auto;
 }
 .navigation {
   display: flex;

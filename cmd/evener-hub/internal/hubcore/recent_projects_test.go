@@ -152,12 +152,15 @@ func TestPastIndex_RecentProjectDirs_ExcludesSessionMachinery(t *testing.T) {
 	laneRooted := mkExistingDir(t, root, "lane-rooted")     // managed lane, restore root known
 	lane := mkExistingDir(t, root, "lane")                  // managed lane, no restore root — skipped
 	delegateLane := mkExistingDir(t, root, "delegate-lane") // isolated delegate lane — skipped
+	laneSubagent := mkExistingDir(t, root, "lane-subagent") // delegate lane carrying worktree fields — skipped
+	restoreeSub := mkExistingDir(t, root, "restoree-sub")   // the subagent lane's restore root — must NOT surface
 	unmanaged := mkExistingDir(t, root, "unmanaged")        // path-entered worktree — kept
 
 	idx := NewPastIndex("")
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv0RootedLaneWt", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: laneRooted}, WorktreePath: laneRooted, WorktreeManaged: true, WorktreeRestoreRoot: restoree},
+		{ID: "02wMz5TxvLaneSubagentW1", UpdatedAt: now.Add(-30 * time.Second), EnvInfo: schema.EnvironmentInfo{WorkingDir: laneSubagent}, WorktreePath: laneSubagent, WorktreeManaged: true, WorktreeRestoreRoot: restoreeSub, IsSubagent: true},
 		{ID: "02wMz5TxvDelegateLaneW1", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: delegateLane}, IsSubagent: true},
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: unmanaged}, WorktreePath: unmanaged},
