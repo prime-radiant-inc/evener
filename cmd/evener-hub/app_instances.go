@@ -1340,10 +1340,12 @@ func removeApplied(err error) error {
 // the discriminator).
 //
 // intentPath is the rename's intent record, written before providers.toml was
-// touched. Its phase is marked landed here, where the config has landed, and the
-// record is spent once BOTH halves of the move have landed: nothing is left at
-// the old canonical record path, no copy is still filed under the old name, and
-// the stored key is filed under the new one. While any half is unfinished the
+// touched. A rename never lands its record - there is no commit marker for it to
+// write, because whether the rename happened is read from the config, which is
+// durable before any credential moves - so the record is spent once BOTH halves
+// of the move have landed: nothing is left at the old canonical record path, no
+// copy is still filed under the old name, and the stored key is filed under the
+// new one. While any half is unfinished the
 // record stays, and startup finishes the move from it
 // (restoreUncommittedOAuthAsides, completeRenameIntent) - which is what keeps a
 // copy the carry promoted onto the OLD canonical record path from being stranded
@@ -2602,11 +2604,13 @@ func (c *hubInstancesController) parkedCopies(name string) ([]string, error) {
 //
 // The name keeps the record's own suffix and adds one no reader looks for, so an
 // aside left behind by a crash is never mistaken for a record (only .json files
-// are read). It also records the removal's KIND, which is what the removal's own
-// rename writes atomically: configBacked when this removal changed providers.toml
-// - an authored [providers.<name>] entry or a `default` pointer naming the
-// instance at removal start - and credential-only otherwise. Recovery reads that
-// kind instead of inferring it from the registry.
+// are read). The name carries no classification of its own: which mutation parked
+// the copy, and - for a removal - whether that removal changed providers.toml
+// (configBacked: an authored [providers.<name>] entry or a `default` pointer
+// naming the instance at removal start) or not (credential-only), is read from
+// the intent record the removal wrote BEFORE this rename (its kind field,
+// oauthRemovalKind). Recovery classifies a copy from that record, never from the
+// copy's name.
 func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) {
 	path := authopenai.AuthFilePath(c.auth.stateDir, name)
 	info, err := os.Lstat(path)
@@ -2744,22 +2748,33 @@ const maxAsideStamp int64 = 1<<63 - 1
 // renameNoReplace moves src to dst without replacing an existing dst. POSIX
 // rename(2) silently replaces its destination, which for an OAuth copy means
 // losing the bytes that destination held - a stale copy of the same instance's
-// record, or another copy's only surviving credential. It therefore checks the
-// destination first and refuses a taken one with an error satisfying
-// errors.Is(err, os.ErrExist), so the caller can pick a fresh name or report the
-// copy as uncarried, and then performs the move with a SINGLE rename(2). The
-// old link-then-unlink left a window between two syscalls in which a crash
-// stranded the bytes under both names - a partial move whose old- and new-name
-// copies recovery could restore independently. A filesystem that cannot
-// hard-link a file no longer matters: no link is attempted.
+// record, or another copy's only surviving credential. A taken destination comes
+// back as an error satisfying errors.Is(err, os.ErrExist), so the caller can pick
+// a fresh name or report the copy as uncarried. The old link-then-unlink left a
+// window between two syscalls in which a crash stranded the bytes under both
+// names - a partial move whose old- and new-name copies recovery could restore
+// independently. A filesystem that cannot hard-link a file no longer matters: no
+// link is attempted.
 //
-// The check and the move are safe against a concurrent writer because every
-// caller serializes under the same lock - Edit's and Remove's credMu (see
-// hubAuthController.credMu; the rename carry and the removal both hold it
-// across their moves), or startup before the hub serves
-// (restoreUncommittedOAuthAsides, run while the process holds hub.lock and
-// before the web server is built) - so no other writer can create the
-// destination between the check and the move.
+// WHERE the no-replace decision is made depends on the platform and the
+// filesystem, and what this function guarantees follows from that:
+//
+//   - With an atomic no-replace rename (renameNoReplaceAtomic: renameat2's
+//     RENAME_NOREPLACE on Linux) the refusal is the KERNEL's, in the one syscall
+//     the move is. No destination can be created between a check and the move,
+//     because there is no check: a writer racing this move loses to it, and the
+//     taken destination is left exactly as it was.
+//   - A filesystem that cannot do one (EINVAL, ENOSYS, ENOTSUP - a network or
+//     FUSE mount) takes the checked move at the end of this function: an Lstat,
+//     then a plain rename(2). That path HAS a window, and what closes it is the
+//     caller discipline rather than this function: every caller serializes under
+//     credMu (Edit's and Remove's; the rename carry and the removal both hold it
+//     across their moves) or is startup before the hub serves
+//     (restoreUncommittedOAuthAsides, run while the process holds hub.lock and
+//     before the web server is built). A writer that holds neither - a second hub
+//     sharing this state root while holding a different hub.lock, which nothing
+//     in this package excludes (see repairEndpointFingerprintKey's sibling lock)
+//   - can create the destination inside that window and have it replaced.
 //
 // src equal to dst is refused explicitly with os.ErrExist. rename(2) on a path
 // onto itself is a no-op success, but a caller that reaches for a name the
@@ -2771,6 +2786,23 @@ func renameNoReplace(src, dst string) error {
 	if src == dst {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
 	}
+	err := renameNoReplaceAtomic(src, dst)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
+	}
+	if !renameNoReplaceAtomicUnsupported(err) {
+		// The move itself failed - a source that is not there, a directory that
+		// cannot be written, a permission - and the caller hears that cause rather
+		// than a refusal it would read as "the destination is taken".
+		return err
+	}
+	// The checked fallback: this filesystem has no no-replace rename to make, so
+	// the destination is looked at first. A destination that appears after this
+	// look is replaced - see the discipline the doc comment names - which is the
+	// one thing this path cannot promise on its own.
 	if _, statErr := os.Lstat(dst); statErr == nil {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -3734,8 +3766,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 			if _, serr := os.Lstat(removedKeyPath(f.path)); serr != nil {
 				continue
 			}
-			more := restoreStagedRemovalKey(f.path, name, store)
+			back, more := restoreStagedRemovalKey(f.path, name, store)
 			nameProblems = append(nameProblems, more...)
+			if back {
+				// The store changed, so the registry's instance list - computed at
+				// load, before this key was back - is missing any instance whose only
+				// credential is that key. The caller reloads on this flag, the way it
+				// does for a record this pass put back (main.go).
+				restored = true
+			}
 			if len(more) > 0 {
 				settled = false
 			}
@@ -3961,25 +4000,34 @@ func spendStagedRemovalKey(intentPath string) error {
 // the staging is the only copy of the bytes left. A key filed since the removal
 // started is the user's newer one and is never overwritten. What it could not do
 // is returned, so a staging that will not come back is never silent.
-func restoreStagedRemovalKey(intentPath, name string, store *credentials.Store) []string {
+//
+// It also reports whether the store now holds the key: a key that came back is a
+// credential change like a record put back, and an instance whose ONLY credential
+// is that key - a credential-only instance, which has no providers.toml entry to
+// derive a row from - is missing from the instance list a registry computed
+// before the key returned. The caller owes the reload such a change asks for
+// (main.go's second Reload), so the answer travels back with the problems rather
+// than being inferred from them: a staging that was absent, or one whose key the
+// store already held, changed nothing and needs no reload.
+func restoreStagedRemovalKey(intentPath, name string, store *credentials.Store) (bool, []string) {
 	path := removedKeyPath(intentPath)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return []string{fmt.Sprintf("read the stored key %s staged for %q (%v)", path, name, err)}
+		return false, []string{fmt.Sprintf("read the stored key %s staged for %q (%v)", path, name, err)}
 	}
 	if store == nil {
-		return []string{fmt.Sprintf("put the stored key staged for %q back (%s): the credentials store was not provided", name, path)}
+		return false, []string{fmt.Sprintf("put the stored key staged for %q back (%s): the credentials store was not provided", name, path)}
 	}
 	if _, filed := store.Get(name); filed {
-		return nil
+		return false, nil
 	}
 	if err := store.Set(name, string(raw)); err != nil {
-		return []string{fmt.Sprintf("put the stored key staged for %q back (%s: %v)", name, path, err)}
+		return false, []string{fmt.Sprintf("put the stored key staged for %q back (%s: %v)", name, path, err)}
 	}
-	return nil
+	return true, nil
 }
 
 // resolveRemovalIntent settles a removal's intent record after its rollback: a
@@ -4108,11 +4156,25 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 				if rerr := c.reclaimOAuthAsides(name); rerr != nil {
 					remnant = fmt.Errorf("%w; and the credentials this removal deleted could not be kept deleted (%w)", remnant, rerr)
 				}
+				// The removal stands, so the plaintext key staged beside its
+				// record stands with it: the credential stays deleted and those
+				// bytes are debris of a removal that stood, exactly like the copies
+				// just reclaimed. Resolving the record instead would read the
+				// staging as the only copy of bytes a later start must put back -
+				// restoring the credential this branch exists to keep deleted - and
+				// would even return the landed record to its in-doubt name so that
+				// start acts on it. The record keeps the phase the removal's commit
+				// point gave it, and a staging that will not come away is reported:
+				// a plaintext key left in the auth directory is what this branch
+				// must not leave behind.
+				if serr := spendStagedRemovalKey(intentPath); serr != nil {
+					remnant = fmt.Errorf("%w; the stored key staged beside the removal record %s of %q could not be spent with the standing removal (%w)", remnant, intentPath, name, serr)
+				}
 			} else {
 				_, remnant = c.restoreFailedRemoval(name, storedKey, hasStoredKey, ownAside, remnant, "the entry is gone from the config", supplyAny)
-			}
-			if more := c.resolveRemovalIntent(intentPath, name); len(more) > 0 {
-				remnant = fmt.Errorf("%w; %s", remnant, strings.Join(more, " and "))
+				if more := c.resolveRemovalIntent(intentPath, name); len(more) > 0 {
+					remnant = fmt.Errorf("%w; %s", remnant, strings.Join(more, " and "))
+				}
 			}
 			// The removal stands in the file, so it is an applied write however
 			// this call ends: the other clients are still listing an instance that

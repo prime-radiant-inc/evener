@@ -2245,6 +2245,39 @@ func TestRenameNoReplaceMovesWithoutHardLinking(t *testing.T) {
 	}
 }
 
+// TestRenameNoReplaceAtomicIsRefusedByTheKernel: where the platform has an
+// atomic no-replace rename, the refusal is the KERNEL's answer to the one
+// syscall the move is - not an Lstat this process makes before moving - so a
+// writer cannot create the destination between a check and the move and have it
+// replaced. A filesystem that cannot do one (EINVAL/ENOSYS/ENOTSUP: a network or
+// FUSE mount) is not a failure of this test: renameNoReplace takes its checked
+// fallback there, and the test says so rather than pretending the guarantee is
+// the same on both.
+func TestRenameNoReplaceAtomicIsRefusedByTheKernel(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("source bytes\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(src): %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("destination bytes\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(dst): %v", err)
+	}
+	err := renameNoReplaceAtomic(src, dst)
+	if renameNoReplaceAtomicUnsupported(err) {
+		t.Skipf("this filesystem has no atomic no-replace rename (%v), so renameNoReplace uses its checked fallback here", err)
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("renameNoReplaceAtomic onto a taken destination = %v, want an os.ErrExist refusal from the kernel", err)
+	}
+	if b, rerr := os.ReadFile(dst); rerr != nil || string(b) != "destination bytes\n" {
+		t.Fatalf("destination bytes = %q (%v), want the taken file left untouched", b, rerr)
+	}
+	if b, rerr := os.ReadFile(src); rerr != nil || string(b) != "source bytes\n" {
+		t.Fatalf("source bytes = %q (%v), want the source left in place", b, rerr)
+	}
+}
+
 // TestRenameNoReplaceRefusesATakenDestination: the no-replace guarantee stands -
 // a taken destination is refused, never replaced, and neither file's bytes
 // change.
@@ -3491,6 +3524,66 @@ func TestInstances_RollbackWriteFailureKeepsAnAuthoredCuratedProviderRemoved(t *
 	}
 }
 
+// TestInstances_RollbackWriteFailureSpendsTheStagedKeyOfAStandingRemoval: the
+// standing branch keeps the removal's credential deleted and reclaims its copies,
+// and the plaintext key the removal staged beside its record has to go the same
+// way. Resolving the record instead reads that staging as the only copy of bytes a
+// later start must put back - the opposite of the removal that stands - and even
+// returns the landed record to its in-doubt name so recovery acts on it. The
+// staging is spent with the removal, and the record keeps the phase the removal's
+// commit point gave it.
+func TestInstances_RollbackWriteFailureSpendsTheStagedKeyOfAStandingRemoval(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.openai-codex]\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	before, _, err := f.ctl.read()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	aside, err := f.ctl.setAsideOAuthFile("openai-codex")
+	if err != nil {
+		t.Fatalf("setAsideOAuthFile: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	intentPath := removalAt(t, f, "openai-codex", true, true, stamp)
+	// The plaintext key the removal staged before it cleared the store: the bytes
+	// a removal that stands must not leave in the auth directory.
+	staging := removedKeyPath(intentPath)
+	if err := os.WriteFile(staging, []byte("sk-the-removed-key"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", staging, err)
+	}
+	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{}); err != nil {
+		t.Fatalf("WriteConfigFile(removal output): %v", err)
+	}
+	tomlDir := filepath.Dir(f.tomlPath)
+	if err := os.Chmod(tomlDir, 0o555); err != nil {
+		t.Fatalf("Chmod(%s): %v", tomlDir, err)
+	}
+	defer func() { _ = os.Chmod(tomlDir, 0o700) }()
+
+	err = f.ctl.rollBackFailedRemoval(before, "openai-codex", "", false, intentPath, aside, true, "the instance is still configured", supplyAny, errors.New("the commit record could not be written"))
+	if err == nil {
+		t.Fatal("rollBackFailedRemoval = nil, want the standing removal reported")
+	}
+	if _, statErr := os.Lstat(staging); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the plaintext key staged beside the standing removal's record is still on disk (%s, Lstat = %v), want it spent with the removal", staging, statErr)
+	}
+	if strings.Contains(err.Error(), "keep the removal record") {
+		t.Fatalf("rollBackFailedRemoval = %v, want no promise that a later start puts the stored key back: the removal stands and the credential stays deleted", err)
+	}
+	if strings.Contains(err.Error(), "in-doubt name") {
+		t.Fatalf("rollBackFailedRemoval = %v, want no attempt to return a record reclaim already spent: the copies and the record that described them go together", err)
+	}
+	// reclaimOAuthAsides spends the copies AND the record that described them, so
+	// what a later start finds is the staging's absence too: nothing of this
+	// removal is left to act on.
+	if names := intentNames(t, f); len(names) != 0 {
+		t.Fatalf("the intent records %v survived a removal that stands, want the record spent with the copies it described", names)
+	}
+}
+
 // TestInstances_RolledBackRemovalReportsARecordItCannotSettle: the rollback can
 // land and still leave a parked copy - the record path is taken by something the
 // rename-back cannot replace. The removal's record must then be returned to its
@@ -3928,6 +4021,38 @@ func TestRestoreUncommittedOAuthAsidesResolvesTheOldNameOfARenameThatNeverLanded
 	}
 	if _, statErr := os.Lstat(parked); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("the copy is still parked at %s (Lstat = %v), want it back at the instance's record path", parked, statErr)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesReportsAStoredKeyItPutBack: the pass writes a
+// staged key back into the LIVE store, and that is a credential change the caller
+// has to publish - an instance whose only credential is that key has no
+// providers.toml entry, so a registry loaded before the key returned does not
+// list it. The pass reports it, which is what runMain's second reload hangs on.
+func TestRestoreUncommittedOAuthAsidesReportsAStoredKeyItPutBack(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	const stamp = "1757000000000000000"
+	// A removal of a store-backed instance that never reached its commit point:
+	// the key was cleared from the store and its bytes are staged beside the
+	// record.
+	record := removalAt(t, f, "groq", false, false, stamp)
+	staging := removedKeyPath(record)
+	if err := os.WriteFile(staging, []byte("gk-the-only-credential"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", staging, err)
+	}
+	if _, ok := f.store.Get("groq"); ok {
+		t.Fatal("fixture: the store already holds a key for groq")
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = (_, %v), want the staged key put back", err)
+	}
+	if key, ok := f.store.Get("groq"); !ok || key != "gk-the-only-credential" {
+		t.Fatalf("the stored key of \"groq\" = (%q, %v), want the key the crashed removal staged", key, ok)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides reported nothing restored after putting the stored key back, so the caller skips the reload that publishes the instance")
 	}
 }
 

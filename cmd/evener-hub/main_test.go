@@ -528,6 +528,76 @@ func TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList(t *testing.T)
 	}
 }
 
+// TestRunMainPublishesARestoredStagedKeyIntoTheInstanceList: a crash inside a
+// removal of a UI-credentialed (store-backed) instance whose credential is a
+// STORED KEY leaves the key's bytes staged beside the removal's own record, which
+// still says the removal never reached its commit point. Startup puts the key
+// back into the live store - and must then reload, exactly as it does for a
+// restored record: the registry's instance list is computed at load, and the
+// first load ran while the key was still deleted, so without the reload the
+// instance the hub just re-credentialed is missing from every listing built over
+// that load (main.go says the credential change is reported through the same flag
+// a restored record sets). This drives runMain end to end, so the call site
+// itself is what the assertions cover.
+func TestRunMainPublishesARestoredStagedKeyIntoTheInstanceList(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	providersPath, none := cmdutil.ProvidersConfigPath()
+	if none || providersPath == "" {
+		t.Fatal("fixture: the providers config path must be the one newTraceMainTestDeps set")
+	}
+	// Every successful load is captured, so the last one can be asked what the
+	// hub ended up listing.
+	var loads []*registry.Registry
+	deps.loadRegistry = func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, store, err := hermeticRegistryLoader(extra...)
+		if err == nil {
+			loads = append(loads, r)
+		}
+		return r, store, err
+	}
+	// The store the hub is built with is the file-backed one the app uses, not
+	// the fixture's default in-memory one: a staged key this pass puts back is
+	// written through it, and the reload that follows reads the credential from
+	// that same file. An in-memory store would make the reload blind to the key
+	// for a reason that has nothing to do with what this test pins.
+	deps.loadCredentials = credentials.LoadStore
+	stateRoot := cmdutil.DefaultStateRoot()
+	// The crash window: the removal's record is in flight (a credential-only
+	// removal, so no providers.toml entry names the instance), the key was
+	// cleared from the store, and the copy of that key is staged beside the
+	// record.
+	const stamp = int64(1757000000000000000)
+	intent := filepath.Join(filepath.Dir(authopenai.AuthFilePath(stateRoot, "groq")), oauthIntentName("groq", stamp))
+	if err := os.MkdirAll(filepath.Dir(intent), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	i := removalIntent("groq", false)
+	if err := os.WriteFile(intent, i.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", intent, err)
+	}
+	const key = "sk-the-only-credential"
+	if err := os.WriteFile(removedKeyPath(intent), []byte(key), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", removedKeyPath(intent), err)
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if _, err := os.Lstat(removedKeyPath(intent)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the staged key is still on disk (Lstat = %v), want it spent once the store holds the key again", err)
+	}
+	if len(loads) < 2 {
+		t.Fatalf("runMain loaded the registry %d times, want at least 2: one before the key was put back and one after it", len(loads))
+	}
+	if registryListsInstance(loads[0], "groq") {
+		t.Fatal("the first load already listed the instance, so this test cannot show what the reload bought")
+	}
+	if !registryListsInstance(loads[len(loads)-1], "groq") {
+		t.Fatalf("the last of %d loads does not list the instance whose stored key startup put back, so the hub serves listings that disagree with the credential it just restored", len(loads))
+	}
+}
+
 // registryListsInstance reports whether a registry's computed instance list
 // carries name.
 func registryListsInstance(reg *registry.Registry, name string) bool {
