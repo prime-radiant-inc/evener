@@ -63,7 +63,7 @@ test("preview collaborators use the supplied owner projection, not the stale lau
     expect(cards[1]?.dataset.attention).toBe("true");
     expect(view.getAllByTestId("subagent-status-word").map((word) => word.textContent)).toEqual([
       "Running",
-      "Running◆ Needs attention",
+      "Running Needs attention",
       "Idle · reported",
       "Failed",
       "Stopped",

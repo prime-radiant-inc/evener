@@ -6,7 +6,7 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { seedCurrentDelegate } from "./currentDelegate.testFixture";
-import { classifyJobStatus, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
+import { classifyJobStatus, delegateOutputHasCard, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
@@ -154,6 +154,18 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
       }),
     ),
   ).toBeNull();
+});
+
+test("an empty delegate_id counts as absent - no card, the standalone status line stays", () => {
+  // str() returns the empty string for "", so the card gate must test
+  // truthiness, not just presence: a receipt with an empty id is
+  // activation-only, exactly like one with no id at all.
+  expect(delegateOutputHasCard({ delegate_id: "" })).toBe(false);
+  expect(
+    rowFromDelegateItem(delegateItem({ output: JSON.stringify({ delegate_id: "", status: "running" }) })),
+  ).toBeNull();
+  expect(delegateOutputHasCard({ delegate_id: "dlg_1" })).toBe(true);
+  expect(delegateOutputHasCard(undefined)).toBe(true);
 });
 
 // --- delegate descriptor: summary ----------------------------------------
@@ -1143,6 +1155,42 @@ test("stable delegate attention and lifecycle own the card while child content s
   expect(row.dataset.kind).toBe("done");
   expect(within(row).getByText("Status: done")).toBeTruthy();
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("✓");
+});
+
+test("the expanded attention card renders one attention glyph and a spaced, glyph-less marker", async () => {
+  seedCurrentDelegate("ref_word", "dlg_word", "running", undefined, { needsAttention: true });
+  const user = userEvent.setup();
+  const turn: TurnModel = { id: "turn_word", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={delegateItem({
+        id: "d_word",
+        turnId: turn.id,
+        callId: "call_word",
+        description: "Wording my attention marker",
+        argumentsJSON: JSON.stringify({ prompt: "run along" }),
+        output: JSON.stringify({ delegate_id: "dlg_word", status: "running", transcript_ref: "local:child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_word"
+      live={false}
+    />,
+  );
+
+  const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
+  const word = within(stats).getByTestId("subagent-status-word");
+  // The card's leading status glyph is the one attention diamond; the word's
+  // marker drops its own glyph and reads as plain, space-separated words.
+  expect(word.textContent).toBe("Running Needs attention");
+  expect((stats.textContent.match(/◆/g) ?? []).length).toBe(1);
+
+  // Collapsed, the standalone line has no leading glyph, so its marker keeps
+  // the diamond.
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  await user.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!);
+  const lifecycle = screen.getByTestId("delegate-lifecycle");
+  expect(lifecycle.textContent).toContain("◆ Needs attention");
+  expect((lifecycle.textContent.match(/◆/g) ?? []).length).toBe(1);
 });
 
 // The card's head (tag + open) duplicated the delegate tool row it sits under.
