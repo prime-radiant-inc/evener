@@ -480,9 +480,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				summary := taskpkg.Summarize(finalTasks)
 				// Checkpoint compaction reminder (mechanism 2): the step
 				// completion boundary is the gate's only trigger; the agent
-				// elects any compaction itself. A nil hook (direct toolDeps
+				// elects any compaction itself. completedAny gates it: a
+				// start-only mutation reaches this point too (the early
+				// return above covers only the nothing-happened case) and is
+				// NOT a completion boundary. A nil hook (direct toolDeps
 				// constructions) simply skips the reminder.
-				if deps.checkpointReminder != nil {
+				if completedAny && deps.checkpointReminder != nil {
 					if err := deps.checkpointReminder(summary.Remaining); err != nil {
 						return nil, err
 					}

@@ -399,6 +399,50 @@ func TestCheckpointReminder_SecondReminderDemandsLargerMargin(t *testing.T) {
 	}
 }
 
+// TestCheckpointReminder_StartOnlyUpdateIsNotACompletionBoundary pins the
+// completion: it must produce no reminder and must not disturb the rate
+// window. The script starts task 1 explicitly before completing anything,
+// so if the start-only mutation reached the completion hook it would open
+// the rate window one round early, shift the first reminder onto the wrong
+// request, and over-close the window count.
+func TestCheckpointReminder_StartOnlyUpdateIsNotACompletionBoundary(t *testing.T) {
+	t.Parallel()
+	u := ckptReminderUsage(1_000, 1_000)
+	sess, adapter := ckptReminderSession(t, true, ckptReminderCost(), []func(req llm.Request) llm.Response{
+		ckptReminderTaskStep("call_add", ckptReminderAddArgs(3), u),                            // r1: add 3 tasks
+		ckptReminderTaskStep("call_start1", `{"update":[{"id":1,"status":"in_progress"}]}`, u), // r2: START-ONLY — not a boundary
+		ckptReminderTaskStep("call_done1", ckptReminderDoneArgs(1), u),                         // r3: boundary 1 (window opens)
+		ckptReminderTaskStep("call_done2", ckptReminderDoneArgs(2), u),                         // r4: boundary 2 → reminder rides r5
+		ckptReminderTaskStep("call_done3", ckptReminderDoneArgs(3), u),                         // r5: boundary 3 (0 remaining)
+		func(llm.Request) llm.Response { return finalResponse("done") },                        // r6
+	})
+	ckptReminderRun(t, sess)
+
+	reqs := adapter.Requests()
+	if len(reqs) != 6 {
+		t.Fatalf("scripted adapter saw %d requests, want 6", len(reqs))
+	}
+	// With the start-only mutation treated as a boundary, the first
+	// reminder would fire one round early and ride r4.
+	if got := ckptReminderOccurrences(reqs[3]); got != 0 {
+		t.Fatalf("request r4 carries %d reminder turns, want 0: a start-only update is not a step completion", got)
+	}
+	if got := ckptReminderOccurrences(reqs[4]); got != 1 {
+		t.Fatalf("request r5 carries %d reminder turns, want 1 (the second completion's reminder)", got)
+	}
+	if got := ckptReminderOccurrences(reqs[5]); got != 1 {
+		t.Fatalf("the final request carries %d reminder turns, want exactly 1", got)
+	}
+	// The rate window observed exactly three completion rounds: one open
+	// (r3) and two closes (r4, r5). The start-only r2 contributed nothing.
+	sess.mu.Lock()
+	windowOpen, rateWindows, issued := sess.ckptWindowOpen, sess.ckptRateWindows, sess.ckptRemindersIssued
+	sess.mu.Unlock()
+	if !windowOpen || rateWindows != 2 || issued != 1 {
+		t.Fatalf("mechanism state = window %v / %d closed windows / %d issued, want open / 2 / 1 (the start-only round must not touch the window)", windowOpen, rateWindows, issued)
+	}
+}
+
 // TestCheckpointReminder_AgentElectsCompactionThroughCompactTool pins the
 // election path: after a reminder, the agent calling its existing
 // compact_context tool compacts exactly as it does today — the mechanism
@@ -435,6 +479,44 @@ func TestCheckpointReminder_AgentElectsCompactionThroughCompactTool(t *testing.T
 	sess.mu.Unlock()
 	if issued != 0 {
 		t.Fatalf("remindersIssued = %d after a published compaction, want 0 (margin ladder must re-arm)", issued)
+	}
+}
+
+// TestCheckpointReminder_BatchCompletionIsOneWindowClose pins the rate
+// window's batch semantics: one task_list update completing several steps
+// is ONE step-completion boundary — one rate-window open or close per
+// completing call, not per completed step. The batch call below finishes
+// two tasks at once, so the window count after three completing calls must
+// be two closes plus one open, and the projected rate stays per-boundary.
+func TestCheckpointReminder_BatchCompletionIsOneWindowClose(t *testing.T) {
+	t.Parallel()
+	u := ckptReminderUsage(1_000, 1_000)
+	sess, adapter := ckptReminderSession(t, true, ckptReminderCost(), []func(req llm.Request) llm.Response{
+		ckptReminderTaskStep("call_add", ckptReminderAddArgs(4), u),                                             // r1: add 4 tasks
+		ckptReminderTaskStep("call_batch", `{"update":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}`, u), // r2: boundary 1 — ONE window open for two finished steps
+		ckptReminderTaskStep("call_done3", ckptReminderDoneArgs(3), u),                                          // r3: boundary 2 → gate: rate 1, 1 remaining → reminder rides r4
+		ckptReminderTaskStep("call_done4", ckptReminderDoneArgs(4), u),                                          // r4: boundary 3 (0 remaining)
+		func(llm.Request) llm.Response { return finalResponse("done") },                                         // r5
+	})
+	ckptReminderRun(t, sess)
+
+	reqs := adapter.Requests()
+	if len(reqs) != 5 {
+		t.Fatalf("scripted adapter saw %d requests, want 5", len(reqs))
+	}
+	if got := ckptReminderOccurrences(reqs[3]); got != 1 {
+		t.Fatalf("request r4 carries %d reminder turns, want 1 (the second boundary's reminder)", got)
+	}
+	if got := ckptReminderOccurrences(reqs[4]); got != 1 {
+		t.Fatalf("the final request carries %d reminder turns, want exactly 1", got)
+	}
+	// Three completing calls → one open + two closes. A per-step close
+	// would count the batch's two finishes as two windows: 3, not 2.
+	sess.mu.Lock()
+	windowOpen, rateWindows := sess.ckptWindowOpen, sess.ckptRateWindows
+	sess.mu.Unlock()
+	if !windowOpen || rateWindows != 2 {
+		t.Fatalf("rate window = open %v / %d closed windows, want open / 2 (one close per completing CALL)", windowOpen, rateWindows)
 	}
 }
 
