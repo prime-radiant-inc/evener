@@ -308,15 +308,52 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return slices.Contains(params.SourceIDs, sourceID)
 }
 
-// remoteHostNames is the set of configured remote host names, so the fan-out can
-// tell a remote source (which must gate on attachment) from the local one.
-func remoteHostNames(cfg hubcore.WebConfig) map[string]struct{} {
-	if len(cfg.RemoteHosts) == 0 {
-		return nil
+// remoteHostKnown reports whether name names a remote host this hub knows:
+// one the configured entries carry (cfg.RemoteHosts is the configured truth)
+// or one the live registry holds — a registry only holds validated entries,
+// while the config carries whatever the operator declared. It is the one
+// configured∪registry membership rule, shared by
+// validateDecisionSource's per-name probe and by remoteHostNames' whole-set
+// build below, so a decision source and a fan-out gate can never disagree
+// about which names count as remote.
+func remoteHostKnown(cfg hubcore.WebConfig, name string) bool {
+	if cfg.RemoteHostRegistry != nil {
+		if _, ok := cfg.RemoteHostRegistry.Get(name); ok {
+			return true
+		}
 	}
+	for _, host := range cfg.RemoteHosts {
+		if host.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteHostNames is the set of remote host names — the enumeration half of
+// the same configured∪registry rule remoteHostKnown probes per name — so the
+// fan-out can tell a remote source (which must gate on attachment) from the
+// local one. The live registry is the authority for hosts that exist past
+// boot: it carries every host the management surface added at runtime, so a
+// UI-added host is classified remote by the same gates a configured one is —
+// an explicit thread/list attaches it, and the background refresh gates it on
+// attachment instead of treating it as local. The configured entries stay in
+// the set alongside it, so the union — not the registry alone — is the set of
+// names these gates treat as remote.
+func remoteHostNames(cfg hubcore.WebConfig) map[string]struct{} {
 	names := make(map[string]struct{}, len(cfg.RemoteHosts))
 	for _, host := range cfg.RemoteHosts {
 		names[host.Name] = struct{}{}
+	}
+	if cfg.RemoteHostRegistry != nil {
+		// Names() is the name set of All() without the entry copies: this
+		// runs per thread/list request, and only membership is needed here.
+		for _, name := range cfg.RemoteHostRegistry.Names() {
+			names[name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return nil
 	}
 	return names
 }
