@@ -41,10 +41,23 @@ func delegateAttentionProjectionEligible(state delegatestore.State, delegateID s
 }
 
 func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
 	}
-	fold, err := readDelegateAttentionFold(path, expectedSessionID)
+	// The memo serves an unchanged transcript's fold without re-reading it: the
+	// status sweeps this function backs run per thread/read, and folding every
+	// eligible child's full transcript each time made a click on a
+	// delegate-heavy session cost that session's total delegate transcript
+	// bytes (session_attention.go's delegateAttentionFoldCache). A memo hit
+	// skips the post-read stat: a hit proves identical bytes were fully read
+	// and folded in this process already, which is the same readiness the
+	// retirement-prepare call below relies on (its EstablishDurability flush
+	// changes the identity, so flushed-but-unread bytes still recompute).
+	if fold, ok := readExistingDelegateAttentionFoldCache.get(path, expectedSessionID, info.Size(), info.ModTime().UnixNano()); ok {
+		return fold, nil
+	}
+	fold, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
 	if err != nil {
 		return delegateAttentionFold{}, err
 	}
@@ -54,6 +67,7 @@ func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegate
 	if _, err := os.Stat(path); err != nil {
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript after read: %w", err)
 	}
+	readExistingDelegateAttentionFoldCache.put(path, expectedSessionID, info.Size(), info.ModTime().UnixNano(), fold)
 	return fold, nil
 }
 

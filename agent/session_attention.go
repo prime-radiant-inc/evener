@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -84,6 +85,84 @@ func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentio
 		return delegateAttentionFold{}, errors.New("delegate attention transcript has no header")
 	}
 	return foldDelegateAttention(entries)
+}
+
+// readExistingDelegateAttentionFoldCompute is the compute step behind the
+// read-path fold memo (see readExistingDelegateAttentionFold). A package var,
+// like scanDelegateJournal and scanJobJournal in jobs_activity_past.go, so
+// tests can count fold computations without instrumenting the filesystem.
+var readExistingDelegateAttentionFoldCompute = readDelegateAttentionFold
+
+// delegateAttentionFoldCacheEntries bounds the read-path fold memo by number of
+// distinct transcripts retained. One memo entry holds one delegateAttentionFold
+// — the attention turns, resolutions, and delivery commits of one child, not
+// its whole transcript — so entries are small and bounded by that child's
+// attention traffic, and a hub reading a fleet of delegate-heavy sessions keeps
+// at most this many folds resident. Sizing follows the same distinct-journal
+// budgeting style as historicalDelegateFoldCacheEntries: a generous count for
+// a cheaply-sized payload.
+const delegateAttentionFoldCacheEntries = 512
+
+// delegateAttentionFoldMemo is one cached fold, valid while its file identity
+// holds. mtime is held as nanos so the key stays comparable with ==.
+type delegateAttentionFoldMemo struct {
+	sessionID string
+	size      int64
+	modNano   int64
+	fold      delegateAttentionFold
+}
+
+// delegateAttentionFoldCache memoizes read-path attention folds by transcript
+// path, keyed to the expected session id and gated on the file's size and
+// mtime: an append-only transcript that changed recomputes, an unchanged one
+// serves the memo. Without it, every status sweep re-read and re-decoded every
+// eligible delegate child's full transcript — O(total delegate bytes) per
+// thread/read (a 251-child session measured 175.6MB re-read per click). The
+// returned fold is shared and MUST be treated as read-only by callers, the
+// same contract TurnCache documents for its memoized slices.
+type delegateAttentionFoldCache struct {
+	mu      sync.Mutex
+	entries map[string]delegateAttentionFoldMemo
+	order   []string // least-recently-used first, for bounded eviction
+	max     int
+}
+
+var readExistingDelegateAttentionFoldCache = &delegateAttentionFoldCache{
+	entries: make(map[string]delegateAttentionFoldMemo),
+	max:     delegateAttentionFoldCacheEntries,
+}
+
+func (c *delegateAttentionFoldCache) get(path, expectedSessionID string, size int64, modNano int64) (delegateAttentionFold, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	memo, ok := c.entries[path]
+	if !ok || memo.sessionID != expectedSessionID || memo.size != size || memo.modNano != modNano {
+		return delegateAttentionFold{}, false
+	}
+	c.touch(path)
+	return memo.fold, true
+}
+
+func (c *delegateAttentionFoldCache) put(path, expectedSessionID string, size int64, modNano int64, fold delegateAttentionFold) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[path] = delegateAttentionFoldMemo{sessionID: expectedSessionID, size: size, modNano: modNano, fold: fold}
+	c.touch(path)
+	for len(c.order) > c.max {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+}
+
+func (c *delegateAttentionFoldCache) touch(path string) {
+	for i, p := range c.order {
+		if p == path {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.order = append(c.order, path)
 }
 
 type delegateAttentionFold struct {

@@ -127,6 +127,103 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	}
 }
 
+// TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend pins the
+// read-path fold memo: a stable transcript is folded once and then served
+// from the memo, the memo is keyed to the expected session id, and an append
+// (the only change an append-only transcript can have) recomputes so the fold
+// reflects the new bytes. The status sweeps the hub runs per thread/read fold
+// every eligible delegate child, so this memo is what keeps a delegate-heavy
+// past session's click cost off the child transcripts' total size.
+func TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend(t *testing.T) {
+	const (
+		sessionID   = "child-memo-fold"
+		attentionID = "delegate:delivery-memo-fold"
+	)
+	stateDir := t.TempDir()
+	path := transcriptPath(stateDir, sessionID)
+	now := time.Unix(1700000000, 0).UTC()
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("memoized attention"))
+	steering.AttentionID = attentionID
+	if err := writer.AppendDurable(steering); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	compute := readExistingDelegateAttentionFoldCompute
+	calls := 0
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
+		calls++
+		return compute(path, sessionID)
+	}
+	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
+
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) {
+		t.Fatalf("first read pending = %v, want [%s]", got, attentionID)
+	}
+	if calls != 1 {
+		t.Fatalf("first read computed %d times, want 1", calls)
+	}
+
+	again, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("memoized read: %v", err)
+	}
+	if got := again.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) {
+		t.Fatalf("memoized read pending = %v, want [%s]", got, attentionID)
+	}
+	if calls != 1 {
+		t.Fatalf("memoized read recomputed (calls=%d, want 1): the fold was not served from the memo", calls)
+	}
+
+	// The memo is keyed to the expected session id as well as the path: another
+	// session id must recompute (and then fail the transcript's header check).
+	if _, err := readExistingDelegateAttentionFold(path, "child-other"); err == nil {
+		t.Fatal("read with a foreign session id unexpectedly succeeded")
+	}
+	if calls != 2 {
+		t.Fatalf("foreign-session read computed %d times, want 2", calls)
+	}
+
+	// An append changes the file identity: the memo invalidates and the fold
+	// reflects the appended resolution.
+	appender, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: attentionID, Disposition: string(delegateAttentionConsumed),
+	}
+	if err := appender.AppendDurable(resolution); err != nil {
+		t.Fatal(err)
+	}
+	if err := appender.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("post-append read: %v", err)
+	}
+	if got := resolved.pendingIDs(); len(got) != 0 {
+		t.Fatalf("post-append pending = %v, want none", got)
+	}
+	if calls != 3 {
+		t.Fatalf("post-append read computed %d times, want 3", calls)
+	}
+}
+
 func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 	t.Run("stop wins before acceptance", func(t *testing.T) {
 		const (
