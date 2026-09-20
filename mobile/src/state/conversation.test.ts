@@ -2909,6 +2909,86 @@ describe("ConversationStore", () => {
     });
   });
 
+  describe("attachment names stop at 64 KiB UTF-8 while src passes through", () => {
+    it("bounds an oversized attachment name and leaves src byte-for-byte intact", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
+      // src is not display text: cutting a data URI (or a fetch URL) yields
+      // something that cannot decode, so it must survive verbatim.
+      const src = `data:image/png;base64,${"A".repeat(200)}`;
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "attachments",
+            id: "msg-1:attachments",
+            sourceTranscriptKey: "msg-1",
+            items: [{ id: "image-1", src, name: largeName }],
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      const item = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "msg-1:attachments");
+      expect(item?.kind).toBe("attachments");
+      if (item?.kind !== "attachments") return;
+      const attachment = item.items[0];
+      expect(attachment).toBeDefined();
+      if (!attachment) return;
+      const encoder = new TextEncoder();
+      expect(encoder.encode(attachment.name ?? "").length).toBeLessThanOrEqual(
+        MAX_ITEM_BYTES,
+      );
+      expect(attachment.name?.endsWith("… truncated")).toBe(true);
+      const markerCount = (attachment.name?.split("… truncated").length ?? 1) - 1;
+      expect(markerCount).toBe(1);
+      // src is never bounded — byte-for-byte identical to the input.
+      expect(attachment.src).toBe(src);
+      expect(encoder.encode(attachment.src).length).toBe(
+        encoder.encode(src).length,
+      );
+    });
+
+    it("bounds an oversized attachment name arriving on a live item/started", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
+      const src = "https://hub.test/live.png";
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "msg-live",
+            text: "hi",
+            images: [{ url: src, name: largeName }],
+          },
+        },
+      } as AnyNotification);
+      const item = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "msg-live:attachments");
+      expect(item?.kind).toBe("attachments");
+      if (item?.kind !== "attachments") return;
+      const attachment = item.items[0];
+      expect(attachment).toBeDefined();
+      if (!attachment) return;
+      const encoder = new TextEncoder();
+      expect(encoder.encode(attachment.name ?? "").length).toBeLessThanOrEqual(
+        MAX_ITEM_BYTES,
+      );
+      expect(attachment.name?.endsWith("… truncated")).toBe(true);
+      // src is never bounded — byte-for-byte identical to the input.
+      expect(attachment.src).toBe(src);
+    });
+  });
+
   describe("resync coalesces to one rehydrate via internal coalescer (F5)", () => {
     it("coalesces evener/thread/resync into one rehydrate call", async () => {
       const service = new FakeConversationService();
