@@ -2887,7 +2887,7 @@ func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removeCredentials: %v", err)
 	}
-	if deleted.storedKey || deleted.oauthRecord {
+	if deleted.storedKey || deleted.oauthRecordDeleted {
 		t.Fatalf("removeCredentials reported %+v for a name holding nothing", deleted)
 	}
 
@@ -2905,7 +2905,7 @@ func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removeCredentials: %v", err)
 	}
-	if !deleted.storedKey || !deleted.oauthRecord {
+	if !deleted.storedKey || !deleted.oauthRecordDeleted {
 		t.Fatalf("removeCredentials reported %+v for a name holding both layers", deleted)
 	}
 }
@@ -5130,15 +5130,6 @@ func authDirEntries(t *testing.T, f *instancesFixture) []string {
 // instance from the listing. Nothing else takes that copy: a removal of another
 // name cannot know it is unwanted, so the reported path is the caller's to act
 // on, and removing this name again is what reclaims it.
-
-// TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete: what a removal moves
-// aside is the user's credential under a name no reader looks at, so a removal
-// that cannot delete it cannot report it gone either. The reclaim runs once the
-// removal has stood - after the reload that drops the instance - so the failure
-// names the path it left while the record is gone from its own path and the
-// instance from the listing. Nothing else takes that copy: a removal of another
-// name cannot know it is unwanted, so the reported path is the caller's to act
-// on, and removing this name again is what reclaims it.
 func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
@@ -5195,17 +5186,6 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 		t.Fatalf("the auth directory holds %v, want removing the name again to reclaim both copies", left)
 	}
 }
-
-// TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName: a copy an earlier
-// removal of this name set aside and could not delete is a credential no reader
-// ever looks at, so removing the name again collects it - in the same call, after
-// the reload that drops the instance. Copies under OTHER names are left alone,
-// because a removal of this name cannot know they are unwanted: a copy stranded
-// by a removal that failed after setting the record aside and could not put it
-// back is the last surviving credential of an instance the user still has, and
-// taking it would turn a repairable failure into a forced sign-in. What counts
-// as a copy is the name the removal builds - the record's path plus a numeric
-// stamp - so an instance whose own name holds the marker keeps its record.
 
 // TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName: a copy an earlier
 // removal of this name set aside and could not delete is a credential no reader
@@ -5286,14 +5266,6 @@ func TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName(t *testing.T) {
 // removed again therefore outlived a removal that reported success. The reclaim
 // takes every copy filed under the name being removed, so both copies go in the
 // call that removes the name.
-
-// TestInstances_RemoveReclaimsACopyStrandedForTheSameName: the sweep used to
-// run before the removal deleted anything, so it skipped a copy whose instance
-// still existed - and the removal then deleted only the copy it made itself.
-// A copy an earlier removal stranded under a name that was re-created and is
-// removed again therefore outlived a removal that reported success. The reclaim
-// takes every copy filed under the name being removed, so both copies go in the
-// call that removes the name.
 func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
@@ -5316,14 +5288,6 @@ func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
 		t.Fatal("openai-codex is still listed after its removal")
 	}
 }
-
-// TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName: a
-// UI-credentialed instance whose name the environment also supplies is
-// removable, and the reload brings the name straight back as an implicit row -
-// so a reclaim that spared any name that still resolved would leave this copy
-// behind for good. What makes it debris is the removal itself: the copy is filed
-// under the name the caller just removed, so it goes with every other copy of
-// that name.
 
 // TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName: a
 // UI-credentialed instance whose name the environment also supplies is
@@ -5365,13 +5329,6 @@ func TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName(t *tes
 // the removal has stood: the instance and its key are gone, and what the caller
 // still has to deal with is the copy the failure names. That is the
 // removeAppliedError the RPC handler announces.
-
-// TestInstances_RemoveReportsACopyItCannotReclaim: the copy a removal sets aside
-// is a credential, so a removal that cannot collect it says so rather than
-// reporting the credential gone. The reclaim runs after the reload, so by then
-// the removal has stood: the instance and its key are gone, and what the caller
-// still has to deal with is the copy the failure names. That is the
-// removeAppliedError the RPC handler announces.
 func TestInstances_RemoveReportsACopyItCannotReclaim(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.store.Set("groq", "gk"); err != nil {
@@ -5401,17 +5358,6 @@ func TestInstances_RemoveReportsACopyItCannotReclaim(t *testing.T) {
 		t.Fatal("the removal did not remove the instance")
 	}
 }
-
-// TestInstanceRenameErrorCarriesThePersistedInfo: the Edit RPC handler maps a
-// rename that stood onto the wire error the client keys its standing-rename
-// report on (appwire.ErrorInstanceRenamePersisted), carrying the rename's own
-// message; every other failure goes back unchanged and unflagged.
-
-// TestInstances_DescribeImplicitNamesAReadableSource: the removal refusal's
-// parenthetical names what makes an implicit instance exist. The keyless sources
-// have no credential to name, so "credential source none" - the old default -
-// named an object the caller cannot go clear; each source gets words that mean
-// something to the person reading the refusal.
 
 // TestInstances_RemoveAsksTheCredentialSourceUnderTheCredentialLock: whether an
 // instance is the user's to remove is decided by the credential source it
@@ -5474,14 +5420,6 @@ func TestInstances_RemoveAsksTheCredentialSourceUnderTheCredentialLock(t *testin
 // - and the sweep skips directories, so renaming it would park the user's own
 // contents under a name no reader reads while the removal reported success.
 // Refused by path, before anything is deleted.
-
-// TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath: the
-// record path is a name the removal sets aside by renaming and the sweep later
-// deletes, and a removal may do both to the hub's own record and not to
-// whatever else the user keeps there. A directory at that path is not a record
-// - and the sweep skips directories, so renaming it would park the user's own
-// contents under a name no reader reads while the removal reported success.
-// Refused by path, before anything is deleted.
 func TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.store.Set("groq", "gk"); err != nil {
@@ -5532,12 +5470,6 @@ func TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath(t *test
 // instance - the hub that died inside the removal's window, and the failed
 // removal whose rename-back did not land - with the bytes it had, and by a
 // rename, so a record the hub cannot read is put back as faithfully as any.
-
-// TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted: the
-// record a removal moved aside goes back when providers.toml still carries the
-// instance - the hub that died inside the removal's window, and the failed
-// removal whose rename-back did not land - with the bytes it had, and by a
-// rename, so a record the hub cannot read is put back as faithfully as any.
 func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -5572,17 +5504,6 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 		t.Fatalf("the copy is still on disk (Lstat = %v), want the record moved rather than copied", err)
 	}
 }
-
-// TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy:
-// a CONFIG-BACKED in-flight copy whose name providers.toml no longer carries is
-// a removal that reached its config write - the config is the durable evidence -
-// so startup must not resurrect it. It is returned to the committed shape and
-// the sweep in the same pass deletes it, so it never stays in flight for a later
-// pass to restore, and its record path is left free. A copy filed beside a
-// record the instance already has - the user signed in again after the removal
-// that set it aside - stays where it is: the live record is the one the instance
-// has now. A state root with no auth directory at all is nothing set aside, not
-// a failure.
 
 // TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy:
 // a CONFIG-BACKED in-flight copy whose name providers.toml no longer carries is
@@ -5658,12 +5579,6 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 // again, a second removal sets that one aside too - and the newest is the
 // record the instance had last, so that is the one that goes back. The older
 // stays for the next removal of the name.
-
-// TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy: one instance can hold
-// several copies - a removal strands one, a later sign-in writes the record
-// again, a second removal sets that one aside too - and the newest is the
-// record the instance had last, so that is the one that goes back. The older
-// stays for the next removal of the name.
 func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -5695,8 +5610,12 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 	if _, err := os.Lstat(newer); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the newest copy is still on disk (Lstat = %v), want it moved", err)
 	}
-	if _, err := os.Lstat(older); err != nil {
-		t.Fatalf("the older copy was taken (%v), want it left for the next removal", err)
+	// The older copy is SUPERSEDED, and the sweep only ever takes committed
+	// copies: leaving it would keep a credential the instance no longer has on
+	// disk forever under a name nothing reads, so the pass that put the newest
+	// one back deletes it.
+	if _, err := os.Lstat(older); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the older copy survives at %s (Lstat = %v), want it deleted now that the newest is the record", older, err)
 	}
 }
 

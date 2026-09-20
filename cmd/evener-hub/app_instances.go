@@ -1259,6 +1259,28 @@ func removeApplied(err error) error {
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
+	// The rename is a transaction, and this is its record: everything still filed
+	// under oldName belongs to newName from here on. It is written before a byte
+	// moves, so a hub that dies anywhere in this call leaves it behind and startup
+	// finishes the move (restoreUncommittedOAuthAsides, finishRenameAt) - which is
+	// what keeps a copy the carry promoted onto the OLD canonical record path from
+	// being stranded there once providers.toml names only the new instance. The
+	// marker is spent when the move landed; while any part of it did not, the
+	// marker is the only thing that says the work is unfinished.
+	renameDir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	marker := filepath.Join(renameDir, oauthRenameMarkerName(newName, c.auth.now().UnixNano()))
+	switch _, statErr := os.Stat(renameDir); {
+	case errors.Is(statErr, os.ErrNotExist):
+		// No auth directory is no record and no copy: there is nothing a crash
+		// could strand, so the rename has nothing to record.
+		marker = ""
+	case statErr != nil:
+		return writeApplied(renamePersistedError{fmt.Errorf("renamed %q to %q, but the rename could not be recorded for startup recovery: check %s (%w)", oldName, newName, renameDir, statErr)})
+	default:
+		if werr := os.WriteFile(marker, []byte(oldName+"\n"), 0o600); werr != nil {
+			return writeApplied(renamePersistedError{fmt.Errorf("renamed %q to %q, but the rename could not be recorded for startup recovery: %w", oldName, newName, werr)})
+		}
+	}
 	// One persist, so the key is never briefly filed under both names or
 	// neither: a copy-then-clear pair whose second half failed would leave
 	// the old name resolving a credential the config no longer names.
@@ -1313,7 +1335,28 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 				}
 			}
 		} else {
-			problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
+			// Nothing was promoted to the record path, so the file sitting at the
+			// OLD record path is what is left of the credential - and it is
+			// unreadable, which is why this branch is the one running. Leaving it
+			// there strands it: providers.toml now names only the new instance, no
+			// recovery pass recognizes a plain record as an aside, and the sweep
+			// reads no other name. File it under the NEW name, in the
+			// credential-only IN-FLIGHT shape - the shape startup recovery
+			// restores even without a readable config - chosen collision-safely
+			// and landed without replacing anything (freeAsideName, which ranks it
+			// after whatever the new name already holds, then renameNoReplace).
+			recordPath := authopenai.AuthFilePath(c.auth.stateDir, oldName)
+			dst, ok := freeAsideName(filepath.Dir(recordPath), newName, false, 0)
+			switch {
+			case !ok:
+				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and no fresh recovery-recognized aside name under %q was free to file the record %q under, so those bytes are still at %q", err, newName, recordPath, recordPath))
+			default:
+				if rerr := renameNoReplace(recordPath, dst); rerr != nil {
+					problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and the record %q could not be filed as the recovery-recognized aside %q (%v)", err, recordPath, filepath.Base(dst), rerr))
+				} else {
+					problems = append(problems, fmt.Sprintf("OAuth record not read (%v), so the record %q was filed as the recovery-recognized aside %q", err, recordPath, filepath.Base(dst)))
+				}
+			}
 		}
 	default:
 		// The record's provider field names the instance it belongs to (the
@@ -1323,6 +1366,20 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
 		} else if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+		}
+	}
+	// The marker is spent once nothing sits at the old canonical record path -
+	// the one thing a crash inside this call can strand where no reader looks. A
+	// copy the carry deliberately left behind (an unrankable one) is debris the
+	// copy rules already report and startup cannot move, so it does not keep the
+	// marker alive and make every later start retry a rename that finished; and a
+	// record this call could not move keeps the marker, whatever else it reports,
+	// because a later startup is what finishes the move. A marker that will not
+	// come away is debris the next startup removes (it finds nothing to finish),
+	// not a reason to fail a rename whose durable work landed.
+	if marker != "" {
+		if _, statErr := os.Lstat(authopenai.AuthFilePath(c.auth.stateDir, oldName)); errors.Is(statErr, os.ErrNotExist) {
+			_ = os.Remove(marker)
 		}
 	}
 	if len(problems) > 0 {
@@ -1882,15 +1939,26 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if err != nil {
 		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
-	deleted.oauthRecord = removedRecord
+	deleted.oauthRecordDeleted = removedRecord
 	return deleted, nil
 }
 
-// deletedCredentials names which credential layers a removal's cleanup
-// actually removed, so a restore rewrites only those.
+// deletedCredentials reports which credential layers a removal's cleanup
+// actually deleted. It is a REPORT of what the cleanup found, not the restore
+// decision: a removal moves its record aside first (setAsideOAuthFile), so by
+// the time this cleanup runs there is nothing at the record path for deleteAuth
+// to delete and oauthRecordDeleted is false for every removal that went through
+// Remove. What a failed removal puts back is that aside - restoreFailedRemoval's
+// oauthAside, and the copies markOAuthAsidesCommitted named - never this flag.
+// Do not gate a restore on it: the old gate's shape (hasOAuth &&
+// removed.oauthRecord) would skip the rename-back and lose the record.
 type deletedCredentials struct {
-	storedKey   bool
-	oauthRecord bool
+	storedKey bool
+	// oauthRecordDeleted reports whether the cleanup found and deleted a record
+	// at the record path. False for a removal, whose record was set aside first;
+	// true only for a caller that invokes the cleanup with the record still in
+	// place.
+	oauthRecordDeleted bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove
@@ -2149,7 +2217,13 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 // removal that stood and startup sweeps those whose name the config no longer
 // carries.
 func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName string) (string, []string) {
-	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	return carryOAuthAsidesForRenameAt(c.auth.stateDir, oldName, newName)
+}
+
+// carryOAuthAsidesForRenameAt is carryOAuthAsidesForRename over a state root, so
+// the startup pass can finish a rename the hub died inside.
+func carryOAuthAsidesForRenameAt(stateDir, oldName, newName string) (string, []string) {
+	dir := filepath.Dir(authopenai.AuthFilePath(stateDir, "instance"))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2206,7 +2280,7 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 	}
 	var problems []string
 	promoted := ""
-	record := authopenai.AuthFilePath(c.auth.stateDir, oldName)
+	record := authopenai.AuthFilePath(stateDir, oldName)
 	if newest != "" {
 		switch _, statErr := os.Lstat(record); {
 		case errors.Is(statErr, os.ErrNotExist):
@@ -2751,6 +2825,63 @@ func findFreeAsideName(dir, name string, configBacked bool, want int64) (string,
 	return stepFreeAsideName(filepath.Join(dir, name+".json"), configBacked, want, highest, have)
 }
 
+// finishRenameAt completes a rename a crash interrupted. The marker a rename
+// writes before it moves anything says which name became which, so this replays
+// the two things the rename does: it carries the copies still filed under the
+// OLD name to the new one - where the pass that follows reads them - and it
+// moves a record left at the old canonical path (the carry promotes the newest
+// copy onto it) to the new name's record path, or to an in-flight aside under
+// the new name when that path is taken. Nothing is left under a name no reader
+// looks at. It reports what it could not move.
+func finishRenameAt(stateDir, oldName, newName string) []string {
+	var problems []string
+	if _, carryProblems := carryOAuthAsidesForRenameAt(stateDir, oldName, newName); len(carryProblems) > 0 {
+		problems = append(problems, carryProblems...)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(stateDir, "instance"))
+	oldRecord := authopenai.AuthFilePath(stateDir, oldName)
+	newRecord := authopenai.AuthFilePath(stateDir, newName)
+	switch _, statErr := os.Lstat(oldRecord); {
+	case errors.Is(statErr, os.ErrNotExist):
+		// Nothing at the old path: the carry either never promoted or the record
+		// was already saved under the new name.
+	case statErr != nil:
+		problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: check its record at %s (%v)", oldName, newName, oldRecord, statErr))
+	default:
+		dst := newRecord
+		if _, takenErr := os.Lstat(newRecord); takenErr == nil {
+			// The renamed instance's record path is taken: these bytes must not
+			// replace it, and must not be left where nothing reads them either.
+			aside, ok := freeAsideName(dir, newName, false, 0)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: no fresh aside name under %q was free to file the record %s under, so those bytes are still at %q", oldName, newName, newName, oldRecord, oldRecord))
+				break
+			}
+			dst = aside
+		} else if !errors.Is(takenErr, os.ErrNotExist) {
+			problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: check %s before moving the record there (%v)", oldName, newName, newRecord, takenErr))
+			break
+		}
+		if rerr := renameNoReplace(oldRecord, dst); rerr != nil {
+			problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: move its record from %s to %s (%v)", oldName, newName, oldRecord, dst, rerr))
+		}
+	}
+	return problems
+}
+
+// readRenameMarker reads the old name a rename marker records.
+func readRenameMarker(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	oldName := strings.TrimSpace(string(raw))
+	if oldName == "" {
+		return "", fmt.Errorf("%s records no name", path)
+	}
+	return oldName, nil
+}
+
 // remarkUncarriedOAuthAside re-files a copy a rename could not carry so startup
 // recovery restores it to the RENAMED instance instead of deleting it, and
 // returns the carry problem to report. providers.toml already names only the new
@@ -3010,21 +3141,70 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			return false, nil
 		}
 		// The directory exists but cannot be read. That is recovery work this
-		// pass could not do, and the config failure (which the pass would have
-		// needed) is part of why it could not be completed; both are reported.
-		var problems []string
+		// pass could not do, and NOTHING was recovered: no entry was read, so no
+		// copy was put back and none was classified - a credential may still be
+		// sitting in flight under this directory. The config failure (which the
+		// pass would have needed) is reported beside it, but not through
+		// asideConfigProblem: that text says which copies were put back and which
+		// were left for a later pass, and here there is no such answer.
 		if _, cfgErr := readAsideConfig(providersConfigPath); cfgErr != nil {
-			problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
-		}
-		if len(problems) > 0 {
-			problems = append(problems, fmt.Sprintf("read the OAuth state directory %s (%v)", dir, err))
-			return false, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
+			return false, fmt.Errorf("startup OAuth recovery could not finish: nothing was recovered - the OAuth state directory %s could not be listed (%w), and the config that would classify what it holds could not be read either (%w)", dir, err, cfgErr)
 		}
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
-	hasAside := false
+	// A rename's marker says the instance formerly named <old> is <new> now, and
+	// it is written before anything moves: a crash inside the rename leaves it
+	// behind with the work half done - a copy promoted onto the OLD canonical
+	// record path, which no reader and no recovery pass looks at once
+	// providers.toml names only the new instance. Finish the move BEFORE judging
+	// any copy, so nothing is judged in a state the rename was about to change.
+	renameProblems := make([]string, 0)
+	hasRenameMarker := false
+	entriesMoved := false
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		newName, ok := oauthRenameMarkerNewName(e.Name())
+		if !ok {
+			continue
+		}
+		hasRenameMarker = true
+		markerPath := filepath.Join(dir, e.Name())
+		oldName, rerr := readRenameMarker(markerPath)
+		if rerr != nil {
+			renameProblems = append(renameProblems, fmt.Sprintf("read the rename marker %s (%v)", markerPath, rerr))
+			continue
+		}
+		unfinished := finishRenameAt(stateDir, oldName, newName)
+		renameProblems = append(renameProblems, unfinished...)
+		if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, oldName)); !errors.Is(statErr, os.ErrNotExist) {
+			// A record is still under the old name: this pass could not finish the
+			// move, so the marker stays for the pass that can.
+			continue
+		}
+		entriesMoved = true
+		if rerr := os.Remove(markerPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			renameProblems = append(renameProblems, fmt.Sprintf("remove the rename marker %s (%v)", markerPath, rerr))
+		}
+	}
+	if entriesMoved {
+		// The completion moved files, so judge the directory as it is now.
+		refreshed, rerr := os.ReadDir(dir)
+		if rerr != nil {
+			renameProblems = append(renameProblems, fmt.Sprintf("read %s after finishing a rename (%v)", dir, rerr))
+		} else {
+			entries = refreshed
+		}
+	}
+	hasAside := false
+	hasManifest := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, ok := oauthCommitManifestInstance(e.Name()); ok {
+			hasManifest = true
 			continue
 		}
 		if _, _, _, aside := oauthAsideInstance(e.Name()); aside {
@@ -3032,13 +3212,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			break
 		}
 	}
-	if !hasAside {
-		// Nothing set aside is nothing to recover, so a config failure here
+	if !hasAside && !hasManifest && !hasRenameMarker {
+		// Nothing set aside, no removal's classification and no rename left
+		// behind is nothing to recover, so a config failure here
 		// prevented no recovery work and is not reported.
 		return false, nil
 	}
 	layer, cfgErr := readAsideConfig(providersConfigPath)
 	var problems []string
+	problems = append(problems, renameProblems...)
 	// A committed copy carries its name and kind into the delete step, so the
 	// delete can report the credential-only ones that could be a stranded
 	// instance's only credential rather than removing them silently.
@@ -3055,6 +3237,12 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		stamp int64
 	}
 	newest := make(map[string]newestCopy, len(entries))
+	// The in-flight copies the newest selection below SUPERSEDED, per instance.
+	// They are deleted once the newest one has been put back - the sweep takes
+	// only committed copies, so nothing else would ever collect them - and kept
+	// when it has not, because then they may be the only bytes of the credential
+	// a later pass could still restore.
+	superseded := make(map[string][]string, len(entries))
 	var committed []committedCopy
 	// A committed copy is durable evidence that a removal's commit mark
 	// (markOAuthAsidesCommitted) landed. renameNoReplace is a single rename(2)
@@ -3136,12 +3324,48 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// today's behaviour: its credential-only copies are still put back, because
 	// an unrelated config failure must not strand the only credential an instance
 	// ever had.
+	// A removal's commit manifest (markOAuthAsidesCommitted) classifies every
+	// in-flight copy of the name it carries as committed. It is written BEFORE
+	// the first of that removal's renames, so its presence means the removal
+	// reached its commit point; the per-copy renames are idempotent follow-ups a
+	// crash can interrupt anywhere, and this pass applies what they left undone
+	// so the whole removal resolves ONE way - never some copies swept while the
+	// rest are restored.
+	manifests := make(map[string][]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if inst, ok := oauthCommitManifestInstance(e.Name()); ok {
+			manifests[inst] = append(manifests[inst], e.Name())
+		}
+	}
+	// Whether a manifest's classification can be judged. A committed copy is
+	// swept when the config does not carry its name, and a config file that does
+	// not exist carries nothing - so for a manifest the missing file is the empty
+	// config, while a config that is there and cannot be read leaves the question
+	// open for a later pass.
+	manifestLayer, manifestCfgErr := layer, cfgErr
+	if cfgErr != nil && providersConfigPath != "" {
+		if _, statErr := os.Stat(providersConfigPath); errors.Is(statErr, os.ErrNotExist) {
+			manifestLayer, manifestCfgErr = &registry.Layer{}, nil
+		}
+	}
 	deferredNames := make(map[string]bool)
 	deferredRestores := make(map[string]bool, len(entries))
 	if cfgErr != nil {
 		for _, e := range entries {
 			a, aside := parseOAuthAside(e.Name())
 			if e.IsDir() || !aside {
+				continue
+			}
+			if manifests[a.inst] != nil {
+				// A manifest's classification is applied below whenever it can be
+				// judged, and what a committed copy resolves to is judged against
+				// the config - so only the unjudgeable case waits for a later pass.
+				if manifestCfgErr != nil {
+					deferredNames[a.inst] = true
+				}
 				continue
 			}
 			switch {
@@ -3168,12 +3392,54 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		// in-flight twin the config would judge was left for a later pass.
 		problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
 	}
+	// Apply each manifest before the copies are judged: every in-flight copy of
+	// the name it carries is renamed to its committed shape - exactly what the
+	// removal's own renames would have done - and enters the sweep as a committed
+	// copy. A rename that cannot land leaves the copy in flight and is held out of
+	// the restore path below (manifestHeld): it is still classified committed,
+	// and restoring it is the resurrection the manifest exists to prevent.
+	manifestFailed := make(map[string]bool)
+	if manifestCfgErr == nil {
+		for _, e := range entries {
+			a, aside := parseOAuthAside(e.Name())
+			if e.IsDir() || !aside || manifests[a.inst] == nil {
+				continue
+			}
+			if a.committed {
+				// The crash landed after this copy's rename: the manifest judges
+				// it with its siblings, whatever the main loop would have made of
+				// a lone committed copy.
+				if !configCarriesName(manifestLayer, a.inst) {
+					committed = append(committed, committedCopy{e.Name(), a.inst, a.configBacked})
+				}
+				continue
+			}
+			source := filepath.Join(dir, e.Name())
+			target := filepath.Join(dir, oauthCommittedAsideName(e.Name()))
+			if rerr := renameNoReplace(source, target); rerr != nil {
+				manifestFailed[a.inst] = true
+				protected[filepath.Base(target)] = true
+				problems = append(problems, fmt.Sprintf("return the copy %s of %q, which the removal's commit manifest classifies as committed, to the committed shape %s for the sweep: the committed name was taken, so the copy stayed in flight and %s was left untouched (%v)", source, a.inst, target, target, rerr))
+				continue
+			}
+			committed = append(committed, committedCopy{filepath.Base(target), a.inst, a.configBacked})
+		}
+	}
 	for _, e := range entries {
 		a, aside := parseOAuthAside(e.Name())
 		if e.IsDir() || !aside {
 			continue
 		}
 		inst, isCommitted, configBacked := a.inst, a.committed, a.configBacked
+		if manifests[inst] != nil {
+			// Every copy of this name is classified by its manifest, and the pass
+			// above applied that classification (the entries here are the ones it
+			// read BEFORE it moved anything): a copy it renamed is committed on
+			// disk now, one it could not rename is held in flight, and neither is
+			// ever restored - which is the whole point of resolving the removal as
+			// one unit. The committed copies it judged are already in the sweep.
+			continue
+		}
 		if isCommitted {
 			// Only a committed copy whose name providers.toml does NOT carry is
 			// swept below: it belongs to a removal that STOOD, so nothing wants it
@@ -3270,8 +3536,13 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			continue
 		}
 		if seen, ok := newest[inst]; !ok || stamp > seen.stamp {
+			if ok {
+				superseded[inst] = append(superseded[inst], seen.name)
+			}
 			newest[inst] = newestCopy{e.Name(), stamp}
+			continue
 		}
+		superseded[inst] = append(superseded[inst], e.Name())
 	}
 	if len(deferredRestores) > 0 {
 		names := make([]string, 0, len(deferredRestores))
@@ -3282,6 +3553,7 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		problems = append(problems, fmt.Sprintf("held back the credential-only in-flight copies of %s: the config that would classify a config-dependent copy of the same instance could not be read, so restoring one could stand a stale credential in for the current record", strings.Join(names, ", ")))
 	}
 	restored := false
+	var restoredInstances []string
 	for inst, entry := range newest {
 		path := authopenai.AuthFilePath(stateDir, inst)
 		// A record filed under its own name again is the one the instance has
@@ -3298,6 +3570,25 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			continue
 		}
 		restored = true
+		restoredInstances = append(restoredInstances, inst)
+	}
+	// Delete the in-flight copies that restore SUPERSEDED. The newest copy of an
+	// instance that was just put back is that instance's current record, so an
+	// older in-flight copy of the same name is a credential the instance no
+	// longer has; the sweep below takes only COMMITTED copies, so nothing else
+	// would ever collect them and the user's superseded credentials would sit on
+	// disk forever under names nothing reads. Only a restore that LANDED
+	// supersedes anything: where it did not, those copies may be the only bytes
+	// of the credential a later pass could still put back, so they stay.
+	slices.Sort(restoredInstances)
+	for _, inst := range restoredInstances {
+		for _, name := range superseded[inst] {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					problems = append(problems, fmt.Sprintf("delete the in-flight copy %s of %q, superseded by the copy put back as its record (%v)", name, inst, err))
+				}
+			}
+		}
 	}
 	// Delete the committed copies no config names: the removal they belong to
 	// stood, and no later removal of that name will ever collect them, so leaving
@@ -3330,10 +3621,81 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			problems = append(problems, fmt.Sprintf("deleted the committed credential-only copy %s of %q, whose name the config no longer carries and whose record path is free, so those bytes were the last copy of that credential a human could have put back by hand", c.name, c.inst))
 		}
 	}
+	// A manifest is spent once its copies carry the classification as committed
+	// names - and also when this pass found none left to classify, which is the
+	// crash that landed after the last rename. One whose rename could not land
+	// stays for the pass that can apply it.
+	for inst, files := range manifests {
+		if manifestFailed[inst] {
+			continue
+		}
+		if manifestCfgErr != nil {
+			// The classification was never applied - the config that judges it
+			// could not be read - so the manifest stays for the pass that can.
+			continue
+		}
+		for _, file := range files {
+			if err := os.Remove(filepath.Join(dir, file)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				problems = append(problems, fmt.Sprintf("remove the commit manifest %s of %q now that its copies are resolved (%v)", file, inst, err))
+			}
+		}
+	}
 	if len(problems) > 0 {
 		return restored, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
 	}
 	return restored, nil
+}
+
+// oauthRenameMarker is the marker a rename's transaction file carries. Like the
+// commit manifest it is deliberately NOT one of oauthAsideShapes: it records a
+// rename, not a credential, and the copy rules must never touch it.
+const oauthRenameMarker = ".renaming-"
+
+// oauthRenameMarkerName names the file that records one rename: the instance the
+// old name became, and the rename's stamp.
+func oauthRenameMarkerName(newName string, stamp int64) string {
+	return newName + ".json" + oauthRenameMarker + strconv.FormatInt(stamp, 10)
+}
+
+// oauthRenameMarkerNewName reports the instance a rename marker belongs to, and
+// whether the file is one.
+func oauthRenameMarkerNewName(fileName string) (string, bool) {
+	suffix := ".json" + oauthRenameMarker
+	i := strings.LastIndex(fileName, suffix)
+	if i <= 0 {
+		return "", false
+	}
+	if _, err := strconv.ParseInt(fileName[i+len(suffix):], 10, 64); err != nil {
+		return "", false
+	}
+	return fileName[:i], true
+}
+
+// oauthCommitManifestMarker is the marker a removal's commit manifest carries.
+// It is deliberately NOT one of oauthAsideShapes: a manifest is the transaction
+// record of a whole removal, and the copy rules - the allocation, the sweep, the
+// reclaim - must never mistake it for a credential.
+const oauthCommitManifestMarker = ".committing-"
+
+// oauthCommitManifestName names the file that carries one removal's commit
+// classification: the instance it classifies and the removal's stamp, so two
+// removals of one name never share one.
+func oauthCommitManifestName(name string, stamp int64) string {
+	return name + ".json" + oauthCommitManifestMarker + strconv.FormatInt(stamp, 10)
+}
+
+// oauthCommitManifestInstance reports the instance a commit manifest
+// classifies, and whether the file is one.
+func oauthCommitManifestInstance(fileName string) (string, bool) {
+	suffix := ".json" + oauthCommitManifestMarker
+	i := strings.LastIndex(fileName, suffix)
+	if i <= 0 {
+		return "", false
+	}
+	if _, err := strconv.ParseInt(fileName[i+len(suffix):], 10, 64); err != nil {
+		return "", false
+	}
+	return fileName[:i], true
 }
 
 // oauthCommitMark is what one removal's commit point (markOAuthAsidesCommitted)
@@ -3347,6 +3709,12 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 type oauthCommitMark struct {
 	own    string
 	marked []string
+	// manifest is the path of the commit manifest this removal's mark wrote
+	// before it renamed anything, or "" when the mark wrote none. The rollback
+	// removes it: a manifest still classifying the name as committed while the
+	// removal did not stand would have the next startup sweep the very copies
+	// the rollback returned to the in-flight shape.
+	manifest string
 }
 
 // markOAuthAsidesCommitted moves every IN-FLIGHT copy filed under name to its
@@ -3383,6 +3751,19 @@ func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (oau
 		}
 		return mark, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %w", name, err)
 	}
+	// The classification is ONE durable act, written before any copy is renamed:
+	// a hub that dies anywhere from here on leaves the manifest behind, and
+	// startup resolves EVERY in-flight copy of this name from it
+	// (restoreUncommittedOAuthAsides) - so a crash that stopped the renames part
+	// way can never leave some copies swept while the rest are restored. The
+	// per-copy renames below are idempotent follow-ups, and the manifest is spent
+	// once they have all landed, because the committed names then carry exactly
+	// the same classification.
+	manifest := filepath.Join(dir, oauthCommitManifestName(name, c.auth.now().UnixNano()))
+	mark.manifest = manifest
+	if werr := os.WriteFile(manifest, []byte(name+"\n"), 0o600); werr != nil {
+		return mark, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: write the commit manifest %s (%w)", name, manifest, werr)
+	}
 	var problems []string
 	for _, e := range entries {
 		inst, committed, _, aside := oauthAsideInstance(e.Name())
@@ -3403,9 +3784,33 @@ func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (oau
 		}
 	}
 	if len(problems) > 0 {
+		// The manifest stays: the caller rolls the removal back, and the rollback
+		// removes it (dropCommitManifest) because the copies it classifies are
+		// about to be returned to the in-flight shape.
 		return mark, fmt.Errorf("mark the OAuth copies the removal of %s set aside as committed: %s", name, strings.Join(problems, ", "))
 	}
+	// Spent: every copy is committed on disk now, so the classification is
+	// carried by the names themselves. A manifest that will not come away is
+	// debris the next startup removes (it finds no copies left to classify), not
+	// a reason to fail a removal whose durable work landed.
+	_ = os.Remove(manifest)
 	return mark, nil
+}
+
+// dropCommitManifest removes the transaction record one removal's commit point
+// wrote, for the paths where the removal is known NOT to stand: the copies are
+// back in the in-flight shape, so a manifest still classifying them as committed
+// would have the next startup sweep exactly the credentials the rollback
+// restored. It reports a manifest it could not remove, because those bytes are
+// then judged committed by the next startup.
+func (c *hubInstancesController) dropCommitManifest(mark oauthCommitMark) []string {
+	if mark.manifest == "" {
+		return nil
+	}
+	if err := os.Remove(mark.manifest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return []string{fmt.Sprintf("remove the commit manifest %s (%v)", mark.manifest, err)}
+	}
+	return nil
 }
 
 // reinstateMarkedAsides returns the copies one removal's commit mark moved to the
@@ -3573,6 +3978,11 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 // retry that fails, so a caller can tell whether the config the rollback
 // restored loads.
 func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, name, storedKey string, hasStoredKey bool, mark oauthCommitMark, configChanged bool, frame string, supplies removalSupply, cause error) error {
+	// The removal did not stand, so the classification its commit point wrote is
+	// undone first, ahead of every branch below: the manifest must not outlive
+	// the copies it classifies, or a later startup would sweep them after this
+	// rollback returned them to the in-flight shape.
+	manifestProblems := c.dropCommitManifest(mark)
 	if configChanged {
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
@@ -3633,7 +4043,8 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 				}
 			} else {
 				_, remnant = c.restoreFailedRemoval(name, storedKey, hasStoredKey, mark.own, remnant, "the entry is gone from the config", supplyAny)
-				if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+				more := append(c.reinstateMarkedAsides(mark), manifestProblems...)
+				if len(more) > 0 {
 					remnant = fmt.Errorf("%w; %s", remnant, strings.Join(more, " and "))
 				}
 			}
@@ -3675,7 +4086,7 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 		// authenticate from its record path. (The carrying copy is the
 		// rename-back restoreFailedRemoval just made; these are the copies
 		// reinstateMarkedAsides returns to the in-flight shape startup reads.)
-		if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+		if more := append(c.reinstateMarkedAsides(mark), manifestProblems...); len(more) > 0 {
 			restored = fmt.Errorf("%w; %s", restored, strings.Join(more, " and "))
 		}
 		// The registry is reloaded over the config the rollback restored, the
@@ -3692,7 +4103,7 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 		rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
 	}
 	restored = rolledBack
-	if more := c.reinstateMarkedAsides(mark); len(more) > 0 {
+	if more := append(c.reinstateMarkedAsides(mark), manifestProblems...); len(more) > 0 {
 		restored = fmt.Errorf("%w; %s", restored, strings.Join(more, " and "))
 	}
 	if reloadErr := c.reg.Reload(); reloadErr != nil {
