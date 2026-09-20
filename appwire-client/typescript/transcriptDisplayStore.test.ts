@@ -335,6 +335,47 @@ describe("lifecycle fencing", () => {
     expect(store.getState().hub.mobile).toBeUndefined();
   });
 
+  test("a relayed lower revision during the loaded publication cannot roll back the first read", async () => {
+    const client = serving(hubDefault(2, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    store.subscribe((state, previous) => {
+      if (!previous.loaded && state.loaded)
+        store.getState().applyHubChange({ layout: "mobile", revision: 1, config: proposed });
+    });
+
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+  });
+
+  test("a refresh started during the loaded publication keeps the first read authoritative", async () => {
+    const client = new FakeClient("ready");
+    let reads = 0;
+    client.on(getMethod, () => {
+      reads += 1;
+      return {
+        desktop: toWireDefault(hubDefault(reads === 1 ? 2 : 1, desktopConfig)),
+        mobile: toWireDefault(hubDefault(reads === 1 ? 2 : 1, mobileConfig)),
+      };
+    });
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    store.subscribe((state, previous) => {
+      if (!previous.loaded && state.loaded && reads === 1) void store.getState().refreshHubDefaults();
+    });
+
+    await store.getState().refreshHubDefaults();
+    await vi.waitFor(() => expect(reads).toBe(2));
+
+    expect(store.getState().hub).toEqual({
+      desktop: hubDefault(2, desktopConfig),
+      mobile: hubDefault(2, mobileConfig),
+    });
+  });
+
   test.each(["endReadyGeneration", "dispose"] as const)(
     "%s fences relayed changes after the ready generation ends",
     async (lifecycle) => {
