@@ -21,6 +21,11 @@
   padding: var(--space-3);
   background: var(--surface-inset);
   border-right: 1px solid var(--edge);
+  /* Scroll the recents inside the dialog instead of stretching it past the
+   * panel's height cap (the folder list beside it can be arbitrarily long
+   * too; the browse column scrolls with the panel, the sidebar scrolls
+   * alone). */
+  overflow-y: auto;
 }
 .recents h3 {
   margin: var(--space-3) 0 var(--space-2);
@@ -124,8 +129,14 @@
 :where(.recents) .row {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  /* Stretch, not flex-start: a column flex item with flex-start sizes itself
+   * to fit-content, and a long path or unbreakable basename then escapes the
+   * 180px sidebar and runs across the browse column. Stretch pins each line
+   * to the row's width so the truncation below can do its work; the full path
+   * rides on the row's title for hover. */
+  align-items: stretch;
   gap: var(--space-1);
+  overflow: hidden;
 }
 .path {
   font-size: var(--font-size-caption);
@@ -218,4 +229,18 @@
 
 .create .input {
   width: 100%;
+}
+
+/* The recents row's two lines each ellipsize inside the sidebar. Placed at the
+ * file's end because these selectors outrank the shared .path rule above (and
+ * .footer/.create below) in specificity, and the linter's descending-specificity
+ * order wants the higher-specificity override after everything it beats. The
+ * footer destination's .path keeps its wrapping: this scope names only the
+ * recents sidebar. */
+:where(.recents) .row strong,
+:where(.recents) .row .path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

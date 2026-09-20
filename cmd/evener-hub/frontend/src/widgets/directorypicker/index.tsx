@@ -212,6 +212,11 @@ export function DirectoryPicker({
               className={CLASS.row}
               type="button"
               key={path}
+              // The sidebar truncates the path to fit (see the recents row
+              // containment in directorypicker.module.css), so the full path
+              // stays reachable on hover. aria-label below already names the
+              // path for assistive tech; this is the sighted-user affordance.
+              title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}
               onClick={() => void browse(path)}
