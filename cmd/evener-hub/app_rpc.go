@@ -1280,10 +1280,10 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 				return list, nil
 			}
 			// A rename that persisted before it failed is a write that stands,
-			// so it is announced (writeApplied, which instanceWrite broadcasts
-			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
-			// so the client that asked reports the standing rename rather than
-			// a failed save.
+			// so it is announced (writeApplied, which the mutation folded onto
+			// its error) and the error goes back carrying
+			// ErrorInstanceRenamePersisted, so the client that asked reports the
+			// standing rename rather than a failed save.
 			persisted, wireErr := instanceRenameError(err)
 			if persisted {
 				return list, writeApplied(wireErr)
@@ -1294,8 +1294,8 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
 			// A removal whose credential deletion applied before it failed is a
-			// write that stands, so it is announced (writeApplied, which
-			// instanceWrite broadcasts on) and the error goes back carrying
+			// write that stands, so it is announced (writeApplied, which the
+			// mutation folded onto its error) and the error goes back carrying
 			// ErrorInstanceRemoveApplied, so the client that asked reconciles the
 			// standing removal rather than a failed remove it would retry.
 			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
@@ -1606,11 +1606,11 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
 	case writeDidApply(err):
 		// The no-data form, deliberately WITHOUT the origin. The originating
-		// credential mutation has already retired its own marker on the error,
-		// so it cannot attribute this broadcast anyway - and echoing the origin
-		// would make this provider-less broadcast structurally identical to a
-		// provider-instance echo, letting it consume an instance mutation's
-		// marker and turn that mutation's own echo foreign.
+		// credential mutation failed, so it cannot attribute this broadcast as
+		// its own success anyway - and echoing the origin would make this
+		// provider-less broadcast structurally identical to a provider-instance
+		// echo, letting it consume an instance mutation's marker and turn that
+		// mutation's own echo foreign.
 		notifyInstanceUpdated(server, "")
 	}
 }

@@ -47,6 +47,12 @@ type hubInstancesController struct {
 	// pre-lock classification already made instead of the test sleeping and
 	// guessing it got there. Nil in production.
 	beforeCredentialLock func()
+	// applied records the providers.toml writes that landed during the current
+	// mutation, so instanceWrite learns a change happened from the write
+	// primitive itself (write) rather than from a marker each error path has to
+	// remember to attach. Cleared when a mutation takes mu, and again when a
+	// rollback puts the previous file back.
+	applied appliedWrites
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
@@ -54,7 +60,35 @@ func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	return registry.WriteConfigFile(c.providersConfigPath, l)
+	err := registry.WriteConfigFile(c.providersConfigPath, l)
+	if err == nil {
+		// The primitive itself records the write the instant it lands; the
+		// mutation's rollback clears it again when it puts the prior file back.
+		c.applied.markApplied()
+	}
+	return err
+}
+
+// lockForWrite takes mu exclusively and clears the applied-write record, so
+// every mutation's answer to "did this call write?" is its own writes and not
+// a previous call's.
+func (c *hubInstancesController) lockForWrite() {
+	c.mu.Lock()
+	c.applied.resetApplied()
+}
+
+// captureApplied folds the mutation's write record into the error it is about
+// to return, and clears it. It is deferred to run before mu is released, so
+// the record it reads is this mutation's own: no other mutation can take mu
+// until this one has captured, so the mark can neither be reset nor stolen out
+// from under the call that made it. Folding it onto the error (rather than
+// leaving the record for the RPC layer to read after the lock is gone) is what
+// keeps the applied answer per-call and race-free.
+func (c *hubInstancesController) captureApplied(errp *error) {
+	wrote := c.applied.takeApplied()
+	if *errp != nil && wrote {
+		*errp = writeApplied(*errp)
+	}
 }
 
 // List returns every instance the registry currently holds, each with its
@@ -814,7 +848,7 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // shapes. A refusal about the hub's own state (the registry not loaded, a
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
-func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
+func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -842,8 +876,9 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if err := validVarNames(params.Vars); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
-	c.mu.Lock()
+	c.lockForWrite()
 	defer c.mu.Unlock()
+	defer c.captureApplied(&err)
 	// The discipline every providers.toml mutation here follows
 	// (hubAuthController.credMu): held across the read, the write and the
 	// reload. A credential write's endpoint assertion is checked under this
@@ -895,9 +930,14 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		// refusal names what could not load.
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The entry this call wrote is still in the file, so the change
-			// stands and every other client's list is stale: an applied write.
-			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
+			// stands and every other client's list is stale: the write primitive
+			// already marked the applied state, so the marker rides the plain
+			// error and instanceWrite broadcasts it.
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
 		}
+		// The rollback put the previous file back, so the write this call made is
+		// undone: nothing for other clients to hear about.
+		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return appwire.InvalidParams(fmt.Sprintf("instance %q cannot be loaded: %v", name, err))
 	}
@@ -936,7 +976,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 // while this edit's write lock is still held, so the answer describes the state
 // this edit produced rather than a later List() a concurrent write can slip
 // into; the RPC handler uses it that way for its response.
-func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) error {
+func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -978,8 +1018,9 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// edit captures under its write locks (listLocked), so it is resolved for
 	// every caller rather than only the captured-listing one.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
-	c.mu.Lock()
+	c.lockForWrite()
 	defer c.mu.Unlock()
+	defer c.captureApplied(&err)
 	// Held for the rest of the call, so the providers.toml write and the
 	// reload that follows it sit inside the same held lock
 	// (hubAuthController.credMu). An edit that moves base_url is one step with
@@ -1136,13 +1177,15 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
 		// A rename whose reload failed and whose rollback write also failed
-		// comes back as a write-applied error: providers.toml carries the new
-		// name, so the rename is as persisted as one that ended cleanly and
-		// gets the same discriminator (instanceRenameError) the handler maps
-		// to ErrorInstanceRenamePersisted. A non-rename edit has no rename to
-		// report, so it keeps the error as it came.
-		if renaming && writeDidApply(err) {
-			return writeApplied(renamePersistedError{err})
+		// is an applied write: providers.toml carries the new name, so the
+		// rename is as persisted as one that ended cleanly and gets the same
+		// discriminator (instanceRenameError) the handler maps to
+		// ErrorInstanceRenamePersisted. The write primitive marked that applied
+		// state on the controller, so the marker is not wrapped onto the error.
+		// A non-rename edit has no rename to report, so it keeps the error as
+		// it came.
+		if renaming && c.applied.peekApplied() {
+			return renamePersistedError{err}
 		}
 		return err
 	}
@@ -1167,19 +1210,21 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		case moveErr == nil:
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
-			// way: renamePersistedError is what the RPC handler reads to
-			// broadcast and to hand the client the discriminator.
-			return writeApplied(renamePersistedError{reloadErr})
+			// way: renamePersistedError is what the RPC handler reads to hand
+			// the client the discriminator, and the write primitive's applied
+			// mark is what the handler broadcasts on.
+			return renamePersistedError{reloadErr}
 		default:
 			// Both halves failed, and the caller has to hear both: the move
 			// report says what credential was left behind, and the reload
 			// failure says the hub's own view may still list the old name
-			// (and refuse instance writes) until it loads again. The move
-			// report already carries the applied marker and the
-			// renamePersistedError discriminator (moveCredentials marks its
-			// own failure), so folding the reload error around it preserves
-			// both without a second writeApplied and without losing the
-			// move's message or wire class.
+			// (and refuse instance writes) until it loads again. The
+			// renamePersistedError discriminator comes from the move report
+			// (moveCredentials marks its own failure), and the applied marker
+			// comes from the providers.toml write this rename landed in
+			// writeAndReload — captureApplied folds it onto this error — so
+			// folding the reload error around the move report preserves both
+			// without losing the move's message or wire class.
 			return fmt.Errorf("%w; the registry could not be reloaded either, so it may still list the old name and refuse instance writes until it can be (%w)", moveErr, reloadErr)
 		}
 	}
@@ -1280,9 +1325,10 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	}
 	if len(problems) > 0 {
 		// The rename reached the file, so it is as persisted as one that ended
-		// cleanly: renamePersistedError is what the RPC handler reads to
-		// broadcast and to hand the client the discriminator.
-		return writeApplied(renamePersistedError{fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; "))})
+		// cleanly: renamePersistedError is what the RPC handler reads to hand
+		// the client the discriminator, and the config write the rename landed
+		// marked the applied state the handler broadcasts on.
+		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; "))}
 	}
 	return nil
 }
@@ -1367,7 +1413,7 @@ func (c *hubInstancesController) renameLeavesRow(r *registry.Registry, inst regi
 // instance or an environment-only one that cannot be deleted - follow Create
 // and Edit's convention (#717/#748): appwire.InvalidParams, not a generic wire
 // error.
-func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
+func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -1390,8 +1436,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// key the caller's row was served with.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 
-	c.mu.Lock()
+	c.lockForWrite()
 	defer c.mu.Unlock()
+	defer c.captureApplied(&err)
 	// The lookup names what this call deletes - the authored entry, the
 	// stored key and the OAuth record under this name - so it is made under
 	// the lock that holds the deletion, as Edit's are: a rename landing
@@ -1573,7 +1620,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 				// folded in here, the way the reload rollback below folds the
 				// same leftovers into its own report.
 				if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-					return writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers))
+					return fmt.Errorf("%w; some credentials were not put back: %w", err, leftovers)
 				}
 			}
 			return restoreErr
@@ -1612,10 +1659,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 				// A credential is still gone, though: a deleted layer that
 				// could not be put back is a change every other client's
 				// credential status for this name is stale against, so the
-				// rollback error also carries the applied marker (writeApplied
-				// leaves the message and wire class alone) that makes
-				// instanceWrite broadcast evener/auth/updated.
-				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
+				// credential deletion's applied mark stays on the controller,
+				// which is what makes instanceWrite broadcast
+				// evener/auth/updated.
+				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
 			}
 			if reloadErr := c.reg.Reload(); reloadErr != nil {
 				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", rolledBack, reloadErr)
@@ -1641,12 +1688,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// however this call ends: the other clients are still listing an
 			// instance that is gone. Unconditional: unlike the other call
 			// sites, this one applies to the config regardless of whether the
-			// credential restore below also fails, so it wraps its own result
-			// rather than relying on restoreFailedRemoval's.
+			// credential restore below also fails, so the applied state is
+			// re-marked here rather than left to restoreFailedRemoval, which
+			// clears it when it puts every credential back.
 			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config", supplyAny)
-			return writeApplied(removeApplied(standingErr))
+			c.applied.markApplied()
+			return removeApplied(standingErr)
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1703,7 +1752,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// !configChanged sibling folds its leftovers.
 			rolledBack := fmt.Errorf("removing %q was rolled back: %w", name, err)
 			if leftovers, ok := errors.AsType[removalLeftoversError](restoreErr); ok {
-				rolledBack = writeApplied(fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers))
+				rolledBack = fmt.Errorf("%w; some credentials were not put back: %w", rolledBack, leftovers)
 			}
 			restoreErr = rolledBack
 		}
@@ -1787,23 +1836,25 @@ func supplyOf(inst registry.Instance) removalSupply {
 // cause is the failure that triggered the rollback. On a restore that carries
 // the instance (ok true) it comes back unchanged, unless a stray layer could
 // not be put back - then the returned error names only those leftover layers,
-// which the caller folds into its own rollback report and marks applied: a
-// deleted credential that stays deleted is a change other clients are stale
-// against even though the instance itself is carried again. On a restore that
-// does not carry the instance, the returned error folds cause, frame, and the
-// layers that could not be put back, and answers writeApplied too. When the
-// failed restore took the layer that carries the instance - a stored key or
-// OAuth record (supplyStoredKey/supplyOAuth) - it also carries the
-// standing-removal discriminator, because the instance no longer resolves and
-// clients must reconcile the removal. supplyAny/supplyConfig are the
-// config-backed question: the authored entry or its provider still carries the
-// instance, so the removal did not stand and a plain applied write is reported
-// (the caller that knows the config IS gone marks removeApplied itself). frame
-// names the state - whether the entry is still authored or the removal stood -
-// so the message reads as correct English for the failure that produced it and
-// never contradicts the wire class. Its callers pass only the layers the
-// failure actually deleted, so this never rewrites - and never reports a
-// failure to rewrite - a credential that is still where it was.
+// which the caller folds into its own rollback report: a deleted credential
+// that stays deleted is a change other clients are stale against even though
+// the instance itself is carried again, and the deletion's applied mark (set
+// by removeCredentials) keeps announcing it. On a restore that does not carry
+// the instance, the returned error folds cause, frame, and the layers that
+// could not be put back. When the failed restore took the layer that carries
+// the instance - a stored key or OAuth record
+// (supplyStoredKey/supplyOAuth) - it also carries the standing-removal
+// discriminator, because the instance no longer resolves and clients must
+// reconcile the removal. supplyAny/supplyConfig are the config-backed
+// question: the authored entry or its provider still carries the instance, so
+// the removal did not stand (the caller that knows the config IS gone marks
+// removeApplied itself). frame names the state - whether the entry is still
+// authored or the removal stood - so the message reads as correct English for
+// the failure that produced it and never contradicts the wire class. Its
+// callers pass only the layers the failure actually deleted, so this never
+// rewrites - and never reports a failure to rewrite - a credential that is
+// still where it was. A restore that puts every deleted layer back clears the
+// applied mark, because the removal is then undone.
 func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
 	storedKeyRestored := true
@@ -1836,24 +1887,28 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 	if !carried {
 		standing := fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
 		if supplies == supplyStoredKey || supplies == supplyOAuth {
-			return false, writeApplied(removeApplied(standing))
+			return false, removeApplied(standing)
 		}
-		return false, writeApplied(standing)
+		return false, standing
 	}
 	if len(problems) > 0 {
 		// The instance is carried again, but a stray layer stayed deleted: a
-		// plain rollback, so the caller learns what is missing without the
-		// writeApplied mark a real applied deletion carries.
+		// plain rollback, so the caller learns what is missing while the
+		// credential-deletion mark removeCredentials set keeps the change
+		// announced.
 		return true, removalLeftoversError{strings.Join(problems, " and ")}
 	}
+	// Every layer this call deleted is back, and so is the one that carries the
+	// instance: the removal is undone, so there is nothing to announce.
+	c.applied.resetApplied()
 	return true, cause
 }
 
 // removalLeftoversError is the error restoreFailedRemoval returns when the
 // layer that carries the instance is back but a stray other layer could not be
-// put back. The caller folds it into its own rollback report and wraps that in
-// writeApplied: the removal rolled back, but a credential is still gone, and
-// the applied marker is what makes every other client hear about it.
+// put back. The caller folds it into its own rollback report: the removal
+// rolled back, but a credential is still gone, and the credential deletion's
+// applied mark is what makes every other client hear about it.
 type removalLeftoversError struct{ problems string }
 
 func (e removalLeftoversError) Error() string { return e.problems }
@@ -1886,12 +1941,18 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 			return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
 		}
 		deleted.storedKey = true
+		// The primitive that removed a layer records the change the instance
+		// mutation stands for; a full restore below clears it again.
+		c.applied.markApplied()
 	}
 	removedRecord, err := c.auth.deleteAuth(c.auth.stateDir, name)
 	if err != nil {
 		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
 	deleted.oauthRecord = removedRecord
+	if removedRecord {
+		c.applied.markApplied()
+	}
 	return deleted, nil
 }
 
@@ -2018,9 +2079,12 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 	if err := c.reg.Reload(); err != nil {
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The layer this call wrote is still in the file, like Create's
-			// failed rollback: an applied write, still broadcast.
-			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
+			// failed rollback: the write primitive set the applied mark, so
+			// instanceWrite broadcasts the plain error's change.
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
 		}
+		// The rollback put the previous file back, so the write is undone.
+		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return appwire.InvalidParams(fmt.Sprintf("this %s would leave %q unable to load: %v", verb, name, err))
 	}
@@ -2038,7 +2102,7 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 // follow Create's convention: the caller sent the bad name, so unknown
 // instances, glob ids, dangling aliases, and unknown rows come back as
 // appwire.InvalidParams.
-func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) error {
+func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -2048,8 +2112,9 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	name := strings.TrimSpace(params.Name)
 	model := strings.TrimSpace(params.Model)
 
-	c.mu.Lock()
+	c.lockForWrite()
 	defer c.mu.Unlock()
+	defer c.captureApplied(&err)
 	// Held across the write and the reload like every other mutation here
 	// (hubAuthController.credMu): a reload commits the credential view it
 	// read, so one running across a credential write's clear could publish a
@@ -2098,7 +2163,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 // SetDefault records which instance a bare model reference resolves on. A
 // name that resolves to no instance follows Create and Edit's convention
 // (#717/#748): the caller sent it, so it comes back as appwire.InvalidParams.
-func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultParams) error {
+func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultParams) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -2107,8 +2172,9 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 	name := strings.TrimSpace(params.Name)
 
-	c.mu.Lock()
+	c.lockForWrite()
 	defer c.mu.Unlock()
+	defer c.captureApplied(&err)
 	// Held across the write and the reload like every other mutation here
 	// (hubAuthController.credMu): a reload commits the credential view it
 	// read, so one running across a credential write's clear could publish a
@@ -2130,6 +2196,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 		return err
 	}
 	// The new default is on disk, so a failed reload is an applied write: only
-	// the hub's own view is behind, and every other client's list is stale.
-	return writeApplied(c.reg.Reload())
+	// the hub's own view is behind, and every other client's list is stale. The
+	// write primitive set the applied mark instanceWrite broadcasts on.
+	return c.reg.Reload()
 }
