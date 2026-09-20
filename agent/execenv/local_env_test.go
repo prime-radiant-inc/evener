@@ -217,6 +217,36 @@ func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
 // API for no production caller.
 const sandboxSessionScratchPrefixForTest = "evener-sandbox-"
 
+// worldTempForTest points container provisioning at a base this test owns, made
+// world-usable (0777 + sticky) so the selection accepts it. It exists because the
+// container's shape assertions must not depend on the machine's /tmp —
+// AGENTS.md: "Do not make make test or go test ./... depend on ... ambient
+// developer machine state" — and because a host with no world-usable base would
+// otherwise fail the test while production behaves correctly (it leaves TMPDIR
+// inherited).
+func worldTempForTest(t *testing.T) string {
+	t.Helper()
+	base := filepath.Join(t.TempDir(), "host-temp")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{base}))
+	return base
+}
+
+// requireContainerPlatform skips a test whose assertions are about the POSIX temp
+// container. Windows keeps TMPDIR on the session scratch (sandbox.SessionTmpSupported
+// is false there), so there is no container to assert about.
+func requireContainerPlatform(t *testing.T) {
+	t.Helper()
+	if !sandbox.SessionTmpSupported {
+		t.Skip("the world-usable temp container is POSIX-only; this platform keeps TMPDIR on the scratch")
+	}
+}
+
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/developing-evener/environment.md
 // documents EVENER_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
 // session's spawned commands must see EVENER_SCRATCH_DIR and TMPDIR too, not
@@ -230,6 +260,8 @@ const sandboxSessionScratchPrefixForTest = "evener-sandbox-"
 // (docs/superpowers/specs/2026-07-15-session-scratch-and-orchestration-posture-design.md,
 // "Environment") states the rule; this test pins its observable shape.
 func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
+	requireContainerPlatform(t)
+	base := worldTempForTest(t)
 	home := t.TempDir()
 	worktree := filepath.Join(home, "project")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -281,12 +313,12 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	if perm := containerInfo.Mode().Perm(); perm != 0o711 {
 		t.Fatalf("temp container %q mode = %04o, want 0711 (reachable by others, not writable by them)", container, perm)
 	}
-	baseInfo, err := os.Stat(filepath.Dir(container))
-	if err != nil || !baseInfo.IsDir() {
-		t.Fatalf("temp container base %q must exist: %v", filepath.Dir(container), err)
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if baseInfo.Mode().Perm()&0o002 == 0 || baseInfo.Mode()&os.ModeSticky == 0 {
-		t.Fatalf("temp container base %q mode = %v, want a world-writable sticky host temp", filepath.Dir(container), baseInfo.Mode())
+	if got := filepath.Dir(container); got != canonicalBase {
+		t.Fatalf("temp container base = %q, want the provisioned world-usable base %q", got, canonicalBase)
 	}
 
 	// Provisioned once per env: a second spawn reuses the same directories rather
@@ -306,6 +338,8 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 // best-effort by construction (a foreign nested subtree may refuse to unlink), but
 // nothing of ours is left behind in the ordinary case.
 func TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose(t *testing.T) {
+	requireContainerPlatform(t)
+	worldTempForTest(t)
 	worktree := t.TempDir()
 	env := NewLocalExecutionEnvironment(worktree)
 	tmpDir := envToMap(env.commandEnvironment(nil))["TMPDIR"]
@@ -331,12 +365,11 @@ func TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose(t *testing.T
 // that cannot be provisioned must leave TMPDIR alone — inherited from the process
 // env, which is the fail-closed direction — and never fall back to the private
 // scratch, which is exactly the value #495 removes. The failure is sticky so a
-// broken host temp is not re-probed on every spawn.
+// broken host temp is not re-probed on every spawn. Provisioning is driven here by
+// an empty base set, so the test needs no ambient host temp and no production seam.
 func TestCommandEnvironment_TmpContainerFailureLeavesTmpDirInherited(t *testing.T) {
-	fail := errors.New("no world-usable host temp")
-	prev := newSessionTmp
-	newSessionTmp = func() (*sandbox.SessionTmp, error) { return nil, fail }
-	t.Cleanup(func() { newSessionTmp = prev })
+	requireContainerPlatform(t)
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 
 	worktree := t.TempDir()
 	env := NewLocalExecutionEnvironment(worktree)
@@ -350,11 +383,57 @@ func TestCommandEnvironment_TmpContainerFailureLeavesTmpDirInherited(t *testing.
 		t.Fatalf("TMPDIR = %q must not fall back to the private scratch when the container fails", got["TMPDIR"])
 	}
 
-	calls := 0
-	newSessionTmp = func() (*sandbox.SessionTmp, error) { calls++; return nil, fail }
-	env.commandEnvironment(nil)
-	if calls != 0 {
-		t.Fatalf("a failed container provisioning must be sticky, got %d further attempts", calls)
+	// Sticky failure: even after a world-usable base becomes available, the env must
+	// not re-attempt provisioning — the failure is recorded once, not re-probed per
+	// spawn.
+	base := filepath.Join(t.TempDir(), "host-temp")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{base}))
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := envToMap(env.commandEnvironment(nil))
+	if strings.HasPrefix(again["TMPDIR"], canonicalBase+string(filepath.Separator)) {
+		t.Fatalf("a failed container provisioning must be sticky, but a later spawn minted %q under the now-available base", again["TMPDIR"])
+	}
+}
+
+// TestCommandEnvironment_TmpContainerExportedWhenScratchUnavailable: the two
+// variables answer different needs, so an env whose private scratch cannot be
+// provisioned must still hand its spawn a world-usable TMPDIR. Inheriting the
+// ambient TMPDIR instead would leave a privilege-dropping child on a temp this
+// process knows nothing about — possibly a private one — which is the failure #495
+// is about.
+func TestCommandEnvironment_TmpContainerExportedWhenScratchUnavailable(t *testing.T) {
+	requireContainerPlatform(t)
+	base := worldTempForTest(t)
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(env.Cleanup)
+	// As if the first spawn's scratch provisioning had failed: the sticky failure
+	// flag is what unsandboxedScratchDir consults.
+	env.scratchMu.Lock()
+	env.unsandboxedScratchFailed = true
+	env.scratchMu.Unlock()
+
+	if scratch := env.SessionScratchDir(); scratch != "" {
+		t.Fatalf("SessionScratchDir = %q, want no scratch for this env", scratch)
+	}
+	tmpDir := envToMap(env.commandEnvironment(nil))["TMPDIR"]
+	if tmpDir == "" {
+		t.Fatal("TMPDIR must still be exported when only the scratch is unavailable")
+	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(filepath.Dir(tmpDir)); got != canonicalBase {
+		t.Fatalf("TMPDIR = %q, want the container leaf under the world-usable base %q", tmpDir, canonicalBase)
 	}
 }
 

@@ -38,6 +38,17 @@ const (
 // exist and be a world-writable sticky directory to be selected.
 var worldTempBases = []string{"/tmp", "/var/tmp"}
 
+// SetWorldTempBasesForTesting replaces the world-usable host temp bases container
+// provisioning walks, returning a restore func. It exists so a test can point the
+// container at a base it owns — or at one that deliberately cannot serve — instead
+// of depending on the machine's /tmp, which AGENTS.md's determinism rule forbids
+// for a default test. Production never calls it.
+func SetWorldTempBasesForTesting(bases []string) (restore func()) {
+	old := worldTempBases
+	worldTempBases = append([]string(nil), bases...)
+	return func() { worldTempBases = old }
+}
+
 // SessionTmp is one session's temp container: an owner-controlled, world-
 // traversable directory holding the liveness lease, and a sticky world-writable
 // leaf inside it that a spawned command receives as TMPDIR so a descendant that
@@ -65,11 +76,33 @@ type SessionTmp struct {
 // and creation FAILS CLOSED when the directory it just made is not owned by this
 // process. Every failure disposes what it created, so a failed call leaks neither
 // a directory nor a lease.
+//
+// Every candidate base is attempted in turn: a base can pass the mode check and
+// still refuse the directory (MkdirTemp full or EACCES, the ownership check, the
+// leaf, the lease), and the requirement is a world-usable container *somewhere*,
+// not in one particular base. Only when no base serves does the call fail.
 func NewSessionTmp() (*SessionTmp, error) {
-	base, err := worldUsableTempBase()
-	if err != nil {
-		return nil, err
+	var failures []error
+	for _, candidate := range worldTempBases {
+		base, ok := validWorldTempBase(candidate)
+		if !ok {
+			failures = append(failures, fmt.Errorf("sandbox: %q is not a world-usable host temp base", candidate))
+			continue
+		}
+		tmp, err := newSessionTmpInBase(base)
+		if err == nil {
+			return tmp, nil
+		}
+		failures = append(failures, err)
 	}
+	if len(failures) == 0 {
+		return nil, errors.New("sandbox: no world-usable host temp base is configured")
+	}
+	return nil, errors.Join(failures...)
+}
+
+// newSessionTmpInBase creates the container inside one already-validated base.
+func newSessionTmpInBase(base string) (*SessionTmp, error) {
 	container, err := os.MkdirTemp(base, sessionScratchPrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: create session temp container: %w", err)
@@ -109,20 +142,12 @@ func NewSessionTmp() (*SessionTmp, error) {
 	return &SessionTmp{Dir: leaf, container: container, base: base, lease: lease}, nil
 }
 
-// worldUsableTempBase returns the canonical first world-usable host temp base, or
-// an error when none of them serves.
-func worldUsableTempBase() (string, error) {
-	for _, candidate := range worldTempBases {
-		if base, ok := validWorldTempBase(candidate); ok {
-			return base, nil
-		}
-	}
-	return "", fmt.Errorf("sandbox: no world-usable host temp base among %s", strings.Join(worldTempBases, ", "))
-}
-
 // validWorldTempBase reports whether candidate is a directory any local user can
-// create in — the /tmp contract: an existing directory, world-writable, and
-// sticky so another user cannot remove what we put there.
+// reach and create in — the /tmp contract, all three parts of it: an existing
+// directory, world-writable so we can create the container, world-EXECUTABLE so an
+// arbitrary uid can traverse into it at all (a 1776-style base is writable yet
+// unreachable, so it cannot serve), and sticky so another user cannot remove what
+// we put there.
 func validWorldTempBase(candidate string) (string, bool) {
 	if strings.TrimSpace(candidate) == "" {
 		return "", false
@@ -131,7 +156,7 @@ func validWorldTempBase(candidate string) (string, bool) {
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
-	if info.Mode().Perm()&0o002 == 0 || info.Mode()&os.ModeSticky == 0 {
+	if info.Mode().Perm()&0o002 == 0 || info.Mode().Perm()&0o001 == 0 || info.Mode()&os.ModeSticky == 0 {
 		return "", false
 	}
 	canonical, err := filepath.EvalSymlinks(candidate)

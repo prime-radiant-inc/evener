@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzProcessRuntimeProgram exercises the public command, grep-ripgrep, stream,
@@ -273,6 +275,17 @@ func (c *processRuntimeCommand) appendTrace(root string, scratch map[string]stri
 func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace {
 	t.Helper()
 	root := t.TempDir()
+	// Container provisioning must not depend on the machine's /tmp (AGENTS.md's
+	// determinism rule), so this fixture points it at a base inside the fixture and
+	// made world-usable, exactly as the production bases are.
+	worldBase := filepath.Join(root, "world-temp")
+	if err := os.Mkdir(worldBase, 0o700); err != nil {
+		t.Fatalf("make fixture world temp base: %v", err)
+	}
+	if err := os.Chmod(worldBase, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("open fixture world temp base: %v", err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{worldBase}))
 	sub := filepath.Join(root, "sub")
 	venvBin := filepath.Join(sub, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {

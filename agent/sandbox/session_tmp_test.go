@@ -22,10 +22,21 @@ func hostTempForTest(t *testing.T) string {
 	if err := os.Chmod(base, sessionTmpLeafMode); err != nil {
 		t.Fatal(err)
 	}
-	old := worldTempBases
-	worldTempBases = []string{base}
-	t.Cleanup(func() { worldTempBases = old })
+	t.Cleanup(SetWorldTempBasesForTesting([]string{base}))
 	return base
+}
+
+// hostHasWorldUsableTempBase reports whether this machine actually offers a base a
+// container could live in. The live arbitrary-uid test uses the REAL bases on
+// purpose — an injected fixture base sits under t.TempDir(), which an arbitrary uid
+// cannot even traverse — so it has to skip rather than fail where none serves.
+func hostHasWorldUsableTempBase() bool {
+	for _, candidate := range append([]string(nil), worldTempBases...) {
+		if _, ok := validWorldTempBase(candidate); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // isolateScratchBases removes every scratch allocation base from the sweep's
@@ -140,23 +151,76 @@ func TestSessionTmpRemoveReclaimsContainer(t *testing.T) {
 
 // TestSessionTmpRequiresWorldUsableBase: the container must never be created in
 // a base an arbitrary uid cannot use — that is the whole point — so a private
-// base (0700) and a missing base are both refused, and no directory is left
-// behind by the refusal.
+// base (0700), a base that is world-writable but NOT world-traversable (1776: an
+// arbitrary uid can reach nothing inside it), a missing base and an empty base set
+// are all refused, and no directory is left behind by the refusal.
 func TestSessionTmpRequiresWorldUsableBase(t *testing.T) {
 	private := t.TempDir()
-	old := worldTempBases
-	t.Cleanup(func() { worldTempBases = old })
+	noTraverse := filepath.Join(t.TempDir(), "no-traverse")
+	if err := os.Mkdir(noTraverse, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 1776: world-writable and sticky, but no world execute, so an arbitrary uid
+	// cannot even chdir into it — a writable, unreachable base cannot serve.
+	if err := os.Chmod(noTraverse, 0o776|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
 
-	worldTempBases = []string{private}
-	if _, err := NewSessionTmp(); err == nil {
-		t.Fatal("NewSessionTmp accepted a base that is neither world-writable nor sticky")
+	for _, tc := range []struct {
+		name  string
+		bases []string
+	}{
+		{"private base", []string{private}},
+		{"non-traversable base", []string{noTraverse}},
+		{"missing and private bases", []string{"", filepath.Join(private, "missing"), private}},
+		{"no bases", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(SetWorldTempBasesForTesting(tc.bases))
+			if _, err := NewSessionTmp(); err == nil {
+				t.Fatalf("NewSessionTmp accepted %v", tc.bases)
+			}
+			if entries, err := os.ReadDir(private); err != nil || len(entries) != 0 {
+				t.Fatalf("a refused container leaked into the rejected base: %v %v", entries, err)
+			}
+		})
 	}
-	worldTempBases = []string{"", filepath.Join(private, "missing"), private}
-	if _, err := NewSessionTmp(); err == nil {
-		t.Fatal("NewSessionTmp accepted a base set with no usable base")
+}
+
+// TestSessionTmpFallsBackToALaterBase: a candidate that cannot serve must not end
+// provisioning while a later candidate can. The first entries here are rejected by
+// the mode check (a plain file, a private dir); the last is a real world-usable
+// base, and the container must come from it.
+//
+// The valid-but-refusing sub-case (a base whose modes pass and whose MkdirTemp
+// still fails) is not constructible portably — a 1777/sticky base grants exactly
+// the creation it advertises — so what the loop's error-join covers there is
+// exercised by the all-candidates-fail case above.
+func TestSessionTmpFallsBackToALaterBase(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if entries, err := os.ReadDir(private); err != nil || len(entries) != 0 {
-		t.Fatalf("a refused container leaked into the rejected base: %v %v", entries, err)
+	healthy := filepath.Join(t.TempDir(), "healthy")
+	if err := os.Mkdir(healthy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(healthy, sessionTmpLeafMode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(SetWorldTempBasesForTesting([]string{notADir, t.TempDir(), healthy}))
+
+	tmp, err := NewSessionTmp()
+	if err != nil {
+		t.Fatalf("NewSessionTmp must fall back to a later usable base: %v", err)
+	}
+	t.Cleanup(func() { _ = tmp.Remove() })
+	canonical, err := filepath.EvalSymlinks(healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if container := filepath.Dir(tmp.Dir); filepath.Dir(container) != canonical {
+		t.Fatalf("container %q did not come from the last usable base %q", container, canonical)
 	}
 }
 
@@ -173,8 +237,8 @@ func TestSessionTmpRequiresWorldUsableBase(t *testing.T) {
 // nested directory is removable: the sticky bit on the leaf lets the leaf's owner
 // unlink any entry, empty or not, that it is not the owner of.)
 func TestSessionTmpUsableByArbitraryUID(t *testing.T) {
-	if _, err := worldUsableTempBase(); err != nil {
-		t.Skipf("no world-usable host temp on this host: %v", err)
+	if !hostHasWorldUsableTempBase() {
+		t.Skipf("this host offers no world-usable host temp base (%v)", worldTempBases)
 	}
 	tmp, err := NewSessionTmp()
 	if err != nil {
@@ -268,6 +332,13 @@ func TestSessionTmpContainerReapedByCrashedSweep(t *testing.T) {
 // reported and left in place, and the sweep still reclaims the rest rather than
 // aborting the base.
 func TestSessionTmpSweepReportsUnremovableContainer(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// Root bypasses a 0500 container with CAP_DAC_OVERRIDE, so the removal this
+		// test needs to fail would succeed and neither assertion would mean what it
+		// says. Same guard as the sibling permission-denial tests in
+		// scratch_retention_test.go.
+		t.Skip("an unremovable container cannot be created as root")
+	}
 	hostTempForTest(t)
 	isolateScratchBases(t)
 	workspace := t.TempDir()

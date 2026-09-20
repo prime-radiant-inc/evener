@@ -592,19 +592,27 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 		overlay[envvars.Path.Name] = e.LoginPATH
 	}
 	if e.Wrapper == nil {
-		if scratch := e.unsandboxedScratchDir(); scratch != "" {
+		// EVENER_SCRATCH_DIR and TMPDIR are provisioned INDEPENDENTLY. They answer
+		// different needs, so one failing must not suppress the other: a host that
+		// cannot serve a private scratch can still serve a world-usable temp, and
+		// inheriting an ambient TMPDIR — which may itself be a private directory — is
+		// exactly the failure #495 is about. Each failure leaves only its OWN
+		// variable unset (inherited) rather than re-pointing it at the other.
+		scratch := e.unsandboxedScratchDir()
+		if scratch != "" {
 			overlay[envvars.EVENERScratchDir.Name] = scratch
-			tmpDir := scratch
-			if !e.tmpDirNamesScratch() {
-				tmpDir = e.unsandboxedTmpDir()
-			}
-			// A container that failed to provision leaves TMPDIR inherited rather
-			// than re-pointed at the private scratch: an inherited host temp is
-			// still usable by a privilege-dropping child, while the scratch is
-			// exactly the value this rule removes.
-			if tmpDir != "" {
-				overlay[envvars.TmpDir.Name] = tmpDir
-			}
+		}
+		tmpDir := ""
+		if e.tmpDirNamesScratch() {
+			// The confined shape's temp IS its scratch, so an unprovisioned scratch
+			// leaves TMPDIR inherited (today's behavior) rather than inventing a path
+			// the file tools cannot write.
+			tmpDir = scratch
+		} else {
+			tmpDir = e.unsandboxedTmpDir()
+		}
+		if tmpDir != "" {
+			overlay[envvars.TmpDir.Name] = tmpDir
 		}
 	}
 	if len(overlay) == 0 {
@@ -626,15 +634,14 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 // never reaches overlaySessionEnv at all — sandbox.ApplyEnvFloor owns its
 // scratch vars — and keeps TMPDIR on the session temp.
 func (e *LocalExecutionEnvironment) tmpDirNamesScratch() bool {
+	if !sandbox.SessionTmpSupported {
+		// Where the POSIX container cannot exist the shape split buys nothing, so
+		// keep the pre-existing session-scratch export instead of handing the child
+		// an unrelated inherited TMPDIR.
+		return true
+	}
 	return e.Sandbox != nil && e.Sandbox.FileToolConfined()
 }
-
-// newSessionTmp provisions the world-usable session temp container exported as
-// TMPDIR for an unconfined unsandboxed env. It is a package var so a test can
-// drive the provisioning-failure branch, which has to leave TMPDIR inherited (never
-// re-pointed at the private scratch) and be sticky rather than re-probed on every
-// spawn. Production always uses sandbox.NewSessionTmp.
-var newSessionTmp = sandbox.NewSessionTmp
 
 // unsandboxedTmpDir lazily provisions (once) and returns this env's world-usable
 // session temp container leaf — the directory exported as TMPDIR when this env's
@@ -652,7 +659,7 @@ func (e *LocalExecutionEnvironment) unsandboxedTmpDir() string {
 		e.scratchMu.Unlock()
 		return ""
 	}
-	tmp, err := newSessionTmp()
+	tmp, err := sandbox.NewSessionTmp()
 	if err != nil {
 		e.unsandboxedTmpFailed = true
 		e.scratchMu.Unlock()

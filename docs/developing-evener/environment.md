@@ -120,7 +120,7 @@ process environments.
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`) for a sandboxed spawn and for an unsandboxed spawn whose file tools are confined, and to a world-usable session temp container instead when an unsandboxed spawn's file tools are unconfined — a privilege-dropping child cannot write the private `0700` scratch. |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`) for a sandboxed spawn and for an unsandboxed spawn whose file tools are confined, and to a world-usable session temp container instead when an unsandboxed spawn's file tools are unconfined — a privilege-dropping child cannot write the private `0700` scratch. The container exists on POSIX platforms only; elsewhere the scratch is kept. |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |

@@ -159,8 +159,12 @@ func capabilityFactsFromEnv(env execenv.ExecutionEnvironment, probe capabilityPr
 // unsandboxed session with unconfined file tools, whose shell receives a
 // world-usable temp container instead of the private scratch (#495). Advertising
 // $TMPDIR as the scratch there would name a path the shell's own temp is not.
+//
+// A platform where the container cannot exist keeps the scratch for every shape
+// (execenv's tmpDirNamesScratch asks sandbox.SessionTmpSupported too, so the two
+// renderers cannot disagree about a session).
 func (f capabilityFacts) tmpDirNamesScratch() bool {
-	return f.sandboxed() || f.fileToolConfined
+	return f.sandboxed() || f.fileToolConfined || !sandbox.SessionTmpSupported
 }
 
 // capabilityPreambleLines renders the preamble as short "label: values" lines.

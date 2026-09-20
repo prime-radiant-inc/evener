@@ -68,6 +68,10 @@ process that inherits it and a private scratch is not:
   user (`su`, an `env_keep += "TMPDIR"`, a setuid binary); such a descendant
   cannot write a directory owned by the session user at `0700`, which is exactly
   why it no longer receives one as `TMPDIR`.
+  This rule applies where such a container can exist. The container is defined by
+  POSIX mode bits and by a descendant being able to become another user; on
+  Windows it cannot, so `TMPDIR` keeps the session scratch there for every shape
+  rather than being left inherited.
 
 `EVENER_SCRATCH_DIR` and the file-tool root do not vary with the shape: the
 model's file tools and its shell still name the same writable scratch, and that

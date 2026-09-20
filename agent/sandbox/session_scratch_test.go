@@ -265,12 +265,10 @@ func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
 	// container may live in, so "no usable base" has to make those unusable too.
 	// The assertion (a sweep with nothing it can read reports failure) is
 	// unchanged; only the fixture covers the second base class.
-	oldWorld := worldTempBases
-	worldTempBases = []string{missing}
+	t.Cleanup(SetWorldTempBasesForTesting([]string{missing}))
 	t.Cleanup(func() {
 		sessionScratchTempDir = oldTemp
 		sessionScratchUserCacheDir = oldCache
-		worldTempBases = oldWorld
 	})
 	if err := SweepCrashedSessionScratch(t.TempDir()); err == nil {
 		t.Error("sweep with no usable scratch base reported success")
