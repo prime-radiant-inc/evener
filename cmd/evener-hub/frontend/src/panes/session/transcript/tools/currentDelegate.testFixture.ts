@@ -2,13 +2,14 @@ import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import { threadsStore } from "../../../../stores/threads";
 import { makeTranscriptPreviewModel } from "../../../../transcriptDisplay/previewFixture";
 
-/** Current owner evidence, deliberately separate from a tool's frozen receipt. */
+/** Current owner evidence, deliberately separate from a tool's frozen receipt.
+ * `overrides` spreads last and cannot shadow the status/reason parameters. */
 export function seedCurrentDelegate(
   ref: string,
   delegateId: string,
   status: string,
   reason?: string,
-  overrides?: Partial<EvenerDelegateInfo>,
+  overrides?: Partial<Omit<EvenerDelegateInfo, "status" | "reason">>,
 ) {
   const thread = makeTranscriptPreviewModel();
   thread.ref = ref;

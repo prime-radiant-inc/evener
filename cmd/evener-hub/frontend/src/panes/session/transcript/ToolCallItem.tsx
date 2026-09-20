@@ -269,7 +269,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // clock); a standalone div here would duplicate the word on back-to-back
   // lines. Collapsed - or for an activation-only receipt whose card renders
   // nothing - this standalone line is the row's only status surface.
-  const delegateCardRenders = delegateOutputHasCard(delegateOutput, stableDelegateId);
+  const delegateCardRenders = delegateOutputHasCard(delegateOutput);
   const showStandaloneLifecycle = !expanded || !delegateCardRenders;
   // Built only when it will render: delegate cards settle auto-expanded, so
   // the standalone line is the exception, not the steady state.
@@ -281,11 +281,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         data-kind={delegateKind}
         data-attention={stableDelegate?.needsAttention ? "true" : undefined}
       >
-        <DelegateStatusWord
-          kind={delegateKind}
-          stable={stableDelegate}
-          attention={stableDelegate?.needsAttention ?? false}
-        />
+        <DelegateStatusWord kind={delegateKind} stable={stableDelegate} />
       </div>
     ) : null;
 
@@ -425,7 +421,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         title={detail}
         bodyId={bodyId}
       />
-      {showStandaloneLifecycle && lifecycle}
+      {lifecycle}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

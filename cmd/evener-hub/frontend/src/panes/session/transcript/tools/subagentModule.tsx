@@ -110,14 +110,15 @@ const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
   unknown: "Status unavailable",
 };
 
-export function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
   const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
   return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
 }
 
 // The attention marker is part of the status word: one string, shared by both
-// status surfaces so the wording cannot drift between them.
-export const DELEGATE_ATTENTION_MARKER = "◆ Needs attention";
+// status surfaces so the wording cannot drift between them. Its glyph is the
+// attention glyph the stats line already carries.
+const DELEGATE_ATTENTION_MARKER = `${STATUS_GLYPH.attention} Needs attention`;
 
 // The status word both delegate status surfaces render: the lifecycle label
 // plus the attention marker when the stable projection asks for it. The
@@ -127,16 +128,14 @@ export const DELEGATE_ATTENTION_MARKER = "◆ Needs attention";
 export function DelegateStatusWord({
   kind,
   stable,
-  attention,
 }: {
   kind: SubagentRowKind;
   stable: EvenerDelegateInfo | undefined;
-  attention: boolean;
 }) {
   return (
     <>
       {delegateLifecycleLabel(kind, stable)}
-      {attention && <span>{DELEGATE_ATTENTION_MARKER}</span>}
+      {stable?.needsAttention && <span>{DELEGATE_ATTENTION_MARKER}</span>}
     </>
   );
 }
@@ -144,12 +143,10 @@ export function DelegateStatusWord({
 // True when a delegate call's parsed output still yields a card row - the
 // exact gate rowFromDelegateItem applies. An activation-only result (parsed
 // JSON with no stable delegate_id) renders no card, so its caller keeps the
-// standalone status line. Shared so the two rules cannot drift.
-export function delegateOutputHasCard(
-  parsed: Record<string, unknown> | undefined,
-  delegateId: string | undefined,
-): boolean {
-  return parsed === undefined || delegateId !== undefined;
+// standalone status line. Deriving the id here keeps the rule and its inputs
+// in one place - no caller can pass an id from a different source.
+export function delegateOutputHasCard(parsed: Record<string, unknown> | undefined): boolean {
+  return parsed === undefined || str(parsed, "delegate_id") !== undefined;
 }
 
 // deriveQuotes flattens the child's turns into its authored lines. Two
@@ -303,7 +300,7 @@ function SubagentCard({
           {STATUS_GLYPH[attention ? "attention" : displayKind]}
         </span>
         <span className={CLASS.statusWord} data-testid="subagent-status-word">
-          <DelegateStatusWord kind={displayKind} stable={stable} attention={attention} />
+          <DelegateStatusWord kind={displayKind} stable={stable} />
         </span>
         {/* Each segment rides behind the word, behind its own separator -
             never a dangling "·" advertising a segment that has no data. */}
@@ -405,7 +402,7 @@ export function rowFromDelegateItem(
   // A settled activation-only result is historical data, not a stable
   // delegate control identity. Keep an in-flight call-keyed placeholder, but
   // never turn job_id into a delegate row.
-  if (!delegateOutputHasCard(parsed, delegateId)) return null;
+  if (!delegateOutputHasCard(parsed)) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
   const resumable = parsed && typeof parsed.resumable === "boolean" ? parsed.resumable : undefined;
