@@ -7,10 +7,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "@evener/appwire-client/state/mutation";
-import { MutationOutboxSQLite, type MutationOutboxDatabase, type Row } from "./mutationOutboxStorage";
+import { MutationOutboxSQLite, type Row } from "./mutationOutboxStorage";
+import type { SqliteSync } from "./sqliteSync";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 // The default id source is expo-crypto's synchronous randomUUID/getRandomValues,
 // mocked so this suite proves the adapter never dereferences a bare Web Crypto
@@ -22,22 +23,13 @@ vi.mock("expo-crypto", () => ({
 }));
 
 let directory: string;
-let database: DatabaseSync;
+let database: SqliteDoubleDatabase;
+let port: SqliteSync;
 let storage: MutationOutboxSQLite;
-
-function databaseAdapter(): MutationOutboxDatabase {
-	return {
-		execSync: (sql) => database.exec(sql),
-		runSync: (sql, ...params) => database.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: (string | number)[]) =>
-			(database.prepare(sql).get(...params) as T | undefined) ?? null,
-		getAllSync: <T>(sql: string, ...params: (string | number)[]) => database.prepare(sql).all(...params) as T[],
-	};
-}
 
 function openStorage() {
 	let next = 0;
-	storage = new MutationOutboxSQLite(databaseAdapter(), {
+	storage = new MutationOutboxSQLite(port, {
 		createMutationId: () => `mutation-${++next}`,
 		now: () => 1234,
 	});
@@ -51,7 +43,9 @@ function rawRow(table: string, clientMutationId: string): Row | undefined {
 
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "evener-mutation-outbox-"));
-	database = new DatabaseSync(join(directory, "outbox.sqlite"));
+	const opened = openSqliteSyncDouble(join(directory, "outbox.sqlite"));
+	database = opened.database;
+	port = opened.port;
 	openStorage();
 });
 
@@ -149,7 +143,7 @@ test("enqueueIntent persists an absent optimistic display as JSON null and reads
 });
 
 test("enqueueIntent persists attachments, composer text, and the submitting client identity", async () => {
-	const identifiedStorage = new MutationOutboxSQLite(databaseAdapter(), {
+	const identifiedStorage = new MutationOutboxSQLite(port, {
 		createMutationId: () => "identified-mutation",
 		now: () => 1234,
 		getOwnClientId: () => "client-one",
@@ -191,7 +185,7 @@ test("enqueueIntent rejects an empty or whitespace targetRef before allocating a
 // reject outright and roll back the sequence it just allocated - not
 // advance the sequence while quietly leaving the first payload in place.
 test("enqueueIntent rejects a duplicate clientMutationId and rolls back its sequence allocation", async () => {
-	const collidingIdStorage = new MutationOutboxSQLite(databaseAdapter(), {
+	const collidingIdStorage = new MutationOutboxSQLite(port, {
 		createMutationId: () => "mutation-collide",
 		now: () => 1234,
 	});
@@ -215,7 +209,7 @@ test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomS
 	// @ts-expect-error - deliberately removing the global for this assertion.
 	delete globalThis.crypto;
 	try {
-		const defaultIdStorage = new MutationOutboxSQLite(databaseAdapter(), { now: () => 1234 });
+		const defaultIdStorage = new MutationOutboxSQLite(port, { now: () => 1234 });
 		const persisted = await defaultIdStorage.enqueueIntent(intent("no bare crypto global", "local:no-crypto"));
 		expect(persisted.clientMutationId).toMatch(/^expo-crypto-/);
 	} finally {
@@ -237,16 +231,16 @@ test("intentSequence is gap-free and per target ref", async () => {
 test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
 	let otherNext = 0;
 	const storageB = new MutationOutboxSQLite(
-		databaseAdapter(),
+		port,
 		{ createMutationId: () => `other-${++otherNext}`, now: () => 5678 },
 	);
 
 	let sequenceAllocations = 0;
 	let recordB: ReturnType<typeof storageB.enqueueIntent> | undefined;
-	const racingAdapter: MutationOutboxDatabase = {
-		...databaseAdapter(),
+	const racingAdapter: SqliteSync = {
+		...port,
 		getFirstSync: <T>(sql: string, ...params: (string | number)[]) => {
-			const result = databaseAdapter().getFirstSync<T>(sql, ...params);
+			const result = port.getFirstSync<T>(sql, ...params);
 			sequenceAllocations += 1;
 			// The old allocator's first getFirstSync is its standalone sequence
 			// read. Re-enter with a second storage instance before that allocator
@@ -839,7 +833,7 @@ test("the stop epoch survives later enqueues and a fresh storage instance", asyn
 	// shares one database: distinct instances mint distinct ids.
 	let next = 0;
 	const instance = () =>
-		new MutationOutboxSQLite(databaseAdapter(), {
+		new MutationOutboxSQLite(port, {
 			createMutationId: () => `mutation-${++next}`,
 			now: () => 1234,
 		});
