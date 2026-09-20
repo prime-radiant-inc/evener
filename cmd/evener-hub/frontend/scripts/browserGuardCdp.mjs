@@ -381,6 +381,13 @@ export async function evaluate(send, expression) {
  * mono face alone. What must never pass is a face the page DID request failing
  * to arrive: that is the 404 which would otherwise leave every guard green and
  * permanently measuring the fallback, and it reports as status "error".
+ *
+ * fonts.ready settles INSTANTLY while a set is still empty, so racing the
+ * stylesheet application that registers the faces misreads "not arrived yet"
+ * as "declares none". Under sustained machine load that race fired across
+ * guards (overflowguard, then retirementguard) while every case passed
+ * standalone. Poll briefly for registration first; a document that truly
+ * declares no fonts still trips the fontless check once the wait expires.
  */
 export async function waitForFonts(send) {
   const documents = await evaluate(
@@ -395,6 +402,10 @@ export async function waitForFonts(send) {
          } catch {
            // Cross-origin: not reachable, and not something a guard builds.
          }
+       }
+       const deadline = Date.now() + 10000;
+       while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
+         await new Promise((resolve) => setTimeout(resolve, 50));
        }
        await Promise.all(found.map(({ doc }) => doc.fonts.ready));
        return found.map(({ label, doc }) => {
