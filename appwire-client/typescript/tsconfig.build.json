@@ -120,6 +120,8 @@
     "keybindingsStore.ts",
     "readyGenerationFence.ts",
     "draftCheckpointPort.ts",
-    "settingsHubGeneration.ts"
+    "settingsHubGeneration.ts",
+    "checkpointedDraftEditor.ts",
+    "transcriptDisplayStore.ts"
   ]
 }

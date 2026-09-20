@@ -6,14 +6,7 @@
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import {
-  hasErrorText,
-  parseArgs,
-  parseJSONObject,
-  scopedDisclosureId,
-  stableDelegateDisplayStatus,
-  str,
-} from "@evener/appwire-client";
+import { hasErrorText, parseArgs, parseJSONObject, scopedDisclosureId, str } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -33,11 +26,12 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { rowFromDelegateItem } from "./tools/subagentModule";
+import { DelegateStatusWord, delegateOutputHasCard, rowFromDelegateItem } from "./tools/subagentModule";
 import {
   effectiveRowKind,
   removeSubagentRow,
   rowKeyForDelegateItem,
+  type SubagentRowKind,
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
@@ -51,22 +45,12 @@ const CLASS = {
   lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
-type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
-
-const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
+const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
   running: "working",
   done: "ended",
   stopped: "ended",
   failed: "failed",
   unknown: "idle",
-};
-
-const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
-  running: "Running",
-  done: "Idle · reported",
-  stopped: "Stopped",
-  failed: "Failed",
-  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -113,22 +97,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
   const delegateStatus =
     isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
-  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
-  const lifecycle = isDelegate ? (
-    <div
-      className={CLASS.lifecycle}
-      data-testid="delegate-lifecycle"
-      data-kind={delegateKind}
-      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
-    >
-      {lifecycleStatus === "exhausted"
-        ? "Exhausted"
-        : lifecycleStatus === "idle"
-          ? "Idle"
-          : DELEGATE_LABEL[delegateKind]}
-      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
-    </div>
-  ) : null;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
@@ -295,6 +263,27 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
+
+  // While the delegate body is expanded AND its card renders, the card's own
+  // first line carries the lifecycle word (with the turn/call counts and run
+  // clock); a standalone div here would duplicate the word on back-to-back
+  // lines. Collapsed - or for an activation-only receipt whose card renders
+  // nothing - this standalone line is the row's only status surface.
+  const delegateCardRenders = delegateOutputHasCard(delegateOutput);
+  const showStandaloneLifecycle = !expanded || !delegateCardRenders;
+  // Built only when it will render: delegate cards settle auto-expanded, so
+  // the standalone line is the exception, not the steady state.
+  const lifecycle =
+    isDelegate && showStandaloneLifecycle ? (
+      <div
+        className={CLASS.lifecycle}
+        data-testid="delegate-lifecycle"
+        data-kind={delegateKind}
+        data-attention={stableDelegate?.needsAttention ? "true" : undefined}
+      >
+        <DelegateStatusWord kind={delegateKind} stable={stableDelegate} />
+      </div>
+    ) : null;
 
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)

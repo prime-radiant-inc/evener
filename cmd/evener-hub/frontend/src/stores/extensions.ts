@@ -185,7 +185,8 @@ onConnectionNotification((n) => {
 });
 
 // resetExtensionsStoreForTests resets the store and every core behind it to
-// their initial state. extensions.ts is a singleton store shared by the whole app, so
+// their reset state. Core fields explicitly retained across reset, such as the
+// marketplace publication version, survive here too. extensions.ts is a singleton store shared by the whole app, so
 // extensions.test.ts must reset it between tests to keep them isolated - no
 // production code should ever call this (mirrors threads.ts/tree.ts's own
 // reset*StoreForTests precedent).
@@ -199,6 +200,7 @@ export function resetExtensionsStoreForTests(): void {
   // would otherwise survive the reset.
   extensionsStore.setState({
     ...marketplaces.getInitialState(),
+    marketplacesPublicationVersion: marketplaces.getState().marketplacesPublicationVersion,
     ...plugins.getInitialState(),
     ...launchLayer.getInitialState(),
   });
