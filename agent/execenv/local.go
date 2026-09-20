@@ -732,11 +732,12 @@ func SessionScratchWorkspaceRoot(dir string) string {
 	return dir
 }
 
-// retainUnsandboxedScratch releases this env's unsandboxed per-session
-// scratch lease (if unsandboxedScratchDir ever lazily provisioned one),
-// without removing the directory — the Cleanup counterpart to
-// RetainSandboxScratch for the unsandboxed case, so a session close never
-// holds the lease open for the rest of the daemon's uptime.
+// retainUnsandboxedScratch releases the leases of the per-session directories
+// this env lazily provisioned for an unsandboxed spawn — the private scratch
+// (unsandboxedScratchDir) and the world-usable temp container
+// (unsandboxedTmpDir) — without removing either directory. It is the retain-side
+// counterpart to RetainSandboxScratch for the unsandboxed case, so a session
+// close never holds either lease open for the rest of the daemon's uptime.
 func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
@@ -767,9 +768,11 @@ func (e *LocalExecutionEnvironment) removeUnsandboxedTmp() {
 }
 
 // removeUnsandboxedTmpLocked is removeUnsandboxedTmp for a caller already
-// holding scratchMu. Detaching the handle under the lock is what makes removing
-// the directory outside a concurrent mint safe: no other goroutine can reach the
-// pointer once it is cleared.
+// holding scratchMu. Detaching the handle under the lock is what keeps a
+// concurrent mint from handing out a directory that is being removed: once the
+// pointer is cleared, nothing can reach it. Holding scratchMu across the
+// RemoveAll is the same allowance RetainSandboxScratch and DisposeUnadoptedScratch
+// already take — no command runs here.
 func (e *LocalExecutionEnvironment) removeUnsandboxedTmpLocked() {
 	tmp := e.unsandboxedTmp
 	e.unsandboxedTmp = nil
