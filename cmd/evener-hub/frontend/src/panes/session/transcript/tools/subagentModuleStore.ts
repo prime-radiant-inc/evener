@@ -11,7 +11,6 @@ export interface SubagentRow {
   rowKey: string;
   receiptStatus?: string;
   launching?: boolean;
-  resumable?: boolean;
   exhaustionBudget?: string;
   exhaustionLimit?: number;
   delegateId?: string;

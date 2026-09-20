@@ -210,12 +210,19 @@ test("job_status: body shows a running status pill", () => {
   expect(chip?.textContent).toContain("running");
 });
 
-test("job_status: body shows needs attention pill when needs_attention is true", () => {
+test("job_status: needs_attention stays plumbing - the lifecycle status leads the pill", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   const raw = delegateStatusRaw({ needs_attention: true });
-  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
-  expect(screen.getByText("Needs attention")).toBeTruthy();
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  // A pending wake is delivery machinery the owner driver consumes, not a
+  // reader-facing status: the chip reports the lifecycle ("running"), never
+  // the flag.
+  const chip = container.querySelector("[class*='chip']");
+  expect(chip?.textContent).toContain("running");
+  expect(screen.queryByText("Needs attention")).toBeNull();
 });
 
 test("job_status: idle status does not receive the alive/running tone", () => {

@@ -275,12 +275,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // the standalone line is the exception, not the steady state.
   const lifecycle =
     isDelegate && showStandaloneLifecycle ? (
-      <div
-        className={CLASS.lifecycle}
-        data-testid="delegate-lifecycle"
-        data-kind={delegateKind}
-        data-attention={stableDelegate?.needsAttention ? "true" : undefined}
-      >
+      <div className={CLASS.lifecycle} data-testid="delegate-lifecycle" data-kind={delegateKind}>
         <DelegateStatusWord kind={delegateKind} stable={stableDelegate} />
       </div>
     ) : null;

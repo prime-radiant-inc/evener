@@ -602,7 +602,7 @@ describe("TranscriptBody", () => {
     expect(firstToolExpanded()).toBe("false");
   });
 
-  test("refreshes delegate attention, resumability, and run timing without status or outcome changes", async () => {
+  test("refreshes delegate exhaustion, reason, usage, and run timing without status or outcome changes", async () => {
     const delegateItem = {
       id: "attention_delegate",
       turnId: "attention_turn",
@@ -622,14 +622,14 @@ describe("TranscriptBody", () => {
       needsAttention: false,
       projectionRevision: 1,
     };
-    const attentionBefore = {
+    const rowBefore = {
       ...ordinaryToolFixture,
       delegates: [settledDelegate],
       turns: [{ id: "attention_turn", status: "completed", items: [delegateItem] }],
     } as unknown as ThreadModel;
     const { rerender } = render(
       <TranscriptBody
-        model={attentionBefore}
+        model={rowBefore}
         config={preset("tools")}
         surface="preview"
         disclosureScope="ordinary:attention"
@@ -641,18 +641,19 @@ describe("TranscriptBody", () => {
     expect(settledLifecycle.textContent).not.toContain("Needs attention");
 
     // Every field the memoized delegate row renders but the old fingerprint
-    // omitted: attention, resumability, exhaustion evidence, failure reason,
-    // usage, run timing, and the reducer's own revision.
+    // omitted: exhaustion evidence, failure reason, usage, run timing, and
+    // the reducer's own revision. Attention and resumability left the card's
+    // render surface - they are wake-delivery plumbing - so they carry no
+    // fingerprint entry of their own; the reducer's projectionRevision
+    // catch-all still covers any field the row starts consuming later.
     const onlyChange = (changes: Record<string, unknown>): ThreadModel =>
       ({
-        ...attentionBefore,
+        ...rowBefore,
         delegates: [{ ...settledDelegate, ...changes }],
       }) as unknown as ThreadModel;
-    const before = threadFingerprintForItem(delegateItem, attentionBefore);
+    const before = threadFingerprintForItem(delegateItem, rowBefore);
     for (const change of [
-      { needsAttention: true, projectionRevision: 2 },
-      { resumable: false, notResumableReason: "budget spent", projectionRevision: 2 },
-      { exhaustionResumable: true, exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
+      { exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
       { reason: "exhausted", projectionRevision: 2 },
       { usage: { inputTokens: 100, outputTokens: 20 }, projectionRevision: 2 },
       { runStartedAt: "2026-09-10T00:00:00Z", runEndedAt: "2026-09-10T00:01:00Z", projectionRevision: 2 },
@@ -660,6 +661,8 @@ describe("TranscriptBody", () => {
       expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
     }
 
+    // A needsAttention flip re-renders nothing the reader can see: the word
+    // stays the lifecycle's own.
     const attentionAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
     rerender(
       <TranscriptBody
@@ -672,8 +675,9 @@ describe("TranscriptBody", () => {
     );
     await waitFor(() => {
       const alertedLifecycle = screen.getByTestId("subagent-stats");
-      expect(alertedLifecycle.getAttribute("data-attention")).toBe("true");
-      expect(alertedLifecycle.textContent).toContain("Needs attention");
+      expect(alertedLifecycle.getAttribute("data-attention")).toBeNull();
+      expect(alertedLifecycle.textContent).toContain("Idle · reported");
+      expect(alertedLifecycle.textContent).not.toContain("Needs attention");
     });
   });
 
