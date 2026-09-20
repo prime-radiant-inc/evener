@@ -40,6 +40,7 @@ type runConfig struct {
 	resultToolName            string   // --result-tool-name override
 	reasoningEffort           string   // --reasoning-effort override (or EVENER_REASONING_EFFORT)
 	contextStrategy           string   // --context-strategy
+	observationPacking        bool     // --observation-packing
 	exportATIF                string   // --export-atif path
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
@@ -320,6 +321,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		MCPInline:                   cfg.mcpServers,
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
+		ObservationPacking:          cfg.observationPacking,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		VisionModel:                 visionModel,

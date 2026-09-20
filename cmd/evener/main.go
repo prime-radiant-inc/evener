@@ -47,6 +47,7 @@ type runCLIFlags struct {
 	exportATIF                  *string
 	exportATIFProviderHandles   *string
 	contextStrategy             *string
+	observationPacking          *bool
 	outputSchema                *string
 	verbose                     *bool
 	noProjectPrompts            *bool
@@ -218,6 +219,7 @@ func mainWithDeps(deps mainDeps) {
 		resultToolName:              *flags.resultToolName,
 		reasoningEffort:             *flags.reasoningEffort,
 		contextStrategy:             *flags.contextStrategy,
+		observationPacking:          *flags.observationPacking,
 		exportATIF:                  *flags.exportATIF,
 		exportATIFProviderHandles:   *flags.exportATIFProviderHandles,
 		outputSchema:                *flags.outputSchema,
@@ -277,6 +279,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.7 trajectory to this `path` on session close")
 	flags.exportATIFProviderHandles = fs.String("export-atif-provider-handles", "", "ATIF provider handle export `mode`: redacted|raw-local (default: redacted)")
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
+	flags.observationPacking = fs.Bool("observation-packing", false, "archive tool results over 10 KiB and pack them into artifact handles after two full request looks (default: off)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading (match container behavior)")
