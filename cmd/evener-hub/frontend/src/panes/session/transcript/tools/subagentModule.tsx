@@ -25,6 +25,7 @@ import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
+  delegateStableState,
   effectiveRowKind,
   resolveRowKey,
   type SubagentRow,
@@ -460,16 +461,8 @@ function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
 // mounts it, so this module owns the surface end-to-end with the card's own
 // first line: same word component, same state attributes, same
 // data-status-line identity.
-export function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
-  const parsed = parseJSONObject(item.output);
-  const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
-  // Same trust rule as the row's own indicator: without a session ref or a
-  // stable identity, the owner projection is not this row's to read.
-  const stable =
-    sessionRef === undefined || delegateId === undefined
-      ? undefined
-      : thread?.delegates?.find((delegate) => delegate.delegateId === delegateId);
-  const kind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stable);
+function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
+  const { parsed, stable, kind } = delegateStableState(item, live, sessionRef, thread);
   // While the expanded card renders, its own first line carries the lifecycle
   // word; a standalone div here would duplicate it on back-to-back lines.
   // Collapsed - or for an activation-only receipt whose card renders nothing -

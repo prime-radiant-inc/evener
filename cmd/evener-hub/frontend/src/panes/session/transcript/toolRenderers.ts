@@ -38,16 +38,6 @@ export interface ToolStatusLineProps extends ToolRenderProps {
   thread?: ThreadModel;
 }
 
-// ToolStatusLineProps carries what a descriptor's statusLine component needs
-// beyond the body props: the row's live expanded state (a standalone line
-// usually only renders while the body is closed, or when the descriptor's
-// expanded surfaces render nothing) and the owning thread model (where the
-// stable delegate projection lives).
-export interface ToolStatusLineProps extends ToolRenderProps {
-  expanded: boolean;
-  thread?: ThreadModel;
-}
-
 // ToolSummaryContext carries render-path facts a descriptor's summary() may
 // need but that ItemModel alone can't answer - the session cwd (shell's
 // stripRedundantCd, so a habitual "cd <cwd> && " prefix reads as noise, not

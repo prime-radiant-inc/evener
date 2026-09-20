@@ -6,7 +6,7 @@
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import { hasErrorText, parseArgs, parseJSONObject, scopedDisclosureId, str } from "@evener/appwire-client";
+import { hasErrorText, parseArgs, scopedDisclosureId, str } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -28,7 +28,7 @@ import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  effectiveRowKind,
+  delegateStableState,
   removeSubagentRow,
   rowKeyForDelegateItem,
   type SubagentRowKind,
@@ -86,15 +86,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
-  const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
-  const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const stableDelegate = thread?.delegates?.find((delegate) => {
-    if (sessionRef === undefined || stableDelegateId === undefined) return false;
-    return delegate.delegateId === stableDelegateId;
-  });
-  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
+  const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread) : undefined;
   const delegateStatus =
-    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+    isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
+      <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />
+    ) : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
@@ -267,7 +263,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // with one, and it owns whether the line renders at all (it returns null
   // while its expanded card carries the status).
   const StatusLine = descriptor.statusLine;
-  const lifecycle = StatusLine ? (
+  const statusLine = StatusLine ? (
     <StatusLine item={item} live={live} sessionRef={sessionRef} cwd={cwd} expanded={expanded} thread={thread} />
   ) : null;
 
@@ -351,7 +347,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
           title={detail}
         />
-        {lifecycle}
+        {statusLine}
       </div>
     );
   }
@@ -407,7 +403,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         title={detail}
         bodyId={bodyId}
       />
-      {lifecycle}
+      {statusLine}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
