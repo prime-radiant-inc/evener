@@ -450,7 +450,11 @@ describe("the detail sheet", () => {
   test("a superseded removal reconciles the listing before it is reported", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
+    const listingsAtRemoval: InstanceEntry[][] = [];
+    const onInstanceRemoved = vi.fn(() => {
+      listingsAtRemoval.push(credentialsStore.getState().instances);
+    });
+    render(<CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />);
     await screen.findByText("personal");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "personal");
@@ -483,6 +487,8 @@ describe("the detail sheet", () => {
     await waitFor(() => expect(getToasts().some((toast) => toast.text === "Removed instance personal")).toBe(true));
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThanOrEqual(3);
     expect(credentialsStore.getState().instances).toEqual([WORK]);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(listingsAtRemoval[0]).toEqual([WORK]);
   });
 
   // fetch() swallows a failed read into the store's error field instead of
@@ -495,9 +501,10 @@ describe("the detail sheet", () => {
   test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
     render(
       <>
-        <CredentialsSection sectionId="credentials" />
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
         <Toast />
       </>,
     );
@@ -534,6 +541,7 @@ describe("the detail sheet", () => {
       });
     });
     expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy();
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
   });
 
   // The applied path is not automatically a confirmation either: the store's
@@ -541,9 +549,10 @@ describe("the detail sheet", () => {
   test("a removal whose applied listing still holds the row is not reported as removed", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
     render(
       <>
-        <CredentialsSection sectionId="credentials" />
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
         <Toast />
       </>,
     );
@@ -560,6 +569,7 @@ describe("the detail sheet", () => {
     // The row is gone on the host: re-issuing the remove could only fail, so
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
   });
 
   // The hub deletes the instance's credentials first and its config entry
@@ -1163,6 +1173,23 @@ describe("actions refused while the held listing belongs to a replaced connectio
     // that is gone, so it closes: the retry captures the fresh row instead of
     // retrying with a stale assertion.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+  });
+});
+
+describe("single-open-editor invariant", () => {
+  test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
+    expect(screen.getByRole("dialog", { name: "Add provider instance" })).toBeTruthy();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
+    expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
   });
 });
 
@@ -2298,23 +2325,6 @@ describe("credential dialogs against a moving endpoint", () => {
 // The registry reports what it could not load (diagnostics) and whether the
 // user layer can be written at all (writesRefused) on every instance list -
 // spec §11.3.
-describe("single-open-editor invariant", () => {
-  test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" fullEditor />);
-    await screen.findByText("work");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
-    expect(screen.getByRole("dialog", { name: "Add provider instance" })).toBeTruthy();
-    const inspector = await openSheet(user, "work");
-    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
-    expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
-  });
-});
-
 describe("diagnostics and writesRefused", () => {
   test("renders every diagnostics entry from the list response", async () => {
     const fake = connectFakeClient();
