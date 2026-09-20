@@ -385,37 +385,85 @@ export async function evaluate(send, expression) {
  * stylesheet application that registers the faces misreads "not arrived yet"
  * as "declares none". Under sustained machine load that race fired across
  * guards (overflowguard, then retirementguard) while every case passed
- * standalone. The in-page poll deadline must stay comfortably BELOW the
- * evaluate() wrapper's 30000ms ceiling, or the outer timer fires first and a
- * genuinely fontless document reports an opaque Runtime.evaluate timeout
- * instead of the actionable fontless diagnostic below.
+ * standalone. The in-page wait has TWO phases and BOTH must stay comfortably
+ * BELOW the evaluate() wrapper's 30000ms ceiling, or the outer timer fires
+ * first and a genuinely fontless or font-stalled document reports an opaque
+ * Runtime.evaluate timeout instead of the actionable diagnostics below: the
+ * registration poll capped at FONT_POLL_DEADLINE_MS, then the fonts.ready
+ * await - unbounded while any load hangs - raced against FONT_READY_TIMEOUT_MS
+ * and reported as a stall. Their sum is pinned by test at 20000ms, leaving
+ * the ceiling 10s of headroom.
  */
+
+// How long the in-page registration poll waits for every document's font set
+// to stop being empty before the guard concludes a document declares no web
+// fonts. Registration follows stylesheet application, so this is generous;
+// it only has to lose to the evaluate() ceiling, never win against it.
+export const FONT_POLL_DEADLINE_MS = 12000;
+
+// How long the in-page fonts.ready await may take before the guard calls the
+// wait stalled. A font load that hangs never settles, and fonts.ready waits
+// for it forever; without this cap that wait would spend the evaluate()
+// wrapper's whole remaining budget.
+export const FONT_READY_TIMEOUT_MS = 8000;
+
+// The in-page half of waitForFonts, exported so the wire tests can call it
+// against a stub document. It runs in the page via toString(), so it must not
+// close over anything outside its own body: the budgets are passed in, the
+// documents come from the page's own globals, and it returns plain data (a
+// stalled flag plus each document's faces) for the node side to diagnose.
+export async function collectFontStatusInPage({ pollMs, readyMs }) {
+  const found = [{ label: "the top document", doc: document }];
+  const frames = document.querySelectorAll("iframe");
+  for (let index = 0; index < frames.length; index++) {
+    try {
+      const doc = frames[index].contentDocument;
+      if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
+    } catch {
+      // Cross-origin: not reachable, and not something a guard builds.
+    }
+  }
+  const deadline = Date.now() + pollMs;
+  while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // fonts.ready is unbounded while any load hangs, so it gets its own cap and
+  // the stall reports as data; clearing the cap timer keeps a settled wait
+  // from holding the guard process open for the loser's remaining ms.
+  let readyCap;
+  const settled = await Promise.race([
+    Promise.all(found.map(({ doc }) => doc.fonts.ready)).then(() => true),
+    new Promise((resolve) => {
+      readyCap = setTimeout(() => resolve(false), readyMs);
+    }),
+  ]).finally(() => clearTimeout(readyCap));
+  return {
+    stalled: !settled,
+    documents: found.map(({ label, doc }) => {
+      const faces = [];
+      doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
+      return { label, faces };
+    }),
+  };
+}
+
 export async function waitForFonts(send) {
-  const documents = await evaluate(
+  const result = await evaluate(
     send,
-    `(async () => {
-       const found = [{ label: "the top document", doc: document }];
-       const frames = document.querySelectorAll("iframe");
-       for (let index = 0; index < frames.length; index++) {
-         try {
-           const doc = frames[index].contentDocument;
-           if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
-         } catch {
-           // Cross-origin: not reachable, and not something a guard builds.
-         }
-       }
-       const deadline = Date.now() + 20000;
-       while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
-         await new Promise((resolve) => setTimeout(resolve, 50));
-       }
-       await Promise.all(found.map(({ doc }) => doc.fonts.ready));
-       return found.map(({ label, doc }) => {
-         const faces = [];
-         doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
-         return { label, faces };
-       });
-     })()`,
+    `(${collectFontStatusInPage.toString()})(${JSON.stringify({
+      pollMs: FONT_POLL_DEADLINE_MS,
+      readyMs: FONT_READY_TIMEOUT_MS,
+    })})`,
   );
+  if (result.stalled) {
+    throw new Error(
+      `environment problem, not a test case failure: web fonts did not settle within ${FONT_READY_TIMEOUT_MS}ms of the ` +
+        `${FONT_POLL_DEADLINE_MS}ms registration poll ending, so a font load is stalled and every text measurement ` +
+        `below would race a fallback. Check that Vite is serving node_modules/@fontsource-variable/* and that no ` +
+        `font request hangs.`,
+    );
+  }
+  const documents = result.documents;
   const fontless = documents.filter((entry) => entry.faces.length === 0).map((entry) => entry.label);
   if (fontless.length > 0) {
     throw new Error(

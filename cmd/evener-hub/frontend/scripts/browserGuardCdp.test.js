@@ -22,18 +22,23 @@ import { afterEach, test, vi } from "vitest";
 import {
   applyViewport,
   clearViewportOverride,
+  collectFontStatusInPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
+  FONT_POLL_DEADLINE_MS,
+  FONT_READY_TIMEOUT_MS,
   forcePseudoStates,
   navigateTo,
   PROBE_ATTEMPT_TIMEOUT_MS,
   STARTUP_DEADLINE_MS,
+  waitForFonts,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("preserves the announced endpoint host when building HTTP URLs", () => {
@@ -517,4 +522,79 @@ test("a failed navigate takes the load wait down with it", async () => {
 
   assert.equal(socket.listenerCount("message"), 0);
   assert.equal(liveTimers(), before);
+});
+
+// waitForFonts spends TWO bounded phases inside the page - the
+// font-registration poll, then a capped wait for fonts.ready - and their sum
+// must stay well below the evaluate() wrapper's 30000ms ceiling. On #2071's
+// head roborev caught the gap: after a poll consumed its whole deadline, the
+// unbounded fonts.ready await could overrun the outer timer, so a genuinely
+// fontless or font-stalled document died as an opaque Runtime.evaluate
+// timeout instead of one of this guard's actionable diagnostics.
+
+test("the registration poll and the fonts.ready cap together stay under the evaluate() ceiling", () => {
+  assert.ok(
+    FONT_POLL_DEADLINE_MS > 0 && FONT_READY_TIMEOUT_MS > 0,
+    "both in-page budgets must be positive waits, not disabled",
+  );
+  assert.ok(
+    FONT_POLL_DEADLINE_MS + FONT_READY_TIMEOUT_MS <= 20000,
+    `poll ${FONT_POLL_DEADLINE_MS}ms + ready cap ${FONT_READY_TIMEOUT_MS}ms must leave the 30000ms ` +
+      `evaluate() wrapper headroom, or a fontless document dies as an opaque timeout instead of the diagnostic`,
+  );
+});
+
+test("a fonts.ready that never settles is capped and reported as a stall", async () => {
+  const faces = [{ family: "Mono Test", status: "loaded" }];
+  vi.stubGlobal("document", {
+    fonts: {
+      size: faces.length,
+      ready: new Promise(() => {}),
+      forEach: (callback) => faces.forEach(callback),
+    },
+    querySelectorAll: () => [],
+  });
+  const started = Date.now();
+  const result = await collectFontStatusInPage({ pollMs: 5000, readyMs: 20 });
+  assert.equal(result.stalled, true);
+  assert.ok(
+    Date.now() - started < 5000,
+    "the stalled fonts.ready must be capped at readyMs, not awaited out to the poll deadline",
+  );
+  assert.deepEqual(result.documents, [{ label: "the top document", faces }]);
+});
+
+test("a fontless document exhausts the poll, then still collects and reports", async () => {
+  vi.stubGlobal("document", {
+    fonts: { size: 0, ready: Promise.resolve(), forEach: () => {} },
+    querySelectorAll: () => [],
+  });
+  const result = await collectFontStatusInPage({ pollMs: 0, readyMs: 20 });
+  assert.equal(result.stalled, false);
+  assert.deepEqual(result.documents, [{ label: "the top document", faces: [] }]);
+});
+
+test("waitForFonts reports a stalled font load as an environment problem", async () => {
+  const send = async () => ({
+    result: {
+      result: { value: { stalled: true, documents: [{ label: "the top document", faces: [] }] } },
+    },
+  });
+  await assert.rejects(
+    waitForFonts(send),
+    /environment problem, not a test case failure.*font load is stalled/s,
+  );
+});
+
+test("waitForFonts passes settled fonts and still names a fontless document", async () => {
+  const settled = {
+    stalled: false,
+    documents: [{ label: "the top document", faces: [{ family: "Mono Test", status: "loaded" }] }],
+  };
+  const sendSettled = async () => ({ result: { result: { value: settled } } });
+  await waitForFonts(sendSettled);
+
+  const fontless = { stalled: false, documents: [{ label: "the top document", faces: [] }] };
+  const sendFontless = async () => ({ result: { result: { value: fontless } } });
+  await assert.rejects(waitForFonts(sendFontless), /declares no web fonts/);
 });
