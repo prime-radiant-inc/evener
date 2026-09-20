@@ -913,10 +913,22 @@ overridable (kata av1j): the lock, the run dir, the state root, and the auth
 token all derive from `cmdutil.DefaultStateRoot()` (XDG_STATE_HOME, else
 `os.UserHomeDir()`), so they only stay coherent when they move **together**.
 The blessed way to run a second, disposable hub — an e2e harness, a scratch
-verification hub — is a fresh HOME:
+verification hub — is a fresh HOME **plus** clearing every variable that can
+redirect evener away from it. Both halves matter: `HOME=$(mktemp -d)` alone
+moves nothing when `XDG_STATE_HOME` is exported (`DefaultStateRoot` prefers it
+over `$HOME`), so the "disposable" hub silently claims the real
+`$XDG_STATE_HOME/evener`; and `EVENER_PROVIDERS_CONFIG`/`EVENER_CREDENTIALS_CONFIG`
+outrank `$HOME/.config/evener`, so a stub `providers.toml` in the throwaway
+HOME is overridden and the daemon calls the real provider. The recipe below
+routes through `e2e_isolate_home` — the same helper the e2e harnesses use — so
+it cannot drift from that list:
 
-```sh
-HOME=$(mktemp -d) ./evener hub -addr 127.0.0.1:0 -evener ./evener
+```bash
+set -euo pipefail
+run_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-disposable-hub.XXXXXX")
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run_dir"
+./evener hub -addr 127.0.0.1:0 -evener ./evener
 ```
 
 Never point a test hub at the real HOME "just for a quick check": if the
