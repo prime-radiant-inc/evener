@@ -1528,6 +1528,11 @@ func (s *Session) recordClientMutationFailure(
 ) error {
 	items := s.clientMutationTranscriptItems(clientMutationID, pending.TurnID)
 	queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+	// Persist the failed start's image attachments before the turn is built
+	// so the recorded message can name their durable paths
+	// (agent/image_persist.go). Idempotent by content: a first attempt that
+	// already wrote the bytes rewrites the same path.
+	queued.Images = s.persistInputImages(queued.Images)
 	if !items.User {
 		if err := s.clientMutationFailureFault("before_user"); err != nil {
 			return err
