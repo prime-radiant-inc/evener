@@ -102,6 +102,27 @@ test("renders the resolved descriptor's summary", () => {
   expect(screen.getByText("did a thing")).toBeTruthy();
 });
 
+// The descriptor's statusLine hook mounts in the row's status slot on BOTH
+// render paths - the summary-only branch (no body) and the expandable one.
+// The descriptor owns WHETHER it renders; the row owns where. (The expanded
+// prop's live flow is proven by the delegate tests, which collapse real rows.)
+test("mounts a descriptor statusLine on both row render paths", () => {
+  const StatusLine = ({ item }: { item: ItemModel }) => <div data-testid="tt-status-line" data-id={item.id} />;
+  registerToolRenderer({ match: "tci_statusline", summary: () => "statusline tool", statusLine: StatusLine });
+  const summaryOnly = render(<ToolCallItem item={item({ toolName: "tci_statusline" })} turn={turn} live={false} />);
+  expect(summaryOnly.getByTestId("tt-status-line").dataset.id).toBe("item_1");
+  summaryOnly.unmount();
+
+  registerToolRenderer({
+    match: "tci_statusline_body",
+    summary: () => "statusline tool with body",
+    body: () => <div data-testid="tt-body" />,
+    statusLine: StatusLine,
+  });
+  const expandable = render(<ToolCallItem item={item({ toolName: "tci_statusline_body" })} turn={turn} live={false} />);
+  expect(expandable.getByTestId("tt-status-line").dataset.id).toBe("item_1");
+});
+
 test("settled intent-bearing commandExecution rows stack intent over the demoted summary", () => {
   registerToolRenderer({ match: "tci_one_line", summary: () => "Ran npm test -- src/foo" });
   render(
