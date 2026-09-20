@@ -451,6 +451,11 @@ export type {
   ViewportClass,
   VisibleCategoryInventory,
 } from "./transcriptDisplayConfig";
+export type {
+  TranscriptDisplayChange,
+  TranscriptDisplayStoreActions,
+  TranscriptDisplayStoreFields,
+} from "./transcriptDisplayStore";
 export {
   accessibleConfigSummary,
   advancedEnabledCount,
