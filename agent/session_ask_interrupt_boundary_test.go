@@ -616,11 +616,11 @@ func TestRestoredFailureBoundaryShiftsDivergencePastRepairs(t *testing.T) {
 	// stays aligned with the post-repair history's geometry — the synthetic
 	// lands inherited-side, the note and the child's ask round child-side —
 	// which is what journal provenance consumers of the boundary expect.
-	// The state/pending assertions are invariant to the shift itself (real
-	// turns move with the boundary; the all-error synthetic is inert in the
-	// derivations — red-checked by disabling the shift), so this test pins
-	// the door's repair-insertion path end to end, with the boundary
-	// geometry documented here for the provenance-side follow-up.
+	// This test's state/pending assertions are themselves invariant to the
+	// shift (real turns move with the boundary; the all-error synthetic is
+	// inert in the derivations — red-checked by disabling the shift); the
+	// shift's observable is pinned by
+	// TestRestoredFailureBoundaryDivergenceShiftDecidesSteerProvenance.
 	sess.fork.divergence = 14
 	sess.mu.Lock()
 	sess.state = SessionProcessing
@@ -632,6 +632,118 @@ func TestRestoredFailureBoundaryShiftsDivergencePastRepairs(t *testing.T) {
 	}
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state after repair-shifted fork restore = %q, want %q", got, SessionAwaiting)
+	}
+}
+
+// TestRestoredFailureBoundaryDivergenceShiftDecidesSteerProvenance pins the
+// observable the repair-insertion shift exists for: an inherited steering
+// turn carrying a client mutation ID that also exists in the child's
+// journal must stay on the inherited side of the boundary, where the
+// provenance scan cannot consult the child's journal (a child mutation may
+// reuse a parent's ID). The kindless steer looks like a human-note carrier
+// through the child's journal record but is an ordinary user steer by its
+// text, so the two classifications disagree on whether it answers an
+// earlier still-pending ask: inherited it resolves the boundary (the
+// parent's steer answered the parent's ask, so only the child's own ask
+// stays pending); misclassified child-side it masquerades as a
+// non-resolving carrier and the inherited ask wrongly survives. The repair
+// insertion before the steer is what moves the boundary past it — without
+// the shift the steer falls child-side and this test fails with
+// pending = 2.
+func TestRestoredFailureBoundaryDivergenceShiftDecidesSteerProvenance(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	// The child's journal carries a notes/human/set record under the same
+	// client mutation ID the inherited steer references.
+	const noteID = "cm-shared-note-id"
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		req := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, noteID, struct{ Note string }{Note: "child note"})
+		snapshot.Journal[noteID] = clientMutationRecord{
+			ClientMutationID:  req.ClientMutationID,
+			Method:            req.Method,
+			Payload:           req.Payload,
+			PayloadHash:       req.PayloadHash,
+			OperationState:    clientMutationOperationTerminal,
+			ExecutionState:    "incorporated",
+			ProjectionState:   appwire.MutationProjectionReflected,
+			AttemptGeneration: 1,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed note provenance: %v", err)
+	}
+
+	inheritedAsk := askUserCall("ask-inherited", askUserArgsValid())
+	childAsk := askUserCall("ask-child", askUserArgsValid())
+	orphan := llm.ToolCallData{ID: "orphan-read", Name: "read_notes", Arguments: json.RawMessage(`{}`), Type: "function"}
+	// The kindless inherited steer: child-side it reads as a human-note
+	// carrier through the journal record; inherited its ordinary user text
+	// resolves the boundary.
+	inheritedSteer := schema.NewTurn(schema.TurnSteering, llm.User("Postgres, let's use it"))
+	inheritedSteer.SteeringSource = events.SteeringSourceUser
+	inheritedSteer.ClientMutationID = noteID
+	// The child's own round is a non-resolving human-note carrier, so the
+	// scan walks past it to the inherited steer before anything resolves.
+	childSteer := schema.NewTurn(schema.TurnSteering, llm.User("updated the project note"))
+	childSteer.SteeringSource = events.SteeringSourceUser
+	childSteer.SteeringKind = events.SteeringKindHumanNote
+	turns := make([]schema.Turn, 0, 20)
+	for range 10 {
+		turns = append(turns, schema.NewTurn(schema.TurnSystem, llm.User("inherited context")))
+	}
+	turns = append(turns,
+		schema.NewTurn(schema.TurnSummary, llm.User("compacted context")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("which datastore?")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &orphan}},
+		}),
+		schema.NewTurn(schema.TurnUserInput, llm.User("which queue?")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &inheritedAsk}},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("ask-inherited", "ask_user", "ack", false)),
+		inheritedSteer,
+		// Bookkeeping after the steer: steeringOriginBoundary treats the
+		// turn at divergence-1 as child-side, so the steer must not be the
+		// last turn before the fork point — a system turn absorbs that
+		// position without resolving anything on either side of the scan.
+		schema.NewTurn(schema.TurnSystem, llm.User("inherited bookkeeping")),
+		childSteer,
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &childAsk}},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("ask-child", "ask_user", "ack", false)),
+	)
+	for _, turn := range turns {
+		if err := sess.writeTranscript(turn); err != nil {
+			t.Fatalf("write transcript turn %s: %v", turn.Kind, err)
+		}
+	}
+
+	// The first child-owned turn is the child's carrier steer at
+	// full-transcript index 18; repair inserts the orphan's synthetic at
+	// resumed index 3, so the raw resumed boundary (8) must shift to 9 to
+	// keep the inherited steer at 7 on the inherited side, where the scan
+	// consults no journal and its ordinary user text resolves the
+	// boundary.
+	sess.fork.divergence = 18
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+
+	sess.finishProcessingAtRestoredFailureBoundary(context.Background())
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pending asks after steer-provenance boundary = %d, want 1 (the child's own ask; the inherited steer answered the parent's)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after steer-provenance boundary = %q, want %q", got, SessionAwaiting)
 	}
 }
 
