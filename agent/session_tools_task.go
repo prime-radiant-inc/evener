@@ -478,6 +478,15 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				summary := taskpkg.Summarize(finalTasks)
+				// Checkpoint compaction reminder (mechanism 2): the step
+				// completion boundary is the gate's only trigger; the agent
+				// elects any compaction itself. A nil hook (direct toolDeps
+				// constructions) simply skips the reminder.
+				if deps.checkpointReminder != nil {
+					if err := deps.checkpointReminder(summary.Remaining); err != nil {
+						return nil, err
+					}
+				}
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())

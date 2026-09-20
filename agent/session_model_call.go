@@ -928,6 +928,26 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		return
 	}
 	s.contextMgr.AddUsage(resp.Usage)
+	// The checkpoint compaction reminder reads recorded usage, never
+	// history size, so packing and masking are already reflected in these
+	// numbers.
+	if s.cfg.CheckpointReminder {
+		total := resp.Usage.InputTokens
+		if resp.Usage.CacheReadTokens != nil {
+			total += *resp.Usage.CacheReadTokens
+		}
+		if resp.Usage.CacheWriteTokens != nil {
+			total += *resp.Usage.CacheWriteTokens
+		}
+		s.mu.Lock()
+		s.ckptLastInputTokens = total
+		s.ckptLastCacheWrite = nil
+		if resp.Usage.CacheWriteTokens != nil {
+			v := *resp.Usage.CacheWriteTokens
+			s.ckptLastCacheWrite = &v
+		}
+		s.mu.Unlock()
+	}
 
 	tokens, record := effectiveRecordedInputTokens(
 		resp.Usage,

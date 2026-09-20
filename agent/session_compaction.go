@@ -695,6 +695,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if preCompactRan {
 			s.mu.Lock()
 			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction that actually took effect
+			s.ckptRemindersIssued = 0    // re-arm the checkpoint reminder's escalating margin
 			s.mu.Unlock()
 		}
 	}

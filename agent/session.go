@@ -840,6 +840,17 @@ type Session struct {
 	forceRequested      bool   // a compaction is requested for this round tail (transient trigger; re-armed from a persisted forced operation at resume)
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
 
+	// Checkpoint compaction reminder (SoL-Pi mechanism 2) state, guarded by
+	// mu. The rate window measures model requests between consecutive
+	// task-list step-completion boundaries; the first boundary only opens it.
+	ckptWindowOpen         bool // a step-completion boundary was observed; the request-rate window is open
+	ckptWindowOpenRequests int  // modelResponses when the window opened
+	ckptRateRequests       int  // model requests summed over closed inter-boundary windows
+	ckptRateWindows        int  // closed inter-boundary windows
+	ckptRemindersIssued    int  // checkpoint reminders injected since the last published compaction
+	ckptLastInputTokens    int  // most recent recorded request's total input tokens (fresh + cache read + cache write)
+	ckptLastCacheWrite     *int // most recent recorded request's cache-write tokens; nil when unreported
+
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
 	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
 	// maybeElicitNoteBeforeCompaction).

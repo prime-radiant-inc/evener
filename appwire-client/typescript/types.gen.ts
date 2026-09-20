@@ -3456,6 +3456,7 @@ export const STEERING_KINDS = [
   "transcript-pointer",
   "current-task",
   "task-list",
+  "checkpoint-reminder",
   "notification",
   "provider-failure",
   "human-note",

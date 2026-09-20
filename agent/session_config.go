@@ -266,6 +266,17 @@ type SessionConfig struct {
 	// applies. Off by default until the mechanism wins held-out validation.
 	ActionFusion bool `json:"action_fusion,omitempty"`
 
+	// CheckpointReminder lets the harness inject a steering reminder at
+	// task-list step completion boundaries that compaction is available and
+	// cheap right now. The reminder fires only when the projected input
+	// savings (observed requests per completed step × remaining steps ×
+	// recent request input size, priced via llm/pricing.go) beat the
+	// prompt-cache rewrite cost (recent cache-write tokens at the model's
+	// cache-write rate) by an escalating margin. The agent elects compaction
+	// through its existing compact_context tool; the harness never forces
+	// one. Off by default until the mechanism wins held-out validation.
+	CheckpointReminder bool `json:"checkpoint_reminder,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -868,6 +879,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		VisionModel:                 c.VisionModel,
 		ObservationPacking:          c.ObservationPacking,
 		ActionFusion:                c.ActionFusion,
+		CheckpointReminder:          c.CheckpointReminder,
 	}
 }
 
@@ -913,6 +925,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		VisionModel:                 s.VisionModel,
 		ObservationPacking:          s.ObservationPacking,
 		ActionFusion:                s.ActionFusion,
+		CheckpointReminder:          s.CheckpointReminder,
 	}
 }
 
