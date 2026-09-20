@@ -2,11 +2,23 @@
  * review call): a call's own lines sit TIGHT (the row's row-gap below) and
  * separate calls sit LOOSE (this padding, 2x8px between calls) - before
  * this, both gaps measured the same 8px and a run of calls read as one
- * undifferentiated list. */
+ * undifferentiated list. The intent-only row below is the one exception:
+ * at the "intent" level every call is a single rationale line, so the loose
+ * step reads as one airy list instead of a grouping cue, and that shape
+ * halves the step (Jesse's density call, 2026-09-20). */
 .call {
   display: flex;
   flex-direction: column;
   padding: var(--rhythm-item) 0;
+}
+
+/* The intent-only presentation (ToolCallItem's data-intent-only: one
+ * rationale line, no summary line, no status line, no body). Halving the
+ * padding halves the gap between collapsed rows; opening any disclosure
+ * drops the attribute and restores the full rhythm above, so expansion is
+ * the visual boundary between rows with more to show and rows without. */
+.call[data-intent-only="true"] {
+  padding: var(--space-1) 0;
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
