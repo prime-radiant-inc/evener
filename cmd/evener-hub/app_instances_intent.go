@@ -73,26 +73,59 @@ func parseOAuthAside(fileName string) (inst, stampText string, ok bool) {
 	return strings.TrimSuffix(record, ".json"), stampText, true
 }
 
-// oauthIntentMarker separates a record's path from the stamp of the intent that
-// records one mutation of it. It is deliberately not the parked copy's marker:
-// an intent is a transaction record, and the copy rules - the allocation, the
-// sweep, the reclaim - must never touch it.
+// A record carries its progress in its NAME, not in a field. One mutation
+// writes one record, and the two names below are the two states it can be in:
+// still filed under oauthIntentMarker means the mutation has not passed its
+// commit point, and renamed to oauthLandedMarker means it has.
+//
+// The name is the stronger discriminator, and deliberately so. A rename is one
+// atomic syscall: it cannot be torn, half written, or left with a value that
+// disagrees with the state of the world, and the commit cannot be forged by
+// rewriting the record's bytes - a rewrite that loses its race leaves the
+// record exactly as it was. The stamp the name already carries then lets
+// recovery ORDER the commit against the copies it claims (a landed record older
+// than a copy cannot settle that copy), which a flag alone can never do, and
+// the writer fsyncs the directory around the rename so the commit survives a
+// power failure rather than living only in the page cache.
+//
+// oauthIntentMarker names a record whose mutation is still in progress, and
+// deliberately not the parked copy's marker: a record is a transaction record,
+// and the copy rules - the allocation, the sweep, the reclaim - must never
+// touch it.
 const oauthIntentMarker = ".intent-"
 
-// oauthIntentName names the intent that records a mutation of inst at stamp.
-// inst is the name the mutation is about: the OLD name for a rename.
+// oauthLandedMarker names a record whose mutation passed its commit point: the
+// durable evidence that the removal's credential deletions (and, when it
+// changed, its providers.toml write) had all landed, and that the mutation is
+// the standing one rather than one still in doubt.
+const oauthLandedMarker = ".landed-"
+
+// oauthIntentName names the record a mutation of inst writes at stamp. inst is
+// the name the mutation is about: the OLD name for a rename.
 func oauthIntentName(inst string, stamp int64) string {
 	return stampedName(inst+".json", oauthIntentMarker, stamp)
 }
 
-// parseOAuthIntent reports the instance an intent record is about and the stamp
-// it was written under.
-func parseOAuthIntent(fileName string) (inst, stampText string, ok bool) {
+// oauthLandedName names the same record once its mutation passed its commit
+// point. The stamp is preserved, so the commit orders against the copies the
+// record claims exactly as the record itself does.
+func oauthLandedName(inst string, stamp int64) string {
+	return stampedName(inst+".json", oauthLandedMarker, stamp)
+}
+
+// parseOAuthIntent reports the instance a record is about, the stamp it was
+// written under, and whether it has passed its commit point. Both names are one
+// grammar, so every reader parses them the same way: a name that is neither
+// says ok false.
+func parseOAuthIntent(fileName string) (inst, stampText string, landed, ok bool) {
+	if record, stampText, ok := parseStampedName(fileName, oauthLandedMarker); ok {
+		return strings.TrimSuffix(record, ".json"), stampText, true, true
+	}
 	record, stampText, ok := parseStampedName(fileName, oauthIntentMarker)
 	if !ok {
-		return "", "", false
+		return "", "", false, false
 	}
-	return strings.TrimSuffix(record, ".json"), stampText, true
+	return strings.TrimSuffix(record, ".json"), stampText, false, true
 }
 
 // oauthIntentOp is the mutation one intent record describes.
@@ -117,25 +150,15 @@ const (
 	oauthKindCredentialOnly oauthRemovalKind = "credential-only"
 )
 
-// oauthIntentPhase is how far a mutation got, written at its commit point -
-// after the providers.toml write and the credential deletions have landed, and
-// before the reload that publishes the mutation. It is progress, not proof: a
-// config-backed mutation's landing is read from the config, which is durable
-// evidence independent of this field.
-type oauthIntentPhase string
-
-const (
-	oauthPhaseStarted oauthIntentPhase = "started"
-	oauthPhaseLanded  oauthIntentPhase = "landed"
-)
-
-// oauthIntent is the record itself.
+// oauthIntent is the record itself: what the mutation is (op), which instance
+// it is about, the removal's kind, and the rename's new name. How far the
+// mutation got is NOT a field - it is the name the record is filed under
+// (oauthIntentMarker vs oauthLandedMarker).
 type oauthIntent struct {
-	op    oauthIntentOp
-	inst  string
-	new   string           // op=rename only
-	kind  oauthRemovalKind // op=remove only
-	phase oauthIntentPhase
+	op   oauthIntentOp
+	inst string
+	new  string           // op=rename only
+	kind oauthRemovalKind // op=remove only
 }
 
 // removalIntent records a removal of inst that removes the given kind of layer.
@@ -144,12 +167,12 @@ func removalIntent(inst string, configBacked bool) oauthIntent {
 	if configBacked {
 		kind = oauthKindConfigBacked
 	}
-	return oauthIntent{op: oauthOpRemove, inst: inst, kind: kind, phase: oauthPhaseStarted}
+	return oauthIntent{op: oauthOpRemove, inst: inst, kind: kind}
 }
 
 // renameIntent records the rename of oldName to newName.
 func renameIntent(oldName, newName string) oauthIntent {
-	return oauthIntent{op: oauthOpRename, inst: oldName, new: newName, phase: oauthPhaseStarted}
+	return oauthIntent{op: oauthOpRename, inst: oldName, new: newName}
 }
 
 // encode renders the record in the one line order the parser accepts. An empty
@@ -165,7 +188,6 @@ func (i oauthIntent) encode() []byte {
 	if i.op == oauthOpRemove {
 		b.WriteString("kind=" + string(i.kind) + "\n")
 	}
-	b.WriteString("phase=" + string(i.phase) + "\n")
 	return []byte(b.String())
 }
 
@@ -213,15 +235,6 @@ func parseOAuthIntentRecord(raw []byte, path string) (oauthIntent, error) {
 			default:
 				return oauthIntent{}, fmt.Errorf("%s records the unknown kind %q", path, value)
 			}
-		case "phase":
-			switch oauthIntentPhase(value) {
-			case oauthPhaseStarted:
-				i.phase = oauthPhaseStarted
-			case oauthPhaseLanded:
-				i.phase = oauthPhaseLanded
-			default:
-				return oauthIntent{}, fmt.Errorf("%s records the unknown phase %q", path, value)
-			}
 		default:
 			return oauthIntent{}, fmt.Errorf("%s records the unknown field %q", path, key)
 		}
@@ -250,9 +263,6 @@ func parseOAuthIntentRecord(raw []byte, path string) (oauthIntent, error) {
 	if i.op == oauthOpRename && !registry.ValidInstanceName(i.new) {
 		return oauthIntent{}, fmt.Errorf("%s records the invalid new instance name %q", path, i.new)
 	}
-	if i.phase == "" {
-		return oauthIntent{}, fmt.Errorf("%s records no phase", path)
-	}
 	return i, nil
 }
 
@@ -274,6 +284,14 @@ func writeOAuthIntentFile(path string, i oauthIntent) error {
 		_ = os.Remove(tmp)
 		return werr
 	}
+	// The record is the mutation's only recovery evidence, so it is fsynced
+	// before the rename that publishes it: a commit that exists only in the page
+	// cache is no evidence at all after a power failure.
+	if serr := f.Sync(); serr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return serr
+	}
 	if cerr := f.Close(); cerr != nil {
 		_ = os.Remove(tmp)
 		return cerr
@@ -282,38 +300,87 @@ func writeOAuthIntentFile(path string, i oauthIntent) error {
 		_ = os.Remove(tmp)
 		return rerr
 	}
-	return nil
+	return syncDir(filepath.Dir(path))
 }
 
-// markOAuthIntentLanded rewrites a written intent's phase at the mutation's
-// commit point. An already-landed record is left untouched, and a record that
-// does not read back is refused rather than overwritten: the caller reports it,
-// and recovery keeps the bytes.
-func markOAuthIntentLanded(path string) error {
-	return markOAuthIntentPhase(path, oauthPhaseLanded)
-}
-
-// markOAuthIntentPhase rewrites a written intent's phase in place. An empty path
-// is a mutation that wrote no record - a removal of a name whose auth directory
-// does not exist has nothing a crash could strand - so there is no phase to
-// write and nothing to refuse.
-func markOAuthIntentPhase(path string, phase oauthIntentPhase) error {
+// landOAuthIntent carries a written record to its commit point by renaming it
+// to the landed name, and returns the path it now holds. An empty path is a
+// mutation that wrote no record - a removal of a name whose auth directory does
+// not exist has nothing a crash could strand - so there is nothing to land and
+// nothing to refuse. A record already landed is returned as it is (the caller
+// may have landed it before, and landing is idempotent), and a path whose name
+// is not a record at all is refused rather than renamed.
+//
+// The rename is the commit: it is no-replace, so a file already at the landed
+// name - another mutation's bytes - is never overwritten, and the caller treats
+// the refusal as a failed commit point (it rolls the mutation back).
+func landOAuthIntent(path string) (string, error) {
 	if path == "" {
-		return nil
+		return "", nil
 	}
-	raw, err := os.ReadFile(path)
+	inst, stampText, landed, ok := parseOAuthIntent(filepath.Base(path))
+	if !ok {
+		return path, fmt.Errorf("%s is not a record name, so it cannot be carried to its commit point", path)
+	}
+	if landed {
+		return path, nil
+	}
+	stamp, perr := strconv.ParseInt(stampText, 10, 64)
+	if perr != nil {
+		return path, fmt.Errorf("%s carries the stamp %q, which cannot be ordered", path, stampText)
+	}
+	landedPath := filepath.Join(filepath.Dir(path), oauthLandedName(inst, stamp))
+	if err := renameNoReplace(path, landedPath); err != nil {
+		return path, err
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return landedPath, err
+	}
+	return landedPath, nil
+}
+
+// unlandOAuthIntent returns a record to the in-doubt name, so recovery reads it
+// as a mutation that did not stand. The rollback of a mutation that reached its
+// commit point and then failed calls it: with the record back at the in-flight
+// name, the copy the failed rollback could not put back is restored by the next
+// start instead of being swept. An empty or already-in-flight path is returned
+// unchanged, and a name that is not a record is refused.
+func unlandOAuthIntent(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	inst, stampText, landed, ok := parseOAuthIntent(filepath.Base(path))
+	if !ok {
+		return path, fmt.Errorf("%s is not a record name, so it cannot be returned to its in-doubt name", path)
+	}
+	if !landed {
+		return path, nil
+	}
+	stamp, perr := strconv.ParseInt(stampText, 10, 64)
+	if perr != nil {
+		return path, fmt.Errorf("%s carries the stamp %q, which cannot be ordered", path, stampText)
+	}
+	inFlight := filepath.Join(filepath.Dir(path), oauthIntentName(inst, stamp))
+	if err := renameNoReplace(path, inFlight); err != nil {
+		return path, err
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return inFlight, err
+	}
+	return inFlight, nil
+}
+
+// syncDir fsyncs a directory, so a rename that has just published (or withdrawn)
+// a record survives a power failure. A directory the process cannot open is not
+// a failure of the mutation - the rename itself landed, and the next start reads
+// the directory as it is - so an open failure is reported, not enforced.
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	i, err := parseOAuthIntentRecord(raw, path)
-	if err != nil {
-		return err
-	}
-	if i.phase == phase {
-		return nil
-	}
-	i.phase = phase
-	return writeOAuthIntentFile(path, i)
+	defer func() { _ = f.Close() }()
+	return f.Sync()
 }
 
 // removeOAuthIntent removes one intent record once its mutation is resolved. A

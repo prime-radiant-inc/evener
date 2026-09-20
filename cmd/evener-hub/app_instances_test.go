@@ -5252,9 +5252,12 @@ func TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName(t *testing.T) {
 	// Everything else stays, whatever its name resolves to: another name's copy -
 	// including one a failed removal stranded, which is the credential the user
 	// would otherwise have to sign in again to replace - a record of an instance
-	// whose own name holds the marker, and a file that is not a record at all.
+	// whose own name holds the marker, a landed record of another name (the
+	// record's own name, never a copy: the reclaim must not read its stamp as a
+	// copy's), and a file that is not a record at all.
 	kept := map[string]string{
 		"openai-codex.json.removing-7": `{"access_token":"stranded"}`,
+		"openai-codex.json.landed-7":   string(removalIntent("openai-codex", false).encode()),
 		"x.removing-1.json":            "{}",
 		"notes.txt":                    "not a record at all",
 	}
@@ -5587,9 +5590,8 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 		}
 	}
 	i := removalIntent("gone", true)
-	i.phase = oauthPhaseLanded
-	if err := os.WriteFile(filepath.Join(filepath.Dir(stale), oauthIntentName("gone", 1757000000000000000)), i.encode(), 0o600); err != nil {
-		t.Fatalf("WriteFile(intent): %v", err)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(stale), oauthLandedName("gone", 1757000000000000000)), i.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(record): %v", err)
 	}
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
@@ -5610,7 +5612,7 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the config-backed copy %s stayed in flight (Lstat = %v), so a later pass could restore it", stale, err)
 	}
-	if _, err := os.Lstat(filepath.Join(filepath.Dir(stale), oauthIntentName("gone", 1757000000000000000))); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(stale), oauthLandedName("gone", 1757000000000000000))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the record of the removal that stood survives (Lstat = %v), want it spent with its copy", err)
 	}
 	if _, err := os.Lstat(authopenai.AuthFilePath(f.stateDir, "gone")); !errors.Is(err, os.ErrNotExist) {

@@ -43,35 +43,38 @@ func stampedRecordPath(f *instancesFixture, record, marker, stamp string) string
 	return filepath.Join(oauthDir(f), record+marker+stamp)
 }
 
-// intentAt writes one intent record the way a mutation that did not finish
+// intentAt writes one record under the given name-marker the way a mutation
 // leaves it, and returns its path. Nothing here validates the record: the point
 // of several tests is what recovery makes of one it cannot read.
-func intentAt(t *testing.T, f *instancesFixture, inst string, i oauthIntent, stamp string) string {
+func intentAt(t *testing.T, f *instancesFixture, inst string, marker string, i oauthIntent, stamp string) string {
 	t.Helper()
 	if err := os.MkdirAll(oauthDir(f), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	path := stampedRecordPath(f, inst+".json", oauthIntentMarker, stamp)
+	path := stampedRecordPath(f, inst+".json", marker, stamp)
 	if err := os.WriteFile(path, i.encode(), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 	return path
 }
 
-// removalAt writes a removal's intent in the phase one crash point leaves.
-func removalAt(t *testing.T, f *instancesFixture, inst string, configBacked bool, phase oauthIntentPhase, stamp string) string {
+// removalAt writes a removal's record at the name-marker one crash point leaves:
+// oauthLandedMarker when the removal had passed its commit point (landed), and
+// the in-flight name otherwise.
+func removalAt(t *testing.T, f *instancesFixture, inst string, configBacked, landed bool, stamp string) string {
 	t.Helper()
-	i := removalIntent(inst, configBacked)
-	i.phase = phase
-	return intentAt(t, f, inst, i, stamp)
+	marker := oauthIntentMarker
+	if landed {
+		marker = oauthLandedMarker
+	}
+	return intentAt(t, f, inst, marker, removalIntent(inst, configBacked), stamp)
 }
 
-// renameAt writes a rename's intent in the phase one crash point leaves.
-func renameAt(t *testing.T, f *instancesFixture, oldName, newName string, phase oauthIntentPhase, stamp string) string {
+// renameAt writes a rename's record. A rename carries no commit marker: its
+// landing is read from the config, so the record is always in flight.
+func renameAt(t *testing.T, f *instancesFixture, oldName, newName, stamp string) string {
 	t.Helper()
-	i := renameIntent(oldName, newName)
-	i.phase = phase
-	return intentAt(t, f, oldName, i, stamp)
+	return intentAt(t, f, oldName, oauthIntentMarker, renameIntent(oldName, newName), stamp)
 }
 
 // parkedAt writes a parked copy with the given bytes and returns its path.
@@ -87,13 +90,26 @@ func parkedAt(t *testing.T, f *instancesFixture, inst, stamp, content string) st
 	return path
 }
 
-// intentNames lists the intent records filed in the fixture's auth directory.
+// intentNames lists the records filed in the fixture's auth directory, under
+// either name. A directory is not a record - the hub's own classification skips
+// one, and a test that puts a directory where a record would go is building an
+// obstacle - so directories are skipped here too.
 func intentNames(t *testing.T, f *instancesFixture) []string {
 	t.Helper()
+	entries, err := os.ReadDir(oauthDir(f))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", oauthDir(f), err)
+	}
 	var out []string
-	for _, e := range authDirEntries(t, f) {
-		if _, _, ok := parseOAuthIntent(e); ok {
-			out = append(out, e)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, _, _, ok := parseOAuthIntent(e.Name()); ok {
+			out = append(out, e.Name())
 		}
 	}
 	return out
@@ -154,10 +170,15 @@ func readIntent(t *testing.T, path string) oauthIntent {
 	return i
 }
 
-// intentPhaseOf reads back the phase one intent record carries.
-func intentPhaseOf(t *testing.T, path string) oauthIntentPhase {
+// recordIsLanded reports whether the record at path is filed under the landed
+// name - the marker a mutation's commit point renames it to.
+func recordIsLanded(t *testing.T, path string) bool {
 	t.Helper()
-	return readIntent(t, path).phase
+	_, _, landed, ok := parseOAuthIntent(filepath.Base(path))
+	if !ok {
+		t.Fatalf("parseOAuthIntent(%s) = not a record", path)
+	}
+	return landed
 }
 
 // recordedRemovalKind reports the kind the removal record filed for inst
@@ -165,7 +186,7 @@ func intentPhaseOf(t *testing.T, path string) oauthIntentPhase {
 func recordedRemovalKind(t *testing.T, f *instancesFixture, inst string) (oauthRemovalKind, bool) {
 	t.Helper()
 	for _, name := range authDirEntries(t, f) {
-		who, _, ok := parseOAuthIntent(name)
+		who, _, _, ok := parseOAuthIntent(name)
 		if !ok || who != inst {
 			continue
 		}
@@ -199,26 +220,28 @@ func TestOAuthRecordNamesStayApart(t *testing.T) {
 		copyInst string
 		copyOK   bool
 		itInst   string
+		itLanded bool
 		itOK     bool
 	}{
-		{"work.json.removing-5", "work", true, "", false},
-		{"work.json.intent-5", "", false, "work", true},
-		{"x.removing-1.json", "", false, "", false},
-		{"x.removing-1.json.removing-5", "x.removing-1", true, "", false},
-		{"x.removing-cfg-1.json.intent-7", "", false, "x.removing-cfg-1", true},
-		{"notes.txt", "", false, "", false},
-		{"work.json.removing-abc", "", false, "", false},
-		{"work.json.intent-", "", false, "", false},
-		{"work.json.removed-5", "", false, "", false},
-		{"work.json.removing-cfg-5", "", false, "", false},
+		{"work.json.removing-5", "work", true, "", false, false},
+		{"work.json.intent-5", "", false, "work", false, true},
+		{"work.json.landed-5", "", false, "work", true, true},
+		{"x.removing-1.json", "", false, "", false, false},
+		{"x.removing-1.json.removing-5", "x.removing-1", true, "", false, false},
+		{"x.removing-cfg-1.json.intent-7", "", false, "x.removing-cfg-1", false, true},
+		{"notes.txt", "", false, "", false, false},
+		{"work.json.removing-abc", "", false, "", false, false},
+		{"work.json.intent-", "", false, "", false, false},
+		{"work.json.removed-5", "", false, "", false, false},
+		{"work.json.removing-cfg-5", "", false, "", false, false},
 	} {
 		inst, _, ok := parseOAuthAside(tc.name)
 		if inst != tc.copyInst || ok != tc.copyOK {
 			t.Fatalf("parseOAuthAside(%q) = (%q, %v), want (%q, %v)", tc.name, inst, ok, tc.copyInst, tc.copyOK)
 		}
-		itInst, _, itOK := parseOAuthIntent(tc.name)
-		if itInst != tc.itInst || itOK != tc.itOK {
-			t.Fatalf("parseOAuthIntent(%q) = (%q, %v), want (%q, %v)", tc.name, itInst, itOK, tc.itInst, tc.itOK)
+		itInst, _, itLanded, itOK := parseOAuthIntent(tc.name)
+		if itInst != tc.itInst || itLanded != tc.itLanded || itOK != tc.itOK {
+			t.Fatalf("parseOAuthIntent(%q) = (%q, landed=%v, %v), want (%q, landed=%v, %v)", tc.name, itInst, itLanded, itOK, tc.itInst, tc.itLanded, tc.itOK)
 		}
 	}
 }
@@ -230,10 +253,8 @@ func TestOAuthRecordNamesStayApart(t *testing.T) {
 // rather than guessing what the mutation was.
 func TestParseOAuthIntentRecordIsStrict(t *testing.T) {
 	good := []string{
-		"op=remove\ninst=work\nkind=config-backed\nphase=started\n",
-		"op=remove\ninst=work\nkind=credential-only\nphase=landed\n",
-		"op=rename\ninst=work\nnew=personal\nphase=started\n",
-		"op=rename\ninst=work\nnew=personal\nphase=landed\n",
+		"op=remove\ninst=work\nkind=config-backed\n",
+		"op=remove\ninst=work\nkind=credential-only\n",
 	}
 	for _, raw := range good {
 		i, err := parseOAuthIntentRecord([]byte(raw), "rec")
@@ -246,18 +267,20 @@ func TestParseOAuthIntentRecordIsStrict(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"op=remove\ninst=work\nkind=config-backed\nphase=started\nphase=landed\n",
-		"op=remove\ninst=work\nkind=config-backed\nphase=started\nextra=1\n",
-		"op=remove\ninst=work\nkind=else\nphase=started\n",
-		"op=remove\ninst=work\nphase=started\n",
-		"op=rename\ninst=work\nnew=personal\nkind=config-backed\nphase=started\n",
-		"op=rename\ninst=work\nphase=started\n",
-		"op=remove\ninst=work\nkind=config-backed\nnew=personal\nphase=started\n",
-		"op=remove\ninst=../etc/passwd\nkind=config-backed\nphase=started\n",
-		"inst=work\nkind=config-backed\nphase=started\n",
-		"op=remove\ninst=work\nkind=config-backed\n",
-		"op=remove\ninst=work\nkind=config-backed\nphase=maybe\n",
-		"op=remove\ninst=work\nkind=config-backed\nnot a pair\nphase=started\n",
+		// How far a mutation got is NOT a field of this record - it is the name
+		// the record is filed under - so a record claiming it in its content is
+		// refused rather than half honoured.
+		"op=remove\ninst=work\nkind=config-backed\nphase=landed\n",
+		"op=rename\ninst=work\nnew=personal\nphase=started\n",
+		"op=remove\ninst=work\nkind=config-backed\nextra=1\n",
+		"op=remove\ninst=work\nkind=else\n",
+		"op=remove\ninst=work\n",
+		"op=rename\ninst=work\nnew=personal\nkind=config-backed\n",
+		"op=rename\ninst=work\n",
+		"op=remove\ninst=work\nkind=config-backed\nnew=personal\n",
+		"op=remove\ninst=../etc/passwd\nkind=config-backed\n",
+		"inst=work\nkind=config-backed\n",
+		"op=remove\ninst=work\nkind=config-backed\nnot a pair\n",
 		"\n",
 	}
 	for _, raw := range bad {
@@ -426,6 +449,70 @@ func TestInstances_RemovalRecordsTheDefaultPointerAsConfigBacked(t *testing.T) {
 
 // ---- parking (setAsideOAuthFile) ----
 
+// TestLandOAuthIntentIsTheCommitPoint: the commit is the record's NAME, not a
+// value inside it. Landing carries the record from its in-flight name to its
+// landed one, is idempotent, never replaces a file already filed there (the
+// no-replace rule, so a taken name fails the commit and the removal rolls back
+// rather than losing bytes), and refuses a path that is not a record at all.
+// The rollback's unland is the same act in reverse, so a record is filed under
+// one name or the other and no torn or lost write can leave it claiming both.
+func TestLandOAuthIntentIsTheCommitPoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, oauthIntentName("work", 7))
+	if err := os.WriteFile(path, removalIntent("work", false).encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+
+	landed, err := landOAuthIntent(path)
+	if err != nil {
+		t.Fatalf("landOAuthIntent: %v", err)
+	}
+	if want := filepath.Join(dir, oauthLandedName("work", 7)); landed != want {
+		t.Fatalf("landOAuthIntent = %q, want %q", landed, want)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the in-flight name survives (Lstat = %v), want the record renamed", err)
+	}
+	if !recordIsLanded(t, landed) {
+		t.Fatal("the record is not filed under the landed name")
+	}
+	// Idempotent: landing a landed record hands back the same path, not a second
+	// rename that could race the first.
+	if again, err := landOAuthIntent(landed); err != nil || again != landed {
+		t.Fatalf("second landOAuthIntent = (%q, %v), want the landed path unchanged", again, err)
+	}
+	// The rollback's unland is the reverse, and idempotent too.
+	back, err := unlandOAuthIntent(landed)
+	if err != nil || back != path {
+		t.Fatalf("unlandOAuthIntent = (%q, %v), want %q", back, err, path)
+	}
+	if recordIsLanded(t, back) {
+		t.Fatal("the record is still filed as landed after the unland")
+	}
+	if back2, err := unlandOAuthIntent(back); err != nil || back2 != back {
+		t.Fatalf("second unlandOAuthIntent = (%q, %v), want the in-flight path unchanged", back2, err)
+	}
+	// A name that is not a record is refused rather than renamed.
+	if got, err := landOAuthIntent(filepath.Join(dir, "notes.txt")); err == nil {
+		t.Fatalf("landOAuthIntent(notes.txt) = (%q, nil), want a refusal", got)
+	}
+	// A taken landed name is never replaced: the commit fails, the caller rolls
+	// the removal back, and the bytes already there survive.
+	if err := os.WriteFile(landed, []byte("another mutation's record\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", landed, err)
+	}
+	if _, err := landOAuthIntent(path); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("landOAuthIntent over a taken landed name = %v, want an os.ErrExist refusal", err)
+	}
+	if b, rerr := os.ReadFile(landed); rerr != nil || string(b) != "another mutation's record\n" {
+		t.Fatalf("the taken landed name = %q (%v), want its bytes untouched", b, rerr)
+	}
+	// An empty path is a mutation with no record: nothing to land, nothing to refuse.
+	if got, err := landOAuthIntent(""); got != "" || err != nil {
+		t.Fatalf("landOAuthIntent(\"\") = (%q, %v), want (\"\", nil)", got, err)
+	}
+}
+
 // TestInstances_SetAsideOAuthFileRefusesANegativeStamp: a stamp from before the
 // Unix epoch has a '-' in its decimal text, which parseOAuthAside does not
 // parse - so the copy would be debris the reclaim skips, and a removal reported
@@ -556,6 +643,16 @@ func TestInstances_RemoveKeepsItsIntentWhenTheReclaimFails(t *testing.T) {
 	if !ok || kind != oauthKindCredentialOnly {
 		t.Fatalf("the record = (kind=%q, ok=%v), want the credential-only removal that stood", kind, ok)
 	}
+	// The commit point had renamed it: the record the failed reclaim left says
+	// the removal stood, which is what the next start sweeps by.
+	for _, name := range intentNames(t, f) {
+		if inst, _, _, ok := parseOAuthIntent(name); !ok || inst != "openai-codex" {
+			continue
+		}
+		if !recordIsLanded(t, filepath.Join(oauthDir(f), name)) {
+			t.Fatalf("the record %s is not filed as landed, so startup would put the copy back", name)
+		}
+	}
 
 	// The record says the removal landed, so startup sweeps the copy rather than
 	// putting it back: a crash after the commit point cannot undo the removal the
@@ -640,11 +737,11 @@ func TestInstances_RemovalsStampLaterRevivalsAboveEarlierOnesWhenTheClockStepsBa
 		t.Fatalf("the later removal's stamp = %d, want greater than the earlier %d: a backward clock filed the newer copy under the smaller stamp", later, firstStamps[0])
 	}
 
-	// The shape a crash before the commit point leaves: both records still at
-	// their started phase, so startup is what chooses between the copies.
+	// The shape a crash before the commit point leaves: both records still filed
+	// under their in-flight name, so startup is what chooses between the copies.
 	for _, name := range intentNames(t, f) {
-		if err := markOAuthIntentPhase(filepath.Join(oauthDir(f), name), oauthPhaseStarted); err != nil {
-			t.Fatalf("markOAuthIntentPhase(%s): %v", name, err)
+		if _, err := unlandOAuthIntent(filepath.Join(oauthDir(f), name)); err != nil {
+			t.Fatalf("unlandOAuthIntent(%s): %v", name, err)
 		}
 	}
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
@@ -695,7 +792,7 @@ func TestInstances_RemoveMarksItsIntentLandedBeforeTheReload(t *testing.T) {
 			if e.IsDir() {
 				continue
 			}
-			inst, _, ok := parseOAuthIntent(e.Name())
+			inst, _, landed, ok := parseOAuthIntent(e.Name())
 			if !ok || inst != "openai-codex" {
 				continue
 			}
@@ -703,11 +800,13 @@ func TestInstances_RemoveMarksItsIntentLandedBeforeTheReload(t *testing.T) {
 			if rerr != nil {
 				return ""
 			}
-			i, perr := parseOAuthIntentRecord(raw, filepath.Join(oauthDir(f), e.Name()))
-			if perr != nil {
+			if _, perr := parseOAuthIntentRecord(raw, filepath.Join(oauthDir(f), e.Name())); perr != nil {
 				return ""
 			}
-			return string(i.phase)
+			if landed {
+				return "landed"
+			}
+			return "intent"
 		}
 		return ""
 	}
@@ -738,12 +837,12 @@ func TestInstances_RemoveMarksItsIntentLandedBeforeTheReload(t *testing.T) {
 	if len(phases) < 2 {
 		t.Fatalf("the loader ran %d time(s), want the removal's own reload among them", len(phases))
 	}
-	if last := phases[len(phases)-1]; last != string(oauthPhaseLanded) {
-		t.Fatalf("the removal's own reload saw phase %q, want %q: the record must be marked landed before the reload", last, oauthPhaseLanded)
+	if last := phases[len(phases)-1]; last != "landed" {
+		t.Fatalf("the removal's own reload saw the record %q, want it landed before the reload", last)
 	}
 	sawLanded := false
 	for _, p := range phases {
-		if p == string(oauthPhaseLanded) {
+		if p == "landed" {
 			sawLanded = true
 		}
 	}
@@ -833,11 +932,11 @@ func TestInstances_RolledBackRemovalLeavesCopiesWhereRecoveryReadsThem(t *testin
 	// The record the rollback left says the removal did not stand, so startup
 	// puts work's only credential back.
 	for _, name := range intentNames(t, f) {
-		if inst, _, _ := parseOAuthIntent(name); inst != "work" {
+		if inst, _, _, _ := parseOAuthIntent(name); inst != "work" {
 			continue
 		}
-		if got := intentPhaseOf(t, filepath.Join(oauthDir(f), name)); got != oauthPhaseStarted {
-			t.Fatalf("the rollback left a %q record, want it back at %q so startup restores the copy", got, oauthPhaseStarted)
+		if recordIsLanded(t, filepath.Join(oauthDir(f), name)) {
+			t.Fatal("the rollback left a landed record, want it back at its in-doubt name so startup restores the copy")
 		}
 	}
 	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
@@ -879,29 +978,27 @@ func TestInstances_RemoveAPhaseFailureRollsBackTheRemoval(t *testing.T) {
 	}
 	record := authopenai.AuthFilePath(f.stateDir, "work")
 	// After the credential cleanup - which runs after the record is written and
-	// the copy parked - occupy the record's own path with a directory, so the
-	// phase update cannot read it back.
+	// the copy parked - occupy the name the commit point renames the record TO,
+	// so the commit cannot land. The removal is then still in doubt and must roll
+	// back rather than report itself as standing.
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 321, time.UTC)
+	f.ctl.auth.now = func() time.Time { return fixed }
+	landed := filepath.Join(oauthDir(f), oauthLandedName("work", fixed.UnixNano()))
 	realDeleteAuth := f.ctl.auth.deleteAuth
 	f.ctl.auth.deleteAuth = func(stateDir, name string) (bool, error) {
 		removed, err := realDeleteAuth(stateDir, name)
-		for _, entry := range intentNames(t, f) {
-			if inst, _, _ := parseOAuthIntent(entry); inst != name {
-				continue
-			}
-			path := filepath.Join(oauthDir(f), entry)
-			if rerr := os.Remove(path); rerr != nil {
-				t.Fatalf("Remove(%s): %v", path, rerr)
-			}
-			if merr := os.Mkdir(path, 0o700); merr != nil {
-				t.Fatalf("Mkdir(%s): %v", path, merr)
-			}
+		if mkErr := os.Mkdir(landed, 0o700); mkErr != nil {
+			t.Fatalf("Mkdir(%s): %v", landed, mkErr)
+		}
+		if wErr := os.WriteFile(filepath.Join(landed, "obstacle"), []byte("in the way"), 0o600); wErr != nil {
+			t.Fatalf("WriteFile(obstacle): %v", wErr)
 		}
 		return removed, err
 	}
 
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
 	if err == nil {
-		t.Fatal("Remove = nil, want the phase-failure reported")
+		t.Fatal("Remove = nil, want the commit-point failure reported")
 	}
 	if _, persisted := errors.AsType[removeAppliedError](err); persisted {
 		t.Fatalf("Remove = %v (%T), want a plain failure, never a persisted removal beside a copy startup can restore", err, err)
@@ -939,15 +1036,18 @@ func TestInstances_RemoveAPhaseFailureAndAFailedRollbackLeavesStartupToRecover(t
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 654, time.UTC)
 	f.ctl.auth.now = func() time.Time { return fixed }
 	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
-	stamp := strconv.FormatInt(fixed.UnixNano(), 10)
-	// After the credential cleanup, occupy the record path with a non-empty
-	// directory: the rollback's rename-back cannot replace it, the way a genuine
-	// disk refusal would - and break the record's own read at the same time, so
-	// the phase update is what fails. It is a directory so the registry's
-	// instance scan skips it, and the test clears it before startup recovery runs.
+	// After the credential cleanup, occupy the name the commit point renames the
+	// record TO (so the commit cannot land) and the record path (so the
+	// rollback's rename-back cannot put the copy back either). The record path is
+	// a directory, so the registry's instance scan skips it, and the test clears
+	// both before startup recovery runs.
+	landed := filepath.Join(oauthDir(f), oauthLandedName("openai-codex", fixed.UnixNano()))
 	realDeleteAuth := f.ctl.auth.deleteAuth
 	f.ctl.auth.deleteAuth = func(stateDir, name string) (bool, error) {
 		removed, err := realDeleteAuth(stateDir, name)
+		if mkErr := os.Mkdir(landed, 0o700); mkErr != nil {
+			t.Fatalf("Mkdir(%s): %v", landed, mkErr)
+		}
 		obstacle := authopenai.AuthFilePath(stateDir, name)
 		if mkErr := os.Mkdir(obstacle, 0o700); mkErr != nil {
 			t.Fatalf("Mkdir(%s): %v", obstacle, mkErr)
@@ -955,24 +1055,12 @@ func TestInstances_RemoveAPhaseFailureAndAFailedRollbackLeavesStartupToRecover(t
 		if wErr := os.WriteFile(filepath.Join(obstacle, "obstacle"), []byte("in the way"), 0o600); wErr != nil {
 			t.Fatalf("WriteFile: %v", wErr)
 		}
-		for _, entry := range intentNames(t, f) {
-			if inst, _, _ := parseOAuthIntent(entry); inst != name {
-				continue
-			}
-			path := filepath.Join(oauthDir(f), entry)
-			if rerr := os.Remove(path); rerr != nil {
-				t.Fatalf("Remove(%s): %v", path, rerr)
-			}
-			if merr := os.Mkdir(path, 0o700); merr != nil {
-				t.Fatalf("Mkdir(%s): %v", path, merr)
-			}
-		}
 		return removed, err
 	}
 
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
 	if err == nil {
-		t.Fatal("Remove = nil, want the phase-failure reported")
+		t.Fatal("Remove = nil, want the commit-point failure reported")
 	}
 	// The record never came back to its own path, so the instance does not
 	// resolve from it and the landed contract reports the removal as standing
@@ -990,20 +1078,18 @@ func TestInstances_RemoveAPhaseFailureAndAFailedRollbackLeavesStartupToRecover(t
 	if len(left) != 1 {
 		t.Fatalf("the parked copies = %v, want the one the failed rollback must leave for startup", left)
 	}
-
-	// Repair the record path and the state the disk would be in once the refusal
-	// passes: the copy is all that is left of the credential, and a removal that
-	// never reached its commit point leaves its record at the started phase.
+	// The failed rollback could not return the record to its in-doubt name - the
+	// commit's landed name is the one it holds, and the in-flight name is free
+	// only once the obstacle goes - so repair the disk the way the disk would:
+	// the copy is all that is left of the credential, and a removal that never
+	// stood leaves its record in doubt.
 	if rerr := os.RemoveAll(record); rerr != nil {
 		t.Fatalf("RemoveAll(%s): %v", record, rerr)
 	}
-	for _, name := range intentNames(t, f) {
-		path := filepath.Join(oauthDir(f), name)
-		if rerr := os.RemoveAll(path); rerr != nil {
-			t.Fatalf("RemoveAll(%s): %v", path, rerr)
-		}
+	if rerr := os.RemoveAll(landed); rerr != nil {
+		t.Fatalf("RemoveAll(%s): %v", landed, rerr)
 	}
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, stamp)
+	removalAt(t, f, "openai-codex", false, false, strconv.FormatInt(fixed.UnixNano(), 10))
 	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if rerr != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
@@ -1070,15 +1156,15 @@ func TestInstances_RemoveAReloadFailureKeepsTheCopyRecoverable(t *testing.T) {
 	if len(left) != 1 {
 		t.Fatalf("the parked copies = %v, want the one work startup recovery reads", left)
 	}
-	var phases []oauthIntentPhase
+	var markers []bool
 	for _, name := range intentNames(t, f) {
-		if inst, _, _ := parseOAuthIntent(name); inst != "openai-codex" {
+		if inst, _, _, ok := parseOAuthIntent(name); !ok || inst != "openai-codex" {
 			continue
 		}
-		phases = append(phases, intentPhaseOf(t, filepath.Join(oauthDir(f), name)))
+		markers = append(markers, recordIsLanded(t, filepath.Join(oauthDir(f), name)))
 	}
-	if len(phases) != 1 || phases[0] != oauthPhaseStarted {
-		t.Fatalf("the records = %v, want the one started record the failed rollback must leave", phases)
+	if len(markers) != 1 || markers[0] {
+		t.Fatalf("the records = %v, want the one in-doubt record the failed rollback must leave", markers)
 	}
 
 	// Clear the obstacle as the disk would once the refusal passes, then let
@@ -1170,8 +1256,8 @@ func TestInstances_RolledBackRemovalSpendsItsIntent(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("the rollback left the records %v, want the one that keeps the copy recoverable", records)
 	}
-	if got := intentPhaseOf(t, filepath.Join(oauthDir(f), records[0])); got != oauthPhaseStarted {
-		t.Fatalf("the record's phase = %q, want %q so startup puts the copy back rather than sweeping it", got, oauthPhaseStarted)
+	if recordIsLanded(t, filepath.Join(oauthDir(f), records[0])) {
+		t.Fatal("the record is filed as landed, want its in-doubt name so startup puts the copy back rather than sweeping it")
 	}
 	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if rerr != nil || !restored {
@@ -1237,7 +1323,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackACredentialOnlyImplicitRecord(t *t
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("Remove(%s): %v", path, err)
 	}
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 	if err := f.ctl.auth.reloadRegistry(); err != nil {
 		t.Fatalf("reloadRegistry: %v", err)
 	}
@@ -1289,8 +1375,8 @@ func TestRestoreUncommittedOAuthAsidesSweepsTheCopiesAStandingRemovalLeft(t *tes
 	parkedAt(t, f, "work", "1757000000000000000", "the copy of a name the config carries\n")
 	orphan := parkedAt(t, f, "retired", "1757000000000000001", "an orphaned removal\n")
 	cfgOrphan := parkedAt(t, f, "gone", "1757000000000000002", "a standing authored removal\n")
-	removalAt(t, f, "retired", false, oauthPhaseLanded, "1757000000000000001")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "1757000000000000002")
+	removalAt(t, f, "retired", false, true, "1757000000000000001")
+	removalAt(t, f, "gone", true, true, "1757000000000000002")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err == nil || !strings.Contains(err.Error(), "deleted the parked copy "+filepath.Base(orphan)) {
@@ -1338,7 +1424,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackAConfigBackedCopyTheConfigStillCar
 	if err := os.Remove(record); err != nil {
 		t.Fatalf("Remove(%s): %v", record, err)
 	}
-	removalAt(t, f, "work", true, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "work", true, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err != nil {
@@ -1380,7 +1466,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackADefaultNamedConfigBackedCopy(t *t
 	if err := os.Remove(record); err != nil {
 		t.Fatalf("Remove(%s): %v", record, err)
 	}
-	removalAt(t, f, "openai-codex", true, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", true, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err != nil {
@@ -1423,7 +1509,7 @@ func TestRestoreUncommittedOAuthAsidesNeedsAReloadForACredentialOnlyInstance(t *
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("Remove(%s): %v", path, err)
 	}
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 	if err := f.ctl.auth.reloadRegistry(); err != nil {
 		t.Fatalf("reloadRegistry: %v", err)
 	}
@@ -1496,7 +1582,7 @@ func TestRestoreUncommittedOAuthAsidesReportsNoConfigFailureForACredentialOnlyRe
 	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
 	const credentialBytes = "the only credential the instance ever had\n"
 	inflight := parkedAt(t, f, "openai-codex", stamp, credentialBytes)
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err != nil {
@@ -1531,11 +1617,11 @@ func TestRestoreUncommittedOAuthAsidesRecoversCredentialOnlyCopiesWhenTheConfigC
 	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
 	const credentialBytes = "the only credential the instance ever had\n"
 	inflight := parkedAt(t, f, "openai-codex", stamp, credentialBytes)
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 	// A config-backed removal the config would have to judge: it must not be
 	// resolved in a pass without one.
 	deferred := parkedAt(t, f, "retired", stamp, "a config-backed removal in doubt\n")
-	removalAt(t, f, "retired", true, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "retired", true, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err == nil || !strings.Contains(err.Error(), f.tomlPath) {
@@ -1570,18 +1656,18 @@ func TestRestoreUncommittedOAuthAsidesDefersConfigBackedCopiesWithoutAConfigPath
 	// A config-backed removal: without a config it cannot be judged, so it must
 	// not be resolved (and its copy not swept).
 	configBacked := parkedAt(t, f, "work", stamp, "an in-doubt removal's only credential\n")
-	removalAt(t, f, "work", true, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "work", true, false, "1757000000000000000")
 	// A credential-only removal whose record says it landed: its phase is the
 	// evidence, so the sweep runs (and reports the lone credential it takes)
 	// without the config.
 	landed := parkedAt(t, f, "retired", stamp, "a standing removal's copy\n")
-	removalAt(t, f, "retired", false, oauthPhaseLanded, "1757000000000000000")
+	removalAt(t, f, "retired", false, true, "1757000000000000000")
 	// A credential-only removal in doubt: its recovery does not consult the
 	// config either, so it must complete.
 	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
 	const credentialBytes = "the credential-only instance's record\n"
 	parkedAt(t, f, "openai-codex", stamp, credentialBytes)
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, "", f.store)
 	if err == nil {
@@ -1625,11 +1711,11 @@ func TestRestoreUncommittedOAuthAsidesDefersWhenTheConfigFileIsMissing(t *testin
 	}
 	const stamp = "1757000000000000000"
 	configBacked := parkedAt(t, f, "work", stamp, "an in-doubt removal's only credential\n")
-	removalAt(t, f, "work", true, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "work", true, false, "1757000000000000000")
 	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
 	const credentialBytes = "the credential-only instance's record\n"
 	parkedAt(t, f, "openai-codex", stamp, credentialBytes)
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "1757000000000000000")
+	removalAt(t, f, "openai-codex", false, false, "1757000000000000000")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err == nil || !strings.Contains(err.Error(), "no providers config file at "+f.tomlPath) {
@@ -1665,8 +1751,8 @@ func TestRestoreUncommittedOAuthAsidesDefersAWholeInstanceWhoseConfigCouldNotBeR
 	record := authopenai.AuthFilePath(f.stateDir, "work")
 	older := parkedAt(t, f, "work", "100", "the stale credential-only copy\n")
 	newer := parkedAt(t, f, "work", "200", "the current config-backed copy\n")
-	removalAt(t, f, "work", false, oauthPhaseStarted, "90")
-	removalAt(t, f, "work", true, oauthPhaseStarted, "190")
+	removalAt(t, f, "work", false, false, "90")
+	removalAt(t, f, "work", true, false, "190")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err == nil || !strings.Contains(err.Error(), f.tomlPath) {
@@ -1734,8 +1820,8 @@ func TestRestoreUncommittedOAuthAsidesResolvesAWholeInstanceForward(t *testing.T
 	record := authopenai.AuthFilePath(f.stateDir, "gone")
 	older := parkedAt(t, f, "gone", "100", "the older credential-only copy\n")
 	newer := parkedAt(t, f, "gone", "200", "the newer config-backed copy\n")
-	removalAt(t, f, "gone", false, oauthPhaseStarted, "90")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "190")
+	removalAt(t, f, "gone", false, false, "90")
+	removalAt(t, f, "gone", true, true, "190")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if restored {
@@ -1778,8 +1864,8 @@ func TestRestoreUncommittedOAuthAsidesRestoresACopyNewerThanTheProof(t *testing.
 	record := authopenai.AuthFilePath(f.stateDir, "gone")
 	proof := parkedAt(t, f, "gone", "100", "the older config-backed proof\n")
 	newer := parkedAt(t, f, "gone", "200", "the newer credential-only copy a later re-sign-in left\n")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "90")
-	removalAt(t, f, "gone", false, oauthPhaseStarted, "190")
+	removalAt(t, f, "gone", true, true, "90")
+	removalAt(t, f, "gone", false, false, "190")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if !restored {
@@ -1819,8 +1905,8 @@ func TestRestoreUncommittedOAuthAsidesResolvesANewerConfigBackedCopy(t *testing.
 	record := authopenai.AuthFilePath(f.stateDir, "gone")
 	older := parkedAt(t, f, "gone", "100", "the older config-backed proof\n")
 	newer := parkedAt(t, f, "gone", "200", "the newer config-backed proof\n")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "90")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "190")
+	removalAt(t, f, "gone", true, true, "90")
+	removalAt(t, f, "gone", true, true, "190")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if restored {
@@ -1859,11 +1945,11 @@ func TestRestoreUncommittedOAuthAsidesTreatsASameStampRecordAndCopyAsOneMutation
 	// (a) A landed config-backed removal of a name the config does not carry, its
 	// record and its copy at one stamp.
 	swept := parkedAt(t, f, "gone", "100", "the copy parked in the record's own tick\n")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "100")
+	removalAt(t, f, "gone", true, true, "100")
 	// (b) A started credential-only removal, its record and its copy at one stamp.
 	const content = "the credential-only instance's record\n"
 	parkedAt(t, f, "openai-codex", "200", content)
-	removalAt(t, f, "openai-codex", false, oauthPhaseStarted, "200")
+	removalAt(t, f, "openai-codex", false, false, "200")
 
 	got, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err != nil {
@@ -1900,8 +1986,8 @@ func TestRestoreUncommittedOAuthAsidesResolvesACopyAtTheProofStamp(t *testing.T)
 		t.Fatalf("write providers.toml: %v", err)
 	}
 	atProof := parkedAt(t, f, "gone", "100", "the copy parked at the proof's own stamp\n")
-	removalAt(t, f, "gone", false, oauthPhaseStarted, "90")
-	removalAt(t, f, "gone", true, oauthPhaseLanded, "100")
+	removalAt(t, f, "gone", false, false, "90")
+	removalAt(t, f, "gone", true, true, "100")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if restored {
@@ -1934,7 +2020,7 @@ func TestRestoreUncommittedOAuthAsidesResolvesEveryCopyOfOneRemovalAsOne(t *test
 	}
 	first := parkedAt(t, f, "retired", "100", "the copy an earlier failed removal left\n")
 	second := parkedAt(t, f, "retired", "200", "the copy the removal parked\n")
-	removalAt(t, f, "retired", false, oauthPhaseLanded, "90")
+	removalAt(t, f, "retired", false, true, "90")
 
 	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if restored {
@@ -2722,8 +2808,11 @@ func TestInstances_EditRenameRecordsAKeyOnlyRename(t *testing.T) {
 		t.Fatalf("the record is not on disk at %s: %v", record, statErr)
 	}
 	i := readIntent(t, record)
-	if i.op != oauthOpRename || i.inst != "work" || i.new != "personal" || i.phase != oauthPhaseStarted {
-		t.Fatalf("the record = %+v, want the rename of work to personal, started", i)
+	if i.op != oauthOpRename || i.inst != "work" || i.new != "personal" {
+		t.Fatalf("the record = %+v, want the rename of work to personal", i)
+	}
+	if recordIsLanded(t, record) {
+		t.Fatal("the rename's record is filed as landed, want it in flight: a rename's landing is read from the config")
 	}
 }
 
@@ -2772,7 +2861,7 @@ func TestInstances_EditRenameResolvesAnEarlierRenameIntoTheNameFirst(t *testing.
 	if err := authopenai.SaveAuth(f.stateDir, "personal", makeOAuthRecord("personal", "personal@example.com")); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	earlier := renameAt(t, f, "personal", "work", oauthPhaseLanded, "1757000000000000000")
+	earlier := renameAt(t, f, "personal", "work", "1757000000000000000")
 	// The config names the name the earlier rename was heading for.
 	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
@@ -2815,7 +2904,7 @@ func TestInstances_EditRenameRefusesWhileAnEarlierRenameCannotBeFinished(t *test
 	if err := f.store.Set("personal", "sk-personal"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	earlier := renameAt(t, f, "personal", "work", oauthPhaseLanded, "1757000000000000000")
+	earlier := renameAt(t, f, "personal", "work", "1757000000000000000")
 	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
@@ -2868,7 +2957,7 @@ func TestRestoreUncommittedOAuthAsidesCompletesARenameWhosRecordWasPromoted(t *t
 	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseLanded, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 	const content = "the credential the rename carried\n"
 	promoted := authopenai.AuthFilePath(f.stateDir, "work")
 	if err := os.WriteFile(promoted, []byte(content), 0o600); err != nil {
@@ -2900,7 +2989,7 @@ func TestRestoreUncommittedOAuthAsidesCompletesARenameBeforeTheCarryMovedAnythin
 	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseLanded, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 	const content = "the only credential of work\n"
 	inflight := parkedAt(t, f, "work", "1757000000000000000", content)
 
@@ -2935,7 +3024,7 @@ func TestRestoreUncommittedOAuthAsidesFinishesARenameWithTheNewRecordAlreadySave
 	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseLanded, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 	const content = "the credential the rename carried\n"
 	for _, path := range []string{authopenai.AuthFilePath(f.stateDir, "work"), authopenai.AuthFilePath(f.stateDir, "personal")} {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -2977,7 +3066,7 @@ func TestRestoreUncommittedOAuthAsidesCompletesARenameWithTheStoredKey(t *testin
 		t.Fatalf("Set: %v", err)
 	}
 	seedOAuthRecord(t, f, "work", "work@example.com")
-	record := renameAt(t, f, "work", "personal", oauthPhaseStarted, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 
 	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
@@ -3022,7 +3111,7 @@ func TestRestoreUncommittedOAuthAsidesSpendsARenameRecordTheConfigStillNamesOld(
 	if err := store.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseStarted, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 
 	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
@@ -3051,7 +3140,7 @@ func TestRestoreUncommittedOAuthAsidesKeepsARenameRecordWhoseKeyCannotMove(t *te
 	if err := store.Set("work", "sk-work"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseStarted, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 	credsDir := filepath.Dir(f.credsPath)
 	if err := os.Chmod(credsDir, 0o555); err != nil {
 		t.Fatalf("Chmod(%s): %v", credsDir, err)
@@ -3092,7 +3181,7 @@ func TestRestoreUncommittedOAuthAsidesMovesTheKeyInTheStoreItIsHanded(t *testing
 		t.Fatalf("Set: %v", err)
 	}
 	seedOAuthRecord(t, f, "work", "work@example.com")
-	record := renameAt(t, f, "work", "personal", oauthPhaseStarted, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 	// The store the pass is handed is NOT at filepath.Join(filepath.Dir(stateDir),
 	// "credentials.toml") unless the fixture says so: pin that the pass uses it.
 	if derived := filepath.Join(filepath.Dir(f.stateDir), "credentials.toml"); derived == f.credsPath {
@@ -3126,7 +3215,7 @@ func TestRestoreUncommittedOAuthAsidesRewritesTheProviderFieldWhenItFinishesARen
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseLanded, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 
 	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
@@ -3161,7 +3250,7 @@ func TestRestoreUncommittedOAuthAsidesLeavesANonRegularRecordWhereItIs(t *testin
 	if err := os.WriteFile(filepath.Join(oldRecord, "inside"), []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile(inside): %v", err)
 	}
-	record := renameAt(t, f, "work", "personal", oauthPhaseLanded, "1757000000000000000")
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
 
 	_, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
@@ -3304,7 +3393,7 @@ func TestInstances_RollbackWriteFailureKeepsADefaultOnlyImplicitInstanceRemoved(
 	if err != nil {
 		t.Fatalf("setAsideOAuthFile: %v", err)
 	}
-	intentPath := removalAt(t, f, "openai-codex", true, oauthPhaseLanded, "1757000000000000000")
+	intentPath := removalAt(t, f, "openai-codex", true, true, "1757000000000000000")
 	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{}); err != nil {
 		t.Fatalf("WriteConfigFile(removal output): %v", err)
 	}
@@ -3369,7 +3458,7 @@ func TestInstances_RollbackWriteFailureKeepsAnAuthoredCuratedProviderRemoved(t *
 	if err != nil {
 		t.Fatalf("setAsideOAuthFile: %v", err)
 	}
-	intentPath := removalAt(t, f, "openai-codex", true, oauthPhaseLanded, "1757000000000000000")
+	intentPath := removalAt(t, f, "openai-codex", true, true, "1757000000000000000")
 	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{}); err != nil {
 		t.Fatalf("WriteConfigFile(removal output): %v", err)
 	}
@@ -3411,12 +3500,18 @@ func TestInstances_RolledBackRemovalReportsARecordItCannotSettle(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	const stamp = "1757000000000000000"
 	own := parkedAt(t, f, "work", stamp, "the record the removal parked\n")
-	// The record does not read back, so the phase cannot be returned to started.
-	record := filepath.Join(oauthDir(f), "work.json"+oauthIntentMarker+"1757000000000000001")
-	if err := os.WriteFile(record, []byte("not a record\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", record, err)
+	// The removal reached its commit point, so its record is filed under the
+	// landed name - and the in-doubt name the rollback has to return it to is
+	// taken, so the rollback cannot put the record back in doubt.
+	record := intentAt(t, f, "work", oauthLandedMarker, removalIntent("work", false), stamp)
+	taken := filepath.Join(oauthDir(f), oauthIntentName("work", 1757000000000000000))
+	if err := os.Mkdir(taken, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", taken, err)
 	}
-	// The carrying copy cannot go back to its own path...
+	if err := os.WriteFile(filepath.Join(taken, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+	// The carrying copy cannot go back to its own path either.
 	path := authopenai.AuthFilePath(f.stateDir, "work")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatalf("Mkdir(%s): %v", path, err)
@@ -3433,8 +3528,8 @@ func TestInstances_RolledBackRemovalReportsARecordItCannotSettle(t *testing.T) {
 	if err == nil {
 		t.Fatal("rollBackFailedRemoval = nil, want the unsettled record reported")
 	}
-	if !strings.Contains(err.Error(), "started phase") {
-		t.Fatalf("rollBackFailedRemoval = %v, want the phase it could not return named", err)
+	if !strings.Contains(err.Error(), "in-doubt name") {
+		t.Fatalf("rollBackFailedRemoval = %v, want the name it could not return the record to named", err)
 	}
 	if _, statErr := os.Lstat(own); statErr != nil {
 		t.Fatalf("the parked copy is gone (Lstat = %v), want it left where recovery reads it", statErr)

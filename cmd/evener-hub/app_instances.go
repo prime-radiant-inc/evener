@@ -1352,13 +1352,10 @@ func removeApplied(err error) error {
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName, intentPath string) error {
 	var problems []string
-	// The config this rename wrote is on disk now, so the record says so. A phase
-	// that will not land is reported, not fatal: whether the rename landed is read
-	// from the config (completeRenameIntent), which is durable evidence this field
-	// only annotates.
-	if err := markOAuthIntentLanded(intentPath); err != nil {
-		problems = append(problems, fmt.Sprintf("the rename could not be recorded as landed (%v)", err))
-	}
+	// The rename carries no commit marker: its landing is read from the config,
+	// which is durable evidence written before any credential moved
+	// (completeRenameIntent), so the record stays under its in-flight name until
+	// the whole move is done with it.
 	// One persist, so the key is never briefly filed under both names or
 	// neither: a copy-then-clear pair whose second half failed would leave
 	// the old name resolving a credential the config no longer names.
@@ -1904,9 +1901,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !configChanged {
 		frame, supplies = "the removal stands", supplyOf(locked)
 	}
-	if err := markOAuthIntentLanded(intentPath); err != nil {
+	landedPath, err := landOAuthIntent(intentPath)
+	if err != nil {
+		// The commit point is the rename that files the record as landed: a record
+		// that cannot be carried there leaves the removal in doubt - the copy it
+		// parked would be put back by the next start - so it rolls back here,
+		// through the same path a failed reload takes, and never reports the
+		// removal as standing.
 		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, intentPath, oauthAside, configChanged, frame, supplies, err)
 	}
+	intentPath = landedPath
 	if err := c.reg.Reload(); err != nil {
 		// The raw error, not a framed one: rollBackFailedRemoval adds the single
 		// "removing %q failed:" frame itself, so wrapping it here would report the
@@ -2860,6 +2864,11 @@ func (c *hubInstancesController) writeIntent(i oauthIntent, createDir bool) (str
 		return "", fmt.Errorf("list %s (%w)", dir, err)
 	}
 	highest, have := highestStampedStamp(entries, i.inst, oauthIntentMarker)
+	// A landed record is the same mutation's other name, so it occupies the same
+	// stamp: a new record steps past both.
+	if landed, ok := highestStampedStamp(entries, i.inst, oauthLandedMarker); ok && (!have || landed > highest) {
+		highest, have = landed, true
+	}
 	path, _, reason, searchErr := stepFreeStampedName(filepath.Join(dir, i.inst+".json"), oauthIntentMarker, stamp, highest, have)
 	switch reason {
 	case asideSearchFound:
@@ -3143,8 +3152,11 @@ type oauthIntentFile struct {
 	stampText string
 	stamp     int64
 	ranked    bool
-	intent    oauthIntent
-	parseErr  error
+	// landed reports that the record was carried to its commit-point name: the
+	// rename that filed it there is the evidence a credential-only removal stood.
+	landed   bool
+	intent   oauthIntent
+	parseErr error
 }
 
 // oauthCopyFile is one parked copy found in the auth directory.
@@ -3167,8 +3179,8 @@ func classifyOAuthState(dir string, entries []os.DirEntry) ([]oauthIntentFile, [
 		if e.IsDir() {
 			continue
 		}
-		if inst, stampText, ok := parseOAuthIntent(e.Name()); ok {
-			f := oauthIntentFile{path: filepath.Join(dir, e.Name()), inst: inst, stampText: stampText}
+		if inst, stampText, landed, ok := parseOAuthIntent(e.Name()); ok {
+			f := oauthIntentFile{path: filepath.Join(dir, e.Name()), inst: inst, stampText: stampText, landed: landed}
 			if s, perr := strconv.ParseInt(stampText, 10, 64); perr == nil {
 				f.stamp, f.ranked = s, true
 			}
@@ -3442,9 +3454,13 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 			continue
 		}
 		carries := cfgErr == nil && configCarriesName(layer, name)
-		// stood[ri] is whether the record proves its removal landed, and proof[ri]
-		// is the stamp that proof is dated by: a copy at or before it belongs to
-		// the removal that stood, whatever parked it.
+		// stood[ri] is whether the record proves its removal landed: a
+		// credential-only removal is proved by the record's NAME - it was carried
+		// to its landed marker at the commit point, an atomic rename a torn or
+		// lost write cannot fake - and a config-backed one by the config, which is
+		// durable evidence the record cannot supply. proof[ri] dates that proof by
+		// the stamp, and the marker is checked against it below: a landed record
+		// older than a copy cannot settle that copy.
 		stood := make([]bool, len(st.records))
 		proof := make([]int64, len(st.records))
 		for ri, f := range st.records {
@@ -3452,7 +3468,7 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 				continue
 			}
 			if f.intent.kind == oauthKindCredentialOnly {
-				stood[ri] = f.intent.phase == oauthPhaseLanded
+				stood[ri] = f.landed
 			} else {
 				stood[ri] = cfgErr == nil && !configCarriesName(layer, f.inst)
 			}
@@ -3679,7 +3695,7 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 		if e.IsDir() {
 			continue
 		}
-		inst, _, ok := parseOAuthIntent(e.Name())
+		inst, _, _, ok := parseOAuthIntent(e.Name())
 		if !ok || inst != name {
 			continue
 		}
@@ -3723,8 +3739,8 @@ func (c *hubInstancesController) resolveRemovalIntent(intentPath, name string) [
 		_ = removeOAuthIntent(intentPath)
 		return nil
 	}
-	if err := markOAuthIntentPhase(intentPath, oauthPhaseStarted); err != nil {
-		return []string{fmt.Sprintf("return the removal record %s of %q to its started phase, so the copy it parked is put back rather than swept (%v)", intentPath, name, err)}
+	if _, err := unlandOAuthIntent(intentPath); err != nil {
+		return []string{fmt.Sprintf("return the removal record %s of %q to its in-doubt name, so the copy it parked is put back rather than swept (%v)", intentPath, name, err)}
 	}
 	return nil
 }

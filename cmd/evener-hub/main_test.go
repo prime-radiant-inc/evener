@@ -880,7 +880,6 @@ func TestRunMainMovesARenamedKeyInTheLiveCredentialsStore(t *testing.T) {
 	}
 	record := filepath.Join(authDir, oauthIntentName("work", 1757000000000000000))
 	ri := renameIntent("work", "personal")
-	ri.phase = oauthPhaseLanded
 	if err := os.WriteFile(record, ri.encode(), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", record, err)
 	}
