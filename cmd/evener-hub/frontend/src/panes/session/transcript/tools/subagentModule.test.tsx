@@ -6,7 +6,7 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { seedCurrentDelegate } from "./currentDelegate.testFixture";
-import { classifyJobStatus, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
+import { classifyJobStatus, delegateOutputHasCard, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
@@ -107,7 +107,10 @@ test("unknown lifecycle is unavailable, never a human question, even collapsed",
   const user = userEvent.setup();
   render(<ToolCallItem item={unknown} turn={turn} live={false} />);
   expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+  // Expanded at settle: the card's merged status line carries the word.
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByTestId("subagent-stats").textContent).toContain("Status unavailable");
+  expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
   await user.click(screen.getByTestId("tool-row").querySelector("button[aria-expanded]")!);
   expect(screen.queryByTestId("subagent-row")).toBeNull();
   expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
@@ -151,6 +154,18 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
       }),
     ),
   ).toBeNull();
+});
+
+test("an empty delegate_id counts as absent - no card, the standalone status line stays", () => {
+  // str() returns the empty string for "", so the card gate must test
+  // truthiness, not just presence: a receipt with an empty id is
+  // activation-only, exactly like one with no id at all.
+  expect(delegateOutputHasCard({ delegate_id: "" })).toBe(false);
+  expect(
+    rowFromDelegateItem(delegateItem({ output: JSON.stringify({ delegate_id: "", status: "running" }) })),
+  ).toBeNull();
+  expect(delegateOutputHasCard({ delegate_id: "dlg_1" })).toBe(true);
+  expect(delegateOutputHasCard(undefined)).toBe(true);
 });
 
 // --- delegate descriptor: summary ----------------------------------------
@@ -508,6 +523,45 @@ test("a folded card quotes the child's newest own words from the full event stre
   expect(quote.tagName).toBe("EM");
 });
 
+test("the folded quote prefers the child's stated intent for its latest tool use, never the action", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "active");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      base.thread.turns[0]!.items = [
+        {
+          id: "item_latest_use",
+          turnId: "turn_c1",
+          type: "commandExecution",
+          toolName: "shell",
+          callId: "ca_latest",
+          description: "Tracing the hook dispatch path",
+          argumentsJSON: JSON.stringify({ command: "rg -n hookDispatch agent/" }),
+          status: "completed",
+        },
+      ] as never;
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_intent",
+    callId: "call_intent",
+    argumentsJSON: JSON.stringify({ prompt: "quote my latest tool use" }),
+    output: JSON.stringify({ delegate_id: "job_intent", status: "running", transcript_ref: "ref_intent_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const quote = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-quote");
+  // The stated intent is the quote - the tool name and the command it ran
+  // (the action) never surface on the folded card.
+  expect(quote.textContent).toBe("Tracing the hook dispatch path");
+  expect(quote.textContent).not.toContain("rg -n");
+  expect(quote.textContent).not.toContain("shell");
+});
+
 test("expanding a card lists recent quotes - intents plain, messages italic - each with its runtime and timestamp", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
@@ -829,6 +883,63 @@ test("the stats line singularizes a single turn and a single call", async () => 
   expect(stats.textContent).not.toContain("1 turns");
 });
 
+// The merged-line tests share one fixture: a watched child (1 turn, 3 calls)
+// plus a stable running delegate whose current run began 12s before `now`.
+function renderRunningStableDelegate(key: string): HTMLElement {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
+  connectionStore.getState().connect(fake);
+  const now = 1_700_000_221_000;
+  seedCurrentDelegate(`parent_${key}`, `dlg_${key}`, "running", undefined, {
+    runStartedAt: new Date(now - 12_000).toISOString(),
+    transcriptRef: `ref_${key}_child`,
+  });
+
+  const Body = toolRendererFor("delegate").body!;
+  render(
+    <SessionNowContext.Provider value={now}>
+      <Body
+        item={delegateItem({
+          id: `d_${key}`,
+          callId: `call_${key}`,
+          argumentsJSON: JSON.stringify({ prompt: `fixture ${key}` }),
+          output: JSON.stringify({
+            delegate_id: `dlg_${key}`,
+            status: "running",
+            transcript_ref: `ref_${key}_child`,
+          }),
+        })}
+        live={false}
+        sessionRef={`parent_${key}`}
+      />
+    </SessionNowContext.Provider>,
+  );
+  return screen.getByTestId("subagent-row");
+}
+
+test("the card's first line carries the lifecycle word together with turns, calls, and the clock", async () => {
+  const row = renderRunningStableDelegate("merged");
+  const stats = await within(row).findByTestId("subagent-stats");
+  // ONE line: the status word leads, and the counts and run clock ride WITH
+  // it rather than on a second line below.
+  await waitFor(() => {
+    expect(stats.textContent).toContain("Running");
+    expect(stats.textContent).toContain("1 turn");
+    expect(stats.textContent).toContain("3 calls");
+    expect(stats.textContent).toContain("12s");
+  });
+  expect(stats.textContent.indexOf("Running")).toBeLessThan(stats.textContent.indexOf("1 turn"));
+  expect(stats.textContent.indexOf("1 turn")).toBeLessThan(stats.textContent.indexOf("3 calls"));
+  expect(stats.textContent.indexOf("3 calls")).toBeLessThan(stats.textContent.indexOf("12s"));
+});
+
+test("the folded latest-tool-use quote renders below the merged status line", async () => {
+  const row = renderRunningStableDelegate("below");
+  const stats = within(row).getByTestId("subagent-stats");
+  const quote = await within(row).findByTestId("subagent-quote");
+  expect(stats.compareDocumentPosition(quote) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("a running receipt without stable run timing does not invent a child clock", () => {
   const Body = toolRendererFor("delegate").body!;
   const now = 1_700_000_221_000;
@@ -882,10 +993,67 @@ test("resumed work keeps its identity and historical report but uses the current
   );
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("running");
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+  // The card is open, so its merged line carries the word - no standalone div.
+  expect(within(row).getByTestId("subagent-stats").textContent).toContain("Running");
+  expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
   expect(within(row).getByText("12s")).toBeTruthy();
   expect(within(row).queryByText("3m41s")).toBeNull();
   expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
+});
+
+test("an expanded card owns the status line - the standalone lifecycle div returns only once collapsed", async () => {
+  seedCurrentDelegate("ref_own", "dlg_own", "running");
+  const user = userEvent.setup();
+  const turn: TurnModel = { id: "turn_own", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={delegateItem({
+        id: "d_own",
+        turnId: turn.id,
+        callId: "call_own",
+        description: "Owning my status line",
+        argumentsJSON: JSON.stringify({ prompt: "run along" }),
+        output: JSON.stringify({ delegate_id: "dlg_own", status: "running", transcript_ref: "local:child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_own"
+      live={false}
+    />,
+  );
+
+  // Expanded (the delegate descriptor auto-opens at settle): the card's merged
+  // line carries the status word; the standalone div must not duplicate it.
+  const row = screen.getByTestId("subagent-row");
+  await waitFor(() => expect(within(row).getByTestId("subagent-stats").textContent).toContain("Running"));
+  expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
+
+  // Collapsed: the card unmounts and the compact standalone line returns.
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  await user.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!);
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+});
+
+test("an activation-only receipt keeps the standalone lifecycle line even while the body is open", () => {
+  const turn: TurnModel = { id: "turn_activation", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={delegateItem({
+        id: "d_activation",
+        turnId: turn.id,
+        callId: "call_activation",
+        argumentsJSON: JSON.stringify({ prompt: "legacy activation-only launch" }),
+        output: JSON.stringify({ job_id: "job_activation", status: "running" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  // An activation-only result renders no card, so the open body has nothing
+  // to carry the status - the standalone line must stay.
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
 });
 
 test("stable delegate attention and lifecycle own the card while child content status changes", async () => {
@@ -921,8 +1089,11 @@ test("stable delegate attention and lifecycle own the card while child content s
   render(<ToolCallItem item={running} turn={turn} live={false} sessionRef="ref_attention_parent" />);
 
   const user = userEvent.setup();
-  const lifecycle = screen.getByTestId("delegate-lifecycle");
-  expect(lifecycle.textContent).toContain("Needs attention");
+  // Expanded: the card's merged status line owns the attention word.
+  const stats = screen.getByTestId("subagent-stats");
+  expect(stats.textContent).toContain("Needs attention");
+  expect(stats.getAttribute("data-attention")).toBe("true");
+  expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
   const bodyId = screen.getByTestId("tool-call-body").id;
   const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!;
   await user.click(toggle);
@@ -984,6 +1155,42 @@ test("stable delegate attention and lifecycle own the card while child content s
   expect(row.dataset.kind).toBe("done");
   expect(within(row).getByText("Status: done")).toBeTruthy();
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("✓");
+});
+
+test("the expanded attention card renders one attention glyph and a spaced, glyph-less marker", async () => {
+  seedCurrentDelegate("ref_word", "dlg_word", "running", undefined, { needsAttention: true });
+  const user = userEvent.setup();
+  const turn: TurnModel = { id: "turn_word", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={delegateItem({
+        id: "d_word",
+        turnId: turn.id,
+        callId: "call_word",
+        description: "Wording my attention marker",
+        argumentsJSON: JSON.stringify({ prompt: "run along" }),
+        output: JSON.stringify({ delegate_id: "dlg_word", status: "running", transcript_ref: "local:child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_word"
+      live={false}
+    />,
+  );
+
+  const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
+  const word = within(stats).getByTestId("subagent-status-word");
+  // The card's leading status glyph is the one attention diamond; the word's
+  // marker drops its own glyph and reads as plain, space-separated words.
+  expect(word.textContent).toBe("Running Needs attention");
+  expect((stats.textContent.match(/◆/g) ?? []).length).toBe(1);
+
+  // Collapsed, the standalone line has no leading glyph, so its marker keeps
+  // the diamond.
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  await user.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!);
+  const lifecycle = screen.getByTestId("delegate-lifecycle");
+  expect(lifecycle.textContent).toContain("◆ Needs attention");
+  expect((lifecycle.textContent.match(/◆/g) ?? []).length).toBe(1);
 });
 
 // The card's head (tag + open) duplicated the delegate tool row it sits under.

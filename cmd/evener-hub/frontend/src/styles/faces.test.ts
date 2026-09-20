@@ -37,6 +37,12 @@ test("the status row no longer offers a mono class for figures", () => {
   expect(css).not.toMatch(/(?:^|\n)\.mono\s*\{/);
 });
 
+test("the subagent card's folded quote is UI-sized, a step below prose reading size", () => {
+  const quote = rule("panes/session/transcript/tools/subagentmodule.module.css", ".quote");
+  expect(quote).toMatch(/font-size:\s*var\(--font-size-ui\)/);
+  expect(quote).not.toMatch(/--font-size-prose/);
+});
+
 test("editorial prose has a distinct serif face and body-scaled size", () => {
   const palette = rule("styles/tokens.css", '[data-theme="dark"]');
   expect(palette).toMatch(/--font-prose:\s*"Source Serif 4 Variable", Georgia, "Times New Roman", serif;/);

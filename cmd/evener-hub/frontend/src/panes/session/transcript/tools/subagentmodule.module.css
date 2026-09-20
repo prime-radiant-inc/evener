@@ -11,11 +11,13 @@
   color: var(--ink-mid);
 }
 
-.lifecycle[data-kind="running"] {
+.lifecycle[data-kind="running"],
+.stats[data-kind="running"] .statusWord {
   color: var(--alive-ink);
 }
 
-.lifecycle[data-kind="failed"] {
+.lifecycle[data-kind="failed"],
+.stats[data-kind="failed"] .statusWord {
   color: var(--danger-ink);
 }
 
@@ -44,7 +46,9 @@
   display: block;
   min-width: 0;
   font-family: var(--font-prose);
-  font-size: var(--font-size-prose);
+  /* The child's latest words are secondary content below the status line -
+     UI-sized, a step below reading prose. */
+  font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
   font-style: italic;
   color: var(--ink-hi);
@@ -75,7 +79,8 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.lifecycle[data-attention="true"] > span {
+.lifecycle[data-attention="true"] > span,
+.stats[data-attention="true"] .statusWord > span {
   color: var(--attention-ink);
   font-weight: var(--font-weight-medium);
 }

@@ -69,7 +69,10 @@ test.each(["running", "completed"])(
       </TranscriptRenderProvider>,
     );
 
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    // Expanded at settle, the card's merged status line carries the word; the
+    // standalone lifecycle div is suppressed while the card is mounted.
+    expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
+    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
