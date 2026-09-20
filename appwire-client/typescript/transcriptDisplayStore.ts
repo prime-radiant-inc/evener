@@ -154,7 +154,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     setState({ hub, loaded: true, hubLoading: false });
   }
 
-  const { beginReadyGeneration, endReadyGeneration } = createSettingsHubGeneration({
+  const { beginReadyGeneration: beginReadyGenerationCore, endReadyGeneration } = createSettingsHubGeneration({
     fence,
     wireNotifications: (generation) => {
       missedChangeNotification = false;
@@ -165,6 +165,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     },
     retirePayload,
   });
+
+  function beginReadyGeneration(): void {
+    beginReadyGenerationCore();
+    if (fence.awaitingFirstPayload && getState().loaded) setState({ loaded: false });
+  }
 
   function detachHub(): void {
     retirePayload({ hub: {}, hubError: null });
