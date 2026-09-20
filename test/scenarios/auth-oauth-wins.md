@@ -17,14 +17,14 @@ network calls), so a synthetic record with a future expiry exercises it
 exactly as a real sign-in would.
 
 ```bash
-# Isolated everything, per docs/developing-evener/agentic-testing.md's Setup checklist.
+# Isolated everything through the shared helper, per
+# docs/developing-evener/agentic-testing.md's Setup checklist.
 run=$(mktemp -d -t evener-e2e-oauth-wins-XXXXXX)
 go build -o "$run/evener" ./cmd/evener
 go build -o "$run/evener" ./cmd/evener
 
-export HOME="$run/home"
-mkdir -p "$HOME"
-unset XDG_STATE_HOME    # else an ambient value outranks the scratch $HOME
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run"
 
 # A fabricated OAuth record in the scratch state root — same shape
 # `evener openai login` writes (auth/openai/storage.go: AuthRecord, and
@@ -62,7 +62,7 @@ for i in $(seq 1 50); do
 done
 [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
 HUB=http://127.0.0.1:$PORT
-TOKEN=$(cat "$HOME/.evener/auth-token")
+TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 ```
 
 ## Steps

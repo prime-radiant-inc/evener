@@ -89,16 +89,16 @@ func covThreadReadSeed(t *testing.T) {
 	for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "bad"}}, {Evener: appwire.EvenerThread{Ref: "local:x"}}} {
 		_ = liveThreadCanMergeLocalPast(thread)
 	}
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{ID: "x"})
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{SessionID: "x"})
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:x"}})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{}, appwire.Thread{Source: "remote"})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{ID: session, SessionID: session, Preview: session})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session}, appwire.Thread{ID: session})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{SessionID: session})
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{ID: "x"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{SessionID: "x"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:x"}}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{}, appwire.Thread{Source: "remote"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{ID: session, SessionID: session, Preview: session}, true)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session}, appwire.Thread{ID: session}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{SessionID: session}, true)
 	full := past
 	full.Name, full.ModelProvider, full.Path, full.CWD, full.Source, full.Evener.Profile = "n", "m", "p", cwd, "local", "profile"
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session, IncludeTurns: true}, full)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session, IncludeTurns: true}, full, len(full.Turns) == 0)
 
 	parts := []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "text"},
