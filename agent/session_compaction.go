@@ -243,9 +243,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// filtered out below and never reach the transcript. The start clamp is
 	// invariant armor, not an expected path.
 	tailStart := snapAppends - s.persistedAppendLogBase
-	if tailStart > len(s.persistedAppendLog) {
-		tailStart = len(s.persistedAppendLog)
-	}
+	tailStart = min(tailStart, len(s.persistedAppendLog))
 	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
