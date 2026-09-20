@@ -146,8 +146,9 @@ export interface StoreLifecycle<S> {
   /** Subscribes to the notification. Idempotent, and refused after
    * dispose(). */
   start(): void;
-  /** Back to the initial state; requests still in flight publish nothing when
-   * they land. The notification subscription, if started, stays. */
+  /** Back to the reset state; fields selected by resetState may survive while
+   * requests still in flight publish nothing when they land. The notification
+   * subscription, if started, stays. */
   reset(): void;
   /** Tells the lifecycle which connection the list belongs to now, and what
    * state it is in - the host calls it for every transition its connection
