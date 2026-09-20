@@ -155,6 +155,9 @@ func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *
 	if !strings.Contains(err.Error(), "removed marketplace") {
 		t.Fatalf("err = %v, want it to say the registry removal landed", err)
 	}
+	if !strings.Contains(err.Error(), "evener plugin gc") {
+		t.Fatalf("err = %v, want it to name the recovery command `evener plugin gc`", err)
+	}
 	if strings.Contains(err.Error(), clone) {
 		t.Fatalf("err = %v, want no absolute path in the CLI-facing error", err)
 	}

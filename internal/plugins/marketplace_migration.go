@@ -481,6 +481,15 @@ func (m *Manager) markerLeftForRecovery(what string) error {
 // and only this says which existing marketplace those directories became.
 type migrationRecord struct {
 	Renames []recordedRename `json:"renames"`
+	// RetainedClones are marketplace clone directories a removal deliberately
+	// spared because a recorded directory source sits at or beneath them: a
+	// store written before refuseSourceInStore, or hand-seeded, can name its own
+	// clone as a source, and deleting that directory would delete the recorded
+	// source path itself. The record they were removed from is gone, so this
+	// carries the spare forward — Gc and Doctor consults it so neither reclaims
+	// the directory as an unreferenced clone. It is lists of paths that never
+	// expire on their own; a directory that is gone costs one string.
+	RetainedClones []string `json:"retained_clones,omitempty"`
 }
 
 // recordedRename is one rename the migration made: the name it moved from, the
@@ -523,10 +532,102 @@ func (m *Manager) loadMigrationRecord() (migrationRecord, error) {
 	return rec, nil
 }
 
+// retainClone records path in the store's exception record so Gc and Doctor
+// leave the clone directory at path alone, and releaseClone drops it again once
+// a later removal has reclaimed the directory. Both are no-ops that write
+// nothing when the record already agrees.
+func (m *Manager) retainClone(path string) error {
+	rec, err := m.loadMigrationRecord()
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	for _, p := range rec.RetainedClones {
+		if filepath.Clean(p) == clean {
+			return nil
+		}
+	}
+	rec.RetainedClones = append(rec.RetainedClones, path)
+	return m.saveMigrationRecord(rec)
+}
+
+func (m *Manager) releaseClone(path string) error {
+	rec, err := m.loadMigrationRecord()
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	kept := make([]string, 0, len(rec.RetainedClones))
+	for _, p := range rec.RetainedClones {
+		if filepath.Clean(p) != clean {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == len(rec.RetainedClones) {
+		return nil
+	}
+	rec.RetainedClones = kept
+	return m.saveMigrationRecord(rec)
+}
+
+// releaseCloneUnder drops every retained path at or beneath dir. A clone swap
+// replaces the whole directory tree, so a retention for a path under it names a
+// directory the swap destroyed; left in place it would keep protecting a clone
+// that is later stranded at that path for good. The comparison covers the
+// lexical path and the resolved one, as the sweep's own source walk does.
+func (m *Manager) releaseCloneUnder(dir string) error {
+	rec, err := m.loadMigrationRecord()
+	if err != nil {
+		return err
+	}
+	if len(rec.RetainedClones) == 0 {
+		return nil
+	}
+	clean := filepath.Clean(dir)
+	resolvedDir, err := resolveForContainment(dir)
+	if err != nil {
+		return err
+	}
+	under := func(p string) bool {
+		cleanP := filepath.Clean(p)
+		if cleanP == clean || pathWithinDir(clean, cleanP) {
+			return true
+		}
+		resolved, err := resolveForContainment(p)
+		if err != nil {
+			return false
+		}
+		return resolved == resolvedDir || pathWithinDir(resolvedDir, resolved)
+	}
+	kept := make([]string, 0, len(rec.RetainedClones))
+	for _, p := range rec.RetainedClones {
+		if under(p) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if len(kept) == len(rec.RetainedClones) {
+		return nil
+	}
+	rec.RetainedClones = kept
+	return m.saveMigrationRecord(rec)
+}
+
+// loadRetainedClones reads the clone directories the store's exception record
+// says a removal deliberately spared.
+func (m *Manager) loadRetainedClones() ([]string, error) {
+	rec, err := m.loadMigrationRecord()
+	if err != nil {
+		return nil, err
+	}
+	return rec.RetainedClones, nil
+}
+
 // saveMigrationRecord writes the record with the atomic write the store files
-// get, and removes the file where the record names no family at all.
+// get, and removes the file where the record names no family and retains no
+// clone.
 func (m *Manager) saveMigrationRecord(rec migrationRecord) error {
-	if len(rec.Renames) == 0 {
+	if len(rec.Renames) == 0 && len(rec.RetainedClones) == 0 {
 		m.removeMigrationRecord()
 		return nil
 	}
