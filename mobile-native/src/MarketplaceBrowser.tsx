@@ -28,7 +28,11 @@ import {
   type PluginMutationGate,
 } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import { catalogToBrowse } from "./marketplaceBrowserModel";
+import {
+  appliedRemovalNotice,
+  catalogToBrowse,
+  shouldRefetchAfterRemoval,
+} from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -140,10 +144,38 @@ export function MarketplaceBrowser({
         style: "destructive",
         onPress: () => {
           if (revision.current !== version) return;
-          void act(() => state.removeMarketplace(name));
+          void removeAct(name);
         },
       },
     ]);
+  }
+
+  // A marketplace removal that rejects can still be one the hub says already
+  // stood (appwire/errors.go), so it never reads as the generic failed write:
+  // the list refreshes when it is stale, and the error slot carries at most
+  // the clone-litter warning - WRITE_FAILED would imply a retry, and a retry
+  // targets a marketplace that is already gone.
+  async function removeAct(name: string) {
+    const version = revision.current;
+    setError(null);
+    let caught: unknown;
+    const outcome = await runGatedMutation(gate, () =>
+      state.removeMarketplace(name).catch((error: unknown) => {
+        caught = error;
+        throw error;
+      }),
+    );
+    if (revision.current !== version) return;
+    if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
+    else if (outcome === "failed") {
+      const removal = appliedRemovalNotice(caught);
+      if (removal === undefined) setError(WRITE_FAILED);
+      else {
+        if (shouldRefetchAfterRemoval(state.marketplaces, name))
+          void state.fetchMarketplaces();
+        setError(removal.notice);
+      }
+    }
   }
   const needle = query.trim().toLowerCase();
   const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
