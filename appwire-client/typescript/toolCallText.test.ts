@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
+import { formatDurationMs } from "./displayFormat";
 import {
   clip,
   clipJobID,
@@ -87,6 +88,19 @@ test("formatToolDuration: 1s-10s shows one decimal, trailing .0 stripped", () =>
 test("formatToolDuration: 10s and above rounds to whole seconds", () => {
   expect(formatToolDuration(10000)).toBe("10s");
   expect(formatToolDuration(65400)).toBe("65s");
+});
+
+test("formatToolDuration: shares the one duration rule with formatDurationMs (#1228)", () => {
+  // Regression: this helper used to carry a second implementation that
+  // rounded the seconds tier from the RAW millisecond value, while
+  // displayFormat.ts's formatDurationMs rounds to whole milliseconds first.
+  // The two names therefore disagreed about the same fractional input even
+  // though both document mirroring renderer-format.js's formatToolDuration.
+  // Both now resolve through the one duration rule.
+  expect(formatToolDuration(999.5)).toBe(formatDurationMs(999.5));
+  expect(formatToolDuration(1049.5)).toBe(formatDurationMs(1049.5));
+  expect(formatToolDuration(999.5)).toBe("1s");
+  expect(formatToolDuration(1049.5)).toBe("1.1s");
 });
 
 // --- formatByteCount -------------------------------------------------------

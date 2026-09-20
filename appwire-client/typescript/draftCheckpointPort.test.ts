@@ -17,6 +17,33 @@ function decode(value: unknown): Checkpoint {
 }
 
 describe("createDraftRepository", () => {
+  it("reports whether reload saw the same classified identity, not just the same decoded content", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: true });
+
+    // Equal decoded fields do not prove that the same record survived: a new
+    // writer's identity must take the ordinary replacement path.
+    drafts.storage.save({ id: "d2", value: "a" });
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d2", value: "a" }, sameIdentity: false });
+  });
+
+  it("reports a changed identity when a replacement decodes identically but has different raw bytes", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    // The replacement decodes to the SAME checkpoint, { id: "d1", value: "a" }
+    // - only its canonical raw bytes differ, by the extra field `decode`
+    // drops. Equal decoded fields do not make it the classified record: an
+    // identity compare over decoded values would carry the previous
+    // classification forward across a record that was actually replaced.
+    drafts.storage.save({ id: "d1", value: "a" });
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: false });
+  });
+
   it("removeIf on a checkpoint load() returned removes the exact stored bytes, extra fields included", () => {
     const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
     const repo = createDraftRepository(drafts.storage, decode);

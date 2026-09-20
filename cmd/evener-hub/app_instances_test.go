@@ -912,6 +912,40 @@ func TestInstances_EditRenamesASignedInCodexAccount(t *testing.T) {
 	}
 }
 
+// TestInstances_EditRenameKeepsTheRankedDefault: an unqualified launch resolves
+// the default instance by ranking when providers.toml names none, so renaming
+// the instance that wins that ranking has to carry the default with it. The
+// rename authors an entry under a name outside default_order - it ranks after
+// every curated id - so without pinning the pointer the next bare launch would
+// resolve whatever instance ranked behind it (here a configured Groq key).
+func TestInstances_EditRenameKeepsTheRankedDefault(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set(groq): %v", err)
+	}
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+
+	before := f.ctl.List()
+	if got := entry(t, before, "openai-codex"); !got.IsDefault {
+		t.Fatalf("fixture: openai-codex = %+v, want the instance ranking as default", got)
+	}
+	if got := entry(t, before, "groq"); got.IsDefault {
+		t.Fatalf("fixture: groq = %+v, want the ranking to pick openai-codex", got)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	after := f.ctl.List()
+	if got := entry(t, after, "codex-work"); !got.IsDefault {
+		t.Fatalf("codex-work = %+v, want the default the rename carries over", got)
+	}
+	if got := entry(t, after, "groq"); got.IsDefault {
+		t.Fatalf("groq = %+v, want the renamed instance to keep the default", got)
+	}
+}
+
 // TestInstances_RemoveReportsAStandingRemovalWhenTheRestoreFails: the
 // credential-only rollback is the only thing a removal of a UI-credentialed
 // instance can undo, so when a put-back fails the removal stands. The caller

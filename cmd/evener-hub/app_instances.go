@@ -1145,11 +1145,17 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			}
 			renameJournal = journal
 		}
-		// The map key is the instance name providers.toml is written under;
-		// the default pointer follows so the file still loads.
+		// The map key is the instance name providers.toml is written under,
+		// and the default pointer follows so the file still loads. It is set
+		// whenever this rename moves the instance an unqualified launch
+		// resolves: either the pointer named it, or §5.1 ranking picked it
+		// with no pointer at all. Renaming a ranked default without pinning it
+		// would hand the next bare launch to whatever instance ranks behind it
+		// - a signed-in Codex account loses to a configured Groq key - and the
+		// user moved their account, not their default.
 		delete(l.Providers, name)
 		p.ID = newName
-		if l.Default == name {
+		if l.Default == name || c.launchDefaultIs(name) {
 			l.Default = newName
 		}
 		l.Providers[newName] = p
@@ -1501,6 +1507,16 @@ func (c *hubInstancesController) renameLeavesRow(r *registry.Registry, inst regi
 		return false
 	}
 	return r.ProviderRenameLeavesInstance(inst.Name)
+}
+
+// launchDefaultIs reports whether an unqualified launch currently resolves the
+// named instance: providers.toml's `default` names it, or §5.1 ranking picks it
+// when the file names none. It asks registry.DefaultInstance - the same answer
+// llm/client's launch path reads - rather than re-deriving the ranking, so the
+// rename's default-preserving pointer and the launch cannot disagree.
+func (c *hubInstancesController) launchDefaultIs(name string) bool {
+	def, _, err := c.reg.Get().DefaultInstance()
+	return err == nil && def == name
 }
 
 // Remove deletes an instance, its stored key and its OAuth record. An instance
