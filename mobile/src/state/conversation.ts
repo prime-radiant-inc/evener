@@ -590,6 +590,20 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
       return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
+    case "attachments":
+      // Only the display name is bounded — it is plain display text the
+      // renderer inserts into accessibility labels and modal copy. src is a
+      // data URI or a resolved fetch URL, and cutting it yields something the
+      // renderer cannot decode, so it passes through verbatim.
+      return {
+        ...item,
+        items: item.items.map((attachment) => ({
+          ...attachment,
+          name: attachment.name
+            ? truncateText(attachment.name, MAX_ITEM_BYTES)
+            : attachment.name,
+        })),
+      };
     case "activity":
       return {
         ...item,
@@ -2559,16 +2573,21 @@ export function createConversationStore() {
                 : projectItemAttachments(params.item);
               markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
-                replacement.push({
-                  kind: "attachments",
-                  id: attachmentId,
-                  items: attachments,
-                  ...(params.item.transcriptKey
-                    ? { sourceTranscriptKey: params.item.transcriptKey }
-                    : projectedWithReasoning.kind === "activity"
-                      ? { sourceTranscriptKey: params.item.id }
-                      : {}),
-                });
+                // The companion row is built from wire images, not projected
+                // here, so it takes the same per-item bound the authoritative
+                // install paths apply (truncateItem) — src passes through.
+                replacement.push(
+                  truncateItem({
+                    kind: "attachments",
+                    id: attachmentId,
+                    items: attachments,
+                    ...(params.item.transcriptKey
+                      ? { sourceTranscriptKey: params.item.transcriptKey }
+                      : projectedWithReasoning.kind === "activity"
+                        ? { sourceTranscriptKey: params.item.id }
+                        : {}),
+                  }),
+                );
                 markLiveOwned(attachmentId);
               }
               const items: MobileTimelineItem[] = [];
