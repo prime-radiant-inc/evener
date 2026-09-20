@@ -122,6 +122,7 @@ type Session struct {
 	ownsDelegateController   bool
 	artifactStore            artifactStore
 	ownsArtifactStore        bool
+	obsPack                  observationPack
 	client                   *llm.Client
 	cheap                    *cheapmodel.Caller
 	profile                  *provider.Profile

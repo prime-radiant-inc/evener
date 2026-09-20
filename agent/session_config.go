@@ -246,6 +246,14 @@ type SessionConfig struct {
 	// Session.SetVisionModel, which writes this same field under s.mu.
 	VisionModel string `json:"vision_model,omitempty"`
 
+	// ObservationPacking archives tool results over 10 KiB to the session
+	// artifact store and, once the first two requests have carried a result in
+	// full, replaces it in later REQUEST contexts with a stable handle plus
+	// the original size and head/tail excerpt lines. The transcript and
+	// in-memory history keep the full result; the full content stays
+	// retrievable on demand via the handle. Off by default.
+	ObservationPacking bool `json:"observation_packing,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -846,6 +854,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
 		VisionModel:                 c.VisionModel,
+		ObservationPacking:          c.ObservationPacking,
 	}
 }
 
@@ -889,6 +898,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
 		VisionModel:                 s.VisionModel,
+		ObservationPacking:          s.ObservationPacking,
 	}
 }
 
