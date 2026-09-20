@@ -100,7 +100,10 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  * outcome: the unregister already landed, but callers must reconcile through
  * their normal fetch path rather than retrying the removal or treating it as
  * an authoritative empty list. */
-export type MarketplaceRemovalOutcome = { kind: "applied"; marketplaces: MarketplaceEntry[] } | { kind: "unavailable" };
+export type MarketplaceRemovalOutcome =
+  | { kind: "applied"; marketplaces: MarketplaceEntry[] }
+  | { kind: "unavailable" }
+  | { kind: "removed" };
 
 /** Classifies the hub's applied-with-litter rejection for UI consumers. The
  * unregister already landed, so a valid applied list is authoritative even
@@ -108,8 +111,13 @@ export type MarketplaceRemovalOutcome = { kind: "applied"; marketplaces: Marketp
  * callers must keep the current list and reconcile through their normal fetch
  * path rather than treating the zero value as an empty list. */
 export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
-    return undefined;
+  if (!(error instanceof WireError)) return undefined;
+  if (error.evenerErrorInfo === "marketplaceRemoveApplied") {
+    if (!error.data || typeof error.data !== "object") return undefined;
+    const data = error.data as { appliedUnavailable?: unknown };
+    return data.appliedUnavailable === true ? { kind: "removed" } : undefined;
+  }
+  if (error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains") return undefined;
   if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
   const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
   if (data.appliedUnavailable) return { kind: "unavailable" };

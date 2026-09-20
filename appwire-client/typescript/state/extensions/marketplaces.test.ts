@@ -30,7 +30,27 @@ function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> 
   });
 }
 
+function removeAppliedUnavailableError(): WireError {
+  return new WireError("marketplace removed, but the updated list was unavailable", -32603, {
+    evenerErrorInfo: "marketplaceRemoveApplied",
+    appliedUnavailable: true,
+  });
+}
+
 describe("marketplaceRemovalOutcome", () => {
+  test("classifies an applied removal with an unavailable list separately from clone litter", () => {
+    expect(marketplaceRemovalOutcome(removeAppliedUnavailableError())).toEqual({ kind: "removed" });
+  });
+
+  test("leaves malformed or ordinary removal errors retryable", () => {
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("marketplace removed", -32603, { evenerErrorInfo: "marketplaceRemoveApplied" }),
+      ),
+    ).toBeUndefined();
+    expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+  });
+
   test("returns the authoritative applied list for clone cleanup failure", () => {
     expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL]))).toEqual({
       kind: "applied",
@@ -56,6 +76,25 @@ describe("marketplaceRemovalOutcome", () => {
 
   test("keeps truly ordinary failures retryable", () => {
     expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+  });
+});
+
+describe("removeMarketplace applied-but-unconfirmed", () => {
+  test("preserves the last snapshot and exposes the applied outcome", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    fake.on("evener/marketplace/remove", () => {
+      throw removeAppliedUnavailableError();
+    });
+
+    const removal = store.getState().removeMarketplace("acme");
+    await expect(removal).rejects.toBeInstanceOf(WireError);
+    await expect(removal.catch((error) => marketplaceRemovalOutcome(error))).resolves.toEqual({ kind: "removed" });
+    expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "evener/marketplace/remove")).toHaveLength(1);
   });
 });
 
