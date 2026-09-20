@@ -236,6 +236,21 @@ skip or a limitation, never as a pass. What each suite covers is described in
 E2E](#openai-codex-backend-e2e), and [Anthropic Messages API
 E2E](#anthropic-messages-api-e2e) below.
 
+### `EVENER_TMPDIR_PRIVDROP_E2E=1` — a host privilege-drop check
+
+Not a provider suite. It proves that a child which becomes another uid can create
+temp files in the session temp container `TMPDIR` names, the field failure
+behind #495: a private `0700` scratch exported as `TMPDIR` is unwritable for such
+a child. It needs a real world-usable host temp, the external `mktemp`, and a
+`sudo` that may drop to `nobody`, so it is an explicit opt-in and never runs in
+default CI. Without the opt-in the property is still covered deterministically —
+the container and leaf mode assertions in `agent/sandbox` and `agent/execenv` are
+the mechanism the kernel uses for a foreign user.
+
+~~~sh
+EVENER_TMPDIR_PRIVDROP_E2E=1 go test ./agent/sandbox -run TestSessionTmpPrivilegeDropE2E -count=1 -v
+~~~
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
