@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -236,10 +237,12 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold still in flight must re-snapshot to publish after this
 	// one (its revision check fails otherwise), so no older snapshot can
 	// need the pruned entries — and snapAppends >= persistedAppendLogBase
-	// for the same reason, since only publications advance the base.
+	// for the same reason, since only publications advance the base. The
+	// prune itself is deferred until the transcript batch below is durable:
+	// an all-or-nothing batch that rolls back leaves these turns with no
+	// replay-tail copies, so the log must still hold them for the next
+	// publication to replay.
 	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[snapAppends-s.persistedAppendLogBase:]...)
-	s.persistedAppendLogBase += len(s.persistedAppendLog)
-	s.persistedAppendLog = nil
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
@@ -273,20 +276,65 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	commit.commitTranscriptsLocked()
-	var mergedTailWriteErrs []error
-	for _, turn := range rewriteTail {
-		if err := s.writeTranscriptDurableLocked(turn); err != nil {
-			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+	// The fold's transcript commit is ONE all-or-nothing durable batch: its
+	// compaction markers and steering turns first, then the replay-tail copies
+	// that carry the turns recorded during the fold past the marker. Writing
+	// them as one batch is what keeps the marker and the copies it claims from
+	// outliving each other. A durable write the writer cannot record rolls the
+	// whole batch back, so a marker that discards the originals it replaces can
+	// never land without those replacements — the loss this used to permit when
+	// the marker (buffered) and the copy (durable) were written separately.
+	commit.commitTranscriptsLocked(rewriteTail)
+	switch {
+	case commit.transcriptCommitErr != nil:
+		// The batch rolled back: no marker landed, so the next resume replays
+		// the pre-fold transcript from the originals. The steering turns the
+		// fold injected (the pinned-note handoff among them) are still part of
+		// its published history, so record them on their own — the note claim
+		// already consumed in memory must not leave the note with no durable
+		// handoff. If even that recovery cannot confirm the handoff durable,
+		// the note must be put back: a crash in the window would otherwise
+		// lose the only copy of a note this fold consumed.
+		if !commit.recordSteeringAfterFailedBatchLocked() {
+			s.mu.Lock()
+			commit.restoreNoteLocked()
+			s.mu.Unlock()
 		}
+		// The claimed operation's receipt lived on the rolled-back marker
+		// turns, so return the cycle to pending; a restart re-arms it.
+		s.mu.Lock()
+		commit.restoreCompactionClaimLocked()
+		s.mu.Unlock()
+	case commit.transcriptRetainedUnsynced:
+		// The batch is a record a returning reader finds, but neither its
+		// fsync nor the recovery barrier made it durable. Keep the record (its
+		// warning is already queued on the writer) and do NOT prune the
+		// replay-tail log: pruning is a durability claim the batch has not
+		// earned, and a crash that lost the unsynced copies must still be able
+		// to replay them. The note's handoff is in that same unconfirmed batch,
+		// so restore the note; the durability gate must not be able to disagree
+		// with itself about a batch it just called non-durable.
+		s.mu.Lock()
+		commit.restoreNoteLocked()
+		commit.restoreCompactionClaimLocked()
+		s.mu.Unlock()
+	default:
+		// The batch is durable: the replay-tail copies are in the transcript
+		// after the marker, so the persisted forms it replayed are now spent.
+		// Advancing the base here (still under attentionMu, so no append can
+		// interleave) drops them exactly as pruning at publish did.
+		s.mu.Lock()
+		s.persistedAppendLogBase += len(s.persistedAppendLog)
+		s.persistedAppendLog = nil
+		s.mu.Unlock()
 	}
 	s.attentionMu.Unlock()
-	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	if err := commit.transcriptCommitErr; err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
 	}
-	// The fold's buffered marker/steering writes and its durable merged-tail
-	// copies each queue a diagnostic when a whole line landed but did not sync;
-	// this is the fold's one owner for surfacing them, outside the door.
+	// A whole line that landed but did not sync through the fold's durable
+	// batch queues a diagnostic on the writer; this is the fold's one owner
+	// for surfacing it, outside the door.
 	s.surfaceTranscriptWarnings()
 	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
 		hook()
@@ -448,11 +496,39 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitSkillCompactionPublication after the flush.
 type foldCommit struct {
 	claimNoteLocked              func()
-	commitTranscriptsLocked      func()
+	commitTranscriptsLocked      func(tail []schema.Turn)
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
 	actualCompaction             bool
+	// transcriptCommitErr is the error from the fold's one all-or-nothing
+	// transcript batch, set by commitTranscriptsLocked. Non-nil means the
+	// batch rolled back and the fold has no durable anchor. Read by the flush
+	// publisher after the locks release, where emitting is safe.
+	transcriptCommitErr error
+	// transcriptRetainedUnsynced reports that the batch IS recorded (a
+	// returning reader finds the marker and its copies) but could be made
+	// durable neither by its own fsync nor by the recovery barrier. The
+	// publisher keeps the log rather than pruning it on an unconfirmed
+	// durability claim.
+	transcriptRetainedUnsynced bool
+	// recordSteeringAfterFailedBatchLocked re-records the fold's steering turns
+	// (fail-closed durable) after transcriptCommitErr rolls their shared batch
+	// back, so the turns the fold injected — the pinned-note handoff among
+	// them — still have a durable record. It reports whether the note handoff
+	// it wrote (when the fold produced one) is confirmed durable; false means
+	// the caller must call restoreNoteLocked. Uncalled on a recorded batch.
+	recordSteeringAfterFailedBatchLocked func() bool
+	// restoreNoteLocked puts back the pinned note this fold claimed when its
+	// transcript handoff could not be confirmed durable, so the note is
+	// re-emitted rather than lost. A no-op when the fold claimed no note.
+	restoreNoteLocked func()
+	// restoreCompactionClaimLocked returns the compaction operation this fold
+	// claimed to its pending phase when the batch carrying its receipt could
+	// not be confirmed durable, so a restart re-arms it instead of finding a
+	// published slot whose receipt never landed. A no-op when no operation was
+	// claimed.
+	restoreCompactionClaimLocked func()
 	captured                     *schema.SkillCompactionOperation
 	stagedCompactionCount        func() int
 	claimCompactionLocked        func()
@@ -501,7 +577,17 @@ func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) b
 // pinned-note claim from stageCompactionEffects down to runPreCompactHook.
 type noteClaimRegistrarKey struct{}
 
-func withNoteClaimRegistrar(ctx context.Context, register func(claimLocked func())) context.Context {
+// noteHandoffClaim couples the fold's generation-checked pinned-note claim
+// with the restore that keeps the note fail-closed. The claim consumes the
+// note atomically with the winning publish; restore puts it back when the
+// fold's transcript handoff could not be confirmed durable, so a crash (or a
+// lost unsynced write) re-emits the note instead of losing it.
+type noteHandoffClaim struct {
+	claimLocked   func()
+	restoreLocked func()
+}
+
+func withNoteClaimRegistrar(ctx context.Context, register func(noteHandoffClaim)) context.Context {
 	return context.WithValue(ctx, noteClaimRegistrarKey{}, register)
 }
 
@@ -510,12 +596,12 @@ func withNoteClaimRegistrar(ctx context.Context, register func(claimLocked func(
 // when no registrar is installed — a direct runPreCompactHook caller outside
 // any publication transaction — in which case the claim belongs with the
 // caller's own deferred commit.
-func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
-	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(func()))
+func registerNoteClaim(ctx context.Context, claim noteHandoffClaim) bool {
+	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(noteHandoffClaim))
 	if !ok {
 		return false
 	}
-	register(claimLocked)
+	register(claim)
 	return true
 }
 
@@ -547,8 +633,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// The publication transaction claims the pinned note (if the hook below
 	// captures one) atomically with the publish; the fold registers its
 	// generation-checked claim here as it runs.
-	var noteClaimLocked func()
-	ctx = withNoteClaimRegistrar(ctx, func(claimLocked func()) { noteClaimLocked = claimLocked })
+	var noteClaim *noteHandoffClaim
+	ctx = withNoteClaimRegistrar(ctx, func(claim noteHandoffClaim) { noteClaim = &claim })
 
 	// pendingCompactionTurns records checkpoint/summary turns the fold
 	// produced; handleCompactionTurn's own side effects (transcript write,
@@ -630,14 +716,20 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// turn's entry can sequence between the publish and these markers
 	// (ResumeHistory anchors on the LAST compaction marker and discards
 	// everything before it, so a late marker would silently drop every turn
-	// recorded after the fold). It also attaches the publication's staged
-	// handoff receipt to each compaction turn, so the durable transcript
-	// carries the typed record a restart reconciles from. Write errors are
-	// carried into flush, where emitting is safe again.
+	// recorded after the fold). It writes those entries AND the caller's
+	// replay-tail copies — the persisted forms of the turns recorded during
+	// the fold, whose originals sit before the marker — as one all-or-nothing
+	// durable batch, so a copy the writer cannot record rolls the marker back
+	// with it rather than leaving an anchor that discards an original it has
+	// nothing to replace. It also attaches the publication's staged handoff
+	// receipt to each compaction turn, so the durable transcript carries the
+	// typed record a restart reconciles from. Write errors are carried into
+	// flush, where emitting is safe again; the batch's own error is also
+	// recorded on the commit for the publisher to surface.
 	commit := &foldCommit{}
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
-	commitTranscriptsLocked := func() {
+	commitTranscriptsLocked := func(tail []schema.Turn) {
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
 				state := pendingCompactionTurns[i].SkillState.Clone()
@@ -651,10 +743,80 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			}
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		for i, turn := range pendingCompactionTurns {
-			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+		steeringWriteErrs = make([]error, len(pendingSteering))
+		// Markers first, then steering, then the replay-tail copies: every
+		// entry the marker must precede lands before it, and every copy the
+		// marker must claim lands after it. The batch is all-or-nothing, so a
+		// copy the writer cannot record takes the marker down with it.
+		batch := make([]schema.Turn, 0, len(pendingCompactionTurns)+len(pendingSteering)+len(tail))
+		batch = append(batch, pendingCompactionTurns...)
+		for _, record := range pendingSteering {
+			batch = append(batch, record.turn)
 		}
-		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		batch = append(batch, tail...)
+		// Each seam is a FAILURE injector: a non-nil return stands in for a
+		// durable write the writer could not record and aborts the whole batch
+		// (nothing lands); a nil return injects nothing and the turn is written
+		// for real in the batch. The seam does not replace the writer.
+		var batchErr error
+		injectedViaHook := false
+		for i, record := range pendingSteering {
+			if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
+				if err := appendTurn(record.turn); err != nil {
+					steeringWriteErrs[i] = err
+					batchErr = err
+					injectedViaHook = true
+				}
+			}
+		}
+		if batchErr == nil {
+			for _, turn := range tail {
+				if appendTail := s.cfg.testOnly.appendFoldTailTurn; appendTail != nil {
+					if err := appendTail(turn); err != nil {
+						batchErr = err
+						injectedViaHook = true
+						break
+					}
+				}
+			}
+		}
+		if injectedViaHook {
+			// A hook-simulated failure must not be papered over by the real
+			// writer below: nothing is written and the recovery path must
+			// respect the same injected failure (see
+			// recordSteeringAfterFailedBatchLocked).
+			commit.transcriptCommitErr = batchErr
+			for i := range compactionTurnWriteErrs {
+				compactionTurnWriteErrs[i] = batchErr
+			}
+			for i := range steeringWriteErrs {
+				if steeringWriteErrs[i] == nil {
+					steeringWriteErrs[i] = batchErr
+				}
+			}
+			return
+		}
+		batchErr = s.writeTranscriptBatchLocked(batch)
+		if errors.Is(batchErr, transcript.ErrRetainedUnsynced) {
+			// The whole batch IS a record — a returning reader finds the
+			// marker and its copies — but neither its fsync nor the recovery
+			// barrier made it durable. It is not a rollback: keep the record
+			// and its steering, and let the publisher leave the replay-tail
+			// log un-pruned.
+			commit.transcriptRetainedUnsynced = true
+			return
+		}
+		if batchErr != nil {
+			commit.transcriptCommitErr = batchErr
+			for i := range compactionTurnWriteErrs {
+				compactionTurnWriteErrs[i] = batchErr
+			}
+			for i := range steeringWriteErrs {
+				if steeringWriteErrs[i] == nil {
+					steeringWriteErrs[i] = batchErr
+				}
+			}
+		}
 	}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
 		if removed && len(pendingCompactionTurns) > 0 {
@@ -763,11 +925,86 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 	}
 	commit.claimNoteLocked = func() {
-		if noteClaimLocked != nil {
-			noteClaimLocked()
+		if noteClaim != nil {
+			noteClaim.claimLocked()
 		}
 	}
+	commit.restoreNoteLocked = func() {
+		if noteClaim != nil {
+			noteClaim.restoreLocked()
+		}
+	}
+	commit.restoreCompactionClaimLocked = func() {
+		receipt := commit.receipt
+		if receipt == nil {
+			return
+		}
+		// Only a claimed operation has a slot to return to pending and a forced
+		// trigger to re-arm; a generation-zero reminder receipt has neither.
+		if receipt.Operation.Generation != 0 {
+			if op := s.skillLifecycle.PendingCompaction; op != nil &&
+				op.Phase == skillCompactionPhasePublished && op.Generation == receipt.Operation.Generation {
+				// Put the claimed cycle back to pending: its receipt lives only
+				// on the batch's marker turns, so a restart must re-arm the
+				// intent rather than find a published slot with no durable
+				// receipt.
+				op.Phase = skillCompactionPhasePending
+				op.PublicationID = ""
+				// A FORCED operation's dispatch consumed the transient
+				// round-tail trigger (applyPendingForceCompact cleared it), so
+				// returning the operation to pending without re-arming would
+				// leave it pending with nothing to dispatch it until restart.
+				// Re-arm it, but never clobber a newer request that already
+				// armed its own trigger.
+				if op.Origin == skillCompactionOriginForced && !s.forceRequested {
+					s.forceRequested = true
+					s.pendingInstructions = op.Instructions
+				}
+			}
+		}
+		// Withdraw the handoff this fold recorded in EVERY non-durable outcome,
+		// including a generation-zero reminder receipt: its marker rolled back
+		// or never synced, so a persisted receipt would make a later restart or
+		// request emit a post-compaction reminder for a compaction that is not
+		// durably recorded.
+		s.removeSkillCompactionHandoffsLocked(map[string]bool{receipt.Operation.PublicationID: true})
+	}
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
+	// recordSteeringAfterFailedBatchLocked re-records the fold's steering turns
+	// after a rolled-back batch and reports whether the pinned-note handoff it
+	// wrote (when the fold produced one) is confirmed durable. A false return
+	// means the caller must restore the note.
+	commit.recordSteeringAfterFailedBatchLocked = func() (noteDurable bool) {
+		// Optimistic: a fold with no note handoff has nothing to restore, and a
+		// fold with one is disproved only by that handoff's own recovery write.
+		noteDurable = true
+		for i, record := range pendingSteering {
+			// A hook-injected steering failure aborts the batch and must not
+			// be papered over by re-writing the same turn for real.
+			if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
+				if err := appendTurn(record.turn); err != nil {
+					steeringWriteErrs[i] = err
+					if record.kind == events.SteeringKindNoteHandoff {
+						noteDurable = false
+					}
+					continue
+				}
+			}
+			// The note claim already consumed the note, so its handoff must be
+			// durable, not merely landed: a fail-closed synced write. A
+			// recorded-but-unsynced result is NOT confirmed durability.
+			err := s.writeTranscriptSyncedLocked(record.turn)
+			if err != nil {
+				steeringWriteErrs[i] = err
+				if record.kind == events.SteeringKindNoteHandoff {
+					noteDurable = false
+				}
+				continue
+			}
+			steeringWriteErrs[i] = nil
+		}
+		return noteDurable
+	}
 	commit.flush = flush
 	return ctx, emitFn, commit, injectedTurns
 }
@@ -834,7 +1071,11 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 		// runs it inside the publication transaction itself, while a direct
 		// caller outside one commits it with the rest.
 		claimLocked := func() { s.claimPinnedNoteLocked(gen) }
-		if !registerNoteClaim(ctx, claimLocked) {
+		// The restore travels with the claim so the publication transaction can
+		// put the note back when its transcript handoff is not confirmed
+		// durable. It runs under s.mu inside that transaction.
+		restoreLocked := func() { s.restorePinnedNoteLocked(gen, note) }
+		if !registerNoteClaim(ctx, noteHandoffClaim{claimLocked: claimLocked, restoreLocked: restoreLocked}) {
 			deferred = append(deferred, func() {
 				s.mu.Lock()
 				claimLocked()
@@ -870,20 +1111,27 @@ func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []preCompa
 	return records
 }
 
-// writeSteeringTurnRecordsLocked appends the records' turns to the
-// transcript. Callers hold attentionMu (the publication transaction's
-// transcript-commit phase). The returned errors align with records; they are
-// reported later by emitSteeringTurnRecords, outside the locks, where
-// emitting is safe.
+// writeSteeringTurnRecordsLocked appends the records' turns to the transcript
+// one at a time. It is no longer the fold path — the publication transaction
+// now writes its steering turns inside the one durable batch its
+// commitTranscriptsLocked builds — and survives only for the test-only
+// flushSteeringTurnRecords convenience below. Callers hold attentionMu. The
+// returned errors align with records; they are reported later by
+// emitSteeringTurnRecords, outside the locks, where emitting is safe.
 func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) []error {
 	if len(records) == 0 {
 		return nil
 	}
 	errs := make([]error, len(records))
 	for i, record := range records {
+		// appendCompactionTurn is a FAILURE injector, matching the fold path: a
+		// non-nil return stands in for a write failure, a nil return injects
+		// nothing and the turn is written for real.
 		if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
-			errs[i] = appendTurn(record.turn)
-			continue
+			if err := appendTurn(record.turn); err != nil {
+				errs[i] = err
+				continue
+			}
 		}
 		errs[i] = s.writeTranscriptLocked(record.turn)
 	}
@@ -902,10 +1150,10 @@ func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []e
 }
 
 // flushSteeringTurnRecords writes and reports records in one step, for a
-// caller outside any publication transaction. No production caller remains
-// since the transaction split — writeSteeringTurnRecordsLocked and
-// emitSteeringTurnRecords own the fold path — so this survives as the
-// one-step convenience the package tests drive directly.
+// caller outside any publication transaction. Test-only: the fold's steering
+// turns now go through the publication transaction's durable batch
+// (commitTranscriptsLocked), so no production caller remains and this
+// survives as the one-step convenience the package tests drive directly.
 func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 	s.attentionMu.Lock()
 	errs := s.writeSteeringTurnRecordsLocked(records)

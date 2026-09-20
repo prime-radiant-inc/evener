@@ -125,6 +125,20 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 	s.pinnedNoteGen++
 }
 
+// restorePinnedNoteLocked puts back the pinned note a fold claimed when its
+// transcript handoff could not be confirmed durable, so the note is re-emitted
+// rather than lost. It restores only when the claim's own generation is still
+// current and no note has been pinned since — a note set (or cleared and
+// re-set) mid-fold belongs to the next cycle and is never clobbered. Runs
+// inside the publication transaction, under s.mu; the caller holds
+// attentionMu, so no append or competing publication interleaves.
+func (s *Session) restorePinnedNoteLocked(gen uint64, note string) {
+	if s.pinnedNote != "" || s.pinnedNoteGen != gen+1 {
+		return
+	}
+	s.pinnedNote = note
+}
+
 // selfCompactNudge is the low-headroom warning. The pressure is real either
 // way; only the remedy is tool-dependent, so a session without compact_context
 // gets the same warning worded as something it can actually do. loaded lists

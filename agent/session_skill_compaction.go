@@ -446,8 +446,17 @@ func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
 		return
 	}
 	receipt := *commit.receipt
+	// The finalize is a durability claim about the transcript: it clears the
+	// pending operation and consumes its reload selection, and the durable
+	// transcript receipt is what lets a restart reconcile the snapshot. That
+	// claim is only earned when the fold's batch is CONFIRMED durable. On a
+	// rolled-back batch, or one that merely landed unsynced, the receipt may
+	// not survive a restart, so the operation must stay pending for restart to
+	// re-arm (or the surviving receipt to reconcile) instead of being cleared
+	// against a transcript that never recorded it.
+	durable := commit.transcriptCommitErr == nil && !commit.transcriptRetainedUnsynced
 	s.mu.Lock()
-	if receipt.Phase == skillCompactionReceiptPublished && receipt.Operation.Generation != 0 {
+	if durable && receipt.Phase == skillCompactionReceiptPublished && receipt.Operation.Generation != 0 {
 		if op := s.skillLifecycle.PendingCompaction; op != nil && op.Phase == skillCompactionPhasePublished &&
 			op.Generation == receipt.Operation.Generation {
 			// The winning publication carried the handoff itself — the note

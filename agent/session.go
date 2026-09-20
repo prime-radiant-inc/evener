@@ -2165,6 +2165,30 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	return s.attachedTranscript().AppendDurable(t)
 }
 
+// writeTranscriptBatchLocked records turns as one all-or-nothing durable batch
+// under attentionMu. The writer rolls the WHOLE batch back to its start offset
+// when it cannot write it, so either every turn is recorded and synced as a
+// unit or none is — the fold transaction relies on this to couple a compaction
+// marker with the replay-tail copies it claims. A not-yet-attached transcript
+// queues every turn instead, exactly as the single-turn doors do.
+func (s *Session) writeTranscriptBatchLocked(turns []schema.Turn) error {
+	if len(turns) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	if !s.transcriptReady {
+		// Queue the whole batch under the same lock that read readiness, so an
+		// attach cannot slip in between and neither record nor queue it — the
+		// single-turn doors check and queue atomically for exactly this reason.
+		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, turns...)
+		s.mu.Unlock()
+		return nil
+	}
+	w := s.transcript
+	s.mu.Unlock()
+	return w.AppendBatchSynced(turns)
+}
+
 // writeTranscriptSyncedLocked is the durability owner's write: it records AND
 // establishes durability, returning an error unless the entry is both a record
 // and synced. Durability owners (the environment producer, skill carriers,

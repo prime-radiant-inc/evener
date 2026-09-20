@@ -405,9 +405,19 @@ type testConfig struct {
 	// no-op; fuzz tests use it to transition the session to closing without races.
 	execToolCheckpoint func(string)
 
-	// appendCompactionTurn injects transcript append failures. Nil preserves the
-	// session transcript writer.
+	// appendCompactionTurn injects transcript append FAILURES only. A non-nil
+	// return aborts the fold's transcript batch (and its steering recovery);
+	// a nil return means "no failure injected" and the turn is written for
+	// real. It is not a replacement writer: a test that installs it to
+	// intercept a steering write and returns nil still writes that turn. Nil
+	// preserves the session transcript writer.
 	appendCompactionTurn func(schema.Turn) error
+
+	// appendFoldTailTurn injects a durable write failure for one of a fold's
+	// replay-tail copies. Tests use it to fail a copy write and prove the
+	// compaction marker does not survive it. Nil preserves the session
+	// transcript writer.
+	appendFoldTailTurn func(schema.Turn) error
 
 	// beforeHistoryRepairPublish observes the boundary immediately before an
 	// orphaned-tool-result repair publishes to s.history. Tests use it only to
