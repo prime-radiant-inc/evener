@@ -126,22 +126,38 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 // workspace that contains the temp dir sends its own sessions to the cache dir
 // instead, and a temp container deliberately does not use the temp dir at all
 // (os.TempDir() is private on macOS and can be private on Linux).
+//
+// The workspace filter applies to the SCRATCH bases only. A container is minted
+// in a world temp base regardless of where the workspace is — NewSessionTmp takes
+// no workspace — so a base the filter would refuse for allocation (a workspace
+// that CONTAINS /tmp, or is /tmp itself) still holds containers, and dropping it
+// from this list would leave them unreclaimable forever.
 func sessionScratchBases(requested, workspaceRoot string) []string {
-	candidates := []string{preferredSessionScratchCandidate(requested)}
+	var bases []string
+	add := func(base string) {
+		if base != "" && !slices.Contains(bases, base) {
+			bases = append(bases, base)
+		}
+	}
+	scratchCandidates := []string{preferredSessionScratchCandidate(requested)}
 	if cache, err := sessionScratchUserCacheDir(); err == nil {
-		candidates = append(candidates, cache)
+		scratchCandidates = append(scratchCandidates, cache)
+	}
+	for _, candidate := range scratchCandidates {
+		base, ok := validSessionScratchBase(candidate, workspaceRoot)
+		if ok {
+			add(base)
+		}
 	}
 	// Only where a session temp container can exist: elsewhere the bases are
 	// meaningless names, and walking them would let the reclaim scan directories
 	// evener never allocated in.
 	if SessionTmpSupported {
-		candidates = append(candidates, worldTempBases...)
-	}
-	var bases []string
-	for _, candidate := range candidates {
-		base, ok := validSessionScratchBase(candidate, workspaceRoot)
-		if ok && !slices.Contains(bases, base) {
-			bases = append(bases, base)
+		for _, candidate := range worldTempBases {
+			base, ok := validWorldTempBase(candidate)
+			if ok {
+				add(base)
+			}
 		}
 	}
 	return bases
@@ -268,12 +284,27 @@ func sweepCrashedSessionScratch(base string) error {
 		if statErr != nil {
 			continue
 		}
+		// Never touch a candidate this process does not own. The sweep walks
+		// world-writable temp bases now, where any local user can plant a directory
+		// under our prefix; acquiring our lease inside someone else's directory and
+		// then removing it recursively would destroy files that are not ours.
+		owned, ownerErr := scratchEntryOwnedByProcess(dir)
+		if ownerErr != nil || !owned {
+			continue
+		}
 		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 		if err != nil || contended {
 			continue
 		}
 		after, statErr := os.Stat(dir)
 		if statErr != nil || !os.SameFile(before, after) {
+			_ = lease.Release()
+			continue
+		}
+		// Re-verify under the held lease: acquiring it creates a file in the
+		// candidate, so a directory whose ownership changed between the two checks
+		// must not be removed either.
+		if owned, ownerErr := scratchEntryOwnedByProcess(dir); ownerErr != nil || !owned {
 			_ = lease.Release()
 			continue
 		}

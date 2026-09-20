@@ -1,4 +1,4 @@
-//go:build unix
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 
 package sandbox
 
@@ -182,8 +182,16 @@ func TestSessionTmpRequiresWorldUsableBase(t *testing.T) {
 			if _, err := NewSessionTmp(); err == nil {
 				t.Fatalf("NewSessionTmp accepted %v", tc.bases)
 			}
-			if entries, err := os.ReadDir(private); err != nil || len(entries) != 0 {
-				t.Fatalf("a refused container leaked into the rejected base: %v %v", entries, err)
+			// Every candidate base, not just the first: a refusal must leave nothing
+			// behind in ANY base it tried.
+			for _, candidate := range tc.bases {
+				entries, err := os.ReadDir(candidate)
+				if err != nil {
+					continue // not a directory; nothing can have leaked into it
+				}
+				if len(entries) != 0 {
+					t.Fatalf("a refused container leaked into the rejected base %q: %v", candidate, entries)
+				}
 			}
 		})
 	}
@@ -298,6 +306,65 @@ func TestSessionTmpPrivilegeDropE2E(t *testing.T) {
 	if err := os.Remove(flat); err != nil {
 		t.Errorf("the container owner must be able to unlink a flat entry another uid created: %v", err)
 	}
+
+	// The reclaim must not touch a directory under our prefix that is not ours: it
+	// walks world-writable temp bases, where any local user can plant that name, and
+	// acquiring our lease inside someone else's directory and removing it
+	// recursively would destroy files we do not own.
+	//
+	// The base is hermetically this test's own rather than the machine's /tmp — a
+	// sweep over the real shared temp would also pick up unrelated residue, and this
+	// check is about ownership, not about the host. It is made traversable (0711)
+	// and its child world-writable (1777) so another uid can plant a directory in
+	// it, exactly as it could in /tmp.
+	// Directly under the world-usable /tmp rather than t.TempDir(): the test
+	// process's own temp path sits under a 0700 directory, which another uid cannot
+	// even traverse, so a fixture there would be unreachable for the very reason
+	// R12 names rather than for the ownership rule under test.
+	fixtureRoot, err := os.MkdirTemp("/tmp", sessionScratchPrefix+"ownertest-")
+	if err != nil {
+		t.Fatalf("create fixture root: %v", err)
+	}
+	if err := os.Chmod(fixtureRoot, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("sudo", "-n", "rm", "-rf", fixtureRoot).Run() })
+	base := filepath.Join(fixtureRoot, "host")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, sessionTmpLeafMode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("sudo", "-n", "rm", "-rf", base).Run() })
+
+	foreign := filepath.Join(base, sessionScratchPrefix+"foreign")
+	runAsUID(t, uid, base, "mkdir", foreign)
+	// World-writable + sticky, like a directory an attacker would plant: without the
+	// ownership guard the sweep would acquire its lease inside it, so the guard is
+	// the only thing between the reclaim and someone else's files.
+	runAsUID(t, uid, base, "chmod", "1777", foreign)
+	runAsUID(t, uid, base, "sh", "-c", "echo keep > "+foreign+"/payload")
+	// Only the owner (or root) may set a directory's times, so age it through the
+	// privilege-drop tool: the sweep decides by mtime, and this fixture has to look
+	// stale for the ownership guard to be what saves it.
+	if out, err := exec.Command("sudo", "-n", "touch", "-d", "2 days ago", foreign).CombinedOutput(); err != nil {
+		t.Fatalf("age foreign fixture: %v\n%s", err, out)
+	}
+
+	t.Cleanup(SetWorldTempBasesForTesting([]string{base}))
+	if err := SweepCrashedSessionScratch(t.TempDir()); err != nil {
+		t.Fatalf("sweep over a foreign-owned candidate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(foreign, "payload")); err != nil {
+		t.Fatalf("the reclaim removed a directory this process does not own: %v", err)
+	}
+	// The direct observable: the guard skips the candidate BEFORE acquiring a lease,
+	// so the sweep must not have created its lock file inside someone else's
+	// directory at all.
+	if _, err := os.Stat(filepath.Join(foreign, sessionScratchLeaseName)); !os.IsNotExist(err) {
+		t.Fatalf("the reclaim created a lease inside a directory this process does not own: %v", err)
+	}
 }
 
 // TestSessionTmpContainerReapedByCrashedSweep: the container's base is walked by
@@ -339,6 +406,40 @@ func TestSessionTmpContainerReapedByCrashedSweep(t *testing.T) {
 	}
 	if _, err := os.Stat(liveContainer); err != nil {
 		t.Errorf("sweep removed a container holding a live lease: %v", err)
+	}
+}
+
+// TestSessionTmpContainerReapedWhenWorkspaceContainsItsBase: a container is
+// minted in a world temp base regardless of where the workspace is (NewSessionTmp
+// takes no workspace), so the reclaim has to visit that base even when the
+// scratch allocator's workspace filter would refuse it — a workspace that
+// CONTAINS the base, or is the base. Without that, such a session's containers
+// are never reclaimed and accumulate as world-traversable directories.
+func TestSessionTmpContainerReapedWhenWorkspaceContainsItsBase(t *testing.T) {
+	base := hostTempForTest(t)
+	isolateScratchBases(t)
+	// A workspace ABOVE the base: the base is inside it, so scratch allocation
+	// refuses the base and only the container rule can put it back in the sweep.
+	workspace := filepath.Dir(base)
+
+	stale, err := NewSessionTmp()
+	if err != nil {
+		t.Fatalf("NewSessionTmp: %v", err)
+	}
+	container := filepath.Dir(stale.Dir)
+	if err := stale.Retain(); err != nil {
+		t.Fatalf("Retain: %v", err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(container, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if _, err := os.Stat(container); !os.IsNotExist(err) {
+		t.Fatalf("a container under a base the workspace contains must still be reclaimed: %v", err)
 	}
 }
 
@@ -420,7 +521,9 @@ func privilegeDropTarget(t *testing.T) string {
 }
 
 // runAsUID runs argv as username uid with TMPDIR set to dir, returning the
-// trimmed stdout. It fails the test when the command cannot run at all.
+// trimmed stdout (empty for a command that prints nothing, e.g. mkdir). It fails
+// the test only when the command cannot run at all; callers that need a value
+// assert it themselves.
 func runAsUID(t *testing.T, uid, dir string, argv ...string) string {
 	t.Helper()
 	args := append([]string{"-n", "-u", uid, "env", "TMPDIR=" + dir}, argv...)
@@ -428,9 +531,5 @@ func runAsUID(t *testing.T, uid, dir string, argv ...string) string {
 	if err != nil {
 		t.Fatalf("sudo %v: %v\n%s", args, err, out)
 	}
-	got := strings.TrimSpace(string(out))
-	if got == "" {
-		t.Fatalf("sudo %v produced no output", args)
-	}
-	return got
+	return strings.TrimSpace(string(out))
 }
