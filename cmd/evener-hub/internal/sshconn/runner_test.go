@@ -170,6 +170,58 @@ func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
 	}
 }
 
+// A host entry carrying an SSH key path must dial with it: -i <key> sits with
+// the other options, before the "--" destination terminator, so every ssh
+// invocation — the bridge channel, the raw probes, and the evener commands —
+// resolves the identity the entry configured instead of the operator's
+// ssh_config default.
+func TestChannelArgvCarriesKeyPath(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "/keys/alpha"}
+	got := channelArgv(Options{}, host)
+	want := []string{
+		"ssh",
+		"-T",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"-i", "/keys/alpha",
+		"--",
+		"alpha.example",
+		"evener",
+		"hub", "attach", "--stdio",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("channelArgv with key:\n got %v\nwant %v", got, want)
+	}
+	for _, tc := range []struct {
+		name string
+		argv []string
+	}{
+		{"raw command", rawCommandArgv(Options{}, host, "uname -s")},
+		{"evener command", evenerCommandArgv(Options{}, host, "launch-check")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv := tc.argv
+			term := slices.Index(argv, "--")
+			if term < 0 {
+				t.Fatalf("no option terminator in %v", argv)
+			}
+			if !slices.Contains(argv[:term], "-i") || !slices.Contains(argv[:term], "/keys/alpha") {
+				t.Fatalf("key option missing before the terminator: %v", argv[:term])
+			}
+		})
+	}
+	// A key path that begins with "-" is still an argument to -i, never an
+	// ssh option: it sits before the terminator that ends option parsing.
+	dash := hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "-weird-key"}
+	argv := channelArgv(Options{}, dash)
+	term := slices.Index(argv, "--")
+	if term < 2 || argv[term-2] != "-i" || argv[term-1] != "-weird-key" {
+		t.Fatalf("dash-leading key path not passed as -i's argument before --: %v", argv)
+	}
+}
+
 // A caller that already gave up must not leave us a child to reap.
 func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
