@@ -481,6 +481,116 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 	})
 }
 
+// TestServeIdleTimeoutSetReArmsDeadlineAndExits proves the wire deadline
+// change moves the armed timer: evener/daemon/idle-timeout/set with the exact
+// ownership identity re-arms the configured 1h to the requested 1m, the
+// shortened deadline claims, and serve exits nil through the same retirement
+// pipeline the original timer used. The fake clock never moves before the set,
+// so every settle-time re-arm is the full 1h; the shortened 1m arm is the one
+// that differs.
+func TestServeIdleTimeoutSetReArmsDeadlineAndExits(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rootID := rec.await(t, "root_published")
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+		appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(entry), TimeoutMillis: 60000})
+	if err != nil {
+		t.Fatalf("idle-timeout set: %v", err)
+	}
+	resp, ok := out.(appwire.DaemonIdleTimeoutSetResponse)
+	if !ok {
+		t.Fatalf("idle-timeout set response type %T", out)
+	}
+	if resp.Lifecycle.TimeoutMillis != 60000 {
+		t.Fatalf("lifecycle TimeoutMillis = %d, want 60000", resp.Lifecycle.TimeoutMillis)
+	}
+	for {
+		d := clk.awaitArm(t)
+		if d == time.Minute {
+			break
+		}
+		if d != time.Hour {
+			t.Fatalf("arm = %v, want a settle re-arm (1h) or the shortened 1m", d)
+		}
+	}
+
+	clk.Advance(time.Minute)
+	clk.fire(t)
+	for _, event := range []string{"claim_consumed", "prepared", "committed", "released"} {
+		if id := rec.await(t, event); id != rootID {
+			t.Fatalf("event %s carried root %q, want the published root %q", event, id, rootID)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit after shortened retirement: %v", err)
+	}
+}
+
+// TestServeIdleTimeoutSetRefusesBadIdentityAndNegativeDeadline proves the
+// setter is identity-fenced like retire: a stale generation conflicts and a
+// negative deadline is invalid params, both without retargeting the
+// controller.
+func TestServeIdleTimeoutSetRefusesBadIdentityAndNegativeDeadline(t *testing.T) {
+	assertUnretargeted := func(t *testing.T, srv *clearIdentityServer) {
+		t.Helper()
+		out, err := dispatchDaemonRPC(srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+		if err != nil {
+			t.Fatalf("status after refused set: %v", err)
+		}
+		status, ok := out.(appwire.DaemonStatusResponse)
+		if !ok {
+			t.Fatalf("status response type %T", out)
+		}
+		if status.Lifecycle.TimeoutMillis != 3600000 {
+			t.Fatalf("refused set changed the deadline: %+v", status.Lifecycle)
+		}
+	}
+	t.Run("stale generation conflicts", func(t *testing.T) {
+		deps, state, args := newClearServeDeps(t)
+		deps.retirementClock = newServeRetireClock()
+		args = append(args, "--daemon-idle-timeout", "1h")
+		runRetireServe(t, deps, state, args)
+		entry := awaitRendezvousEntry(t, serveArgValue(args, "--run-dir"))
+		awaitRetirementSettled(t, state.srv)
+
+		stale := daemonIdentityFor(entry)
+		stale.Generation = "not-the-current-ownership"
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: stale, TimeoutMillis: 60000})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("stale-identity idle-timeout set = %v, want conflict", err)
+		}
+		assertUnretargeted(t, state.srv)
+	})
+	t.Run("negative deadline is invalid params", func(t *testing.T) {
+		deps, state, args := newClearServeDeps(t)
+		deps.retirementClock = newServeRetireClock()
+		args = append(args, "--daemon-idle-timeout", "1h")
+		runRetireServe(t, deps, state, args)
+		entry := awaitRendezvousEntry(t, serveArgValue(args, "--run-dir"))
+		awaitRetirementSettled(t, state.srv)
+
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(entry), TimeoutMillis: -1})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Fatalf("negative idle-timeout set = %v, want invalid params", err)
+		}
+		assertUnretargeted(t, state.srv)
+	})
+}
+
 // TestServeManualRetirementResponseSurvivesServeCancel proves the accepted
 // manual retire response is delivered over the wire. The manual trigger must
 // not cancel the serve context - which closes the HTTP server and aborts the

@@ -126,6 +126,10 @@ type serveServer interface {
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
 	SetDaemonLifecycle(func() appwire.DaemonLifecycle, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error))
+	// SetDaemonIdleTimeoutSet installs the hook behind
+	// evener/daemon/idle-timeout/set, which retargets the automatic
+	// idle-retirement deadline.
+	SetDaemonIdleTimeoutSet(func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error))
 	// SetRetirementAdmission installs the process-owned admission boundary on
 	// the daemon's router. The callback receives the access kind ("read" or
 	// "mutation") and returns the lease release the handler runs after it
@@ -1012,6 +1016,27 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
 	}, requestRetirement)
+	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
+	// exact-ownership revalidation runs BEFORE the controller is touched, so a
+	// caller holding a stale generation (same PID, drifted identity) gets a
+	// conflict and no deadline moves.
+	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		entry, ok := rvRegistration.Entry()
+		if !ok {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("daemon rendezvous not registered")
+		}
+		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+		}
+		if params.TimeoutMillis < 0 {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
+		}
+		if err := retirement.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
+	}
+	srv.SetDaemonIdleTimeoutSet(requestIdleTimeoutSet)
 	// Install the retirement admission boundary on the router. Every routed
 	// handler is classified by access kind (server/appwire_retirement_admission.go):
 	// a mutation holds a lease for the handler's duration and is refused while

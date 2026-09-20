@@ -28,6 +28,22 @@ func (s *Server) daemonLifecycleHooks() (func() appwire.DaemonLifecycle, func(co
 	return s.daemonStatusFunc, s.daemonRetireFunc
 }
 
+// SetDaemonIdleTimeoutSet installs the process hook behind
+// evener/daemon/idle-timeout/set. The hook retargets the retirement deadline
+// and answers with the current lifecycle; like the other lifecycle hooks it is
+// copied under the server mutex and invoked without it.
+func (s *Server) SetDaemonIdleTimeoutSet(fn func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)) {
+	s.mu.Lock()
+	s.daemonIdleTimeoutSetFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) daemonIdleTimeoutHooks() (func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error), func() appwire.DaemonLifecycle) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.daemonIdleTimeoutSetFunc, s.daemonStatusFunc
+}
+
 // DaemonLifecycleFromSnapshot converts the process retirement snapshot into
 // the wire lifecycle contract. Timestamps are UTC RFC3339Nano strings (valid
 // RFC3339, lossless instants); durations are integer milliseconds. Blockers
@@ -74,6 +90,20 @@ func (s *Server) handleAppDaemonRetire(ctx context.Context, params appwire.Daemo
 		// can retry automatically; its mutation outcome is unknown, not a
 		// rejection — a lost response is not proof the claim was refused.
 		return appwire.DaemonRetireResponse{}, appwire.LifecycleUnavailable(status().Phase)
+	}
+	return resp, err
+}
+
+func (s *Server) handleAppDaemonIdleTimeoutSet(ctx context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+	set, status := s.daemonIdleTimeoutHooks()
+	if set == nil {
+		return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("daemon idle-timeout control not available")
+	}
+	resp, err := set(ctx, params)
+	if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) && status != nil {
+		// The same typed lifecycle race as retire: a lost response is not
+		// proof the retarget was refused; daemon/status remains the authority.
+		return appwire.DaemonIdleTimeoutSetResponse{}, appwire.LifecycleUnavailable(status().Phase)
 	}
 	return resp, err
 }
