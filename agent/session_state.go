@@ -260,15 +260,26 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 }
 
 func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
-	transitioned := false
-	var turnMS int64
 	s.mu.Lock()
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	s.mu.Unlock()
+	s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+}
+
+// transitionProcessingAtBoundaryLocked publishes a processing boundary while
+// the caller holds s.mu. The restored transcript boundary nests this under
+// attentionMu so the state assignment cannot race a new durable transcript
+// append between restoration and publication.
+func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (transitioned bool, turnMS int64) {
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
 		turnMS = s.accumulateWorkLocked()
 		transitioned = true
 	}
-	s.mu.Unlock()
+	return transitioned, turnMS
+}
+
+func (s *Session) finishProcessingAtBoundaryEvents(ctx context.Context, transitioned bool, turnMS int64) {
 	if transitioned {
 		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
@@ -297,10 +308,68 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 // the pending-set rule above; this path is only for an interrupt marker that
 // never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
+	// recordTurn retains the live pair before an ordinary transcript write
+	// reports a clean rollback. Read the transcript while attentionMu excludes
+	// another append, and hold it through state publication so this boundary
+	// sees only recorded or adopted turns.
+	var restoredHistory []schema.Turn
+	var restoredRepairInsertions []int
+	retained := 0
+	path := s.TranscriptPath()
+	s.attentionMu.Lock()
+	if path != "" {
+		_, entries, _, err := readTranscript(path)
+		if err == nil {
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			retained = retainedFrom(entries)
+		}
+	}
+	release := func(transitioned bool, turnMS int64) {
+		s.mu.Unlock()
+		if hook := s.cfg.testOnly.beforeRestoredFailureBoundaryDoorRelease; hook != nil {
+			hook()
+		}
+		s.attentionMu.Unlock()
+		s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+	}
+
 	s.mu.Lock()
-	state := deriveRestoredState(s.history, s.fork.divergence, s.clientMutations.steeringOrigins())
-	s.mu.Unlock()
-	s.finishProcessingAtBoundary(ctx, state)
+	divergence := s.fork.divergence
+	if restoredHistory != nil {
+		// The transcript-derived history starts at its last compaction marker,
+		// and orphan repair may splice synthetic results before the fork
+		// boundary. Map the immutable full-transcript divergence into those
+		// resumed-history coordinates before consulting journal provenance.
+		divergence -= retained
+		for _, idx := range restoredRepairInsertions {
+			if idx <= divergence-1 {
+				divergence++
+			}
+		}
+	}
+	origins := s.clientMutations.steeringOrigins()
+	if restoredHistory == nil {
+		// Without a readable transcript there is no confirmed replacement for
+		// the live history. Preserve the existing pending-aware failure rule.
+		state := SessionIdle
+		if len(s.askPending) > 0 {
+			state = SessionAwaiting
+		}
+		transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+		release(transitioned, turnMS)
+		return
+	}
+	state := deriveRestoredState(restoredHistory, divergence, origins)
+	pending, _ := deriveRestoredAskPending(restoredHistory, divergence, origins)
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	if transitioned {
+		// The settlement is atomic with the state publication: a no-op
+		// transition (already settled, or closing) leaves the live pending
+		// set untouched rather than half-settling it against an unchanged
+		// state.
+		s.askPending = pending
+	}
+	release(transitioned, turnMS)
 }
 
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and

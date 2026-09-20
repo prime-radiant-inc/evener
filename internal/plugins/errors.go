@@ -21,4 +21,7 @@ var (
 	// refusal by errors.Is against this instead of assuming a non-nil error
 	// means the marketplace is still registered.
 	ErrMarketplaceUnregisteredCloneRemains = errors.New("marketplace unregistered, but its clone could not be removed")
+	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
+	// accept; it is wire input, not a store failure, and carries no path.
+	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
 )
