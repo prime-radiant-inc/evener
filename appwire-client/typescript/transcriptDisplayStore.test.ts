@@ -259,6 +259,35 @@ describe("hub defaults", () => {
     expect(reads).toBe(3);
   });
 
+  test("a direct generation replacement retires a pending read without clearing cached defaults", async () => {
+    const client = serving(hubDefault(7, desktopConfig), hubDefault(7, mobileConfig));
+    const store = await readyStore(client);
+    const late = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => late.promise);
+
+    const refresh = store.getState().refreshHubDefaults();
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+    store.beginReadyGeneration();
+
+    expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
+    expect(store.getState().hub).toEqual({
+      desktop: hubDefault(7, desktopConfig),
+      mobile: hubDefault(7, mobileConfig),
+    });
+
+    late.resolve({
+      desktop: toWireDefault(hubDefault(9, proposed)),
+      mobile: toWireDefault(hubDefault(9, proposed)),
+    });
+    await refresh;
+
+    expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
+    expect(store.getState().hub).toEqual({
+      desktop: hubDefault(7, desktopConfig),
+      mobile: hubDefault(7, mobileConfig),
+    });
+  });
+
   test("a change arriving while the first read fails survives to the next successful read", async () => {
     const client = new FakeClient("ready");
     let reads = 0;
