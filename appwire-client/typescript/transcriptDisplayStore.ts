@@ -215,13 +215,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const serial = fence.claimRead();
     const stillMine = () => fence.readStillMine(generation, serial);
     setState({ hubLoading: true, hubError: null });
+    if (!stillMine()) return;
     try {
       const result = await client.request("evener/settings/transcriptDisplay/get", {});
       if (!stillMine()) return;
       const defaults = fromWireDefaults(result);
       if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
       applyHubDefault("desktop", defaults.desktop);
+      if (!stillMine()) return;
       applyHubDefault("mobile", defaults.mobile, { loaded: true, hubLoading: false });
+      if (!stillMine()) return;
       fence.firstPayloadApplied();
       if (missedChangeNotification) {
         missedChangeNotification = false;
