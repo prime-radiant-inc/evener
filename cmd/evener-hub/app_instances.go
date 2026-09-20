@@ -1180,7 +1180,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// keep the journal alive and make every later start retry a rename that
 		// finished.
 		if renameJournal != "" {
-			if _, statErr := os.Lstat(authopenai.AuthFilePath(c.auth.stateDir, name)); errors.Is(statErr, os.ErrNotExist) {
+			// Both halves must be done: the OAuth record must be off the old
+			// canonical path AND the stored key must have moved. A key still filed
+			// under the old name keeps the journal, so the idempotent startup
+			// completion runs the move again rather than the rename being recorded
+			// as finished with the key stranded.
+			_, stillFiled := c.auth.creds.Get(name)
+			if _, statErr := os.Lstat(authopenai.AuthFilePath(c.auth.stateDir, name)); errors.Is(statErr, os.ErrNotExist) && !stillFiled {
 				c.spendRenameJournal(renameJournal)
 			}
 		}
@@ -1893,7 +1899,10 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 				// restored whatever the fallback does with the bytes.
 				oauthRestored = false
 				inFlight := filepath.Join(filepath.Dir(oauthAside), oauthInFlightAsideName(filepath.Base(oauthAside)))
-				if fallbackErr := os.Rename(oauthAside, inFlight); fallbackErr != nil {
+				// No-replace, like every other aside move: a file already at the
+				// in-flight name is another credential's bytes, and rename(2) would
+				// silently destroy them.
+				if fallbackErr := renameNoReplace(oauthAside, inFlight); fallbackErr != nil {
 					problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v), and its committed copy could not be returned to the in-flight shape startup recovery reads (%v)", restoreErr, fallbackErr))
 				} else {
 					problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v), so its committed copy was returned to the in-flight shape startup recovery reads (%s)", restoreErr, filepath.Base(inFlight)))
@@ -2871,16 +2880,38 @@ func findFreeAsideName(dir, name string, configBacked bool, want int64) (string,
 // instance.
 func (c *hubInstancesController) writeRenameJournal(oldName, newName string) (string, error) {
 	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
-	if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
-		return "", nil
-	} else if statErr != nil {
-		return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: check %s (%v)", oldName, newName, dir, statErr))
+	// The journal is written whenever a STORED CREDENTIAL may be present, and a
+	// stored key lives in credentials.toml - not in this directory - so a rename
+	// of a key-only instance needs the journal as much as any other. The directory
+	// is created rather than skipped: a crash after providers.toml is written but
+	// before the key move would otherwise strand the key with nothing to say it
+	// belongs to the new name.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: make %s (%v)", oldName, newName, dir, err))
 	}
-	path := filepath.Join(dir, oauthRenameJournalName(newName, c.auth.now().UnixNano()))
-	if err := os.WriteFile(path, []byte(oldName+"\n"), 0o600); err != nil {
-		return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: %v", oldName, newName, err))
+	// The name carries the stamp, and a leftover journal from an earlier rename
+	// with the same stamp (a clock that repeated, a state root restored from a
+	// snapshot) must not be overwritten: create exclusively and step the stamp,
+	// the way the aside search steps past a taken one.
+	stamp := c.auth.now().UnixNano()
+	for attempt := 0; ; attempt++ {
+		path := filepath.Join(dir, oauthRenameJournalName(newName, stamp))
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if _, werr := f.WriteString(oldName + "\n"); werr != nil {
+				_ = f.Close()
+				return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: write %s (%v)", oldName, newName, path, werr))
+			}
+			if cerr := f.Close(); cerr != nil {
+				return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: close %s (%v)", oldName, newName, path, cerr))
+			}
+			return path, nil
+		}
+		if !errors.Is(err, os.ErrExist) || attempt >= 64 {
+			return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: %v", oldName, newName, err))
+		}
+		stamp++
 	}
-	return path, nil
 }
 
 // spendRenameJournal removes one rename's journal once its work landed.
@@ -2955,6 +2986,12 @@ func (c *hubInstancesController) finishPendingRename(name string, layer *registr
 		}
 		if newName, ok := oauthRenameMarkerNewName(e.Name()); ok && newName == name {
 			oldName, rerr := readRenameMarker(path)
+			if errors.Is(rerr, os.ErrNotExist) {
+				// The journal pass above spent this rename's inner record with it,
+				// and the entries here are the snapshot taken before that: a file
+				// that is gone is resolved, not a problem to refuse a rename over.
+				continue
+			}
 			if rerr != nil {
 				problems = append(problems, fmt.Sprintf("read the rename marker %s (%v)", path, rerr))
 				continue
@@ -3273,7 +3310,7 @@ func asideConfigProblem(providersConfigPath string, cfgErr error) string {
 // out of every listing over it - until the next Reload. The returned bool is
 // true when at least one record was put back, so a partial restore (some copies
 // reported as problems) still asks for the reload.
-func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, error) {
+func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *credentials.Store) (bool, error) {
 	// The config decides two things this pass needs: the KIND of every copy that
 	// could be config-backed (one whose name the config no longer carries is
 	// resolved forward, one the config still carries is put back) and which
@@ -3361,7 +3398,6 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// use the same completion (finishRenameAt), so neither can leave a state the
 	// other would resolve differently.
 	journaled := make(map[string]bool)
-	var renameJournalStore *credentials.Store
 	entriesMoved := false
 	for _, e := range entries {
 		if e.IsDir() {
@@ -3378,18 +3414,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			problems = append(problems, fmt.Sprintf("read the rename journal %s (%v)", journalPath, rerr))
 			continue
 		}
-		if renameJournalStore == nil {
-			// The stored key lives beside the auth directory, the way
-			// hubAuthController derives it, so the pass can move it without being
-			// handed the hub's live store.
-			loaded, lerr := credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
-			if lerr != nil {
-				problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: open its credentials store (%v)", oldName, newName, lerr))
-				continue
-			}
-			renameJournalStore = loaded
+		if store == nil {
+			// Without the store this pass cannot tell whether the rename's stored
+			// key still needs moving, and guessing a path would spend a journal
+			// whose key never moved (the hub's real store is cmdutil's, not one
+			// beside the auth directory). The journal stays for the pass that can.
+			problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: the credentials store was not provided, so its stored key cannot be moved", oldName, newName))
+			continue
 		}
-		spent, pending := finishRenameJournal(renameJournalStore, stateDir, layer, cfgErr, oldName, newName)
+		spent, pending := finishRenameJournal(store, stateDir, layer, cfgErr, oldName, newName)
 		problems = append(problems, pending...)
 		if !spent {
 			// The completion could not finish (a record still under the old name,

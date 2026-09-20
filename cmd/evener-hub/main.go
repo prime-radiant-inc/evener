@@ -310,7 +310,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// first load is missing from that list - and from every listing built over it
 	// - until the next one. The reload runs even when the recovery also reported
 	// copies it could not put back, because it put back at least one.
-	restored, err := restoreUncommittedOAuthAsides(hubAuthStateRoot(hubReg), providersConfigPath)
+	// The stored keys a rename moved live in the hub's own credentials store -
+	// cmdutil's path, not one beside the auth directory - so the recovery is
+	// handed that store: it is the same file the registry loads its credentials
+	// from, and the Reload below reads the move back.
+	recoveryStore, storeErr := credentials.LoadStore(credentialsPath)
+	if storeErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", storeErr)
+	}
+	restored, err := restoreUncommittedOAuthAsides(hubAuthStateRoot(hubReg), providersConfigPath, recoveryStore)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 	}

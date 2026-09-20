@@ -5490,7 +5490,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 		t.Fatalf("Rename: %v", err)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -5521,7 +5521,7 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 		t.Fatalf("Create: %v", err)
 	}
 	// Nothing set aside yet, and no auth directory to look in.
-	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides with nothing set aside: %v", err)
 	}
 
@@ -5549,7 +5549,7 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
 	if err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
@@ -5597,7 +5597,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
