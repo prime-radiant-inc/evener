@@ -8,7 +8,6 @@ import {
   fromWireDefault,
   fromWireDefaults,
   type HubTranscriptDisplayDefault,
-  legacyWritesFromConfig,
   normalizeConfig,
   resolveEffectiveConfig,
   shippedDefault,
@@ -22,13 +21,15 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import { transitionTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import { connectionStore } from "./connection";
-import {
-  dualWriteTranscriptDisplayLegacy,
-  migrateLegacyTranscriptDisplay,
-  readLegacyPreference,
-  readTranscriptDisplayLocal,
-} from "./prefs";
+import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
+import {
+  LOCAL_KEYS,
+  removeLocal,
+  reportStorageResult,
+  verifyLegacyWrite,
+  writeLocal,
+} from "./transcriptDisplay/localStore";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // This store's own guard: keybindings.ts wires the same connectionStore
@@ -36,19 +37,6 @@ export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // registration slot.
 const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
-const LOCAL_KEYS: Record<ViewportClass, string> = {
-  desktop: "evener.prefs.transcriptDisplay.desktop",
-  mobile: "evener.prefs.transcriptDisplay.mobile",
-};
-const LEGACY_KEYS = [
-  "transcriptRoundTimings",
-  "transcriptTokenCounts",
-  "transcriptHookExitsAll",
-  "transcriptHookExitsNormal",
-  "transcriptPromptLoaded",
-  "showCost",
-] as const;
-
 type ConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
 type HubByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
 
@@ -159,55 +147,6 @@ function makeSourceId(): string {
     // Some privacy modes expose crypto but deny randomUUID.
   }
   return `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-}
-
-function setStorageWarning(message: string | null): void {
-  transcriptDisplayStore.setState({ storageWarning: message });
-}
-
-function writeLocal(layout: ViewportClass, encoded: string): boolean {
-  try {
-    if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
-    localStorage.setItem(LOCAL_KEYS[layout], encoded);
-    if (localStorage.getItem(LOCAL_KEYS[layout]) !== encoded) throw new Error("localStorage did not retain the value");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function removeLocal(layout: ViewportClass): boolean {
-  try {
-    if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
-    localStorage.removeItem(LOCAL_KEYS[layout]);
-    if (localStorage.getItem(LOCAL_KEYS[layout]) !== null) throw new Error("localStorage retained the value");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function verifyLegacyWrite(config: TranscriptDisplayConfigV1): boolean {
-  try {
-    const expected = legacyWritesFromConfig(config);
-    for (const key of LEGACY_KEYS) {
-      const raw = readLegacyPreference(key);
-      if (raw !== (expected[key] ? "1" : "0")) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function reportStorageResult(localOK: boolean, legacyOK: boolean): void {
-  if (localOK && legacyOK) {
-    setStorageWarning(null);
-    return;
-  }
-  setStorageWarning(
-    "Transcript display changed for this tab, but browser storage is unavailable; it may not survive restart.",
-  );
 }
 
 function broadcastLocal(layout: ViewportClass, encoded: string | null): void {
@@ -496,7 +435,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const localOK = writeLocal(layout, encoded);
       dualWriteTranscriptDisplayLegacy(config);
       const legacyOK = verifyLegacyWrite(config);
-      reportStorageResult(localOK, legacyOK);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
       broadcastLocal(layout, encoded);
     },
     clearLocal: (layout) => {
@@ -508,7 +447,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const fallback = resolveEffectiveConfig({ local: undefined, hub: state.hub[layout], layout });
       dualWriteTranscriptDisplayLegacy(fallback);
       const legacyOK = verifyLegacyWrite(fallback);
-      reportStorageResult(localOK, legacyOK);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
       broadcastLocal(layout, null);
     },
     effective: (layout): TranscriptDisplayConfigV1 => {
@@ -713,7 +652,9 @@ export function initTranscriptDisplay(): void {
   }
   transcriptDisplayStore.setState({ local });
   if (!migrationWriteOK)
-    setStorageWarning("Transcript display migration could not be saved; it may not survive restart.");
+    transcriptDisplayStore.setState({
+      storageWarning: "Transcript display migration could not be saved; it may not survive restart.",
+    });
   attachBrowserSync();
   stopViewportSubscription = subscribeMobileViewport(() => {
     transcriptDisplayStore.getState().setViewport(isMobileViewport() ? "mobile" : "desktop");
