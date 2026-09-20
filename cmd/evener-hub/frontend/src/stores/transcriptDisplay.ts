@@ -94,6 +94,13 @@ let unwireReady: (() => void) | null = null;
 // into the web's one public Zustand store below.
 let packageStore: TranscriptDisplayStore | null = null;
 let unsubscribeMirror: (() => void) | null = null;
+// Previews the adapter restored after a malformed PATCH reply: the package
+// clears its own preview when the write fails, while the web contract keeps
+// the draft. They are adapter-owned, so they are merged over every package
+// drafts publication (a write on another layout must not erase them) and
+// dropped when a newer package write on their own layout supersedes them or
+// the store is detached or replaced.
+let restoredPreviews: ConfigByLayout = {};
 
 // The web's PATCH reply contract is stricter than the package's decoder: the
 // web-owned decoder it replaces treated a reply with any unexpected key as
@@ -147,9 +154,7 @@ function currentSupport(): "unknown" | "supported" | "unsupported" {
 // Mirrors one package state publication into the web store. The framework-
 // free store publishes its full state on every write, but object fields keep
 // their identity across publications that do not touch them, so a reference
-// comparison identifies exactly the fields this publication changed - which
-// is also what lets an adapter-restored draft (see patchHubDefault) survive
-// later package publications that never mention drafts.
+// comparison identifies exactly the fields this publication changed.
 function mirrorPackageState(next: PackageStoreState, previous: PackageStoreState): void {
   if (next.hub !== previous.hub) {
     for (const layout of ["desktop", "mobile"] as const) {
@@ -160,7 +165,14 @@ function mirrorPackageState(next: PackageStoreState, previous: PackageStoreState
   if (next.hubLoading !== previous.hubLoading) transcriptDisplayStore.setState({ hubLoading: next.hubLoading });
   if (next.hubError !== previous.hubError) transcriptDisplayStore.setState({ hubError: next.hubError });
   if (next.hubErrors !== previous.hubErrors) transcriptDisplayStore.setState({ hubErrors: next.hubErrors });
-  if (next.drafts !== previous.drafts) transcriptDisplayStore.setState({ drafts: next.drafts });
+  if (next.drafts !== previous.drafts) {
+    // A newer package write on a layout owns that layout's preview again,
+    // superseding any malformed-reply preview the adapter restored for it.
+    for (const layout of ["desktop", "mobile"] as const) {
+      if (next.drafts[layout] !== undefined) delete restoredPreviews[layout];
+    }
+    transcriptDisplayStore.setState({ drafts: { ...next.drafts, ...restoredPreviews } });
+  }
 }
 
 // A hub default the package just accepted, landing in the web store through
@@ -224,6 +236,27 @@ function disposePackageStore(): void {
   store?.dispose();
 }
 
+// Anchors the change-only mirror to a freshly wired store's current state.
+// The new store starts from its initial values and the mirror only publishes
+// transitions, so without this sync whatever the replaced client last
+// published would survive in the web store indefinitely - most visibly a
+// stale hubError from its failed read, which would keep the settings UI
+// disabled while the replacement client loads successfully. Support is
+// deliberately not synced: setSupportFromConnection publishes the
+// connection's real support immediately after the rewire.
+function syncMirrorToStore(store: TranscriptDisplayStore): void {
+  restoredPreviews = {};
+  const next = store.getState();
+  for (const layout of ["desktop", "mobile"] as const) applyMirroredHubDefault(layout, next.hub[layout]);
+  const web = transcriptDisplayStore.getState();
+  const changed: Partial<TranscriptDisplayStoreState> = {};
+  if (web.hubLoading !== next.hubLoading) changed.hubLoading = next.hubLoading;
+  if (web.hubError !== next.hubError) changed.hubError = next.hubError;
+  if (web.hubErrors !== next.hubErrors) changed.hubErrors = next.hubErrors;
+  if (web.drafts !== next.drafts) changed.drafts = { ...next.drafts };
+  if (Object.keys(changed).length > 0) transcriptDisplayStore.setState(changed);
+}
+
 // The ready callback (and the already-ready path at wire time): the package
 // generation owns notification registration and payload retirement. The
 // initial refresh is issued BEFORE setSupport because the two never double a
@@ -246,6 +279,7 @@ function beginPackageGeneration(client: AppwireClientLike): void {
 function detachPackageStore(): void {
   const store = packageStore;
   packageStore = null;
+  restoredPreviews = {};
   unwireReady?.();
   unwireReady = null;
   wiredClient = null;
@@ -266,6 +300,7 @@ function rewireClient(client: AppwireClientLike): void {
   wiredClient = client;
   packageStore = createTranscriptDisplayStore({ client: strictPatchReplyClient(client) });
   unsubscribeMirror = packageStore.subscribe(mirrorPackageState);
+  syncMirrorToStore(packageStore);
   unwireReady = client.onReady(
     readyGenerationCallback(
       client,
@@ -309,9 +344,12 @@ function restoreMalformedPreview(
   // A newer write owns the layout's preview now; restoring over it would
   // resurrect a write the package already superseded.
   if (store.getState().drafts[layout] !== undefined) return;
-  transcriptDisplayStore.setState({
-    drafts: { ...transcriptDisplayStore.getState().drafts, [layout]: preview },
-  });
+  // The restored preview is adapter-owned: the package cleared it with this
+  // write's failure, so it survives later package drafts publications on other
+  // layouts (merged in the mirror) until a newer write on its own layout
+  // supersedes it or the store is detached or replaced.
+  restoredPreviews = { ...restoredPreviews, [layout]: preview };
+  transcriptDisplayStore.setState({ drafts: { ...store.getState().drafts, ...restoredPreviews } });
 }
 
 export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = createStore<TranscriptDisplayStoreState>(
