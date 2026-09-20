@@ -955,6 +955,99 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
   });
 
+  test("a refresh preserves a live active turn omitted by the snapshot cut", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    const cut = { reached: false };
+    let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveRefresh = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_m5", "turn_m6"]);
+
+    const refreshing = threadsStore.getState().refreshThread("ref_a");
+    await flushUntil(() => resolveRefresh !== null);
+    const baselineHydrations = threadsStore.getState().hydrations.get("ref_a") ?? 0;
+    const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
+    finishRefresh(
+      markResponseCut(
+        readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 0 },
+            activeTurnId: "turn_m6",
+          },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(
+      cut,
+      "ref_a",
+      () => {
+        fake.emitNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turnId: "turn_m6",
+            item: {
+              type: "agentMessage",
+              id: "item_assistant_m6",
+              turnId: "turn_m6",
+              text: "skillguard turn complete",
+              status: "completed",
+            },
+          },
+        });
+        fake.emitNotification({
+          method: "turn/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+          },
+        });
+      },
+      () => (threadsStore.getState().hydrations.get("ref_a") ?? 0) > baselineHydrations,
+    );
+    await refreshing;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+    expect(model?.turns[1]?.items[0]?.text).toBe("skillguard turn complete");
+    expect(model?.turns[1]?.status).toBe("completed");
+    expect(model?.activeTurnId).toBeUndefined();
+  });
+
   // The generation is how a mounted consumer notices a WHOLESALE model
   // replacement whose visible fields didn't change - e.g. jobsUpdatedAt is
   // null both before and after a resync, yet activity retained through the
