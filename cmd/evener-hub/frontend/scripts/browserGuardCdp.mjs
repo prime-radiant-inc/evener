@@ -40,7 +40,7 @@ function withTimeout(promise, ms, operation) {
     promise,
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(`timeout calling ${operation} after ${ms}ms`)), ms);
-    })
+    }),
   ]).finally(() => clearTimeout(timer));
 }
 
@@ -169,10 +169,7 @@ export const STARTUP_DEADLINE_MS = 30000;
 
 export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)),
-    ms,
-  );
+  const timer = setTimeout(() => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)), ms);
   return {
     signal: controller.signal,
     clear: () => clearTimeout(timer),
@@ -224,7 +221,8 @@ export async function waitForHttp(
         if (response.ok) return;
         lastAttempt = `answered HTTP ${response.status}`;
       } catch (error) {
-        if (startupFailures.has(error) || deadline.aborted) throw startupFailures.has(error) ? error : abortReason(deadline);
+        if (startupFailures.has(error) || deadline.aborted)
+          throw startupFailures.has(error) ? error : abortReason(deadline);
         // The child process is still starting, or this attempt outlasted its
         // own bound and the next one gets a fresh connection.
         lastAttempt = error.message;
@@ -296,20 +294,21 @@ export async function navigateTo({ ws, send }, url) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
-  const loaded = withTimeout(new Promise((resolve) => {
-    abandonLoad = resolve;
-    handler = (event) => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
-    };
-    ws.addEventListener("message", handler);
-  }), 30000, "navigateTo").finally(() => ws.removeEventListener("message", handler));
+  const loaded = withTimeout(
+    new Promise((resolve) => {
+      abandonLoad = resolve;
+      handler = (event) => {
+        if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+      };
+      ws.addEventListener("message", handler);
+    }),
+    30000,
+    "navigateTo",
+  ).finally(() => ws.removeEventListener("message", handler));
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    await Promise.all([
-      loaded,
-      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
-    ]);
+    await Promise.all([loaded, withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate")]);
   } finally {
     // A failed command may never produce a load event. Release that wait (and
     // its listener/timer) without replacing the error Promise.all observed.
@@ -331,7 +330,7 @@ export async function evaluate(send, expression) {
       returnByValue: true,
     }),
     30000,
-    "Runtime.evaluate"
+    "Runtime.evaluate",
   );
   if (response.result.exceptionDetails) {
     throw new Error(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
@@ -381,29 +380,94 @@ export async function evaluate(send, expression) {
  * mono face alone. What must never pass is a face the page DID request failing
  * to arrive: that is the 404 which would otherwise leave every guard green and
  * permanently measuring the fallback, and it reports as status "error".
+ *
+ * fonts.ready settles INSTANTLY while a set is still empty, so racing the
+ * stylesheet application that registers the faces misreads "not arrived yet"
+ * as "declares none". Under sustained machine load that race fired across
+ * guards (overflowguard, then retirementguard) while every case passed
+ * standalone. The in-page wait runs on ONE coordinated deadline: the
+ * registration poll owns the whole FONT_POLL_DEADLINE_MS budget - it has to,
+ * because stylesheet application was observed taking more than 10s under
+ * sustained load - and the fonts.ready await, unbounded while any load
+ * hangs, races the budget's REMAINDER, capped at FONT_READY_TIMEOUT_MS, and
+ * reports a stall as data. No wait in the page can outlast FONT_POLL_DEADLINE_MS,
+ * pinned by test at 20000ms so the evaluate() wrapper's 30000ms ceiling
+ * always fires last: a genuinely fontless or font-stalled document reports
+ * one of the actionable diagnostics below, never an opaque timeout.
  */
+
+// The registration poll's deadline, which is also the TOTAL in-page budget:
+// the fonts.ready await below runs on this deadline's remainder. It must
+// cover the stylesheet-application windows observed exceeding 10s under
+// sustained machine load, and it must lose to the evaluate() ceiling, never
+// win against it.
+export const FONT_POLL_DEADLINE_MS = 20000;
+
+// The most the fonts.ready await may take once the poll exits early. When the
+// poll spends the whole budget waiting on a fontless document, the remainder
+// is zero and the await reports a stalled load immediately instead of
+// hanging on it.
+export const FONT_READY_TIMEOUT_MS = 8000;
+
+// The in-page half of waitForFonts, exported so the wire tests can call it
+// against a stub document. It runs in the page via toString(), so it must not
+// close over anything outside its own body: the budgets are passed in, the
+// documents come from the page's own globals, and it returns plain data (a
+// stalled flag plus each document's faces) for the node side to diagnose.
+export async function collectFontStatusInPage({ pollMs, readyMs }) {
+  const found = [{ label: "the top document", doc: document }];
+  const frames = document.querySelectorAll("iframe");
+  for (let index = 0; index < frames.length; index++) {
+    try {
+      const doc = frames[index].contentDocument;
+      if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
+    } catch {
+      // Cross-origin: not reachable, and not something a guard builds.
+    }
+  }
+  const deadline = Date.now() + pollMs;
+  while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // fonts.ready is unbounded while any load hangs, so it is raced against the
+  // shared deadline's remainder (never more than readyMs); a stall reports as
+  // data, and clearing the cap timer keeps a settled wait from holding the
+  // guard process open for the loser's remaining ms.
+  const remaining = Math.max(deadline - Date.now(), 0);
+  let readyCap;
+  const settled = await Promise.race([
+    Promise.all(found.map(({ doc }) => doc.fonts.ready)).then(() => true),
+    new Promise((resolve) => {
+      readyCap = setTimeout(() => resolve(false), Math.min(readyMs, remaining));
+    }),
+  ]).finally(() => clearTimeout(readyCap));
+  return {
+    stalled: !settled,
+    documents: found.map(({ label, doc }) => {
+      const faces = [];
+      doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
+      return { label, faces };
+    }),
+  };
+}
+
 export async function waitForFonts(send) {
-  const documents = await evaluate(
+  const result = await evaluate(
     send,
-    `(async () => {
-       const found = [{ label: "the top document", doc: document }];
-       const frames = document.querySelectorAll("iframe");
-       for (let index = 0; index < frames.length; index++) {
-         try {
-           const doc = frames[index].contentDocument;
-           if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
-         } catch {
-           // Cross-origin: not reachable, and not something a guard builds.
-         }
-       }
-       await Promise.all(found.map(({ doc }) => doc.fonts.ready));
-       return found.map(({ label, doc }) => {
-         const faces = [];
-         doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
-         return { label, faces };
-       });
-     })()`,
+    `(${collectFontStatusInPage.toString()})(${JSON.stringify({
+      pollMs: FONT_POLL_DEADLINE_MS,
+      readyMs: FONT_READY_TIMEOUT_MS,
+    })})`,
   );
+  if (result.stalled) {
+    throw new Error(
+      `environment problem, not a test case failure: web fonts did not settle within ${FONT_READY_TIMEOUT_MS}ms of the ` +
+        `${FONT_POLL_DEADLINE_MS}ms registration poll ending, so a font load is stalled and every text measurement ` +
+        `below would race a fallback. Check that Vite is serving node_modules/@fontsource-variable/* and that no ` +
+        `font request hangs.`,
+    );
+  }
+  const documents = result.documents;
   const fontless = documents.filter((entry) => entry.faces.length === 0).map((entry) => entry.label);
   if (fontless.length > 0) {
     throw new Error(
@@ -439,7 +503,7 @@ export async function applyViewport(send, viewport) {
       screenHeight: viewport.height,
     }),
     30000,
-    "Emulation.setDeviceMetricsOverride"
+    "Emulation.setDeviceMetricsOverride",
   );
   // Metrics mobile:true alone does NOT flip the pointer media features; touch
   // emulation is what makes (pointer: coarse)/(hover: none) match, the same
@@ -449,17 +513,21 @@ export async function applyViewport(send, viewport) {
     await withTimeout(
       send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }),
       30000,
-      "Emulation.setTouchEmulationEnabled"
+      "Emulation.setTouchEmulationEnabled",
     );
   }
 }
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
-  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(() => {});
-  await withTimeout(send("Emulation.setTouchEmulationEnabled", { enabled: false }), 30000, "Emulation.setTouchEmulationEnabled").catch(
-    () => {}
+  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(
+    () => {},
   );
+  await withTimeout(
+    send("Emulation.setTouchEmulationEnabled", { enabled: false }),
+    30000,
+    "Emulation.setTouchEmulationEnabled",
+  ).catch(() => {});
 }
 
 /**
@@ -499,12 +567,20 @@ export async function forcePseudoStates(send, states) {
   const doc = await withTimeout(send("DOM.getDocument", { depth: -1 }), 30000, "DOM.getDocument");
   const rootId = doc.result.root.nodeId;
   for (const { selector, pseudoClasses } of states) {
-    const found = await withTimeout(send("DOM.querySelector", { nodeId: rootId, selector }), 30000, "DOM.querySelector");
+    const found = await withTimeout(
+      send("DOM.querySelector", { nodeId: rootId, selector }),
+      30000,
+      "DOM.querySelector",
+    );
     // DOM.querySelector answers with nodeId 0 for "no match" rather than
     // failing - forcing nothing would leave the case measuring the resting
     // state while reporting the forced one, so it stops here instead.
     if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
-    await withTimeout(send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }), 30000, "CSS.forcePseudoState");
+    await withTimeout(
+      send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }),
+      30000,
+      "CSS.forcePseudoState",
+    );
   }
 }
 
