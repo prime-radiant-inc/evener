@@ -133,3 +133,30 @@ func TestPastIndex_RecentProjectDirs_FiltersDeletedDirs(t *testing.T) {
 		t.Fatalf("RecentProjectDirs(15) = %v, want %v (deleted dir %q must be dropped)", got, want, deleted)
 	}
 }
+
+// TestPastIndex_RecentProjectDirs_SkipsManagedWorktreeLanes pins the recents
+// contract: a session whose meta records an evener-managed worktree lane
+// (WorktreeManaged, set by the native worktree tools' create/switch and by
+// delegate isolation lanes) is session machinery, not a user project — its
+// WorkingDir must not surface as a recent project. A worktree entered by path
+// but not managed (WorktreePath set, WorktreeManaged false) is the user's own
+// checkout and stays.
+func TestPastIndex_RecentProjectDirs_SkipsManagedWorktreeLanes(t *testing.T) {
+	root := t.TempDir()
+	project := mkExistingDir(t, root, "project")
+	lane := mkExistingDir(t, root, "lane")           // managed lane — skipped
+	unmanaged := mkExistingDir(t, root, "unmanaged") // path-entered worktree — kept
+
+	idx := NewPastIndex("")
+	now := time.Now().UTC()
+	idx.SeedForTest([]schema.SessionMeta{
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: unmanaged}, WorktreePath: unmanaged},
+		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: project}},
+	})
+	got := idx.RecentProjectDirs(15)
+	want := []string{unmanaged, project}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RecentProjectDirs(15) = %v, want %v (managed lane %q must be dropped)", got, want, lane)
+	}
+}

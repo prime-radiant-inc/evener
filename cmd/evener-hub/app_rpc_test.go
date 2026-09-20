@@ -11243,7 +11243,9 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 // TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
 // flows' recent-project source (issue #35): evener/projects/recent serves the
 // past index's distinct working dirs, most-recently-used first, defaulting to
-// the 15-option cap when the request carries no limit.
+// the 15-option cap when the request carries no limit. A managed worktree
+// lane (the newest session here) must never surface or consume one of those
+// slots: it is session machinery, not a project.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	// RecentProjectDirs drops dirs that no longer exist on disk (issue #50),
 	// so every seeded WorkingDir must be a real directory.
@@ -11257,10 +11259,12 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	alpha := mkdir("alpha")
 	beta := mkdir("beta")
+	lane := mkdir("lane") // evener-managed worktree lane — must never surface
 
 	past := hubcore.NewPastIndex("")
 	now := time.Now().UTC()
 	metas := []schema.SessionMeta{
+		{ID: "02wMz5Txv0ManagedLane1", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: beta}},
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}}, // older dup — dropped
@@ -11291,6 +11295,11 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	if resp.Data[0] != alpha || resp.Data[1] != beta {
 		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
+	}
+	for _, dir := range resp.Data {
+		if dir == lane {
+			t.Fatalf("recent dirs contain managed worktree lane %q", lane)
+		}
 	}
 
 	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
