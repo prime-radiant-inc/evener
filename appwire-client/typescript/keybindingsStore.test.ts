@@ -698,6 +698,41 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  test("refreshing a raw-different replacement with identical decoded fields does not preserve the prior generation", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    store.getState().editDraft(rules);
+
+    // The same-revision reconnect makes this draft stale by generation.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ draftConflict: true, draft: { generation: 1 } });
+
+    // A failed local save leaves the classified checkpoint unchanged, so the
+    // recovery below compares against the record editDraft itself wrote.
+    drafts.failReplace();
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+    drafts.failReplace(false);
+
+    // Another writer replaces the record with one that DECODES identically -
+    // every field this build knows is unchanged (the same id, baseRevision,
+    // rules and writeUncertain) - but whose raw storage bytes differ by an
+    // extra field this build's decoder drops. It is still a DIFFERENT record,
+    // so it must take the ordinary null-generation restore path rather than
+    // carrying the stale generation forward.
+    const classified = drafts.stored() as KeybindingDraftCheckpoint;
+    drafts.storage.save({ ...classified, futureField: 1 } as KeybindingDraftCheckpoint);
+
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: false,
+      draftConflict: false,
+      draft: { revision: 3, rules, generation: 3 },
+    });
+  });
+
   test("editDraft's own id-generation failure sets storageUnavailable and draftError, the same as a save failure", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const throwingCreateId: typeof drafts.storage = {

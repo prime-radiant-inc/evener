@@ -1572,9 +1572,9 @@ export function foldWarningParams(params: WarningParams): WarningFold {
 // Joins whichever WarningFold parts a caller has (title/text/hint, in
 // whatever order it passes them) into one display string, filtering out
 // blanks - the one composition rule every surface that renders a fold as a
-// single string shares, so mobile's canonical projector (title, text, hint)
-// and its live row (text, hint; title stays its own field there) never
-// drift into two different join implementations.
+// single string shares, so mobile's canonical projector and its live row
+// (both pass text and hint, keeping title as their own field) never drift
+// into two different join implementations.
 export function joinWarningParts(parts: readonly (string | undefined)[]): string {
   return parts.filter(hasWarningText).join(" — ");
 }
