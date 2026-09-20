@@ -2917,7 +2917,11 @@ func branchProseForbidsRequired(params map[string]any, keyword string) bool {
 			continue
 		}
 		for _, name := range requiredNames(m) {
-			if propertyForbidden(params, name) {
+			// The arm's own property/pattern/additional rules and the enclosing
+			// schema's both apply conjunctively: an arm requiring a property
+			// either forbids is unsatisfiable, so the prose must not tell the
+			// caller to send it.
+			if propertyForbidden(m, name) || propertyForbidden(params, name) {
 				return true
 			}
 		}
@@ -3805,33 +3809,73 @@ func exampleObjectValid(schema map[string]any) bool {
 }
 
 // exampleObjectValidDepth validates the placeholders exampleObject renders for
-// schema's required keys. A declared property is checked against its own
-// schema's modelable bounds — and, when it is an object that itself declares
-// required keys, recursively — while an undeclared key is checked against its
-// governing patternProperties/additionalProperties schema (issue #622 review).
+// schema's required keys, at the same nesting depth the renderer expands. Each
+// required key is checked against its effective schema (declared properties
+// conjoined with matching patternProperties), an object that itself requires
+// keys is recursed while the renderer would expand it, and the object-level
+// constraints of schema itself are validated (issue #622 review).
 func exampleObjectValidDepth(schema map[string]any, depth int) bool {
-	if depth > 4 {
+	if schema == nil {
 		return true
 	}
-	props := schemaProps(schema)
+	if !exampleObjectSelfValid(schema) {
+		return false
+	}
 	for _, name := range requiredNames(schema) {
-		if p := schemaChildMap(props[name]); p != nil {
-			typ := examplePlaceholderType(p)
-			if !exampleBoundsValid(p, typ) {
-				return false
-			}
-			if typ == "object" && len(requiredNames(p)) > 0 && !exampleObjectValidDepth(p, depth+1) {
+		eff := exampleEffectivePropertySchema(schema, name)
+		if eff == nil {
+			continue
+		}
+		if _, ok := exampleValueSetMember(eff); ok {
+			continue
+		}
+		typ := examplePlaceholderType(eff)
+		if typ == "object" && depth < exampleMaxDepth && len(requiredNames(eff)) > 0 {
+			if !exampleObjectValidDepth(eff, depth+1) {
 				return false
 			}
 			continue
 		}
-		if gap := applicablePropertySchema(schema, name); gap != nil {
-			if !examplePlaceholderValid(gap, examplePlaceholderType(gap)) {
+		if !exampleBoundsValid(eff, typ) || !examplePlaceholderValid(eff, typ) {
+			return false
+		}
+	}
+	return true
+}
+
+// exampleObjectSelfValid reports whether the exact required-key object the
+// renderer emits (one placeholder per required key) satisfies schema's own
+// object-level constraints: minProperties/maxProperties, additionalProperties:
+// false, and any required key the schema forbids.
+func exampleObjectSelfValid(schema map[string]any) bool {
+	req := requiredNames(schema)
+	if lim, ok := schemaInt(schema["minProperties"]); ok && lim > len(req) {
+		return false
+	}
+	if lim, ok := schemaInt(schema["maxProperties"]); ok && lim < len(req) {
+		return false
+	}
+	for _, name := range req {
+		if propertyForbidden(schema, name) {
+			return false
+		}
+		if additionalPropsFalse(schema) {
+			if _, declared := schemaProps(schema)[name]; !declared && !patternMatchesName(schema, name) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// patternMatchesName reports whether any patternProperties pattern matches name.
+func patternMatchesName(schema map[string]any, name string) bool {
+	for pattern := range schemaChildMap(schema["patternProperties"]) {
+		if ok, err := regexp.MatchString(pattern, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // examplePlaceholderType is the placeholder type exampleObject renders for a
@@ -3885,11 +3929,20 @@ func exampleBoundsValid(m map[string]any, typ string) bool {
 		if n, ok := schemaInt(m["maxLength"]); ok && n < len("...") {
 			return false
 		}
+		if pat, ok := m["pattern"].(string); ok {
+			if matched, err := regexp.MatchString(pat, "..."); err != nil || !matched {
+				return false
+			}
+		}
 	case "array":
 		if n, ok := schemaInt(m["minItems"]); ok && n > 0 {
 			return false
 		}
 	case "object":
+		// The placeholder is "{}"; it cannot satisfy a required list.
+		if len(requiredNames(m)) > 0 {
+			return false
+		}
 		// The example carries exactly the required keys.
 		req := len(requiredNames(m))
 		if n, ok := schemaInt(m["minProperties"]); ok && n > req {
@@ -3976,47 +4029,70 @@ func examplePlaceholderValid(m map[string]any, typ string) bool {
 // way, and asStringSlice returns such a slice as-is), so sorting in place
 // would corrupt the shared schema for every later message and every
 // registry clone that shares it.
+// exampleMaxDepth bounds the nested-object expansion exampleObject performs, and
+// exampleObjectValidDepth mirrors it so the guard validates exactly the levels
+// the renderer emits (issue #622 review).
+const exampleMaxDepth = 4
+
+// exampleEffectivePropertySchema resolves the schema governing a required
+// property: its declared schema conjoined with every matching
+// patternProperties schema (which apply to declared names too), or, for an
+// undeclared key, the applicable patternProperties/additionalProperties schemas.
+func exampleEffectivePropertySchema(schema map[string]any, name string) map[string]any {
+	var merged map[string]any
+	if declared := schemaChildMap(schemaProps(schema)[name]); declared != nil {
+		merged = declared
+	}
+	for pattern, sub := range schemaChildMap(schema["patternProperties"]) {
+		if ok, err := regexp.MatchString(pattern, name); err != nil || ok {
+			if m := schemaChildMap(sub); m != nil {
+				merged = mergeSchema(merged, m)
+			}
+		}
+	}
+	if merged == nil {
+		merged = applicablePropertySchema(schema, name)
+	}
+	return merged
+}
+
 func exampleObject(schema map[string]any, expandNested bool) string {
-	props := schemaProps(schema)
+	return exampleObjectDepth(schema, expandNested, 0)
+}
+
+func exampleObjectDepth(schema map[string]any, expandNested bool, depth int) string {
 	req := append([]string(nil), asStringSlice(schema["required"])...)
 	sort.Strings(req)
 	parts := make([]string, 0, len(req))
 	for _, name := range req {
-		propSchema := props[name]
-		if propSchema == nil {
-			// An undeclared required key's value is governed by any matching
-			// patternProperties schema and by a schema-valued
-			// additionalProperties, so render a placeholder that satisfies them
-			// rather than the unconstrained string placeholder (issue #622
-			// review).
-			propSchema = applicablePropertySchema(schema, name)
-		}
+		eff := exampleEffectivePropertySchema(schema, name)
 		typ := ""
-		if p := schemaChildMap(propSchema); p != nil {
-			typ = exampleSchemaType(p["type"])
+		if eff != nil {
+			typ = exampleSchemaType(eff["type"])
 			if typ == "" {
-				typ = exampleAdmittedPlaceholderType(p["type"])
+				typ = exampleAdmittedPlaceholderType(eff["type"])
 			}
+		} else {
+			// No governing schema: keep the unconstrained string placeholder.
+			eff = map[string]any{}
 		}
-		placeholder := examplePlaceholder(typ)
-		if expandNested {
-			placeholder = examplePropertyPlaceholder(propSchema, typ)
-		}
+		placeholder := examplePropertyText(eff, typ, expandNested, depth)
 		parts = append(parts, fmt.Sprintf("%q: %s", name, placeholder))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// examplePropertyPlaceholder renders a required property's value: an actual
-// member of a same-node enum/const value set when present (so the Example
-// satisfies the constraint the call failed), otherwise the generic placeholder.
-func examplePropertyPlaceholder(prop any, typ string) string {
-	if p := schemaChildMap(prop); p != nil {
-		if member, ok := exampleValueSetMember(p); ok {
-			return formatEnumValue(member)
-		}
+// examplePropertyText renders a required property's value: an actual member of a
+// same-node enum/const value set when present, a nested object shape when the
+// schema requires one and expansion is enabled, or the generic type placeholder.
+func examplePropertyText(eff map[string]any, typ string, expandNested bool, depth int) string {
+	if member, ok := exampleValueSetMember(eff); ok {
+		return formatEnumValue(member)
 	}
-	return exampleValue(prop, typ)
+	if expandNested && typ == "object" && depth < exampleMaxDepth && len(requiredNames(eff)) > 0 {
+		return exampleObjectDepth(eff, expandNested, depth+1)
+	}
+	return examplePlaceholder(typ)
 }
 
 // exampleValueSetMember returns a member of a schema's same-node enum/const
@@ -4080,22 +4156,27 @@ func exampleMemberSatisfies(m map[string]any, v any) bool {
 	return true
 }
 
-// exampleValue renders a property's placeholder: examplePlaceholder for
-// scalars, or (for an object property that declares its own required list)
-// the nested shape via exampleObject, one level deep.
+// exampleValue renders a property's placeholder for callers outside exampleObject
+// (exampleForField): a member of a same-node enum/const set when present, the
+// nested required shape for an object, or the generic type placeholder.
 func exampleValue(prop any, typ string) string {
+	p := schemaChildMap(prop)
+	if p != nil {
+		if member, ok := exampleValueSetMember(p); ok {
+			return formatEnumValue(member)
+		}
+	}
 	placeholder := examplePlaceholder(typ)
 	if typ != "object" {
 		return placeholder
 	}
-	p := schemaChildMap(prop)
 	if p == nil {
 		return placeholder
 	}
 	if len(asStringSlice(p["required"])) == 0 {
 		return placeholder
 	}
-	return exampleObject(p, false)
+	return exampleObject(p, true)
 }
 
 func examplePlaceholder(typ string) string {
@@ -4408,19 +4489,18 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 				holderOneOf = i
 			}
 			if i+1 < len(ksegs) {
-				if branches, isList := cur["oneOf"].([]any); isList {
-					if idx, isIdx := arrayIndex(ksegs[i+1]); isIdx && idx >= 0 && idx < len(branches) {
-						if child, isSchema := branches[idx].(map[string]any); isSchema {
-							if consumed == 0 && rootBranch == nil {
-								// The outermost root oneOf branch also constrains
-								// the root instance, so the Example must satisfy
-								// it too (issue #624 review).
-								rootBranch = child
-							}
-							cur = child
-							i++
-							continue
+				branches := valueList(cur["oneOf"])
+				if idx, isIdx := arrayIndex(ksegs[i+1]); isIdx && idx >= 0 && idx < len(branches) {
+					if child := schemaChildMap(branches[idx]); child != nil {
+						if consumed == 0 && rootBranch == nil {
+							// The outermost root oneOf branch also constrains
+							// the root instance, so the Example must satisfy
+							// it too (issue #624 review).
+							rootBranch = child
 						}
+						cur = child
+						i++
+						continue
 					}
 				}
 			}
@@ -4430,14 +4510,13 @@ func enclosingOneOf(params map[string]any, keywordLocation, instanceLocation str
 			// selecting a holder, letting a oneOf inside it be found (issue #624
 			// review).
 			if i+1 < len(ksegs) {
-				if arms, isList := cur[ksegs[i]].([]any); isList {
-					if idx, isIdx := arrayIndex(ksegs[i+1]); isIdx && idx >= 0 && idx < len(arms) {
-						if child, isSchema := arms[idx].(map[string]any); isSchema {
-							cur = child
-							applicatorUnsafe = true
-							i++
-							continue
-						}
+				arms := valueList(cur[ksegs[i]])
+				if idx, isIdx := arrayIndex(ksegs[i+1]); isIdx && idx >= 0 && idx < len(arms) {
+					if child := schemaChildMap(arms[idx]); child != nil {
+						cur = child
+						applicatorUnsafe = true
+						i++
+						continue
 					}
 				}
 			}

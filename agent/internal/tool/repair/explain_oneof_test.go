@@ -1537,3 +1537,93 @@ func TestTighterBound_PreservesFractional(t *testing.T) {
 		t.Fatalf("maximum tighter bound = %v, want 4.4", got)
 	}
 }
+
+// A required property whose nested object requires an enum-constrained key must
+// render that key's member, not a generic placeholder the enum rejects. This
+// nested shape is what hid the validation/rendering depth mismatch.
+func TestExampleForParams_NestedRequiredObjectWithEnum(t *testing.T) {
+	params := map[string]any{
+		"type":     "object",
+		"required": []string{"output"},
+		"properties": map[string]any{
+			"output": map[string]any{
+				"type":       "object",
+				"required":   []string{"status"},
+				"properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"ok", "error"}}},
+			},
+		},
+	}
+	got := exampleForParams(params)
+	if !strings.Contains(got, `"ok"`) || strings.Contains(got, `"..."`) {
+		t.Fatalf("nested enum key must render a member: %q", got)
+	}
+}
+
+// Object-level constraints of the schema the example renders must be validated.
+func TestExampleObjectValid_ObjectLevelConstraints(t *testing.T) {
+	falseRequired := map[string]any{"type": "object", "required": []string{"x"}, "properties": map[string]any{"x": false}}
+	if exampleObjectValid(falseRequired) {
+		t.Fatal("required property declared false admitted")
+	}
+	minProps := map[string]any{
+		"type": "object", "required": []string{"a"}, "minProperties": 2,
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	if exampleObjectValid(minProps) {
+		t.Fatal("example with fewer than minProperties admitted")
+	}
+	addlFalse := map[string]any{
+		"type": "object", "required": []string{"b"}, "additionalProperties": false,
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	if exampleObjectValid(addlFalse) {
+		t.Fatal("undeclared required key under additionalProperties:false admitted")
+	}
+}
+
+// A declared required property is also governed by matching patternProperties.
+func TestExampleObjectValid_DeclaredPropertyPatternProperties(t *testing.T) {
+	schema := map[string]any{
+		"type": "object", "required": []string{"x"},
+		"properties":        map[string]any{"x": map[string]any{"type": "string"}},
+		"patternProperties": map[string]any{"^x$": map[string]any{"minLength": 10}},
+	}
+	if exampleObjectValid(schema) {
+		t.Fatal("placeholder violating patternProperties:minLength admitted")
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted violating patternProperties: %q", got)
+	}
+}
+
+// An arm requiring a property its own properties forbids is unsatisfiable, so
+// branch prose must not tell the caller to send it.
+func TestBranchProseForbidsRequired_ArmOwnRules(t *testing.T) {
+	params := map[string]any{
+		"oneOf": []any{map[string]any{
+			"required":   []string{"b"},
+			"properties": map[string]any{"b": false},
+		}},
+	}
+	if !branchProseForbidsRequired(params, "oneOf") {
+		t.Fatal("arm requiring its own forbidden property not detected")
+	}
+}
+
+// A hand-built oneOf stored as a typed slice must still be traversed and
+// rendered as branch prose rather than falling back to a generic message.
+func TestExplainSchemaError_TypedOneOfArmsRenderBranchProse(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"a": map[string]any{
+				"type":  "object",
+				"oneOf": []map[string]any{{"required": []string{"x"}}, {"required": []string{"y"}}},
+			},
+		},
+	}
+	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": map[string]any{}}, "a", "/properties/a/oneOf/0/required")
+	if !strings.Contains(msg, "oneOf constraint") || !strings.Contains(msg, "Branch 0 requires") {
+		t.Fatalf("typed oneOf arms not rendered as branch prose: %q", msg)
+	}
+}
