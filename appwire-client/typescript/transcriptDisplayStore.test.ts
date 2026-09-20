@@ -39,6 +39,37 @@ function patchAnswer(layout: "desktop" | "mobile", value: HubTranscriptDisplayDe
   return { layout, revision: value.revision, config: toWireConfig(value.config) };
 }
 
+function conflictError(layout: "desktop" | "mobile", current: HubTranscriptDisplayDefault): WireError {
+  return new WireError("revision conflict", -32013, {
+    evenerErrorInfo: "conflict",
+    layout,
+    current: toWireDefault(current),
+  });
+}
+
+function postApplyError(layout: "desktop" | "mobile", applied: HubTranscriptDisplayDefault): WireError {
+  return new WireError("sync transcript display state: boom", -32603, {
+    evenerErrorInfo: "transcriptDisplayPostApply",
+    layout,
+    applied: toWireDefault(applied),
+  });
+}
+
+function internalError(): WireError {
+  return new WireError("after rename failed", -32603, { evenerErrorInfo: "internal" });
+}
+
+function captureLoadedPublications(store: TranscriptDisplayStore): {
+  publications: ReturnType<TranscriptDisplayStore["getState"]>[];
+  unsubscribe: () => void;
+} {
+  const publications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
+  const unsubscribe = store.subscribe((state) => {
+    if (state.loaded) publications.push(state);
+  });
+  return { publications, unsubscribe };
+}
+
 async function readyStore(client: FakeClient): Promise<TranscriptDisplayStore> {
   const store = createTranscriptDisplayStore({ client });
   store.setSupport("supported");
@@ -532,7 +563,10 @@ describe("the direct write", () => {
     const desktopReply = deferred<TranscriptDisplayPatchResponse>();
     const mobileReply = deferred<TranscriptDisplayPatchResponse>();
     let patches = 0;
-    client.on(patchMethod, () => ((patches += 1) === 1 ? desktopReply : mobileReply).promise);
+    client.on(patchMethod, () => {
+      patches += 1;
+      return (patches === 1 ? desktopReply : mobileReply).promise;
+    });
     const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
     await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
     const mobileWrite = store.getState().patchHubDefault("mobile", proposed);
@@ -546,10 +580,7 @@ describe("the direct write", () => {
       desktop: toWireDefault(hubDefault(4, desktopConfig)),
       mobile: toWireDefault(hubDefault(3, proposed)),
     }));
-    const publications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
-    const unsubscribe = store.subscribe((state) => {
-      if (state.loaded) publications.push(state);
-    });
+    const { publications, unsubscribe } = captureLoadedPublications(store);
     store.beginReadyGeneration();
     await store.getState().refreshHubDefaults();
 
@@ -657,13 +688,7 @@ describe("the direct write", () => {
     const write = store.getState().patchHubDefault("mobile", proposed);
     await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
     store.endReadyGeneration();
-    reply.reject(
-      new WireError("revision conflict", -32013, {
-        evenerErrorInfo: "conflict",
-        layout: "mobile",
-        current: toWireDefault(hubDefault(9, desktopConfig)),
-      }),
-    );
+    reply.reject(conflictError("mobile", hubDefault(9, desktopConfig)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
   });
@@ -685,11 +710,7 @@ describe("the direct write", () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
     client.on(patchMethod, () => {
-      throw new WireError("revision conflict", -32013, {
-        evenerErrorInfo: "conflict",
-        layout: "mobile",
-        current: toWireDefault(hubDefault(4, desktopConfig)),
-      });
+      throw conflictError("mobile", hubDefault(4, desktopConfig));
     });
     await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("revision conflict");
     expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
@@ -737,11 +758,7 @@ describe("the direct write", () => {
         method: changedMethod,
         params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
       });
-      throw new WireError("sync transcript display state: boom", -32603, {
-        evenerErrorInfo: "transcriptDisplayPostApply",
-        layout: "mobile",
-        applied: toWireDefault(hubDefault(3, proposed)),
-      });
+      throw postApplyError("mobile", hubDefault(3, proposed));
     });
     const applied = await store.getState().patchHubDefault("mobile", proposed);
     expect(applied).toEqual(hubDefault(7, mobileConfig));
@@ -753,11 +770,7 @@ describe("the direct write", () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
     client.on(patchMethod, () => {
-      throw new WireError("sync transcript display state: boom", -32603, {
-        evenerErrorInfo: "transcriptDisplayPostApply",
-        layout: "desktop",
-        applied: toWireDefault(hubDefault(4, mobileConfig)),
-      });
+      throw postApplyError("desktop", hubDefault(4, mobileConfig));
     });
     await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow();
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
@@ -766,11 +779,35 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.mobile).toEqual("sync transcript display state: boom");
   });
 
+  test("a preview stranded by a support flap clears when the next read confirms the write did not land", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("desktop", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+
+    store.setSupport("unknown");
+    reply.reject(new Error("boom"));
+    expect(await write).toEqual(hubDefault(3, desktopConfig));
+    expect(store.getState().drafts.desktop).toEqual(proposed);
+
+    // The read that restores support carries an unchanged canonical, which
+    // proves the stranded write never landed: the preview clears with it.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    store.setSupport("supported");
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+  });
+
   test("an internal PATCH failure reconciles the canonical state through GET", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
     client.on(patchMethod, () => {
-      throw new WireError("after rename failed", -32603, { evenerErrorInfo: "internal" });
+      throw internalError();
     });
     client.on(getMethod, () => ({
       desktop: toWireDefault(hubDefault(3, desktopConfig)),
@@ -790,7 +827,7 @@ describe("the direct write", () => {
     const read = deferred<TranscriptDisplayDefaults>();
     client.on(getMethod, () => read.promise);
     client.on(patchMethod, () => {
-      throw new WireError("after rename failed", -32603, { evenerErrorInfo: "internal" });
+      throw internalError();
     });
     const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
     const mobileWrite = store.getState().patchHubDefault("mobile", proposed);

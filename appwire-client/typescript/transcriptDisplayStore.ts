@@ -3,7 +3,7 @@
 // framework-free store and fences every request by the active ready generation.
 
 import type { AppwireClient } from "./client";
-import { errorText, WireError } from "./errors";
+import { errorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
 import { createSettingsHubGeneration, retireSettingsHubPayload } from "./settingsHubGeneration";
@@ -102,7 +102,7 @@ const MALFORMED_DEFAULTS_MESSAGE = "Hub returned malformed transcript display de
 const UNAVAILABLE_MESSAGE = "Hub transcript display settings are unavailable.";
 const MALFORMED_PATCH_MESSAGE = "Hub returned malformed transcript display PATCH response";
 
-export class InvalidPatchResponseError extends Error {}
+class InvalidPatchResponseError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -117,58 +117,65 @@ interface HubDefaultCalculation {
   contradictsPreview: boolean;
 }
 
+interface HubDefaultInputs {
+  readonly hub: TranscriptDisplayStoreState["hub"];
+  readonly drafts: TranscriptDisplayStoreState["drafts"];
+  readonly previewBases: ReadonlyMap<ViewportClass, { generation: number; revision: number; fingerprint: string }>;
+  readonly fence: { readonly awaitingFirstPayload: boolean; readonly generation: number };
+}
+
 function calculateHubDefault(
-  previous: HubTranscriptDisplayDefault | undefined,
+  layout: ViewportClass,
   incoming: HubTranscriptDisplayDefault,
-  awaitingFirstPayload: boolean,
-  generation: number,
-  previewBase: { generation: number; revision: number } | undefined,
-  preview: TranscriptDisplayConfigV1 | undefined,
+  inputs: HubDefaultInputs,
 ): HubDefaultCalculation {
-  const accepted = awaitingFirstPayload || previous === undefined || incoming.revision > previous.revision;
+  const previous = inputs.hub[layout];
+  const previewBase = inputs.previewBases.get(layout);
+  const accepted = inputs.fence.awaitingFirstPayload || previous === undefined || incoming.revision > previous.revision;
   const contradictsPreview =
     accepted &&
     previewBase !== undefined &&
-    preview !== undefined &&
-    configFingerprint(incoming.config) !== configFingerprint(preview) &&
-    (previewBase.generation !== generation || incoming.revision > previewBase.revision);
+    inputs.drafts[layout] !== undefined &&
+    (previewBase.generation !== inputs.fence.generation || incoming.revision > previewBase.revision) &&
+    configFingerprint(incoming.config) !== previewBase.fingerprint;
   return { accepted, contradictsPreview };
 }
 
 function fromWirePatchResponse(value: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value) || value.layout !== layout || !isRevision(value.revision)) return undefined;
-  const config = fromWireConfig(value.config);
-  return config === undefined ? undefined : { revision: value.revision, config };
+  if (!isRecord(value) || value.layout !== layout) return undefined;
+  return fromWireDefault(value);
+}
+
+// The conflict and post-apply payloads (appwire/transcript_display.go's
+// TranscriptDisplayConflictData and TranscriptDisplayPostApplyData) name the
+// layout their canonical value belongs to; a payload naming another layout
+// is not this write's answer. The discriminator is the payload's info
+// string, never the code - siblings share the code (errors.ts).
+function canonicalErrorPayload(
+  error: unknown,
+  info: string,
+  field: string,
+  layout: ViewportClass,
+): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || !isRecord(error.data) || error.data.layout !== layout) return undefined;
+  return wireRejectionPayload(error, info, field, fromWireDefault);
 }
 
 function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32013 || !isRecord(error.data)) return undefined;
-  if (error.data.evenerErrorInfo !== "conflict" || error.data.layout !== layout) return undefined;
-  return fromWireDefault(error.data.current);
+  return canonicalErrorPayload(error, "conflict", "current", layout);
 }
 
-// postApplyDefault extracts the applied canonical value from a
-// transcriptDisplayPostApply error (appwire/errors.go's
-// ErrorTranscriptDisplayPostApply): the patch already landed on the hub
-// before a follow-up durable step failed, so the caller must reconcile from
-// it instead of treating the write as rejected. The payload names the layout
-// separately from the applied value (appwire/transcript_display.go's
-// TranscriptDisplayPostApplyData), and a payload naming another layout is
-// not this write's answer - the same rule conflictCurrent applies.
 function postApplyDefault(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32603 || !isRecord(error.data)) return undefined;
-  if (error.data.evenerErrorInfo !== "transcriptDisplayPostApply" || error.data.layout !== layout) return undefined;
-  return fromWireDefault(error.data.applied);
+  return canonicalErrorPayload(error, "transcriptDisplayPostApply", "applied", layout);
 }
 
 function decodePatchReply(
   result: unknown,
   layout: ViewportClass,
   confirmed: HubTranscriptDisplayDefault,
-  requested: TranscriptDisplayConfigV1,
+  requestedFingerprint: string,
 ): HubTranscriptDisplayDefault {
   const canonical = fromWirePatchResponse(result, layout);
-  const requestedFingerprint = configFingerprint(requested);
   const isThisWrite =
     canonical !== undefined &&
     configFingerprint(canonical.config) === requestedFingerprint &&
@@ -190,7 +197,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   let missedChangeNotification = false;
   let successfulHubReads = 0;
   const patchTokens = new Map<ViewportClass, number>();
-  const previewBases = new Map<ViewportClass, { generation: number; revision: number }>();
+  const previewBases = new Map<ViewportClass, { generation: number; revision: number; fingerprint: string }>();
+  const strandedPreviews = new Set<ViewportClass>();
   let reconciliationRefresh: { generation: number; promise: Promise<void> } | undefined;
 
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
@@ -215,15 +223,28 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     return { hubErrors: { ...getState().hubErrors, [layout]: message } };
   }
 
-  function clearPreview(layout: ViewportClass): Partial<TranscriptDisplayStoreFields> {
+  // A preview's base and its draft clear together, whether the caller
+  // clears against live state or against the snapshot an atomic publication
+  // is about to build on.
+  function dropPreview(layout: ViewportClass, drafts: TranscriptDisplayStoreState["drafts"]): void {
     previewBases.delete(layout);
-    const drafts = { ...getState().drafts };
     delete drafts[layout];
+  }
+
+  function clearPreview(layout: ViewportClass): Partial<TranscriptDisplayStoreFields> {
+    const drafts = { ...getState().drafts };
+    dropPreview(layout, drafts);
     return { drafts };
+  }
+
+  // A settled write clears its preview and its error slots together.
+  function writeSettled(layout: ViewportClass): Partial<TranscriptDisplayStoreFields> {
+    return { ...clearPreview(layout), hubError: null, ...layoutError(layout, undefined) };
   }
 
   function clearPreviews(): Partial<TranscriptDisplayStoreFields> {
     previewBases.clear();
+    strandedPreviews.clear();
     return { drafts: {} };
   }
 
@@ -235,14 +256,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     extra: Partial<TranscriptDisplayStoreFields> = {},
   ): boolean {
     const state = getState();
-    const calculation = calculateHubDefault(
-      state.hub[layout],
-      value,
-      fence.awaitingFirstPayload,
-      fence.generation,
-      previewBases.get(layout),
-      state.drafts[layout],
-    );
+    const calculation = calculateHubDefault(layout, value, {
+      hub: state.hub,
+      drafts: state.drafts,
+      previewBases,
+      fence,
+    });
     if (!calculation.accepted) {
       if (Object.keys(extra).length > 0) setState(extra);
       return false;
@@ -260,22 +279,23 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const hub = { ...state.hub };
     const drafts = { ...state.drafts };
     for (const layout of LAYOUTS) {
-      const calculation = calculateHubDefault(
-        hub[layout],
-        defaults[layout],
-        fence.awaitingFirstPayload,
-        fence.generation,
-        previewBases.get(layout),
-        drafts[layout],
-      );
+      const calculation = calculateHubDefault(layout, defaults[layout], {
+        hub,
+        drafts,
+        previewBases,
+        fence,
+      });
       if (!calculation.accepted) continue;
       hub[layout] = defaults[layout];
-      if (calculation.contradictsPreview) {
-        previewBases.delete(layout);
-        delete drafts[layout];
-      }
+      if (calculation.contradictsPreview) dropPreview(layout, drafts);
     }
     if (fence.awaitingFirstPayload) fence.firstPayloadApplied();
+    // A preview the support flap stranded settled before this read: the
+    // write's continuation is dead, and an unchanged revision proves the
+    // write never landed, so the read ends that preview rather than
+    // leaving it for the host.
+    for (const layout of strandedPreviews) dropPreview(layout, drafts);
+    strandedPreviews.clear();
     setState({ hub, drafts, loaded: true, hubLoading: false });
   }
 
@@ -407,58 +427,63 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       throw new Error(UNAVAILABLE_MESSAGE);
     }
     const config = normalizeConfig(input);
+    const requestedFingerprint = configFingerprint(config);
     const confirmed = state.hub[layout] ?? shippedDefault(layout);
     const token = fence.claimWrite();
     patchTokens.set(layout, token);
     const stillMine = () => fence.liveHub(generation) && patchTokens.get(layout) === token;
-    previewBases.set(layout, { generation, revision: confirmed.revision });
+    const retained = () => getState().hub[layout] ?? confirmed;
+    // A newer write on this layout owns the preview from here on, so a
+    // support flap stranding an older write must not reach this one.
+    strandedPreviews.delete(layout);
+    previewBases.set(layout, { generation, revision: confirmed.revision, fingerprint: requestedFingerprint });
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
-    if (!stillMine()) return getState().hub[layout] ?? confirmed;
+    if (!stillMine()) return retained();
     try {
       const result = await client.request("evener/settings/transcriptDisplay/patch", {
         layout,
         expectedRevision: confirmed.revision,
         config: toWireConfig(config),
       });
-      if (!stillMine()) return getState().hub[layout] ?? confirmed;
-      const canonical = decodePatchReply(result, layout, confirmed, config);
+      if (!stillMine()) return retained();
+      const canonical = decodePatchReply(result, layout, confirmed, requestedFingerprint);
       const current = getState().hub[layout] ?? confirmed;
       if (canonical.revision < current.revision) {
-        setState({ ...clearPreview(layout), hubError: null, ...layoutError(layout, undefined) });
+        setState(writeSettled(layout));
         return current;
       }
-      applyHubDefault(layout, canonical, {
-        ...clearPreview(layout),
-        hubError: null,
-        ...layoutError(layout, undefined),
-      });
+      applyHubDefault(layout, canonical, writeSettled(layout));
       return canonical;
     } catch (error) {
       if (!stillMine()) {
-        return getState().hub[layout] ?? confirmed;
+        // A support flap (generation unchanged, hub not live) killed this
+        // continuation without retiring the payload, so the preview's
+        // write settled unseen: mark it for the next authoritative read,
+        // which clears it even at an unchanged revision - that read proves
+        // the write never landed. A newer write's token loss strands
+        // nothing (it owns the preview now), and a generation change's
+        // retirement leaves the preview to the stranded-preview rules.
+        if (fence.isCurrent(generation) && !fence.liveHub(generation)) strandedPreviews.add(layout);
+        return retained();
       }
       const applied = postApplyDefault(error, layout);
       if (applied !== undefined) {
-        applyHubDefault(layout, applied, {
-          ...clearPreview(layout),
-          hubError: null,
-          ...layoutError(layout, undefined),
-        });
+        applyHubDefault(layout, applied, writeSettled(layout));
         return getState().hub[layout] ?? applied;
       }
       if (error instanceof WireError && error.evenerErrorInfo === "internal" && stillMine()) {
         for (let attempt = 0; attempt < 2; attempt++) {
           const readsBefore = successfulHubReads;
           await reconcileHubDefaults();
-          if (!stillMine()) return getState().hub[layout] ?? confirmed;
+          if (!stillMine()) return retained();
           const reconciled = getState().hub[layout];
           if (
             successfulHubReads > readsBefore &&
             reconciled !== undefined &&
             reconciled.revision > confirmed.revision &&
-            configFingerprint(reconciled.config) === configFingerprint(config)
+            configFingerprint(reconciled.config) === requestedFingerprint
           ) {
-            setState({ ...clearPreview(layout), hubError: null, ...layoutError(layout, undefined) });
+            setState(writeSettled(layout));
             return reconciled;
           }
         }
