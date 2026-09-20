@@ -1494,6 +1494,20 @@ func (s *Session) releaseOwnWorktreeLock(run worktree.GitRunner, path string, lo
 	return err
 }
 
+// occupiesManagedLane reports whether path is the managed lane this session's
+// environment is currently rooted in. A session legitimately holds its own
+// occupancy marker on that lane; the identical marker on any other lane is
+// crash residue (spec §5: "a worktree found locked with the session's own
+// marker while the session is not occupying it ... is the session's to
+// release"). The comparison canonicalizes both sides, so a persisted symlink
+// alias of the occupied lane is not mistaken for residue.
+func (s *Session) occupiesManagedLane(path string) bool {
+	s.mu.Lock()
+	current := s.worktreeCurrentPath
+	s.mu.Unlock()
+	return current != "" && canonicalOrClean(current) == canonicalOrClean(path)
+}
+
 // lockStateOf reports whether the worktree at path is locked and, if so, its
 // (C-unquoted) lock reason, by parsing `git worktree list --porcelain` from the
 // control env. A path git does not list is reported unlocked (not an error) —
@@ -2917,8 +2931,10 @@ func prunePolicy() laneSweepPolicy {
 
 // worktreePruneSweep1 disposes of registered managed worktrees (spec §5
 // prune sweep 1): a worktree is collected (dir + branch + sidecar removed)
-// iff it is unlocked, has no live work under it, has a sidecar, passes the
-// policy's grace/delegate filters, and is disposable per the policy predicate.
+// iff it is unlocked (or carries only this session's own stale marker, which is
+// no obstacle — see staleOwnMarker below), has no live work under it, has a
+// sidecar, passes the policy's grace/delegate filters, and is disposable per
+// the policy predicate.
 // Every entry that fails one of those tests is reported skipped with the reason;
 // any per-entry git query failure is treated as a soft skip. A mutation failure
 // aborts (prune) or is reported as a lost race and the sweep continues (P3),
@@ -2935,7 +2951,23 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 		if e.Locked {
 			lockSt = worktree.ClassifyReason(e.LockReason, s.id, "")
 		}
-		if worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
+		// A lane carrying THIS session's own marker while the session does not
+		// occupy it is crash residue — what a process death inside the lane, or a
+		// resume whose re-entry was refused before the lane was recorded as
+		// current, leaves behind. `remove` and `switch` already treat that residue
+		// as unlocked-for-us (spec §5), so prune is the one operation that stranded
+		// a lane under its own owner: it skipped the marker, leaving the lane
+		// locked and un-collectible until a later close swept it. The marker is
+		// therefore no obstacle to ELIGIBILITY here — but it is released only on
+		// the path that actually collects the lane (just before collectLane), never
+		// during evaluation. Eagerly unlocking a lane this pass then skips (dirty,
+		// unmerged, in-grace, live work, not a delegate lane) is what would expose
+		// it: the lock is the only thing stopping another session's prune, and its
+		// live-work view cannot see this session's work under the lane. Only our
+		// own marker is ever released; a foreign or delegate marker stays the skip
+		// it was, so another live session's occupancy is never taken.
+		staleOwnMarker := lockSt == worktree.OwnSession && !s.occupiesManagedLane(e.Path)
+		if !staleOwnMarker && worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
 			reason := "locked"
 			if e.LockReason != "" {
 				reason = fmt.Sprintf("locked (%s)", e.LockReason)
@@ -2989,7 +3021,42 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 		// rationale for never trusting `-d`), delete the sidecar. The optional
 		// Disposed mark is appended after the remove and before the branch delete
 		// (spec §P3: own-store records only).
+		//
+		// A lane that only survived the eligibility gate because its marker is
+		// this session's own, stale one (staleOwnMarker) is released here — at the
+		// one point where the pass has committed to collecting it, and after every
+		// skip rung that could have kept the lane (and needed its lock) has been
+		// passed. The release routes through the same EvLeave rule close uses, so a
+		// foreign or delegate marker is still left untouched.
+		//
+		// The verdict that got us here came from the ONE `worktree list` snapshot
+		// taken at the top of the pass, which every earlier lane's git calls have
+		// since aged — so the marker is re-confirmed against a fresh listing
+		// immediately before it is touched. A marker someone else released since
+		// the snapshot (a human running the documented `git worktree unlock`
+		// recovery, or a second process on the same session id) and another
+		// session then took must never be unlocked: that would hand this lane's
+		// removal to prune while that session is rooted in it. A lane whose lock
+		// is no longer ours is therefore skipped, not collected.
+		if staleOwnMarker {
+			reason, stillOurs := s.confirmStrandedOwnMarker(run, e.Path)
+			if !stillOurs {
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "lock changed since listing"})
+				continue
+			}
+			if relErr := s.releaseOwnWorktreeLock(run, e.Path, true, reason); relErr != nil {
+				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded own marker: " + relErr.Error()})
+				continue
+			}
+		}
 		if cErr := s.collectLane(run, metaDir, e.Name, e.Path, true, policy); cErr != nil {
+			// The release was made for a removal that did not happen. Put the
+			// marker back so a lane this pass could not collect is exactly as
+			// protected as it was, rather than left open to another session's
+			// sweep (whose live-work view cannot see this session's work under it).
+			if staleOwnMarker {
+				s.restoreStrandedOwnMarker(run, e.Path)
+			}
 			if policy.abortOnError {
 				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
 			}
@@ -3004,6 +3071,53 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 	}
 
 	return removed, skipped, nil
+}
+
+// confirmStrandedOwnMarker re-reads a lane's lock from a FRESH listing and
+// reports whether it still carries this session's own marker on a lane the
+// session does not occupy, returning the marker to release. ok is false when it
+// is not — the lane is now unlocked, carries a foreign or delegate marker, is
+// occupied after all, or could not be read — and the caller must then release
+// nothing.
+//
+// It exists because a residue verdict is derived from one `worktree list`
+// snapshot taken at the top of the pass, and every earlier lane's git calls age
+// that snapshot. Between the snapshot and this lane's turn the marker can be
+// released (the documented manual `git worktree unlock` recovery, or a second
+// process on the same session id) and the lane taken by another session; acting
+// on the snapshot then would unlock that session's occupancy and hand its lane
+// to removal.
+func (s *Session) confirmStrandedOwnMarker(run worktree.GitRunner, lanePath string) (reason string, ok bool) {
+	locked, reason, err := lockStateOf(run, lanePath)
+	if err != nil || !locked {
+		return "", false
+	}
+	if worktree.ClassifyReason(reason, s.id, "") != worktree.OwnSession || s.occupiesManagedLane(lanePath) {
+		return "", false
+	}
+	return reason, true
+}
+
+// restoreStrandedOwnMarker puts this session's own marker back on a lane whose
+// release was made for a collection that then failed, so a lane this pass could
+// not collect keeps the protection it had. It is a no-op when the lane is gone
+// (a remove that succeeded before a later step failed has nothing left to lock)
+// or when the lane now carries someone else's marker — a foreign lock is never
+// displaced. Best-effort: a failure warns, and the lane is left as the failure
+// found it.
+func (s *Session) restoreStrandedOwnMarker(run worktree.GitRunner, lanePath string) {
+	if _, statErr := s.statLaneGitDir(lanePath); statErr != nil {
+		return
+	}
+	locked, _, err := lockStateOf(run, lanePath)
+	if err != nil || locked {
+		// Unverifiable, already re-locked, or someone else's: leave it alone.
+		return
+	}
+	marker := worktree.FormatSessionMarker(s.id)
+	if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, lockErr)})
+	}
 }
 
 // collectLane runs the collection mechanics for one lane (spec §5 sweep 1 /

@@ -75,7 +75,10 @@ What this means day to day:
   a human (or an agent that has verified the owner is really gone) can clear it with
   `git worktree unlock` and let `prune` collect it afterward. If the same session
   resumes later, it recognizes its own lock and picks the worktree back up rather than
-  erroring.
+  erroring. A session's *own* marker on a lane it is not occupying is the one piece of
+  that residue evener can attribute with certainty: it does not block a `prune`
+  candidate, so `prune` reclaims that lane and releases the marker as it does.
+  Another session's marker is never taken on the sweeper's guess.
 
 ## Disposal: `remove`, `prune`, and `dispose`
 
@@ -198,9 +201,16 @@ These are documented trade-offs, not bugs:
 - **Two processes resuming the same session id can't be told apart.** The occupancy
   lock is keyed by session id; if the same session is somehow resumed by two processes
   at once, both look like the legitimate owner, and either one exiting will release
-  the lock out from under the other. This is an existing "don't do that" case for
-  evener sessions generally, not something specific to worktrees.
+  the lock out from under the other. `prune` inherits the same ambiguity: each process
+  reads the other's lane as this session's own stale marker, so a `prune` from one can
+  reclaim the lane the other is standing in. This is an existing "don't do that" case
+  for evener sessions generally, not something specific to worktrees.
 - **A hard crash leaves the lane locked.** There's no automatic recovery from a
   session or delegate dying without a clean shutdown — the lock stays until a human
   or agent verifies the owner is really gone and runs `git worktree unlock`, after
-  which `prune` can collect it if it's otherwise safe to.
+  which `prune` can collect it if it's otherwise safe to. The one exception is a
+  session's *own* marker on a lane it is not occupying: that marker does not block a
+  `prune` candidate, so `prune` reclaims the lane and releases it — the session itself
+  is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
+  skips keeps its lock, and another session's marker has no liveness signal at all and
+  still needs a deliberate unlock.
