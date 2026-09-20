@@ -1,4 +1,4 @@
-import { type MarketplaceEntry, WireError } from "@evener/appwire-client";
+import { ErrorMarketplaceRemoveApplied, type MarketplaceEntry, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -162,6 +162,13 @@ function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> 
     evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
     applied: { marketplaces },
     ...extra,
+  });
+}
+
+function removeAppliedUnavailableError(): WireError {
+  return new WireError("marketplace removed, but the updated list was unavailable", -32603, {
+    evenerErrorInfo: ErrorMarketplaceRemoveApplied,
+    appliedUnavailable: true,
   });
 }
 
@@ -784,6 +791,33 @@ test("an applied but unavailable cleanup failure closes confirmation, refreshes,
   select("other");
   select("acme");
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("an applied removal with an unavailable list reports neutrally and closes confirmation", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  fake.on("evener/marketplace/remove", () => {
+    throw removeAppliedUnavailableError();
+  });
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  renderSheet(ACME);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() => expect(listCalls(fake)).toBe(1));
+  await waitFor(() =>
+    expect(
+      getToasts().some(
+        (t) => t.kind === "info" && t.text.includes("Removed marketplace acme; the updated list was unavailable"),
+      ),
+    ).toBe(true),
+  );
+  expect(getToasts().some((t) => t.text.includes("clone cleanup failed"))).toBe(false);
+  expect(screen.queryByRole("dialog", { name: "Remove marketplace" })).toBeNull();
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(removeCalls(fake)).toBe(1);
 });
 
 // The confirm names the entry the sheet currently shows, so a confirm left

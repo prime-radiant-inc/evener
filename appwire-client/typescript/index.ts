@@ -157,6 +157,7 @@ export {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
