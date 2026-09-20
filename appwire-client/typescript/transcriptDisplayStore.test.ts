@@ -296,6 +296,45 @@ describe("hub defaults", () => {
 });
 
 describe("lifecycle fencing", () => {
+  test("a lifecycle retirement during the loading publication prevents the request", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    store.subscribe((state, previous) => {
+      if (!previous.hubLoading && state.hubLoading) store.endReadyGeneration();
+    });
+
+    await store.getState().refreshHubDefaults();
+
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(0);
+    expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
+  });
+
+  test.each([
+    ["retirement", (store: TranscriptDisplayStore) => store.endReadyGeneration()],
+    [
+      "replacement",
+      (store: TranscriptDisplayStore) => {
+        store.endReadyGeneration();
+        store.beginReadyGeneration();
+      },
+    ],
+  ] as const)("a generation %s during the desktop publication fences the remaining read", async (_name, lifecycle) => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    store.subscribe((state, previous) => {
+      if (state.hub.desktop !== previous.hub.desktop) lifecycle(store);
+    });
+
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
+    expect(store.getState().hub.mobile).toBeUndefined();
+  });
+
   test.each(["endReadyGeneration", "dispose"] as const)(
     "%s fences relayed changes after the ready generation ends",
     async (lifecycle) => {
