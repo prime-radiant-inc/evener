@@ -1,6 +1,5 @@
 import type { AnyNotification, AppwireClientLike } from "@evener/appwire-client";
 import {
-  accessibleConfigSummary,
   configFingerprint,
   decodeLocalConfig,
   encodeLocalConfig,
@@ -8,7 +7,6 @@ import {
   fromWireDefault,
   fromWireDefaults,
   type HubTranscriptDisplayDefault,
-  legacyWritesFromConfig,
   normalizeConfig,
   resolveEffectiveConfig,
   shippedDefault,
@@ -19,16 +17,19 @@ import {
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { transitionTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import { connectionStore } from "./connection";
-import {
-  dualWriteTranscriptDisplayLegacy,
-  migrateLegacyTranscriptDisplay,
-  readLegacyPreference,
-  readTranscriptDisplayLocal,
-} from "./prefs";
+import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
+import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
+import {
+  LOCAL_KEYS,
+  removeLocal,
+  reportStorageResult,
+  verifyLegacyWrite,
+  writeLocal,
+} from "./transcriptDisplay/localStore";
+import { publishEffectiveTransition } from "./transcriptDisplay/transitions";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // This store's own guard: keybindings.ts wires the same connectionStore
@@ -36,19 +37,6 @@ export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // registration slot.
 const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
-const LOCAL_KEYS: Record<ViewportClass, string> = {
-  desktop: "evener.prefs.transcriptDisplay.desktop",
-  mobile: "evener.prefs.transcriptDisplay.mobile",
-};
-const LEGACY_KEYS = [
-  "transcriptRoundTimings",
-  "transcriptTokenCounts",
-  "transcriptHookExitsAll",
-  "transcriptHookExitsNormal",
-  "transcriptPromptLoaded",
-  "showCost",
-] as const;
-
 type ConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
 type HubByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
 
@@ -77,14 +65,6 @@ export interface TranscriptDisplayStoreState {
   patchHubDefault(layout: ViewportClass, config: TranscriptDisplayConfigV1): Promise<HubTranscriptDisplayDefault>;
 }
 
-interface LocalMessage {
-  version: 1;
-  sourceId: string;
-  layout: ViewportClass;
-  config: string | null;
-  fingerprint: string | null;
-}
-
 function initialState(): Omit<
   TranscriptDisplayStoreState,
   "setViewport" | "setLocal" | "clearLocal" | "effective" | "applyHubChange" | "refreshHubDefaults" | "patchHubDefault"
@@ -103,8 +83,6 @@ function initialState(): Omit<
 }
 
 let initialized = false;
-let channel: BroadcastChannel | null = null;
-let sourceId = "";
 let stopViewportSubscription: (() => void) | null = null;
 let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
@@ -118,217 +96,8 @@ const patchTokens = new Map<ViewportClass, number>();
 
 class InvalidPatchResponseError extends Error {}
 
-type EffectiveLayers = Pick<TranscriptDisplayStoreState, "viewport" | "local" | "hub">;
-
-function effectiveForLayers(layers: EffectiveLayers, layout: ViewportClass): TranscriptDisplayConfigV1 {
-  return resolveEffectiveConfig({
-    local: layers.local[layout],
-    hub: layers.hub[layout],
-    layout,
-  });
-}
-
-function publishEffectiveTransition(
-  before: EffectiveLayers,
-  after: EffectiveLayers,
-  publish: () => void,
-  targetLayout: ViewportClass,
-  force = false,
-): void {
-  const beforeConfig = effectiveForLayers(before, before.viewport);
-  const afterConfig = effectiveForLayers(after, after.viewport);
-  const afterFingerprint = configFingerprint(afterConfig);
-  const changed = configFingerprint(beforeConfig) !== afterFingerprint;
-  if (!changed && !force) {
-    publish();
-    return;
-  }
-  transitionTranscriptViews(publish, accessibleConfigSummary(afterConfig), {
-    fingerprint: afterFingerprint,
-    targetLayout,
-    force,
-    prepareRemount: force,
-    announce: changed,
-  });
-}
-
-function makeSourceId(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  } catch {
-    // Some privacy modes expose crypto but deny randomUUID.
-  }
-  return `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-}
-
-function setStorageWarning(message: string | null): void {
-  transcriptDisplayStore.setState({ storageWarning: message });
-}
-
-function writeLocal(layout: ViewportClass, encoded: string): boolean {
-  try {
-    if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
-    localStorage.setItem(LOCAL_KEYS[layout], encoded);
-    if (localStorage.getItem(LOCAL_KEYS[layout]) !== encoded) throw new Error("localStorage did not retain the value");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function removeLocal(layout: ViewportClass): boolean {
-  try {
-    if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
-    localStorage.removeItem(LOCAL_KEYS[layout]);
-    if (localStorage.getItem(LOCAL_KEYS[layout]) !== null) throw new Error("localStorage retained the value");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function verifyLegacyWrite(config: TranscriptDisplayConfigV1): boolean {
-  try {
-    const expected = legacyWritesFromConfig(config);
-    for (const key of LEGACY_KEYS) {
-      const raw = readLegacyPreference(key);
-      if (raw !== (expected[key] ? "1" : "0")) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function reportStorageResult(localOK: boolean, legacyOK: boolean): void {
-  if (localOK && legacyOK) {
-    setStorageWarning(null);
-    return;
-  }
-  setStorageWarning(
-    "Transcript display changed for this tab, but browser storage is unavailable; it may not survive restart.",
-  );
-}
-
-function broadcastLocal(layout: ViewportClass, encoded: string | null): void {
-  if (channel === null) return;
-  const decoded = encoded === null ? undefined : decodeLocalConfig(encoded);
-  if (encoded !== null && decoded === undefined) return;
-  const message: LocalMessage = {
-    version: 1,
-    sourceId,
-    layout,
-    config: encoded,
-    fingerprint: decoded === undefined ? null : configFingerprint(decoded),
-  };
-  try {
-    channel.postMessage(message);
-  } catch {
-    // BroadcastChannel is an enhancement; storage and the origin tab remain
-    // authoritative when a browser closes it or refuses a message.
-  }
-}
-
 function isLayout(value: unknown): value is ViewportClass {
   return value === "desktop" || value === "mobile";
-}
-
-function isLocalMessage(value: unknown): value is LocalMessage {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  if (
-    Object.keys(candidate).length !== 5 ||
-    candidate.version !== 1 ||
-    typeof candidate.sourceId !== "string" ||
-    candidate.sourceId === "" ||
-    !isLayout(candidate.layout) ||
-    !(candidate.config === null || typeof candidate.config === "string") ||
-    !(candidate.fingerprint === null || typeof candidate.fingerprint === "string")
-  )
-    return false;
-  if (candidate.config === null) return candidate.fingerprint === null;
-  const config = decodeLocalConfig(candidate.config);
-  return config !== undefined && candidate.fingerprint === configFingerprint(config);
-}
-
-function applyIncomingLocal(message: LocalMessage): void {
-  if (message.sourceId === sourceId) return;
-  const state = transcriptDisplayStore.getState();
-  const current = state.local[message.layout];
-  if (message.config === null) {
-    if (current === undefined) return;
-    const local = { ...state.local };
-    delete local[message.layout];
-    publishEffectiveTransition(
-      state,
-      { ...state, local },
-      () => transcriptDisplayStore.setState({ local }),
-      message.layout,
-    );
-    return;
-  }
-  const config = decodeLocalConfig(message.config);
-  if (config === undefined || (current !== undefined && configFingerprint(current) === message.fingerprint)) return;
-  const local = { ...state.local, [message.layout]: config };
-  publishEffectiveTransition(
-    state,
-    { ...state, local },
-    () => transcriptDisplayStore.setState({ local }),
-    message.layout,
-  );
-}
-
-function onChannelMessage(event: MessageEvent<unknown>): void {
-  if (!isLocalMessage(event.data)) return;
-  applyIncomingLocal(event.data);
-}
-
-function onStorage(event: StorageEvent): void {
-  if (!isLayoutKey(event.key)) return;
-  const layout = event.key.endsWith(".mobile") ? "mobile" : "desktop";
-  if (event.newValue === null) {
-    const state = transcriptDisplayStore.getState();
-    if (state.local[layout] === undefined) return;
-    const local = { ...state.local };
-    delete local[layout];
-    publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
-    return;
-  }
-  const config = decodeLocalConfig(event.newValue);
-  if (config === undefined) return;
-  const current = transcriptDisplayStore.getState().local[layout];
-  if (current !== undefined && configFingerprint(current) === configFingerprint(config)) return;
-  const state = transcriptDisplayStore.getState();
-  const local = { ...state.local, [layout]: config };
-  publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
-}
-
-function isLayoutKey(key: string | null): key is string {
-  return key === LOCAL_KEYS.desktop || key === LOCAL_KEYS.mobile;
-}
-
-function attachBrowserSync(): void {
-  sourceId = makeSourceId();
-  if (typeof BroadcastChannel !== "undefined") {
-    try {
-      channel = new BroadcastChannel(TRANSCRIPT_DISPLAY_CHANNEL);
-      channel.addEventListener("message", onChannelMessage);
-    } catch {
-      channel = null;
-    }
-  }
-  if (typeof window !== "undefined") window.addEventListener("storage", onStorage);
-}
-
-function detachBrowserSync(): void {
-  if (channel !== null) {
-    channel.removeEventListener("message", onChannelMessage);
-    channel.close();
-    channel = null;
-  }
-  if (typeof window !== "undefined") window.removeEventListener("storage", onStorage);
-  stopViewportSubscription?.();
-  stopViewportSubscription = null;
 }
 
 function currentSupport(): "unknown" | "supported" | "unsupported" {
@@ -496,8 +265,8 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const localOK = writeLocal(layout, encoded);
       dualWriteTranscriptDisplayLegacy(config);
       const legacyOK = verifyLegacyWrite(config);
-      reportStorageResult(localOK, legacyOK);
-      broadcastLocal(layout, encoded);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      browserSync.broadcastLocal(layout, encoded);
     },
     clearLocal: (layout) => {
       const state = transcriptDisplayStore.getState();
@@ -508,8 +277,8 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const fallback = resolveEffectiveConfig({ local: undefined, hub: state.hub[layout], layout });
       dualWriteTranscriptDisplayLegacy(fallback);
       const legacyOK = verifyLegacyWrite(fallback);
-      reportStorageResult(localOK, legacyOK);
-      broadcastLocal(layout, null);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      browserSync.broadcastLocal(layout, null);
     },
     effective: (layout): TranscriptDisplayConfigV1 => {
       const state = transcriptDisplayStore.getState();
@@ -692,6 +461,25 @@ connectionStore.subscribe(onConnectionChange);
 const initialClient = connectionStore.getState().client;
 if (initialClient !== null) rewireClient(initialClient);
 
+function applyLocalFromBrowserSync(layout: ViewportClass, config: TranscriptDisplayConfigV1 | undefined): void {
+  const state = transcriptDisplayStore.getState();
+  const local = { ...state.local };
+  if (config === undefined) delete local[layout];
+  else local[layout] = config;
+  publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
+}
+
+const browserSync = createBrowserSync({
+  channelName: TRANSCRIPT_DISPLAY_CHANNEL,
+  localKeys: LOCAL_KEYS,
+  getState: () => transcriptDisplayStore.getState(),
+  applyLocal: applyLocalFromBrowserSync,
+  onDetach: () => {
+    stopViewportSubscription?.();
+    stopViewportSubscription = null;
+  },
+});
+
 export function initTranscriptDisplay(): void {
   if (initialized) return;
   initialized = true;
@@ -713,15 +501,17 @@ export function initTranscriptDisplay(): void {
   }
   transcriptDisplayStore.setState({ local });
   if (!migrationWriteOK)
-    setStorageWarning("Transcript display migration could not be saved; it may not survive restart.");
-  attachBrowserSync();
+    transcriptDisplayStore.setState({
+      storageWarning: "Transcript display migration could not be saved; it may not survive restart.",
+    });
+  browserSync.attach();
   stopViewportSubscription = subscribeMobileViewport(() => {
     transcriptDisplayStore.getState().setViewport(isMobileViewport() ? "mobile" : "desktop");
   });
 }
 
 export function resetTranscriptDisplayStoreForTests(): void {
-  detachBrowserSync();
+  browserSync.detach();
   initialized = false;
   invalidateReadyGeneration();
   unwireReady?.();

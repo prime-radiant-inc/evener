@@ -722,3 +722,244 @@ func scenarioCitedBaseName(cited string) string {
 	}
 	return cited
 }
+
+// scenarioBareLineAnchor matches a line-range anchor written on its own, with
+// no path in front of it: the `:128,139,159` in "`StatusRow.tsx:129` sets it,
+// and unset renders as `(default)` (`:128,139,159`)". The corpus abbreviates
+// this way once the path is already in the sentence, and scenarioSourceCitation
+// cannot see it — that needle's first capture is a path, and this shape has
+// none, so no audit read one until this one (issue #158).
+var scenarioBareLineAnchor = regexp.MustCompile("`(:[0-9][0-9,-]*)`")
+
+// scenarioSourcePathSpan matches a backticked source path, anchored or not:
+// `path`, `path:lines` and `path#symbol` all name the file a following bare
+// `:NNN` belongs to. A bare anchor resolves against the nearest one of these
+// before it.
+var scenarioSourcePathSpan = regexp.MustCompile(
+	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#[A-Za-z0-9_.]+|:[0-9][0-9,-]*)?`")
+
+// scenarioBareLineAnchorResolution is one bare `:NNN` and the path it resolves
+// against.
+type scenarioBareLineAnchorResolution struct {
+	line   int    // 1-based line in the card
+	anchor string // the `:NNN` span, colon included
+	cited  string // the path it resolves against, "" when nothing precedes it
+}
+
+// scenarioBareLineAnchorResolutions resolves every bare `:NNN` in one card
+// against the nearest preceding source path, the way a reader supplies the
+// omitted path.
+//
+// The nearest preceding path in the same paragraph is the referent. Inside a
+// markdown table that rule would bind each row to the row above it, so a
+// table's anchors resolve against the nearest preceding path on a line that is
+// not itself a table row — the section header that introduced the table
+// (`**Composer** (`Composer.tsx`):` above its hook table).
+func scenarioBareLineAnchorResolutions(text string) []scenarioBareLineAnchorResolution {
+	lines := strings.Split(text, "\n")
+	paragraphs := scenarioParagraphIndex(lines)
+	spans := scenarioSourcePathSpan.FindAllStringSubmatchIndex(text, -1)
+	spanLines := make([]int, len(spans))
+	for i, span := range spans {
+		spanLines[i] = scenarioLineOfOffset(text, span[0])
+	}
+	var out []scenarioBareLineAnchorResolution
+	for _, match := range scenarioBareLineAnchor.FindAllStringSubmatchIndex(text, -1) {
+		line := scenarioLineOfOffset(text, match[0])
+		inTable := strings.Contains(lines[line-1], "|")
+		cited := ""
+		for i, span := range spans {
+			if span[0] >= match[0] {
+				break
+			}
+			if inTable {
+				// A row-to-row binding would be wrong; the table's referent
+				// path is named outside the table.
+				if strings.Contains(lines[spanLines[i]-1], "|") {
+					continue
+				}
+			} else if paragraphs[spanLines[i]-1] != paragraphs[line-1] {
+				continue
+			}
+			cited = text[span[2]:span[3]]
+		}
+		out = append(out, scenarioBareLineAnchorResolution{
+			line:   line,
+			anchor: text[match[2]:match[3]],
+			cited:  cited,
+		})
+	}
+	return out
+}
+
+// scenarioParagraphIndex numbers the blank-line-separated blocks of a card, so
+// two lines are in the same paragraph exactly when their indexes are equal.
+func scenarioParagraphIndex(lines []string) []int {
+	index := make([]int, len(lines))
+	paragraph := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			paragraph++
+		}
+		index[i] = paragraph
+	}
+	return index
+}
+
+// scenarioLineOfOffset is the 1-based line holding a byte offset.
+func scenarioLineOfOffset(text string, offset int) int {
+	return strings.Count(text[:offset], "\n") + 1
+}
+
+// scenarioAnchorLastLine is the highest line number a `:NNN` anchor names.
+// `36,44` and `81,120-125` each name their largest part.
+func scenarioAnchorLastLine(anchor string) int {
+	last := 0
+	for part := range strings.SplitSeq(strings.TrimPrefix(anchor, ":"), ",") {
+		high := part
+		if _, after, ok := strings.Cut(part, "-"); ok {
+			high = after
+		}
+		n, err := strconv.Atoi(high)
+		if err != nil {
+			continue
+		}
+		if n > last {
+			last = n
+		}
+	}
+	return last
+}
+
+// scenarioSourceLineCount is a source file's line count, memoized across
+// citations into the same file so a card citing one file many times reads it
+// once.
+func scenarioSourceLineCount(cache map[string]int, path string) (int, error) {
+	if count, ok := cache[path]; ok {
+		return count, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	count := len(strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n"))
+	cache[path] = count
+	return count, nil
+}
+
+// scenarioMinBareLineAnchors is the floor on how many bare `:NNN` anchors the
+// audit below must actually read. A corpus audit is green both when the corpus
+// is clean and when its needle stopped matching, and only a floor tells the two
+// apart; the corpus carried 97 resolvable bare anchors when this landed, so the
+// floor sits just below that. Raise it as the corpus grows; lower it only with a
+// reason, and say why here.
+const scenarioMinBareLineAnchors = 90
+
+// TestScenarioBareLineAnchorsResolve reads the citation shape the rest of this
+// file cannot see: a `:NNN` anchor with the path left implicit. It resolves
+// each one against the nearest preceding source path and checks two things —
+// that a path is actually there to resolve against, and that the anchor's lines
+// fall inside the file that path names. A bare anchor whose path was renamed, or
+// whose file shrank below the numbers it cites, points at nothing while every
+// other audit stays green, which is the failure kata yj52 measured at 44% in a
+// single sweep (issue #158).
+//
+// What this does NOT check is that the numbers name the right statement: a file
+// that merely grew or moved code above the anchor passes, because a line
+// shift is not evidence the citation is wrong. The removed line-range audit
+// tried to read that through the card's own quotation and was brittle enough
+// that an unrelated insertion broke it, so this audit stops at the boundary
+// that is stable — the path resolves and the anchor is not past the file's end.
+// No exemption list is needed: unlike a literal search, "does the file reach
+// the cited line" has no plausible-but-wrong match to excuse.
+func TestScenarioBareLineAnchorsResolve(t *testing.T) {
+	byBase := scenarioSourceFilesByBase(t)
+	counts := map[string]int{}
+	var findings []string
+	checked := 0
+	for _, path := range scenarioCardFiles(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, resolved := range scenarioBareLineAnchorResolutions(string(raw)) {
+			if resolved.cited == "" {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` has no source path before it to resolve against")
+				continue
+			}
+			candidates := scenarioResolveCitedPath(byBase, resolved.cited)
+			if len(candidates) == 0 {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` resolves against `"+resolved.cited+
+					"`, which names no source file in the tree")
+				continue
+			}
+			checked++
+			last := scenarioAnchorLastLine(resolved.anchor)
+			covered := false
+			for _, candidate := range candidates {
+				count, err := scenarioSourceLineCount(counts, candidate)
+				if err != nil {
+					t.Fatalf("reading %s cited by %s: %v", candidate, path, err)
+				}
+				if last <= count {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` resolves against `"+resolved.cited+
+					"`, which does not reach line "+strconv.Itoa(last))
+			}
+		}
+	}
+	if checked < scenarioMinBareLineAnchors {
+		t.Fatalf("this audit read %d bare line anchors, below the floor of %d: "+
+			"either the `:NNN` needle stopped matching (check "+
+			"scenarioBareLineAnchor), or the cards dropped their abbreviated "+
+			"anchors. Restore the shape, or lower the floor deliberately and say "+
+			"why here.", checked, scenarioMinBareLineAnchors)
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("a bare `:NNN` anchor must resolve against a source path that "+
+			"is still there and still reaches the cited lines — a renamed file, "+
+			"or code deleted from under the anchor, leaves the citation parsing "+
+			"fine and pointing at nothing, and the path-carrying needle cannot "+
+			"see the shape at all (issue #158). Give the anchor its path, or "+
+			"repoint it at the file that carries the code now:\n%s",
+			strings.Join(findings, "\n"))
+	}
+}
+
+// TestScenarioBareLineAnchorResolutionPinsTheRule pins
+// scenarioBareLineAnchorResolutions itself: which preceding path a bare anchor
+// binds to, and that it binds to none when there is nothing before it in the
+// paragraph.
+func TestScenarioBareLineAnchorResolutionPinsTheRule(t *testing.T) {
+	const card = "`Composer.tsx` introduces the table below.\n" +
+		"\n" +
+		"| Hook | What it is |\n" +
+		"|---|---|\n" +
+		"| steer | only while busy (`:382`) |\n" +
+		"\n" +
+		"`Rail.tsx:509` names a row, and a bare `:113-138` follows.\n" +
+		"\n" +
+		"A trailing paragraph keeps its own `:999`.\n"
+	want := []scenarioBareLineAnchorResolution{
+		{line: 5, anchor: ":382", cited: "Composer.tsx"},
+		{line: 7, anchor: ":113-138", cited: "Rail.tsx"},
+		{line: 9, anchor: ":999", cited: ""},
+	}
+	got := scenarioBareLineAnchorResolutions(card)
+	if len(got) != len(want) {
+		t.Fatalf("resolved %d bare anchors, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("bare anchor %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

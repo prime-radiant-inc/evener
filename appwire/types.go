@@ -3596,6 +3596,40 @@ type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
 
+// MarketplaceUnregisteredCloneRemainsData is the WireError.Data payload for
+// ErrorMarketplaceUnregisteredCloneRemains: the removal APPLIED (Applied
+// carries the updated marketplace list, with the target already gone) but
+// removing its clone from disk failed. Clients should reconcile from Applied
+// instead of treating the removal as rejected - the same rule
+// KeybindingsPostRenameData carries for keybindings. Re-listing to build
+// Applied is itself a fresh read that can fail on its own account, unrelated
+// to the removal that already landed; when it does, AppliedUnavailable is
+// true and Applied is the zero value - a client must not read that as "every
+// marketplace gone" and must not retry the removal as a fresh attempt either,
+// since it already applied.
+type MarketplaceUnregisteredCloneRemainsData struct {
+	EvenerErrorInfo    ErrorInfo               `json:"evenerErrorInfo"`
+	Applied            MarketplaceListResponse `json:"applied"`
+	AppliedUnavailable bool                    `json:"appliedUnavailable,omitempty"`
+}
+
+// MarketplaceRemoveAppliedData is the WireError.Data payload for
+// ErrorMarketplaceRemoveApplied: the removal APPLIED (the unregister save
+// landed and the clone cleanup that follows it completed) but the fresh read
+// that would carry the updated list to the caller failed. AppliedUnavailable
+// is true on this path - the failed read is the whole reason this outcome
+// exists - so a consumer reconciling the removal must not read the missing
+// list as "every marketplace gone", and must not retry: the removal already
+// applied, so a retry finds ErrMarketplaceNotFound. Applied is deliberately
+// absent (unlike MarketplaceUnregisteredCloneRemainsData, whose read can
+// succeed): no snapshot was read, and the wire carries no substitute for one.
+// The consumer binding is deliberately deferred to the marketplace
+// reconciliation successors (#1954 SDK, #1960 web).
+type MarketplaceRemoveAppliedData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	AppliedUnavailable bool      `json:"appliedUnavailable,omitempty"`
+}
+
 // MarketplaceAddParams is the params for evener/marketplace/add. Name is
 // optional; when empty, the marketplace manifest's own name is used.
 type MarketplaceAddParams struct {

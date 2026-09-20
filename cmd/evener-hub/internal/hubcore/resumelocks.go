@@ -65,7 +65,8 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 // failure. It records no owner process identity, so the Resume refusal stands
 // until the Stop route establishes an exit proof.
 func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error {
-	return r.PersistForceStopWithOwner(aliases, sessionID, daemonprocess.Target{})
+	_, err := r.PersistForceStopWithOwner(aliases, sessionID, daemonprocess.Target{})
+	return err
 }
 
 // PersistForceStopWithOwner is PersistForceStop plus the process identity the
@@ -73,25 +74,28 @@ func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error
 // the process controller even when every rendezvous marker is gone — the same
 // proof class the Stop route itself uses. The force-stop path always records
 // the identity it signaled; a zero owner records no exit proof and the Resume
-// refusal stands.
-func (r *ResumeLocks) PersistForceStopWithOwner(aliases []string, sessionID string, owner daemonprocess.Target) error {
+// refusal stands. The committed return distinguishes an error that left
+// nothing recorded (false) from one whose record landed: the rename can commit
+// while a later sync step fails, and committed-with-error installs the
+// in-memory obligation either way, so a caller refusing on the error must only
+// roll its fence back when committed is false.
+func (r *ResumeLocks) PersistForceStopWithOwner(aliases []string, sessionID string, owner daemonprocess.Target) (committed bool, err error) {
 	if len(aliases) == 0 {
-		return errors.New("recovery alias set is empty")
+		return false, errors.New("recovery alias set is empty")
 	}
 	aliases = slices.Compact(slices.Sorted(slices.Values(aliases)))
 	for _, alias := range aliases {
 		if !validRecoveryAlias(alias) {
-			return errors.New("invalid recovery alias")
+			return false, errors.New("invalid recovery alias")
 		}
 	}
 	if !validRecoveryAlias(sessionID) || !slices.Contains(aliases, sessionID) {
-		return errors.New("recovery target must be a verified ownership alias")
+		return false, errors.New("recovery target must be a verified ownership alias")
 	}
 	r.persistenceMu.Lock()
 	defer r.persistenceMu.Unlock()
 	id := rand.Text()
-	committed := true
-	var err error
+	committed = true
 	if r.store != nil {
 		next := maps.Clone(r.store.state)
 		for _, alias := range aliases {
@@ -117,7 +121,19 @@ func (r *ResumeLocks) PersistForceStopWithOwner(aliases []string, sessionID stri
 		}
 		r.mu.Unlock()
 	}
-	return err
+	return committed, err
+}
+
+// SetRecoveryStoreFaultsForTest installs write-fault hooks on the persistent
+// recovery store so app-level tests can stage store failures through the
+// public surface (the hubcore suite reaches locks.store.faults directly).
+// Production code must not call it.
+func (r *ResumeLocks) SetRecoveryStoreFaultsForTest(beforeRename, afterRename func() error) {
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	if r.store != nil {
+		r.store.faults = recoveryStoreFaults{BeforeRename: beforeRename, AfterRename: afterRename}
+	}
 }
 
 // ConfirmForceStop records proven process exit without acknowledging explicit
@@ -766,6 +782,25 @@ func (r *ResumeLocks) ResolvedSessionID(sessionID string) string {
 		return group.resolvedSessionID
 	}
 	return ""
+}
+
+// RecoveryEnded reports whether sessionID has durably ended: a committed
+// recovery obligation is recorded for it and it awaits an explicit resume
+// (ResumeRequired, set by PersistForceStop and Finish(true)). A completed
+// recovery redirect (RecordResolvedSession) names the session a resume settled
+// on, and is written once and never cleared; once that named session has ended
+// the redirect stops being a live route, so a consumer that would branch it
+// falls back to the alias rather than resolving into the ended session's
+// recovery fence — which nothing would ever clear short of a hub restart.
+//
+// A temporary Stopping fence is deliberately NOT evidence of ending: a force
+// stop that is refused gives it back with Finish(false) and leaves the session
+// running, so the redirect is still the right route. While merely stopping, the
+// target stays in the fork's fence set and the fork is refused through it.
+func (r *ResumeLocks) RecoveryEnded(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recovery[sessionID].ResumeRequired
 }
 
 // RecoverySequence is captured once when a transport is established. A

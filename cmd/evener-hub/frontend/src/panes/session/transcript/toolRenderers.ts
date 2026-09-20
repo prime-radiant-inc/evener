@@ -28,6 +28,16 @@ export interface ToolRenderProps {
   cwd?: string;
 }
 
+// ToolStatusLineProps carries what a descriptor's statusLine component needs
+// beyond the body props: the row's live expanded state (a standalone line
+// usually only renders while the body is closed, or when the descriptor's
+// expanded surfaces render nothing) and the owning thread model (where the
+// stable delegate projection lives).
+export interface ToolStatusLineProps extends ToolRenderProps {
+  expanded: boolean;
+  thread?: ThreadModel;
+}
+
 // ToolSummaryContext carries render-path facts a descriptor's summary() may
 // need but that ItemModel alone can't answer - the session cwd (shell's
 // stripRedundantCd, so a habitual "cd <cwd> && " prefix reads as noise, not
@@ -67,6 +77,13 @@ export interface ToolRendererDescriptor {
   //                     must see, so it breaks a run exactly like "never".
   fold?: "never" | "quiet" | "consequential";
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
+  // statusLine renders the row's standalone status line, mounted in the slot
+  // below the summary/intent on BOTH of the row's render paths. The
+  // descriptor owns whether it renders at all: return null while the row's
+  // other surfaces carry the status (a delegate's expanded card) - the row
+  // only owns where the line sits. The one descriptor with one today is
+  // delegate.
+  statusLine?: ComponentType<ToolStatusLineProps>;
   // hasBody answers per-item whether the body would render anything.
   // ToolCallItem keys the row's expandability off body presence today, so a
   // descriptor whose body returns null for some items (a summary-only

@@ -1344,7 +1344,7 @@ test("missing credentials surface setup in the composer without opening a dialog
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(screen.getByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
@@ -1406,10 +1406,10 @@ test("connection handoff shows the actual instance models and preserves draft un
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  // team-local is not one of the curated providers the guided grid leads
-  // with, so the card shows under All providers.
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
-  await user.click(await screen.findByRole("button", { name: "Team local" }));
+  // team-local is not one of the curated providers the picker leads with, so
+  // its card shows behind the catalogue disclosure.
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(screen.getByRole("button", { name: "Team local" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   await user.click(await screen.findByRole("button", { name: "Continue" }));
@@ -1644,22 +1644,33 @@ test("retrying missing provider setup discovers a local server started afterward
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = userEvent.setup();
   let available = false;
+  const keyless = {
+    name: "ollama",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: true,
+    isDefault: true,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-ollama",
+  };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [
+      instances: [keyless],
+      availableProviders: [
         {
-          name: "ollama",
-          providerId: "ollama",
+          id: "ollama",
+          name: "Local endpoint",
           protocol: "openai-chat",
           auth: "none",
           implicit: true,
-          isDefault: true,
-          activeSource: "none",
-          hasStoredOAuth: false,
-          credentialRequired: false,
+          authModes: [],
+          setup: keyless,
         },
       ],
-      availableProviders: [],
     }));
     fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
     fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
@@ -1678,13 +1689,14 @@ test("successful keyless testing refreshes availability without an auth notifica
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  const testConnection = await screen.findByRole("button", { name: "Test connection" });
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
+  const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;
   await user.click(testConnection);
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
-    { method: "evener/auth/test", params: { provider: "ollama" } },
+    { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();

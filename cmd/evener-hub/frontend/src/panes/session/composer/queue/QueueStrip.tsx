@@ -26,7 +26,6 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
   type PendingTurnEntry,
-  refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
@@ -403,11 +402,11 @@ export function QueueStrip({
       setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, `Retry failed: ${cause}`));
     try {
       if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
-        // Refresh FIRST, then decide on the state the refresh observed. Reading
-        // before the refresh let a settle from another tab that landed between
-        // the two report "Delivery still cannot be checked" for a row the retry
-        // had already made moot.
-        await refreshPendingTurnsProjection(sessionRef);
+        // The projection is already refreshed at this point:
+        // retryBlockedPendingTurn is mutateThenRefresh, which awaits its refresh
+        // before resolving, so this decides on the state that refresh observed
+        // (issue #1722 - a second refresh here read the same durable rows and
+        // fed nothing).
         const { outbox } = await readMutationPersistence(sessionRef);
         const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
         if (current?.state === "blockedUnknown")

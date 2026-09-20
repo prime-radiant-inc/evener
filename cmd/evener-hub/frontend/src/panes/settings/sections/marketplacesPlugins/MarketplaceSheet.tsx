@@ -21,10 +21,12 @@
 // alternative - reseeding on every store update - silently discards whatever
 // the user is halfway through typing, which is worse.
 
-import type { MarketplaceEntry } from "@evener/appwire-client";
+import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
+import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
+import { connectionStore } from "../../../../stores/connection";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -66,6 +68,13 @@ export interface MarketplaceSheetProps {
   /** Written only by a rename, which moves the entry's expansion to its new
    * name - the set is keyed by name. */
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
+  /** Applied removals survive this sheet's load-error unmount until the owning
+   * connection returns an authoritative list without the marketplace. */
+  appliedRemovalNames: ReadonlySet<string>;
+  /** The client identity that owned this render's mutation. */
+  connectionClient: AppwireClientLike | null;
+  /** Records a completed registry removal for the owning connection only. */
+  onAppliedRemoval: (name: string, owner: AppwireClientLike | null, publicationVersion: number) => void;
 }
 
 function lastUpdatedText(seconds: number): string {
@@ -78,6 +87,9 @@ export function MarketplaceSheet({
   onRenamed,
   expandedMarketplaces,
   setExpandedMarketplaces,
+  appliedRemovalNames,
+  connectionClient,
+  onAppliedRemoval,
 }: MarketplaceSheetProps) {
   const marketplaces = useExtensionsStore((s) => s.marketplaces);
   const isMobile = useIsMobile();
@@ -169,6 +181,7 @@ export function MarketplaceSheet({
   // changing that name refreshes a marketplace that no longer answers to it,
   // or races the rename for the store lock.
   const busy = saving || refreshing || removeBusy;
+  const removeDisabled = busy || (entry !== undefined && appliedRemovalNames.has(entry.name));
   const canSave = dirty && !busy && !(sourceTouched && incomplete);
 
   function update(patch: Partial<MarketplaceDraft>): void {
@@ -254,25 +267,59 @@ export function MarketplaceSheet({
 
   async function handleConfirmRemove(): Promise<void> {
     if (entry === undefined) return;
+    const removalName = entry.name;
+    const removalClient = connectionClient;
     setRemoveBusy(true);
     try {
-      await extensionsStore.getState().removeMarketplace(entry.name);
+      await extensionsStore.getState().removeMarketplace(removalName);
       // Reported wherever the user has navigated to, like a save's: the
       // removal landed, and a sheet that moved on is no reason to leave it
       // unreported.
-      toasts.push("success", `Removed marketplace ${entry.name}`);
+      toasts.push("success", `Removed marketplace ${removalName}`);
       // The confirm this closes belongs to whatever marketplace the sheet
       // shows now, so on a sheet that moved on it would answer a question the
       // user has not answered yet.
-      if (liveName.current === entry.name) setPendingRemove(false);
+      if (liveName.current === removalName) setPendingRemove(false);
       // onClose fires via the entry-vanished effect once the store's updated
       // list lands - no explicit close here.
     } catch (err) {
-      // The failure is reported wherever the user has navigated to; only the
-      // flag is this sheet's to clear.
-      toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
+      const outcome = marketplaceRemovalOutcome(err);
+      if (outcome !== undefined) {
+        // A late result from a replaced hub no longer describes this sheet's
+        // catalog. Leave the current connection's confirmation and list
+        // untouched; its own reconciliation will settle them.
+        if (connectionStore.getState().client !== removalClient) return;
+        // The registry removal already landed. Close the completed confirm and
+        // keep this entry from issuing the same removal again while an
+        // applied list is reconciled through the normal fetch. An accepted
+        // snapshot that already omits the target is the reconciliation, so a
+        // retry guard is only needed while the target remains or the list is
+        // unavailable.
+        const current = extensionsStore.getState();
+        const targetPresent = current.marketplaces?.some((marketplace) => marketplace.name === removalName) ?? false;
+        if (current.marketplaces === null || targetPresent) {
+          onAppliedRemoval(removalName, removalClient, current.marketplacesPublicationVersion);
+          void extensionsStore.getState().fetchMarketplaces();
+        }
+        if (liveName.current === removalName) setPendingRemove(false);
+        if (outcome.kind === "removed") {
+          // No litter exists; the reconciliation above settles the list.
+          toasts.push(
+            "info",
+            `Removed marketplace ${removalName}; the updated list was unavailable, so it is being refreshed.`,
+          );
+        } else {
+          toasts.push(
+            "warning",
+            "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
+          );
+        }
+      } else {
+        // Ordinary failures keep the existing retryable error behavior.
+        toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
+      }
     } finally {
-      if (liveName.current === entry.name) setRemoveBusy(false);
+      if (liveName.current === removalName) setRemoveBusy(false);
     }
   }
 
@@ -387,7 +434,7 @@ export function MarketplaceSheet({
             </div>
             <hr className={CLASS.sheetDivider} />
             <div className={CLASS.sheetActions}>
-              <Button variant="danger" onClick={() => setPendingRemove(true)} disabled={busy}>
+              <Button variant="danger" onClick={() => setPendingRemove(true)} disabled={removeDisabled}>
                 Remove
               </Button>
             </div>

@@ -8,6 +8,7 @@ import {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -17,7 +18,28 @@ import {
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
+
+function decodeUpper(value: unknown): string | undefined {
+  return typeof value === "string" ? value.toUpperCase() : undefined;
+}
+
+test("wireRejectionPayload decodes the named key when the discriminator matches", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBe("OK");
+});
+
+test("wireRejectionPayload returns undefined for a different evenerErrorInfo - the code alone is never the discriminator", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "conflict", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
+
+test("wireRejectionPayload returns undefined for a non-WireError, or when decode rejects the payload", () => {
+  expect(wireRejectionPayload(new Error("boom"), "somePostApply", "applied", decodeUpper)).toBeUndefined();
+  const malformed = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: 42 });
+  expect(wireRejectionPayload(malformed, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
 
 // goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
 // file the hub stamps every evenerErrorInfo from. Reading the source (the way
@@ -58,6 +80,18 @@ describe("the applied-removal discriminator is bound to appwire/errors.go", () =
       isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
     ).toBe(false);
     expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
+  });
+});
+
+// The marketplace remove-applied discriminator is the marketplace-side
+// sibling of the applied-removal family: a marketplace removal that stood -
+// unregister and clone cleanup both done - whose response could not re-read
+// the updated list. Every consumer must reconcile rather than retry, and a
+// hub-side rename of it has to break this binding rather than silently read
+// the standing removal as a failed one.
+describe("the marketplace remove-applied discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorMarketplaceRemoveApplied).toBe(goErrorInfo("ErrorMarketplaceRemoveApplied"));
   });
 });
 

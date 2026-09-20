@@ -53,14 +53,20 @@ export async function measureEditorialTranscript() {
         const box = host.getBoundingClientRect();
         const tools = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="tool-call-item"]'));
         const opens = Array.from(host.querySelectorAll<HTMLElement>('button[aria-label="Open transcript"]'));
-        const lifecycle = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="delegate-lifecycle"]'));
-        const outside = [...tools, ...opens, ...lifecycle]
+        // A delegate's status line is the card's merged stats line while the
+        // body is expanded and the standalone lifecycle div once collapsed;
+        // data-status-line marks both, so one selector finds the line
+        // whichever surface is mounted.
+        const statusLines = Array.from(host.querySelectorAll<HTMLElement>('[data-status-line="delegate"]'));
+        // The status word carries its own testid on either surface.
+        const statusWords = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="delegate-status-word"]'));
+        const outside = [...tools, ...opens, ...statusLines]
           .filter((element) => {
             const r = element.getBoundingClientRect();
             return r.left < box.left - 1 || r.right > box.right + 1;
           })
           .map((element) => element.outerHTML.slice(0, 180));
-        const attention = required(lifecycle.find((element) => element.dataset.attention === "true"));
+        const attention = required(statusLines.find((element) => element.dataset.attention === "true"));
         const attentionVisible = visibleWithin(attention, box);
         const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
         const userText = required(user.firstElementChild);
@@ -98,7 +104,7 @@ export async function measureEditorialTranscript() {
           agentFont: agent && getComputedStyle(agent).fontFamily,
           quoteFont: getComputedStyle(quote).fontFamily,
           cardBackground: getComputedStyle(card).backgroundColor,
-          unavailable: lifecycle.filter((element) => element.textContent === "Status unavailable").length,
+          unavailable: statusWords.filter((element) => element.textContent === "Status unavailable").length,
         });
       }
     }

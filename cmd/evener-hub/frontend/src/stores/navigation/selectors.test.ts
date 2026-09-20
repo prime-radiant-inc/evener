@@ -57,7 +57,7 @@ test("normalized section sessions preserve the section tier like the legacy adap
   expect(model.sessions.get(secondEntityKey)?.tier).toBe("live");
 });
 
-test("normalized rail sessions derive display age from updated_at", () => {
+test("normalized rail sessions carry the updated_at anchor a row derives its display age from", () => {
   const updatedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
   const snapshot = {
     metadata: {},
@@ -78,7 +78,10 @@ test("normalized rail sessions derive display age from updated_at", () => {
     version: { generationId: "g", revision: 1, etag: "tag" },
     presence: "present",
   });
-  expect(model.sessions.get(firstEntityKey)?.age).toBe("1h");
+  // The model carries the ANCHOR, not a label: a row (not the adapter) derives
+  // the relative stamp, so it can tick without new data.
+  expect(model.sessions.get(firstEntityKey)?.updated_at).toBe(updatedAt);
+  expect(relativeAge(updatedAt, Date.now())).toBe("1h");
   expect(relativeAge(undefined)).toBeUndefined();
   expect(relativeAge("not-a-timestamp")).toBeUndefined();
 });

@@ -192,9 +192,10 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // exists for an item currently streaming). A reasoning item that already
 // carries flattened text (e.g. replayed from a persisted transcript on
 // hydrate) is seeded as a single chunk so display-time joining still works;
-// live in-flight chunks accumulated via item/reasoning/summaryTextDelta are
-// preserved separately by the item/completed and turn/completed handlers
-// (mergeReasoning), since they are more complete than this seed.
+// when a later settle carries no text of its own, the live in-flight chunks
+// accumulated via item/reasoning/summaryTextDelta are preserved by the
+// item/completed and turn/completed handlers (mergeReasoning). A settle that
+// DOES carry text re-seeds through here and wins — see mergeReasoning.
 const ITEM_TEXT_PRESENCE = Symbol("itemTextPresence");
 type ItemTextPresence = "omitted" | "provided";
 type InternalItemModel = ItemModel & { [ITEM_TEXT_PRESENCE]?: ItemTextPresence };
@@ -256,17 +257,39 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
-  if (item.type === "reasoning" && item.text) {
+  // `item.text !== undefined` (not truthiness): an explicitly provided empty
+  // text is authoritative for a reasoning row exactly as it is for assistant
+  // text (mergeCompletedText), so it seeds an authoritative EMPTY summary
+  // ([[""]], which display-time joining drops to no paragraph) instead of
+  // leaving reasoningSummaries unset — unset means "the settle said nothing"
+  // to mergeReasoning, which would keep stale chunks on screen.
+  if (item.type === "reasoning" && item.text !== undefined) {
     model.reasoningSummaries = [[item.text]];
   }
   return model;
 }
 
-// The model "keeps chunks": reasoningSummaries accumulated from
-// item/reasoning/summaryTextDelta are never discarded on settlement (only
-// joined for display, by the consumer). Wins over whatever wireItemToModel
-// seeded from the settled wire item's own (usually empty) text.
+// The model "keeps chunks" only when the settle carries no text of its own.
+// An item/completed (or a "full" turn/completed item) that brings its own
+// text is authoritative for a reasoning row exactly as it is for assistant
+// text (mergeCompletedText): wireItemToModel has already seeded
+// reasoningSummaries from that text (including an explicit empty text, as the
+// authoritative-empty [[""]]), and that complete flattened reasoning replaces
+// whatever the model accumulated, so a settle can correct a row the item's
+// earlier seed or live deltas got wrong. An omitted text — the wire never
+// sends an empty Text (appwire/types.go's `text,omitempty`), and the live
+// settle carries none for reasoning — has nothing to say, so the chunks
+// accumulated from item/reasoning/summaryTextDelta survive (only ever joined
+// for display, by the consumer).
+//
+// The seed, not itemTextPresence(settled), is the signal deliberately:
+// mergeCompletedText runs before this helper in every chain and copies the
+// EXISTING item's presence onto its result when the settle omitted text, so
+// by the time this runs a previously-text-bearing item's omitted settle still
+// reads "provided" — presence here would discard the very chunks an omission
+// must preserve.
 function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (settled.reasoningSummaries) return settled;
   if (existing?.reasoningSummaries) {
     return copyItemTextPresence(settled, { ...settled, reasoningSummaries: existing.reasoningSummaries });
   }
@@ -405,36 +428,172 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
 // dropped so its TurnSeparator does not survive. (zrzr)
-function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
+// Item payloads lose page ownership during retained placement. Keep the
+// original source values beside the folded turns so inherited fields do not
+// acquire the freshness of the item that carried them. The merge tree records
+// membership at the identity-match edge; reconstructing it from final IDs
+// would lose aliases and would make hydration quadratic.
+type ToolItemSource = "fresh" | "older";
+type ToolItemSourceMembership =
+  | { item: ItemModel }
+  | { left: ToolItemSourceMembership; right: ToolItemSourceMembership };
+type ToolItemProvenance = Partial<Record<ToolItemSource, ToolItemSourceMembership>>;
+type ToolItemMergeContext = { provenance: WeakMap<ItemModel, ToolItemProvenance> };
+type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
+
+function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly TurnModel[]): ToolItemMergeContext {
+  const context: ToolItemMergeContext = { provenance: new WeakMap() };
+  const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const existing = context.provenance.get(item);
+        if (existing?.[source] !== undefined) continue;
+        context.provenance.set(item, { ...existing, [source]: { item } });
+      }
+    }
+  };
+  add("fresh", fresh);
+  add("older", older);
+  return context;
+}
+
+function combineToolItemMembership(
+  left: ToolItemSourceMembership | undefined,
+  right: ToolItemSourceMembership | undefined,
+): ToolItemSourceMembership | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return { left, right };
+}
+
+function recordMergedToolItem(
+  context: ToolItemMergeContext,
+  merged: ItemModel,
+  older: ItemModel,
+  newer: ItemModel,
+): void {
+  const olderProvenance = context.provenance.get(older);
+  const newerProvenance = context.provenance.get(newer);
+  if (olderProvenance === undefined && newerProvenance === undefined) return;
+  context.provenance.set(merged, {
+    fresh: combineToolItemMembership(olderProvenance?.fresh, newerProvenance?.fresh),
+    older: combineToolItemMembership(olderProvenance?.older, newerProvenance?.older),
+  });
+}
+
+function appendToolItemCandidates(
+  membership: ToolItemSourceMembership | undefined,
+  candidates: ToolCandidates,
+  callId: string | undefined,
+): void {
+  if (membership === undefined || callId === undefined) return;
+  const stack: ToolItemSourceMembership[] = [membership];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) continue;
+    if ("item" in current) {
+      if (isToolResultId(current.item.id)) candidates.results.push(current.item);
+      else if (isToolCallId(current.item.id)) candidates.calls.push(current.item);
+      continue;
+    }
+    stack.push(current.right, current.left);
+  }
+}
+
+type ToolResultField =
+  | "output"
+  | "error"
+  | "prevalOnly"
+  | "exitCode"
+  | "completedAt"
+  | "status"
+  | "outputImages"
+  | "raw";
+
+function collectToolCandidates(
+  normalizedTurns: TurnModel[],
+  context: ToolItemMergeContext,
+  source: ToolItemSource,
+): Map<string, ToolCandidates> {
+  const candidates = new Map<string, ToolCandidates>();
+  for (const turn of normalizedTurns) {
+    for (const item of turn.items) {
+      if (!item.callId) continue;
+      const provenance = context.provenance.get(item);
+      const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
+      appendToolItemCandidates(provenance?.[source], entry, item.callId);
+      if (entry.calls.length > 0 || entry.results.length > 0) candidates.set(item.callId, entry);
+    }
+  }
+  return candidates;
+}
+
+function collectDirectToolCandidates(turns: TurnModel[]): Map<string, ToolCandidates> {
+  const candidates = new Map<string, ToolCandidates>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (!item.callId) continue;
+      const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
+      if (isToolResultId(item.id)) entry.results.push(item);
+      else if (isToolCallId(item.id)) entry.calls.push(item);
+      candidates.set(item.callId, entry);
+    }
+  }
+  return candidates;
+}
+
+function preferredToolField<K extends ToolResultField>(
+  item: ItemModel,
+  field: K,
+  ...sources: readonly (readonly ItemModel[])[]
+): ItemModel[K] | undefined {
+  for (const candidates of sources) {
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const value = candidates[index]?.[field];
+      if (value !== undefined) return value;
+    }
+  }
+  return item[field];
+}
+
+function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel[] {
   const callIds = new Set<string>();
-  const resultByCallId = new Map<string, ItemModel>();
   for (const turn of turns) {
     for (const item of turn.items) {
       if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
-      if (item.callId && isToolResultId(item.id)) resultByCallId.set(item.callId, item);
     }
   }
-  if (resultByCallId.size === 0) return turns;
+  const freshCandidates = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
+  const olderCandidates = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
+  const resultCallIds = new Set(
+    [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
+      candidates.results.length > 0 ? [callId] : [],
+    ),
+  );
+  if (resultCallIds.size === 0) return turns;
 
   const merged: TurnModel[] = [];
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
       if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
-      if (item.callId && isToolCallId(item.id)) {
-        const result = resultByCallId.get(item.callId);
-        if (result) {
+      if (item.callId && isToolCallId(item.id) && resultCallIds.has(item.callId)) {
+        const fresh = freshCandidates.get(item.callId) ?? { calls: [], results: [] };
+        const older = olderCandidates.get(item.callId) ?? { calls: [], results: [] };
+        if (fresh.results.length > 0 || older.results.length > 0) {
+          const field = <K extends ToolResultField>(name: K) =>
+            preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
           items.push(
             copyItemTextPresence(item, {
               ...item,
-              output: result.output,
-              error: result.error,
-              prevalOnly: result.prevalOnly,
-              exitCode: result.exitCode,
-              completedAt: result.completedAt,
-              status: result.status,
-              outputImages: result.outputImages ?? item.outputImages,
-              raw: result.raw ?? item.raw,
+              output: field("output"),
+              error: field("error"),
+              prevalOnly: field("prevalOnly"),
+              exitCode: field("exitCode"),
+              completedAt: field("completedAt"),
+              status: field("status"),
+              outputImages: field("outputImages"),
+              raw: field("raw"),
             }),
           );
           continue;
@@ -531,7 +690,7 @@ function orderedItems(items: ItemModel[]): ItemModel[] {
     .map(({ item }) => item);
 }
 
-function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
+function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const merged = orderedItems(older);
   for (const current of orderedItems(newer)) {
     const index = merged.findIndex((item) => itemIdentityMatches(item, current));
@@ -539,7 +698,11 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
       merged.push(current);
     } else {
       const existing = merged[index];
-      if (existing) merged[index] = mergePageItem(existing, current);
+      if (existing) {
+        const mergedItem = mergePageItem(existing, current);
+        if (context) recordMergedToolItem(context, mergedItem, existing, current);
+        merged[index] = mergedItem;
+      }
     }
   }
   return orderedItems(merged);
@@ -553,7 +716,7 @@ function turnsMatch(left: TurnModel, right: TurnModel): boolean {
   return left.id === right.id || turnsShareItemIdentity(left, right);
 }
 
-function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
+function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMergeContext): TurnModel {
   return {
     ...older,
     ...newer,
@@ -567,7 +730,7 @@ function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
       newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
         ? older.status
         : newer.status,
-    items: mergePageItems(older.items, newer.items),
+    items: mergePageItems(older.items, newer.items, context),
   };
 }
 
@@ -682,6 +845,7 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
 type TurnFragment = {
   turn: TurnModel;
   source: "older" | "fresh";
+  index: number;
   order: number;
 };
 
@@ -690,10 +854,20 @@ type TurnFragmentGroup = {
   firstOrder: number;
 };
 
-function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnModel[] {
+type CoalescedTurn = {
+  turn: TurnModel;
+  olderIndexes: number[];
+  freshIndexes: number[];
+};
+
+function coalesceTurnFragments(
+  older: TurnModel[],
+  fresh: TurnModel[],
+  context?: ToolItemMergeContext,
+): CoalescedTurn[] {
   const groups: TurnFragmentGroup[] = [];
-  const add = (turn: TurnModel, source: TurnFragment["source"], order: number): void => {
-    const fragment = { turn, source, order } satisfies TurnFragment;
+  const add = (turn: TurnModel, source: TurnFragment["source"], index: number, order: number): void => {
+    const fragment = { turn, source, index, order } satisfies TurnFragment;
     const matching = groups.filter((group) =>
       group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
     );
@@ -713,10 +887,10 @@ function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnMode
   };
 
   older.forEach((turn, index) => {
-    add(turn, "older", index);
+    add(turn, "older", index, index);
   });
   fresh.forEach((turn, index) => {
-    add(turn, "fresh", older.length + index);
+    add(turn, "fresh", index, older.length + index);
   });
 
   return groups
@@ -724,20 +898,144 @@ function coalesceTurnFragments(older: TurnModel[], fresh: TurnModel[]): TurnMode
     .flatMap((group) => {
       const olderFragments = group.fragments.filter((fragment) => fragment.source === "older");
       const freshFragments = group.fragments.filter((fragment) => fragment.source === "fresh");
+      let turn: TurnModel;
       if (olderFragments.length === 0) {
         const firstFresh = freshFragments[0]?.turn;
         if (firstFresh === undefined) return [];
-        return [
-          freshFragments.slice(1).reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstFresh),
-        ];
+        turn = freshFragments
+          .slice(1)
+          .reduce((current, fragment) => mergePageTurn(current, fragment.turn, context), firstFresh);
+      } else {
+        const firstOlder = olderFragments[0]?.turn;
+        if (firstOlder === undefined) return [];
+        const mergedOlder = olderFragments
+          .slice(1)
+          .reduce((current, fragment) => mergePageTurn(current, fragment.turn, context), firstOlder);
+        turn = freshFragments.reduce(
+          (current, fragment) => mergePageTurn(current, fragment.turn, context),
+          mergedOlder,
+        );
       }
-      const firstOlder = olderFragments[0]?.turn;
-      if (firstOlder === undefined) return freshFragments.map((fragment) => fragment.turn);
-      const mergedOlder = olderFragments
-        .slice(1)
-        .reduce((current, fragment) => mergePageTurn(current, fragment.turn), firstOlder);
-      return [freshFragments.reduce((current, fragment) => mergePageTurn(current, fragment.turn), mergedOlder)];
+      return [
+        {
+          turn,
+          olderIndexes: olderFragments.map((fragment) => fragment.index),
+          freshIndexes: freshFragments.map((fragment) => fragment.index),
+        },
+      ];
     });
+}
+
+function firstTurnPosition(turn: TurnModel): NonNullable<ItemModel["position"]> | undefined {
+  return turn.items.reduce<NonNullable<ItemModel["position"]> | undefined>((first, item) => {
+    if (item.position === undefined) return first;
+    if (first === undefined) return item.position;
+    return item.position.entry < first.entry || (item.position.entry === first.entry && item.position.item < first.item)
+      ? item.position
+      : first;
+  }, undefined);
+}
+
+function compareTurnPositions(left: TurnModel, right: TurnModel): number | undefined {
+  const leftPosition = firstTurnPosition(left);
+  const rightPosition = firstTurnPosition(right);
+  if (leftPosition === undefined || rightPosition === undefined) return undefined;
+  return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
+}
+
+function nextPositionedTurn(turns: CoalescedTurn[], start: number): CoalescedTurn | undefined {
+  return turns.slice(start).find((turn) => firstTurnPosition(turn.turn) !== undefined);
+}
+
+function weaveTurnGap(
+  fresh: CoalescedTurn[],
+  older: CoalescedTurn[],
+  preferOlderWithoutPositions: boolean,
+): CoalescedTurn[] {
+  const result: CoalescedTurn[] = [];
+  let olderIndex = 0;
+  for (const [freshIndex, freshTurn] of fresh.entries()) {
+    const freshComparisonTurn =
+      firstTurnPosition(freshTurn.turn) === undefined ? nextPositionedTurn(fresh, freshIndex) : freshTurn;
+    while (olderIndex < older.length) {
+      const olderTurn = older[olderIndex];
+      if (olderTurn === undefined) break;
+      const comparisonTurn =
+        firstTurnPosition(olderTurn.turn) === undefined ? nextPositionedTurn(older, olderIndex) : olderTurn;
+      const comparison =
+        comparisonTurn === undefined || freshComparisonTurn === undefined
+          ? undefined
+          : compareTurnPositions(comparisonTurn.turn, freshComparisonTurn.turn);
+      if (comparison !== undefined ? comparison < 0 : preferOlderWithoutPositions) {
+        result.push(olderTurn);
+        olderIndex += 1;
+        continue;
+      }
+      break;
+    }
+    result.push(freshTurn);
+  }
+  result.push(...older.slice(olderIndex));
+  return result;
+}
+
+function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnModel[] {
+  const fresh = groups
+    .filter((group) => group.freshIndexes.length > 0)
+    .sort((left, right) => (left.freshIndexes[0] ?? 0) - (right.freshIndexes[0] ?? 0));
+  const retained = groups
+    .filter((group) => group.freshIndexes.length === 0)
+    .sort((left, right) => (left.olderIndexes[0] ?? 0) - (right.olderIndexes[0] ?? 0));
+  const oldAnchorFreshIndexes = new Array<number>(olderCount).fill(-1);
+  for (const [freshIndex, group] of fresh.entries()) {
+    for (const olderIndex of group.olderIndexes) {
+      oldAnchorFreshIndexes[olderIndex] = freshIndex;
+    }
+  }
+
+  const retainedByFreshGap = new Map<number, CoalescedTurn[]>();
+  for (const group of retained) {
+    const olderIndex = group.olderIndexes[0];
+    if (olderIndex === undefined) continue;
+    // Coalesced fresh groups can consume noncontiguous older anchors. Keep the
+    // retained gaps moving forward by the greatest fresh rank seen so far,
+    // then choose the earliest later rank that remains compatible with it.
+    const previousAnchor = oldAnchorFreshIndexes
+      .slice(0, olderIndex)
+      .reduce((greatest, freshIndex) => Math.max(greatest, freshIndex), -1);
+    const nextCompatibleAnchor =
+      previousAnchor === -1
+        ? undefined
+        : oldAnchorFreshIndexes
+            .slice(olderIndex + 1)
+            .reduce<number | undefined>(
+              (earliest, freshIndex) =>
+                freshIndex > previousAnchor && (earliest === undefined || freshIndex < earliest)
+                  ? freshIndex
+                  : earliest,
+              undefined,
+            );
+    const gap = previousAnchor === -1 ? 0 : (nextCompatibleAnchor ?? fresh.length);
+    const run = retainedByFreshGap.get(gap) ?? [];
+    run.push(group);
+    retainedByFreshGap.set(gap, run);
+  }
+
+  const anchors = fresh.flatMap((group, index) => (group.olderIndexes.length > 0 ? [index] : []));
+  const boundaries = [-1, ...anchors, fresh.length];
+  const result: CoalescedTurn[] = [];
+  for (let boundaryIndex = 0; boundaryIndex < boundaries.length - 1; boundaryIndex += 1) {
+    const previousAnchor = boundaries[boundaryIndex];
+    const nextAnchor = boundaries[boundaryIndex + 1];
+    if (previousAnchor === undefined || nextAnchor === undefined) continue;
+    const gapRun = retainedByFreshGap.get(previousAnchor === -1 ? 0 : nextAnchor) ?? [];
+    result.push(...weaveTurnGap(fresh.slice(previousAnchor + 1, nextAnchor), gapRun, previousAnchor === -1));
+    if (nextAnchor < fresh.length) {
+      const anchorTurn = fresh[nextAnchor];
+      if (anchorTurn !== undefined) result.push(anchorTurn);
+    }
+  }
+  return result.map((group) => group.turn);
 }
 
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
@@ -747,10 +1045,12 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   // before that field existed re-derives it from its own thread id.
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
+  const context = createToolItemMergeContext(model.turns, olderTurns);
+  const coalesced = coalesceTurnFragments(olderTurns, model.turns, context);
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(coalesceTurnFragments(olderTurns, model.turns)),
+    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length), context),
     olderCursor: resp.nextCursor,
   };
 }
@@ -1272,9 +1572,9 @@ export function foldWarningParams(params: WarningParams): WarningFold {
 // Joins whichever WarningFold parts a caller has (title/text/hint, in
 // whatever order it passes them) into one display string, filtering out
 // blanks - the one composition rule every surface that renders a fold as a
-// single string shares, so mobile's canonical projector (title, text, hint)
-// and its live row (text, hint; title stays its own field there) never
-// drift into two different join implementations.
+// single string shares, so mobile's canonical projector and its live row
+// (both pass text and hint, keeping title as their own field) never drift
+// into two different join implementations.
 export function joinWarningParts(parts: readonly (string | undefined)[]): string {
   return parts.filter(hasWarningText).join(" — ");
 }

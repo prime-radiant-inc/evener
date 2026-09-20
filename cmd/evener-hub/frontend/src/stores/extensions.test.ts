@@ -87,6 +87,19 @@ afterEach(() => {
 });
 
 describe("resetExtensionsStoreForTests", () => {
+  test("preserves the marketplace publication version across the combined-store reset", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    const before = extensionsStore.getState().marketplacesPublicationVersion;
+
+    await extensionsStore.getState().fetchMarketplaces();
+    const published = extensionsStore.getState().marketplacesPublicationVersion;
+    expect(published).toBe(before + 1);
+
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState().marketplacesPublicationVersion).toBe(published);
+  });
+
   test("clears marketplaces fields seeded straight into the store, not only ones the core published", () => {
     extensionsStore.setState({
       marketplaces: [MARKETPLACE_A],

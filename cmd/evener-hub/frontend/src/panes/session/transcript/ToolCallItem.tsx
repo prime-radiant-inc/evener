@@ -6,14 +6,7 @@
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import {
-  hasErrorText,
-  parseArgs,
-  parseJSONObject,
-  scopedDisclosureId,
-  stableDelegateDisplayStatus,
-  str,
-} from "@evener/appwire-client";
+import { hasErrorText, parseArgs, scopedDisclosureId, str } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -35,38 +28,27 @@ import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  effectiveRowKind,
+  delegateStableState,
   removeSubagentRow,
   rowKeyForDelegateItem,
+  type SubagentRowKind,
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
-import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
-  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
-type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
-
-const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
+const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
   running: "working",
   done: "ended",
   stopped: "ended",
   failed: "failed",
   unknown: "idle",
-};
-
-const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
-  running: "Running",
-  done: "Idle · reported",
-  stopped: "Stopped",
-  failed: "Failed",
-  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -104,31 +86,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
-  const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
-  const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const stableDelegate = thread?.delegates?.find((delegate) => {
-    if (sessionRef === undefined || stableDelegateId === undefined) return false;
-    return delegate.delegateId === stableDelegateId;
-  });
-  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
+  const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread) : undefined;
   const delegateStatus =
-    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
-  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
-  const lifecycle = isDelegate ? (
-    <div
-      className={CLASS.lifecycle}
-      data-testid="delegate-lifecycle"
-      data-kind={delegateKind}
-      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
-    >
-      {lifecycleStatus === "exhausted"
-        ? "Exhausted"
-        : lifecycleStatus === "idle"
-          ? "Idle"
-          : DELEGATE_LABEL[delegateKind]}
-      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
-    </div>
-  ) : null;
+    isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
+      <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />
+    ) : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
@@ -296,6 +258,15 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
+  // The descriptor's statusLine hook renders the row's standalone status
+  // line in the slot below the summary; the delegate descriptor is the one
+  // with one, and it owns whether the line renders at all (it returns null
+  // while its expanded card carries the status).
+  const StatusLine = descriptor.statusLine;
+  const statusLine = StatusLine ? (
+    <StatusLine item={item} live={live} sessionRef={sessionRef} cwd={cwd} expanded={expanded} thread={thread} />
+  ) : null;
+
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)
   // swaps its summary text for a placeholder while the row is open. The
@@ -376,7 +347,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
           title={detail}
         />
-        {lifecycle}
+        {statusLine}
       </div>
     );
   }
@@ -432,7 +403,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         title={detail}
         bodyId={bodyId}
       />
-      {lifecycle}
+      {statusLine}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
