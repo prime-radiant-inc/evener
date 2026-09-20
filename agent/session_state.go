@@ -371,12 +371,15 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		s.askPending = pending
 	}
 	release(transitioned, turnMS)
-	if isAskRound && len(pending) == 0 {
-		// Mirror the restore path's warning: an ask round the transcript
-		// says was pending, but none of whose questions parsed, leaves the
-		// pending-ask holds inert. An operator hitting that on the
-		// interrupt-rejection path deserves the same diagnostic a restart
-		// emits (session_init.go), and neither may ever fail the boundary.
+	if transitioned && isAskRound && len(pending) == 0 {
+		// Mirror the restore path's warning — gated on the settlement it
+		// describes: an ask round the transcript says was pending, but
+		// none of whose questions parsed, left the pending-ask holds
+		// inert. On a no-op transition the live pending set was left
+		// untouched, so the holds still apply and the warning would be
+		// false. An operator hitting that on the interrupt-rejection path
+		// gets the same diagnostic a restart emits (session_init.go), and
+		// neither may ever fail the boundary.
 		s.emit(events.EventWarning, events.WarningData{Message: "interrupt boundary: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
 }

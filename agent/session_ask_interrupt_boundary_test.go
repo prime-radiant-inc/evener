@@ -795,12 +795,20 @@ func TestRestoredFailureBoundaryWarnsOnUnparseablePendingAsk(t *testing.T) {
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("unparseable ask round left pending asks = %d, want 0", got)
 	}
+	// A no-op boundary (already settled; the session is no longer
+	// Processing) must not repeat the warning: the live pending set was
+	// left untouched, so the holds still apply and a second warning would
+	// be false.
+	sess.finishProcessingAtRestoredFailureBoundary(context.Background())
 	sess.Close()
 	msgs := <-collected
+	count := 0
 	for _, msg := range msgs {
 		if strings.HasPrefix(msg, "interrupt boundary: found a pending ask_user round") {
-			return
+			count++
 		}
 	}
-	t.Fatalf("no interrupt-boundary warning emitted; warnings = %q", msgs)
+	if count != 1 {
+		t.Fatalf("interrupt-boundary warning count = %d, want exactly 1 (one real settlement, one silent no-op)", count)
+	}
 }
