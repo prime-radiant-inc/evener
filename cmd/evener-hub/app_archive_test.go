@@ -331,6 +331,63 @@ func TestArchiveSetPersistsWhenIdleTimeoutNudgeFails(t *testing.T) {
 	assertSessionArchived(t, archive, entry.SessionID, true)
 }
 
+// TestArchiveSetBoundedWhenDaemonNudgeWedges proves the best-effort nudge is
+// time-bounded: a daemon that accepts the connection but never answers cannot
+// hang the archive response, and the decision still persists once the bound
+// expires.
+func TestArchiveSetBoundedWhenDaemonNudgeWedges(t *testing.T) {
+	orig := archivedDaemonNudgeTimeout
+	archivedDaemonNudgeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { archivedDaemonNudgeTimeout = orig })
+
+	entry := residentEntryForTest(t, 4505)
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		<-released
+		return appwire.DaemonIdleTimeoutSetResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+
+	type archiveOutcome struct {
+		resp appwire.ArchiveResponse
+		err  error
+	}
+	done := make(chan archiveOutcome, 1)
+	go func() {
+		raw, err := json.Marshal(appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true})
+		if err != nil {
+			done <- archiveOutcome{err: err}
+			return
+		}
+		result, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{
+			ID:     appwire.NewIntID(1),
+			Method: appwire.MethodEvenerArchiveSet,
+			Params: raw,
+		})
+		resp, _ := result.(appwire.ArchiveResponse)
+		done <- archiveOutcome{resp: resp, err: err}
+	}()
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("archive session: %v", out.err)
+		}
+		if !out.resp.OK {
+			t.Fatalf("archive response = %+v, want OK", out.resp)
+		}
+	case <-time.After(3 * time.Second): // TRIPWIRE: the bound is 100ms; a wedge past 3s means the nudge is unbounded.
+		t.Fatal("archive response wedged behind the unresponsive daemon nudge")
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
+}
+
 // A remote project's working directory does not exist on the controller, so the
 // archive must not resolve it against the controller's filesystem. Each host's
 // decision is keyed by its own source, distinct from the controller key.

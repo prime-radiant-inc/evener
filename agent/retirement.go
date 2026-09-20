@@ -81,10 +81,14 @@ type RetirementClaim struct {
 	finished   bool
 }
 
+// errRetirementTimeoutNegative is the single refusal a negative idle deadline
+// meets, whether at controller construction or at a runtime Retarget.
+var errRetirementTimeoutNegative = errors.New("retirement timeout must not be negative")
+
 // NewRetirementController constructs a dormant process admission controller.
 func NewRetirementController(timeout time.Duration, clk RetirementClock) (*RetirementController, error) {
 	if timeout < 0 {
-		return nil, errors.New("retirement timeout must not be negative")
+		return nil, errRetirementTimeoutNegative
 	}
 	if clk == nil {
 		return nil, errors.New("retirement clock is required")
@@ -177,7 +181,7 @@ func (c *RetirementController) Changed() {
 // from the pre-Retarget timer can never claim before the new deadline.
 func (c *RetirementController) Retarget(timeout time.Duration) error {
 	if timeout < 0 {
-		return errors.New("retirement timeout must not be negative")
+		return errRetirementTimeoutNegative
 	}
 	c.mu.Lock()
 	if c.phase != "resident" {

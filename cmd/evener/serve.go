@@ -958,17 +958,30 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return nil
 	}
+	// requireExactOwnership is the one exact-ownership fence behind both
+	// identity-fenced daemon control RPCs: the current rendezvous entry must
+	// exist and the caller's generation fingerprint must match it, where an
+	// unrendered (empty) generation never compares equal. The retire path runs
+	// it again between TryClaim and the claim's prepare so a thread/clear that
+	// swapped ownership under an uncommitted claim cannot be retired by its
+	// predecessor's stale row.
+	requireExactOwnership := func(generation string) error {
+		entry, ok := rvRegistration.Entry()
+		if !ok {
+			return appwire.Unavailable("daemon rendezvous not registered")
+		}
+		if generation == "" || generation != rendezvous.OwnershipFingerprint(entry) {
+			return appwire.Conflict("daemon identity does not match current ownership")
+		}
+		return nil
+	}
 	// requestRetirement serves evener/daemon/retire. Exact-ownership
 	// revalidation runs BEFORE the admission fence is touched: a caller
 	// holding a stale generation (same PID, drifted identity) gets a conflict
 	// and no claim is consumed.
 	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			return appwire.DaemonRetireResponse{}, err
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
@@ -992,14 +1005,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// the caller proved. Re-read ownership and abort the uncommitted claim if
 		// it moved, so a stale request can never retire its replacement. The
 		// abort is essential: a claim left in "preparing" wedges the daemon.
-		recheck, ok := rvRegistration.Entry()
-		if !ok {
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
 			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if params.Identity.Generation != rendezvous.OwnershipFingerprint(recheck) {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+			return appwire.DaemonRetireResponse{}, err
 		}
 		if err := consumeRetirementClaim(ctx, claim); err != nil {
 			// A post-commit teardown failure means the retirement already
@@ -1017,16 +1025,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
 	}, requestRetirement)
 	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
-	// exact-ownership revalidation runs BEFORE the controller is touched, so a
+	// the exact-ownership fence runs BEFORE the controller is touched, so a
 	// caller holding a stale generation (same PID, drifted identity) gets a
 	// conflict and no deadline moves.
 	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
 		}
 		if params.TimeoutMillis < 0 {
 			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")

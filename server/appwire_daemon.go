@@ -44,6 +44,18 @@ func (s *Server) daemonIdleTimeoutHooks() (func(context.Context, appwire.DaemonI
 	return s.daemonIdleTimeoutSetFunc, s.daemonStatusFunc
 }
 
+// normalizeLifecycleRace types an ErrRetirementUnavailable from a daemon
+// control hook as the retryable CodeUnavailable a lost response deserves: a
+// lost response is not proof the action was refused, and
+// evener/daemon/status remains the authority. Every other error (and nil)
+// passes through unchanged.
+func normalizeLifecycleRace(status func() appwire.DaemonLifecycle, err error) error {
+	if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) && status != nil {
+		return appwire.LifecycleUnavailable(status().Phase)
+	}
+	return err
+}
+
 // DaemonLifecycleFromSnapshot converts the process retirement snapshot into
 // the wire lifecycle contract. Timestamps are UTC RFC3339Nano strings (valid
 // RFC3339, lossless instants); durations are integer milliseconds. Blockers
@@ -85,13 +97,7 @@ func (s *Server) handleAppDaemonRetire(ctx context.Context, params appwire.Daemo
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon retirement not available")
 	}
 	resp, err := retire(ctx, params)
-	if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) && status != nil {
-		// A lifecycle race (already preparing/retiring) is typed so the caller
-		// can retry automatically; its mutation outcome is unknown, not a
-		// rejection — a lost response is not proof the claim was refused.
-		return appwire.DaemonRetireResponse{}, appwire.LifecycleUnavailable(status().Phase)
-	}
-	return resp, err
+	return resp, normalizeLifecycleRace(status, err)
 }
 
 func (s *Server) handleAppDaemonIdleTimeoutSet(ctx context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
@@ -100,10 +106,5 @@ func (s *Server) handleAppDaemonIdleTimeoutSet(ctx context.Context, params appwi
 		return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("daemon idle-timeout control not available")
 	}
 	resp, err := set(ctx, params)
-	if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) && status != nil {
-		// The same typed lifecycle race as retire: a lost response is not
-		// proof the retarget was refused; daemon/status remains the authority.
-		return appwire.DaemonIdleTimeoutSetResponse{}, appwire.LifecycleUnavailable(status().Phase)
-	}
-	return resp, err
+	return resp, normalizeLifecycleRace(status, err)
 }

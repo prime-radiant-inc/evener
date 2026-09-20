@@ -107,6 +107,13 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 // pushes to a resident daemon when its session is archived.
 const archivedSessionIdleTimeout = time.Minute
 
+// archivedDaemonNudgeTimeout bounds the best-effort idle-deadline nudge so a
+// wedged daemon cannot hang the archive response behind an unanswered loopback
+// RPC. It is a wedge bound for an unresponsive peer, never the mechanism: the
+// dial + initialize + set sequence completes in single-digit milliseconds on
+// any healthy daemon.
+var archivedDaemonNudgeTimeout = 5 * time.Second
+
 // nudgeResidentDaemonIdleTimeout pushes a session archive decision to that
 // session's resident daemon as a deadline change: archiving shortens the
 // daemon's automatic idle retirement to archivedSessionIdleTimeout (an idle
@@ -122,6 +129,8 @@ func nudgeResidentDaemonIdleTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	if cfg.Roster == nil || sources == nil || sessionID == "" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, archivedDaemonNudgeTimeout)
+	defer cancel()
 	entry, ok := liveDaemonForSession(cfg.Roster, sessionID)
 	if !ok || entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" {
 		return
