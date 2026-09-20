@@ -24,6 +24,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,9 +87,9 @@ func lastTurnOfKind(t *testing.T, sess *Session, kind schema.TurnKind) schema.Tu
 	t.Helper()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for i := len(sess.history) - 1; i >= 0; i-- {
-		if sess.history[i].Kind == kind {
-			return sess.history[i]
+	for _, turn := range slices.Backward(sess.history) {
+		if turn.Kind == kind {
+			return turn
 		}
 	}
 	t.Fatalf("no %s turn in history (len=%d)", kind, len(sess.history))
