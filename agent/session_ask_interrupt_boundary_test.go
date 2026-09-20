@@ -146,7 +146,7 @@ func TestRestoredFailureBoundaryMapsCompactedForkDivergence(t *testing.T) {
 
 	ask := askUserCall("ask-compacted", askUserArgsValid())
 	turns := make([]schema.Turn, 0, 15)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		turns = append(turns, schema.NewTurn(schema.TurnSystem, llm.User("inherited context")))
 	}
 	turns = append(turns,
