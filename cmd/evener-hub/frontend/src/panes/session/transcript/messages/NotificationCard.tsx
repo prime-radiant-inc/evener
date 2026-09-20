@@ -231,12 +231,14 @@ export function NotificationCard({
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const chip = toneChip(notification.tone);
-  // The head's open affordance opens a SUBAGENT transcript, so only a
-  // delegate notification earns it: its transcript_ref is a child session's
-  // thread. A job notification's transcript_ref is the producer's
-  // read_transcript ref for retained output ("job:<id>", agent/job_notify.go's
-  // jobTranscriptRef) - valid grammar with no transcript thread behind it - so
-  // job notifications of any type never show the control.
+  // The head's open affordance is the SUBAGENT control, so only a delegate
+  // notification earns it: its transcript_ref, when a frame carries one,
+  // names a child session's thread. A job notification is not a subagent
+  // report - its transcript_ref is the read_transcript ref for retained
+  // output ("job:<id>", agent/job_notify.go's jobTranscriptRef), which opens
+  // the job-log surface rather than a subagent transcript - so job
+  // notifications of any type never show the control. The job log stays
+  // reachable through the card's job-id trigger and the activity tree.
   const transcriptRef =
     notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
       ? notification.transcriptRef

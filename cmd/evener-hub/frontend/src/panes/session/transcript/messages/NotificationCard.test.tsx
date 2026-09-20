@@ -484,29 +484,28 @@ test("missing and malformed refs have no dead open-subagent action", () => {
 });
 
 // A shell job's notification block carries the producer's read_transcript ref
-// for retained output ("job:<id>", agent/job_notify.go's jobTranscriptRef):
-// valid ref grammar, but there is no transcript thread behind it to open in a
-// panel, so the intent line owes no open-in-a-new-panel affordance.
+// ("job:<id>", agent/job_notify.go's jobTranscriptRef). That ref opens the
+// job-log surface, not a subagent transcript, so the head's subagent control
+// never shows for it (the job log opens from the card's job-id trigger and
+// the activity tree).
 test("a shell job notification shows no open-in-a-new-panel affordance", () => {
   render(<NotificationCard notification={notif({ jobType: "shell", transcriptRef: "job:job_x" })} />);
   expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
 });
 
-// The open affordance opens a SUBAGENT transcript; only a delegate
-// notification carries one. Job notifications of any type - every parsed
-// type a <job-notification> block yields, whatever ref it carries - never
-// show it.
-test("job notifications of any type never show the open-subagent affordance", () => {
-  for (const type of ["job", "watch", "watch-send"] as const) {
-    const { unmount } = render(
+// The head's Open control is subagent-only: no job-notification type ever
+// shows it, whatever ref the frame carries (the gate lives in NotificationCard).
+test.each(["job", "watch", "watch-send"] as const)(
+  "a %s notification never shows the open-subagent affordance",
+  (type) => {
+    render(
       <NotificationCard
         notification={notif({ type, secondary: "Run the bounded test set", transcriptRef: "local:child" })}
       />,
     );
     expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
-    unmount();
-  }
-});
+  },
+);
 
 test("the raw block is always kept inspectable", async () => {
   const _user = userEvent.setup();
