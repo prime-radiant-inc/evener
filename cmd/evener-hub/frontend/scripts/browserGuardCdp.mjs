@@ -403,7 +403,7 @@ export async function waitForFonts(send) {
            // Cross-origin: not reachable, and not something a guard builds.
          }
        }
-       const deadline = Date.now() + 10000;
+       const deadline = Date.now() + 30000;
        while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
          await new Promise((resolve) => setTimeout(resolve, 50));
        }
