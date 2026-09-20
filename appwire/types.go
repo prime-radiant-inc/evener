@@ -3613,6 +3613,23 @@ type MarketplaceUnregisteredCloneRemainsData struct {
 	AppliedUnavailable bool                    `json:"appliedUnavailable,omitempty"`
 }
 
+// MarketplaceRemoveAppliedData is the WireError.Data payload for
+// ErrorMarketplaceRemoveApplied: the removal APPLIED (the unregister save
+// landed and the clone cleanup that follows it completed) but the fresh read
+// that would carry the updated list to the caller failed. AppliedUnavailable
+// is true on this path - the failed read is the whole reason this outcome
+// exists - so a consumer reconciling the removal must not read the missing
+// list as "every marketplace gone", and must not retry: the removal already
+// applied, so a retry finds ErrMarketplaceNotFound. Applied is deliberately
+// absent (unlike MarketplaceUnregisteredCloneRemainsData, whose read can
+// succeed): no snapshot was read, and the wire carries no substitute for one.
+// The consumer binding is deliberately deferred to the marketplace
+// reconciliation successors (#1954 SDK, #1960 web).
+type MarketplaceRemoveAppliedData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	AppliedUnavailable bool      `json:"appliedUnavailable,omitempty"`
+}
+
 // MarketplaceAddParams is the params for evener/marketplace/add. Name is
 // optional; when empty, the marketplace manifest's own name is used.
 type MarketplaceAddParams struct {
