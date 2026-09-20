@@ -121,6 +121,7 @@
     "readyGenerationFence.ts",
     "draftCheckpointPort.ts",
     "settingsHubGeneration.ts",
-    "checkpointedDraftEditor.ts"
+    "checkpointedDraftEditor.ts",
+    "transcriptDisplayStore.ts"
   ]
 }
