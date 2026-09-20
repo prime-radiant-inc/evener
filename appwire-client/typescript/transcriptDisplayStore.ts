@@ -266,9 +266,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (Object.keys(extra).length > 0) setState(extra);
       return false;
     }
+    // An accepted canonical payload supersedes whatever stale write error
+    // the layout carried; rejected payloads keep theirs. Caller-provided
+    // extras still win the merge below.
     setState({
       hub: { ...state.hub, [layout]: value },
       ...(calculation.contradictsPreview ? clearPreview(layout) : {}),
+      ...layoutError(layout, undefined),
       ...extra,
     });
     return true;
@@ -278,6 +282,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const state = getState();
     const hub = { ...state.hub };
     const drafts = { ...state.drafts };
+    const hubErrors = { ...state.hubErrors };
     for (const layout of LAYOUTS) {
       const calculation = calculateHubDefault(layout, defaults[layout], {
         hub,
@@ -287,6 +292,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       });
       if (!calculation.accepted) continue;
       hub[layout] = defaults[layout];
+      delete hubErrors[layout];
       if (calculation.contradictsPreview) dropPreview(layout, drafts);
     }
     if (fence.awaitingFirstPayload) fence.firstPayloadApplied();
@@ -296,7 +302,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // leaving it for the host.
     for (const layout of strandedPreviews) dropPreview(layout, drafts);
     strandedPreviews.clear();
-    setState({ hub, drafts, loaded: true, hubLoading: false });
+    setState({ hub, drafts, hubErrors, loaded: true, hubLoading: false });
   }
 
   const { beginReadyGeneration: beginReadyGenerationCore, endReadyGeneration } = createSettingsHubGeneration({
