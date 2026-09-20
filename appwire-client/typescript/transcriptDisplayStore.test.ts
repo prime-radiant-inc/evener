@@ -871,6 +871,34 @@ describe("the direct write", () => {
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
   });
 
+  test("a reentrant support loss during preview publication still strands the unsent write", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => new Promise<TranscriptDisplayPatchResponse>(() => {}));
+    // The draft's own publication runs this subscriber synchronously, so
+    // support drops before patchHubDefault has even sent its request.
+    let tripped = false;
+    store.subscribe(() => {
+      if (tripped || store.getState().drafts.desktop === undefined) return;
+      tripped = true;
+      store.setSupport("unknown");
+    });
+    const write = store.getState().patchHubDefault("desktop", proposed);
+    expect(await write).toEqual(hubDefault(3, desktopConfig));
+    expect(client.calls.filter((call) => call.method === patchMethod)).toHaveLength(0);
+    expect(store.getState().drafts.desktop).toEqual(proposed);
+
+    // The request was never sent, so only the marker can clear the preview
+    // when the restoring read carries an unchanged revision.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    store.setSupport("supported");
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+  });
+
   test("an internal PATCH failure reconciles the canonical state through GET", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);

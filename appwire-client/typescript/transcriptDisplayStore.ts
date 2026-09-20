@@ -448,7 +448,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     strandedPreviews.delete(layout);
     previewBases.set(layout, { generation, revision: confirmed.revision, fingerprint: requestedFingerprint });
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
-    if (!stillMine()) return retained();
+    // A synchronous subscriber can drop hub support while that publication
+    // runs, killing the continuation before the request is even sent.
+    if (!stillMine()) {
+      if (strandedByFlap()) strandedPreviews.add(layout);
+      return retained();
+    }
     try {
       const result = await client.request("evener/settings/transcriptDisplay/patch", {
         layout,
