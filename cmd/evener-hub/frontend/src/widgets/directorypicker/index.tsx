@@ -212,10 +212,9 @@ export function DirectoryPicker({
               className={CLASS.row}
               type="button"
               key={path}
-              // The sidebar truncates the path to fit (see the recents row
-              // containment in directorypicker.module.css), so the full path
-              // stays reachable on hover. aria-label below already names the
-              // path for assistive tech; this is the sighted-user affordance.
+              // The sidebar truncates this text, so the full path rides on
+              // hover for sighted users; aria-label already carries it for
+              // assistive tech.
               title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}

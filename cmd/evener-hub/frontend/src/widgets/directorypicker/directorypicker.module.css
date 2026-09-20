@@ -143,6 +143,17 @@
   color: var(--ink-mid);
   overflow-wrap: anywhere;
 }
+
+/* Scoped after the shared .path rule so the override wins: the recents
+ * sidebar truncates each line to fit its 180px column, while the footer
+ * destination's .path keeps its overflow-wrap wrapping. */
+:where(.recents) .row strong,
+:where(.recents) .row .path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .footer {
   display: flex;
   flex: 1;
@@ -229,18 +240,4 @@
 
 .create .input {
   width: 100%;
-}
-
-/* The recents row's two lines each ellipsize inside the sidebar. Placed at the
- * file's end because these selectors outrank the shared .path rule above (and
- * .footer/.create below) in specificity, and the linter's descending-specificity
- * order wants the higher-specificity override after everything it beats. The
- * footer destination's .path keeps its wrapping: this scope names only the
- * recents sidebar. */
-:where(.recents) .row strong,
-:where(.recents) .row .path {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

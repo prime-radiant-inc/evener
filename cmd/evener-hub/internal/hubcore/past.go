@@ -1118,7 +1118,14 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 // manage_worktree task lanes) are skipped too: their WorkingDir is session
 // machinery under the state root, not a project the user would spawn into;
 // a worktree entered by path but not managed stays, since that one is the
-// user's own checkout. Deduped on the dir's first (most recent) occurrence.
+// user's own checkout. That policy deliberately diverges from
+// EffectiveWorkingDir (tree.go), the spec §7 shared mechanism that maps any
+// worktree session — managed or path-entered — back to its restore root for
+// grouping, spawn prefill, and resume: recents answers "which dirs would you
+// spawn into next", where a path-entered worktree is a deliberate user
+// location, and a managed lane is dropped rather than remapped because the
+// project it was entered from is already surfaced by that project's own root
+// sessions. Deduped on the dir's first (most recent) occurrence.
 func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	if limit <= 0 {
 		return nil

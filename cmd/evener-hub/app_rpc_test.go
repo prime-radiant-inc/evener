@@ -11259,7 +11259,7 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	alpha := mkdir("alpha")
 	beta := mkdir("beta")
-	lane := mkdir("lane") // evener-managed worktree lane — must never surface
+	lane := mkdir("lane") // evener-managed worktree lane
 
 	past := hubcore.NewPastIndex("")
 	now := time.Now().UTC()
@@ -11296,10 +11296,8 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	if resp.Data[0] != alpha || resp.Data[1] != beta {
 		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
 	}
-	for _, dir := range resp.Data {
-		if dir == lane {
-			t.Fatalf("recent dirs contain managed worktree lane %q", lane)
-		}
+	if slices.Contains(resp.Data, lane) {
+		t.Fatalf("recent dirs contain managed worktree lane %q", lane)
 	}
 
 	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
