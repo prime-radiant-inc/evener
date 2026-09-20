@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -1026,6 +1027,9 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name
+	// The journal this rename records, if any: written before the layer is
+	// mutated and spent once the credential move is done with it.
+	var renameJournal string
 	if renaming {
 		if !registry.ValidInstanceName(newName) {
 			return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
@@ -1123,6 +1127,24 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 				return appwire.InvalidParams(fmt.Sprintf("%q is a curated provider id; an instance named after it would inherit its configuration. Give the instance an explicit base or choose another name.", newName))
 			}
 		}
+		// A rename that never finished leaves its journal (and the marker inside
+		// moveCredentials) naming THIS name as the one the credential belongs to.
+		// Resolve it BEFORE the layer below is mutated: the completion asks whether
+		// the config still carries the name, and a layer that already names the new
+		// one would read the earlier rename as one that never landed - spending its
+		// record without moving the credential. Chaining a second rename onto an
+		// unfinished one would strand the older credential under a name nothing
+		// reads; what cannot be finished refuses the rename instead.
+		{
+			if pending := c.finishPendingRename(name, l, nil); len(pending) > 0 {
+				return appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot start while an earlier rename into %q is unfinished: %s", name, newName, name, strings.Join(pending, "; ")))
+			}
+			journal, jerr := c.writeRenameJournal(name, newName)
+			if jerr != nil {
+				return jerr
+			}
+			renameJournal = journal
+		}
 		// The map key is the instance name providers.toml is written under;
 		// the default pointer follows so the file still loads.
 		delete(l.Providers, name)
@@ -1150,6 +1172,18 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)
+		// The journal is spent once nothing sits at the old canonical record path
+		// - the one thing a crash inside the rename can strand where no reader
+		// looks - whether or not other parts of the rename reported problems. A
+		// copy the carry deliberately leaves behind (an unrankable one) is debris
+		// the copy rules already report and startup cannot move, so it does not
+		// keep the journal alive and make every later start retry a rename that
+		// finished.
+		if renameJournal != "" {
+			if _, statErr := os.Lstat(authopenai.AuthFilePath(c.auth.stateDir, name)); errors.Is(statErr, os.ErrNotExist) {
+				c.spendRenameJournal(renameJournal)
+			}
+		}
 		// The reload above ran while the stored key and OAuth record still
 		// sat under the old name, so a curated provider this instance had
 		// shadowed could resolve a credential and reappear as a phantom
@@ -1170,7 +1204,8 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
 			// way: renamePersistedError is what the RPC handler reads to
-			// broadcast and to hand the client the discriminator.
+			// broadcast and to hand the client the discriminator. The journal
+			// stays: only the credential move below clears it.
 			return writeApplied(renamePersistedError{reloadErr})
 		default:
 			// Both halves failed, and the caller has to hear both: the move
@@ -1747,8 +1782,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, mark, configChanged, frame, supplies, markErr)
 	}
 	if err := c.reg.Reload(); err != nil {
-		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, mark, configChanged, frame, supplies,
-			fmt.Errorf("removing %q failed: %w", name, err))
+		// The raw error, not a framed one: rollBackFailedRemoval adds the single
+		// "removing %q failed:" frame itself, so wrapping it here would report the
+		// same sentence twice.
+		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, mark, configChanged, frame, supplies, err)
 	}
 	// The removal stands, so every copy of this name's record is unwanted now:
 	// the one this call set aside and any an earlier removal of the name left
@@ -2825,6 +2862,133 @@ func findFreeAsideName(dir, name string, configBacked bool, want int64) (string,
 	return stepFreeAsideName(filepath.Join(dir, name+".json"), configBacked, want, highest, have)
 }
 
+// writeRenameJournal records a rename BEFORE providers.toml is touched and
+// returns its path ("" when there is nothing to record: no auth directory means
+// no record and no copy a crash could strand). It is what makes the whole rename
+// recoverable: without it, a crash after the config write but before
+// moveCredentials starts leaves the stored key and the OAuth record under a name
+// providers.toml no longer carries, with nothing to say they belong to the new
+// instance.
+func (c *hubInstancesController) writeRenameJournal(oldName, newName string) (string, error) {
+	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
+		return "", nil
+	} else if statErr != nil {
+		return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: check %s (%v)", oldName, newName, dir, statErr))
+	}
+	path := filepath.Join(dir, oauthRenameJournalName(newName, c.auth.now().UnixNano()))
+	if err := os.WriteFile(path, []byte(oldName+"\n"), 0o600); err != nil {
+		return "", appwire.Conflict(fmt.Sprintf("renaming %q to %q cannot be recorded for startup recovery: %v", oldName, newName, err))
+	}
+	return path, nil
+}
+
+// spendRenameJournal removes one rename's journal once its work landed.
+func (c *hubInstancesController) spendRenameJournal(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// finishRenameJournal completes one journal: the rename it records landed only if
+// the config now carries the new name, and only then may anything migrate. Both
+// halves of the move are idempotent - Store.Move is a no-op when the old name
+// holds nothing, and finishRenameAt moves only what is still filed under the old
+// name - so this is safe to run at any crash point and on every start. It returns
+// whether the journal is spent, and what it could not finish.
+func finishRenameJournal(store *credentials.Store, stateDir string, layer *registry.Layer, cfgErr error, oldName, newName string) (bool, []string) {
+	if cfgErr != nil {
+		// The config is what says whether the rename landed; without it, migrating
+		// could move a credential the live config still files under the old name.
+		return false, []string{fmt.Sprintf("finish the rename of %q to %q: the config that says whether it landed could not be read (%v)", oldName, newName, cfgErr)}
+	}
+	if !configCarriesName(layer, newName) {
+		// The config never reached the new name, so the rename did not happen:
+		// nothing migrates, and the journal is spent.
+		return true, nil
+	}
+	if err := store.Move(oldName, newName); err != nil {
+		return false, []string{fmt.Sprintf("finish the rename of %q to %q: move its stored key (%v)", oldName, newName, err)}
+	}
+	problems := finishRenameAt(stateDir, oldName, newName)
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, oldName)); !errors.Is(statErr, os.ErrNotExist) {
+		return false, append(problems, fmt.Sprintf("finish the rename of %q to %q: its record is still filed under the old name", oldName, newName))
+	}
+	return true, problems
+}
+
+// finishPendingRename resolves any rename INTO name that never finished, before a
+// later rename takes that name away: a pending journal or marker says a credential
+// is still filed under the name it came from, and chaining a later rename onto it
+// would strand those bytes under a name neither the config nor any recovery pass
+// reads any more. What it cannot finish is returned, so the caller refuses rather
+// than chains.
+func (c *hubInstancesController) finishPendingRename(name string, layer *registry.Layer, cfgErr error) []string {
+	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return []string{fmt.Sprintf("read %s before renaming %q (%v)", dir, name, err)}
+	}
+	var problems []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if newName, ok := oauthRenameJournalNewName(e.Name()); ok && newName == name {
+			oldName, rerr := readRenameMarker(path)
+			if rerr != nil {
+				problems = append(problems, fmt.Sprintf("read the rename journal %s (%v)", path, rerr))
+				continue
+			}
+			spent, pending := finishRenameJournal(c.auth.creds, c.auth.stateDir, layer, cfgErr, oldName, newName)
+			problems = append(problems, pending...)
+			if spent {
+				_ = os.Remove(path)
+				dropRenameMarkers(dir, newName)
+			}
+			continue
+		}
+		if newName, ok := oauthRenameMarkerNewName(e.Name()); ok && newName == name {
+			oldName, rerr := readRenameMarker(path)
+			if rerr != nil {
+				problems = append(problems, fmt.Sprintf("read the rename marker %s (%v)", path, rerr))
+				continue
+			}
+			pending := finishRenameAt(c.auth.stateDir, oldName, newName)
+			problems = append(problems, pending...)
+			if _, statErr := os.Lstat(authopenai.AuthFilePath(c.auth.stateDir, oldName)); errors.Is(statErr, os.ErrNotExist) {
+				_ = os.Remove(path)
+			}
+			continue
+		}
+	}
+	return problems
+}
+
+// dropRenameMarkers removes the inner record of one rename - its marker - once
+// the journal that covers the same rename has been completed: the marker records
+// the window inside that journal, so it is spent with it rather than lingering as
+// debris nothing reads.
+func dropRenameMarkers(dir, newName string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if name, ok := oauthRenameMarkerNewName(e.Name()); ok && name == newName {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
 // finishRenameAt completes a rename a crash interrupted. The marker a rename
 // writes before it moves anything says which name became which, so this replays
 // the two things the rename does: it carries the copies still filed under the
@@ -3152,53 +3316,10 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		}
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
-	// A rename's marker says the instance formerly named <old> is <new> now, and
-	// it is written before anything moves: a crash inside the rename leaves it
-	// behind with the work half done - a copy promoted onto the OLD canonical
-	// record path, which no reader and no recovery pass looks at once
-	// providers.toml names only the new instance. Finish the move BEFORE judging
-	// any copy, so nothing is judged in a state the rename was about to change.
-	renameProblems := make([]string, 0)
-	hasRenameMarker := false
-	entriesMoved := false
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		newName, ok := oauthRenameMarkerNewName(e.Name())
-		if !ok {
-			continue
-		}
-		hasRenameMarker = true
-		markerPath := filepath.Join(dir, e.Name())
-		oldName, rerr := readRenameMarker(markerPath)
-		if rerr != nil {
-			renameProblems = append(renameProblems, fmt.Sprintf("read the rename marker %s (%v)", markerPath, rerr))
-			continue
-		}
-		unfinished := finishRenameAt(stateDir, oldName, newName)
-		renameProblems = append(renameProblems, unfinished...)
-		if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, oldName)); !errors.Is(statErr, os.ErrNotExist) {
-			// A record is still under the old name: this pass could not finish the
-			// move, so the marker stays for the pass that can.
-			continue
-		}
-		entriesMoved = true
-		if rerr := os.Remove(markerPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-			renameProblems = append(renameProblems, fmt.Sprintf("remove the rename marker %s (%v)", markerPath, rerr))
-		}
-	}
-	if entriesMoved {
-		// The completion moved files, so judge the directory as it is now.
-		refreshed, rerr := os.ReadDir(dir)
-		if rerr != nil {
-			renameProblems = append(renameProblems, fmt.Sprintf("read %s after finishing a rename (%v)", dir, rerr))
-		} else {
-			entries = refreshed
-		}
-	}
 	hasAside := false
 	hasManifest := false
+	hasRenameMarker := false
+	hasJournal := false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -3207,12 +3328,19 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			hasManifest = true
 			continue
 		}
+		if _, ok := oauthRenameJournalNewName(e.Name()); ok {
+			hasJournal = true
+			continue
+		}
+		if _, ok := oauthRenameMarkerNewName(e.Name()); ok {
+			hasRenameMarker = true
+			continue
+		}
 		if _, _, _, aside := oauthAsideInstance(e.Name()); aside {
 			hasAside = true
-			break
 		}
 	}
-	if !hasAside && !hasManifest && !hasRenameMarker {
+	if !hasAside && !hasManifest && !hasRenameMarker && !hasJournal {
 		// Nothing set aside, no removal's classification and no rename left
 		// behind is nothing to recover, so a config failure here
 		// prevented no recovery work and is not reported.
@@ -3220,7 +3348,103 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	}
 	layer, cfgErr := readAsideConfig(providersConfigPath)
 	var problems []string
-	problems = append(problems, renameProblems...)
+	// A rename carries TWO records. The JOURNAL is the outer one, written before
+	// providers.toml is touched: it covers the config write and the whole
+	// credential move, which is why a crash before moveCredentials ever runs is
+	// recoverable at all. The MARKER is the inner one, written inside
+	// moveCredentials once the config is already on disk. The journal is
+	// completed FIRST and subsumes the marker - when a journal is present its
+	// completion is the one that runs, and the marker for that same new name is
+	// spent with it, so a rename has exactly ONE ordered completion and the two
+	// records can never disagree about it. A marker with no journal (a rename
+	// whose journal was already spent) is still completed on its own, and the two
+	// use the same completion (finishRenameAt), so neither can leave a state the
+	// other would resolve differently.
+	journaled := make(map[string]bool)
+	var renameJournalStore *credentials.Store
+	entriesMoved := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		newName, ok := oauthRenameJournalNewName(e.Name())
+		if !ok {
+			continue
+		}
+		journaled[newName] = true
+		journalPath := filepath.Join(dir, e.Name())
+		oldName, rerr := readRenameMarker(journalPath)
+		if rerr != nil {
+			problems = append(problems, fmt.Sprintf("read the rename journal %s (%v)", journalPath, rerr))
+			continue
+		}
+		if renameJournalStore == nil {
+			// The stored key lives beside the auth directory, the way
+			// hubAuthController derives it, so the pass can move it without being
+			// handed the hub's live store.
+			loaded, lerr := credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
+			if lerr != nil {
+				problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: open its credentials store (%v)", oldName, newName, lerr))
+				continue
+			}
+			renameJournalStore = loaded
+		}
+		spent, pending := finishRenameJournal(renameJournalStore, stateDir, layer, cfgErr, oldName, newName)
+		problems = append(problems, pending...)
+		if !spent {
+			// The completion could not finish (a record still under the old name,
+			// or the config that judges it unreadable), so the journal stays for
+			// the pass that can.
+			continue
+		}
+		entriesMoved = true
+		if rerr := os.Remove(journalPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			problems = append(problems, fmt.Sprintf("remove the rename journal %s (%v)", journalPath, rerr))
+		}
+		// The inner record of the same rename is spent with the journal.
+		dropRenameMarkers(dir, newName)
+	}
+	// A rename's marker says the instance formerly named <old> is <new> now, and
+	// it is written before anything moves: a crash inside the rename leaves it
+	// behind with the work half done - a copy promoted onto the OLD canonical
+	// record path, which no reader and no recovery pass looks at once
+	// providers.toml names only the new instance. Finish the move BEFORE judging
+	// any copy, so nothing is judged in a state the rename was about to change.
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		newName, ok := oauthRenameMarkerNewName(e.Name())
+		if !ok || journaled[newName] {
+			continue
+		}
+		markerPath := filepath.Join(dir, e.Name())
+		oldName, rerr := readRenameMarker(markerPath)
+		if rerr != nil {
+			problems = append(problems, fmt.Sprintf("read the rename marker %s (%v)", markerPath, rerr))
+			continue
+		}
+		unfinished := finishRenameAt(stateDir, oldName, newName)
+		problems = append(problems, unfinished...)
+		if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, oldName)); !errors.Is(statErr, os.ErrNotExist) {
+			// A record is still under the old name: this pass could not finish the
+			// move, so the marker stays for the pass that can.
+			continue
+		}
+		entriesMoved = true
+		if rerr := os.Remove(markerPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			problems = append(problems, fmt.Sprintf("remove the rename marker %s (%v)", markerPath, rerr))
+		}
+	}
+	if entriesMoved {
+		// The completions moved files, so judge the directory as it is now.
+		refreshed, rerr := os.ReadDir(dir)
+		if rerr != nil {
+			problems = append(problems, fmt.Sprintf("read %s after finishing a rename (%v)", dir, rerr))
+		} else {
+			entries = refreshed
+		}
+	}
 	// A committed copy carries its name and kind into the delete step, so the
 	// delete can report the credential-only ones that could be a stranded
 	// instance's only credential rather than removing them silently.
@@ -3644,6 +3868,33 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		return restored, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
 	}
 	return restored, nil
+}
+
+// oauthRenameJournalMarker is the marker a rename's JOURNAL carries. The journal
+// is the outer record of a rename - written before providers.toml is touched - so
+// it covers the whole transaction, where the marker inside moveCredentials covers
+// only the window after the config write. Like the marker it is deliberately not
+// one of oauthAsideShapes: it records a rename, not a credential.
+const oauthRenameJournalMarker = ".journal-"
+
+// oauthRenameJournalName names the file that records one rename before the config
+// is written: the instance the old name becomes, and the rename's stamp.
+func oauthRenameJournalName(newName string, stamp int64) string {
+	return newName + ".json" + oauthRenameJournalMarker + strconv.FormatInt(stamp, 10)
+}
+
+// oauthRenameJournalNewName reports the instance a rename journal belongs to, and
+// whether the file is one.
+func oauthRenameJournalNewName(fileName string) (string, bool) {
+	suffix := ".json" + oauthRenameJournalMarker
+	i := strings.LastIndex(fileName, suffix)
+	if i <= 0 {
+		return "", false
+	}
+	if _, err := strconv.ParseInt(fileName[i+len(suffix):], 10, 64); err != nil {
+		return "", false
+	}
+	return fileName[:i], true
 }
 
 // oauthRenameMarker is the marker a rename's transaction file carries. Like the

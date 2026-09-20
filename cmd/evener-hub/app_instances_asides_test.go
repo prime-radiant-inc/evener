@@ -3403,3 +3403,284 @@ func TestInstances_EditRenameLeavesNoRenameMarker(t *testing.T) {
 	}
 	assertNoTransactionFiles(t, f)
 }
+
+// journalStore opens the credentials store the startup pass reads: the hub keeps
+// it beside the auth directory (the derivation hubAuthController itself uses), so
+// for a fixture it is the parent of the state root handed to the pass.
+func journalStore(t *testing.T, f *instancesFixture) *credentials.Store {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(f.stateDir), "credentials.toml")
+	store, err := credentials.LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", path, err)
+	}
+	return store
+}
+
+// renameJournal writes the file a rename's journal carries before it touches
+// providers.toml: the NEW name is in the file name and the old one in the
+// content, so a crash anywhere in the rename leaves the pair behind.
+func renameJournal(t *testing.T, f *instancesFixture, newName, oldName, stamp string) string {
+	t.Helper()
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, newName+".json.journal-"+stamp)
+	if err := os.WriteFile(path, []byte(oldName+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+	return path
+}
+
+// TestRestoreUncommittedOAuthAsidesCompletesARenameJournalWithTheStoredKey:
+// crash point (b) - the journal is written and providers.toml already names the
+// new instance, but the move never ran. Both halves of the credential are still
+// under the old name, and nothing but the journal says so: startup must migrate
+// the stored key (credentials.Store.Move) and the OAuth record, then spend the
+// journal - and it must be idempotent, so a second pass changes nothing.
+func TestRestoreUncommittedOAuthAsidesCompletesARenameJournalWithTheStoredKey(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	store := journalStore(t, f)
+	if err := store.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	seedOAuthRecord(t, f, "work", "work@example.com")
+	journal := renameJournal(t, f, "personal", "work", "1757000000000000000")
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	store = journalStore(t, f) // the pass rewrote the file; read it back
+	if v, _ := store.Get("work"); v != "" {
+		t.Fatalf("the stored key is still under the old name: %q", v)
+	}
+	if v, _ := store.Get("personal"); v != "sk-work" {
+		t.Fatalf("personal = %q, want the stored key the journal migrated", v)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record is still under the old name (Lstat = %v)", statErr)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "personal")); statErr != nil {
+		t.Fatalf("the record was not migrated to the new name: %v", statErr)
+	}
+	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the journal survives at %s, want it spent once its work landed", journal)
+	}
+
+	// Idempotent: the state it produced is a state it leaves alone.
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("second restoreUncommittedOAuthAsides: %v", err)
+	}
+	store = journalStore(t, f)
+	if v, _ := store.Get("personal"); v != "sk-work" {
+		t.Fatalf("the second pass changed the stored key: %q", v)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesSpendsARenameJournalTheConfigStillNamesOld:
+// crash point (a) - the journal is written and providers.toml was never saved,
+// so the config still names the OLD instance. Completion must be harmless: the
+// credential stays where the live configuration says it belongs, and the journal
+// is spent because the rename it recorded never happened.
+func TestRestoreUncommittedOAuthAsidesSpendsARenameJournalTheConfigStillNamesOld(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	store := journalStore(t, f)
+	if err := store.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	journal := renameJournal(t, f, "personal", "work", "1757000000000000000")
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	if v, _ := store.Get("work"); v != "sk-work" {
+		t.Fatalf("work = %q, want the stored key left where the config names it", v)
+	}
+	if v, _ := store.Get("personal"); v != "" {
+		t.Fatalf("personal = %q, want nothing migrated while the config still names work", v)
+	}
+	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the journal survives at %s, want it spent: the rename never landed", journal)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesKeepsARenameJournalWhoseKeyCannotMove: a
+// stored key that cannot be migrated is reported and keeps the journal, so the
+// next start tries again rather than leaving the credential under a name the
+// config no longer carries.
+func TestRestoreUncommittedOAuthAsidesKeepsARenameJournalWhoseKeyCannotMove(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	store := journalStore(t, f)
+	if err := store.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	journal := renameJournal(t, f, "personal", "work", "1757000000000000000")
+	credsDir := filepath.Dir(filepath.Join(filepath.Dir(f.stateDir), "credentials.toml"))
+	if err := os.Chmod(credsDir, 0o555); err != nil {
+		t.Fatalf("Chmod(%s): %v", credsDir, err)
+	}
+	defer func() {
+		if err := os.Chmod(credsDir, 0o700); err != nil {
+			t.Fatalf("restore Chmod(%s): %v", credsDir, err)
+		}
+	}()
+
+	_, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err == nil {
+		t.Fatal("restoreUncommittedOAuthAsides = nil, want the key it could not move reported")
+	}
+	if !strings.Contains(err.Error(), "stored key") {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the stored key named", err)
+	}
+	if _, statErr := os.Lstat(journal); statErr != nil {
+		t.Fatalf("the journal was spent (%v) although its key could not move", statErr)
+	}
+	store = journalStore(t, f)
+	if v, _ := store.Get("work"); v != "sk-work" {
+		t.Fatalf("work = %q, want the key left in place by the failed move", v)
+	}
+}
+
+// TestInstances_RemoveReportsOneFailureFrame: the rollback's cause already names
+// what failed, so the caller must not add a second frame of the same shape - the
+// message reads "removing %q failed: <cause>" once, the way the mark-failure path
+// reports it.
+func TestInstances_RemoveReportsOneFailureFrame(t *testing.T) {
+	f := newFlakyReloadFixture(t, "openai-codex", func(load int) bool { return load == 3 })
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	// Occupy the record path so the rollback cannot put the carrying record back:
+	// the rollback then reports the STANDING removal, which is the branch whose
+	// cause the caller had already framed.
+	authPath := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		removed, err := originalDelete(dir, name)
+		if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil && !os.IsExist(mkErr) {
+			t.Errorf("Mkdir(%s): %v", authPath, mkErr)
+		}
+		return removed, err
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil || !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing removal reported", err)
+	}
+	const frame = `removing "openai-codex" failed:`
+	if got := strings.Count(err.Error(), frame); got != 1 {
+		t.Fatalf("Remove = %v, want exactly one %q frame, got %d", err, frame, got)
+	}
+}
+
+// TestInstances_EditRenameResolvesAnEarlierRenameIntoTheNameFirst: a rename that
+// never finished leaves its journal naming the name a later rename is about to
+// take away, with the credential still filed under the name it came from. The
+// later rename resolves that record FIRST - moving the credential forward along
+// the name chain - and only then records and performs its own rename, so nothing
+// is left under a name neither the config nor any recovery pass reads.
+func TestInstances_EditRenameResolvesAnEarlierRenameIntoTheNameFirst(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The earlier personal-to-work rename: its journal, and a real record (so the
+	// rename below can carry it) still filed under the name it came from.
+	if err := authopenai.SaveAuth(f.stateDir, "personal", makeOAuthRecord("personal", "personal@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	journal := renameJournal(t, f, "work", "personal", "1757000000000000000")
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"}); err != nil {
+		t.Fatalf("Edit(rename): %v", err)
+	}
+	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the earlier journal survives at %s, want it resolved by the later rename", journal)
+	}
+	rec, rerr := authopenai.LoadAuth(f.stateDir, "work2")
+	if rerr != nil {
+		t.Fatalf("the renamed instance has no record: %v", rerr)
+	}
+	if rec.AccessToken != "access-personal" || rec.Provider != "work2" {
+		t.Fatalf("moved record = %+v, want the earlier credential carried along the name chain", rec)
+	}
+	for _, name := range authDirEntries(t, f) {
+		if inst, _, _, aside := oauthAsideInstance(name); aside && inst == "personal" {
+			t.Fatalf("a copy is still filed under the earlier name: %s", name)
+		}
+	}
+	assertNoTransactionFiles(t, f)
+}
+
+// TestInstances_EditRenameRefusesWhileAnEarlierRenameCannotBeFinished: when the
+// earlier rename's record cannot be finished, the later rename must refuse rather
+// than chain onto it - taking the name away would strand the credential under a
+// name nothing reads. The refusal is a Conflict, and it names the unfinished
+// rename and what it could not do.
+func TestInstances_EditRenameRefusesWhileAnEarlierRenameCannotBeFinished(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The earlier rename still has a STORED KEY to move, and the credentials store
+	// refuses writes, so its completion cannot land.
+	if err := f.store.Set("personal", "sk-personal"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	journal := renameJournal(t, f, "work", "personal", "1757000000000000000")
+	credsDir := filepath.Dir(f.credsPath)
+	if err := os.Chmod(credsDir, 0o555); err != nil {
+		t.Fatalf("Chmod(%s): %v", credsDir, err)
+	}
+	defer func() {
+		if err := os.Chmod(credsDir, 0o700); err != nil {
+			t.Fatalf("restore Chmod(%s): %v", credsDir, err)
+		}
+	}()
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
+	if err == nil {
+		t.Fatal("Edit = nil, want the unfinished earlier rename refused")
+	}
+	want := `renaming "work" to "work2" cannot start while an earlier rename into "work" is unfinished:`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Edit = %v, want it to carry %q", err, want)
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
+		t.Fatalf("Edit = %v (%T), want appwire.Conflict", err, err)
+	}
+	if !strings.Contains(err.Error(), "stored key") {
+		t.Fatalf("Edit = %v, want the unfinished work named", err)
+	}
+	// Nothing was taken and nothing new was recorded.
+	if _, statErr := os.Lstat(journal); statErr != nil {
+		t.Fatalf("the earlier journal was taken (%v), want it left for the pass that finishes it", statErr)
+	}
+	for _, name := range authDirEntries(t, f) {
+		if strings.Contains(name, ".journal-") && strings.Contains(name, "work2") {
+			t.Fatalf("the refused rename left its own journal %s", name)
+		}
+	}
+}
