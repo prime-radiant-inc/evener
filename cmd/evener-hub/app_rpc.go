@@ -716,15 +716,12 @@ func registerThreadHandlers(
 			return appwire.ThreadReadResponse{}, err
 		}
 		if params.IncludeTurns {
-			usedPastItemPage := false
 			if pastPage != nil {
 				resp.Thread.Turns = pastPage.Thread.Turns
 				resp.OlderCursor = pastPage.OlderCursor
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
-				usedPastItemPage = true
-			}
-			if !usedPastItemPage {
+			} else {
 				candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)
 				if !read.hasItemCandidates {
 					var candidateErr error

@@ -1074,11 +1074,9 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-// pastEntryTurns projects a saved session's whole transcript into full wire
-// turns. A package var, like discoverPastThreadSkillCatalog above, so tests can
-// observe (and pin the absence of) the O(transcript) projection on read paths
-// that must not pay it.
-var pastEntryTurns = func(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
+// computePastEntryTurns projects a saved session's whole transcript into full
+// wire turns.
+func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
@@ -1094,6 +1092,11 @@ var pastEntryTurns = func(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]app
 	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, nil
 }
+
+// This function is intentionally behind a package variable, like
+// discoverPastThreadSkillCatalog above, so tests can observe (and pin the
+// absence of) the O(transcript) projection on read paths that must not pay it.
+var pastEntryTurns = computePastEntryTurns
 
 // projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
 // (decoded once by apptranscript's own reader, not here — kata j13r) into

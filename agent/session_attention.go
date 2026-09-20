@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -11,9 +12,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -103,66 +104,52 @@ var readExistingDelegateAttentionFoldCompute = readDelegateAttentionFold
 // a cheaply-sized payload.
 const delegateAttentionFoldCacheEntries = 512
 
-// delegateAttentionFoldMemo is one cached fold, valid while its file identity
-// holds. mtime is held as nanos so the key stays comparable with ==.
+// delegateAttentionFoldMemo is one cached fold's payload. The session id rides
+// in the payload because foldcache keys by path alone: a transcript path reused
+// across sessions must never serve another session's fold, so
+// readExistingDelegateAttentionFold checks it after a hit.
 type delegateAttentionFoldMemo struct {
 	sessionID string
-	size      int64
-	modNano   int64
 	fold      delegateAttentionFold
 }
 
 // delegateAttentionFoldCache memoizes read-path attention folds by transcript
-// path, keyed to the expected session id and gated on the file's size and
-// mtime: an append-only transcript that changed recomputes, an unchanged one
-// serves the memo. Without it, every status sweep re-read and re-decoded every
-// eligible delegate child's full transcript — O(total delegate bytes) per
-// thread/read (a 251-child session measured 175.6MB re-read per click). The
-// returned fold is shared and MUST be treated as read-only by callers, the
-// same contract TurnCache documents for its memoized slices.
-type delegateAttentionFoldCache struct {
-	mu      sync.Mutex
-	entries map[string]delegateAttentionFoldMemo
-	order   []string // least-recently-used first, for bounded eviction
-	max     int
-}
+// path, with foldcache's staleness rules standing in for the hand-rolled
+// size-and-mtime gate this used to be: an append-only transcript that changed
+// recomputes, an unchanged one serves the memo. Without it, every status sweep
+// re-read and re-decoded every eligible delegate child's full transcript —
+// O(total delegate bytes) per thread/read (a 251-child session measured
+// 175.6MB re-read per click). The cached fold is shared and MUST be treated as
+// read-only by callers, the same contract TurnCache documents for its
+// memoized slices.
+var delegateAttentionFoldCache = foldcache.New[delegateAttentionFoldMemo](delegateAttentionFoldCacheEntries)
 
-var readExistingDelegateAttentionFoldCache = &delegateAttentionFoldCache{
-	entries: make(map[string]delegateAttentionFoldMemo),
-	max:     delegateAttentionFoldCacheEntries,
-}
-
-func (c *delegateAttentionFoldCache) get(path, expectedSessionID string, size int64, modNano int64) (delegateAttentionFold, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	memo, ok := c.entries[path]
-	if !ok || memo.sessionID != expectedSessionID || memo.size != size || memo.modNano != modNano {
-		return delegateAttentionFold{}, false
-	}
-	c.touch(path)
-	return memo.fold, true
-}
-
-func (c *delegateAttentionFoldCache) put(path, expectedSessionID string, size int64, modNano int64, fold delegateAttentionFold) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[path] = delegateAttentionFoldMemo{sessionID: expectedSessionID, size: size, modNano: modNano, fold: fold}
-	c.touch(path)
-	for len(c.order) > c.max {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
-	}
-}
-
-func (c *delegateAttentionFoldCache) touch(path string) {
-	for i, p := range c.order {
-		if p == path {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			break
+// extendDelegateAttentionFold is the Extend delegateAttentionFoldCache reads a
+// transcript through. The attention fold is a whole-file reduction — a later
+// resolution turn re-resolves an earlier steering turn, so appended entries
+// can change what earlier entries meant — so every call refolds from byte
+// zero and fromOffset/prior go unused; the cache still pays for itself by
+// skipping the read entirely while a transcript is unchanged, which is the
+// hot case in the per-click status sweeps. toOffset is the file size statted
+// after the fold: the fold consumed every complete line, and the only bytes
+// it can leave unconsumed are a torn trailing line, which either completes
+// (growing the file, so the next read refolds) or is rolled back by the
+// writer (shrinking it, which foldcache treats as a rewrite and refolds from
+// zero) — either way the stat size is the honest consumed-through bound. The
+// ctx an Extend call runs with is detached from every caller by
+// foldcache.Get, so there is no cancellation to check mid-read.
+func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[delegateAttentionFoldMemo] {
+	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, error) {
+		fold, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		if err != nil {
+			return delegateAttentionFoldMemo{}, 0, err
 		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return delegateAttentionFoldMemo{}, 0, fmt.Errorf("stat delegate attention transcript: %w", err)
+		}
+		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, info.Size(), nil
 	}
-	c.order = append(c.order, path)
 }
 
 type delegateAttentionFold struct {

@@ -85,7 +85,7 @@ func packThreadReadItemCandidates(
 			Thread:      appwire.Thread{Turns: turns},
 			OlderCursor: olderCursor,
 		}
-	}, threadReadContentSize, requestedLimit...)
+	}, func(response appwire.ThreadReadResponse) []appwire.Turn { return response.Thread.Turns }, requestedLimit...)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -105,7 +105,7 @@ func packThreadTurnsItemCandidates(
 			Data:       turns,
 			NextCursor: olderCursor,
 		}
-	}, threadTurnsListContentSize, requestedLimit...)
+	}, func(response appwire.ThreadTurnsListResponse) []appwire.Turn { return response.Data }, requestedLimit...)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -119,15 +119,15 @@ func packItemCandidates[T any](
 	result transcriptItemCandidateResult,
 	enrich func(T) (T, error),
 	build func([]appwire.Turn, string) T,
-	// contentSize reports the encoded size of the transcript content the packer
-	// shrinks by dropping items — the turns the response carries, not the fixed
+	// contentTurns reports the transcript content the packer shrinks by
+	// dropping items — the turns the response carries, read post-enrich so the
+	// measurement tracks what the page would actually transmit, not the fixed
 	// envelope (delegate statuses, task aggregates) a thread/read enrich grafts
 	// around them. The soft limit exists to bound what a page costs to
 	// transmit and to shrink when too large; an envelope no drop can remove
 	// must not drive the decision, or every window of a delegate-heavy session
-	// strips to a single item and the hub re-marshals the whole envelope once
-	// per dropped item on every click.
-	contentSize func(T) (int, error),
+	// strips to a single item.
+	contentTurns func(T) []appwire.Turn,
 	requestedLimit ...int,
 ) (T, error) {
 	var zero T
@@ -198,31 +198,15 @@ func packItemCandidates[T any](
 				return zero, err
 			}
 		}
-		size, marshalErr := contentSize(response)
+		encoded, marshalErr := json.Marshal(contentTurns(response))
 		if marshalErr != nil {
-			return zero, marshalErr
+			return zero, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
 		}
-		if size <= transcriptRPCResultSoftLimit || len(selected) == 1 {
+		if len(encoded) <= transcriptRPCResultSoftLimit || len(selected) == 1 {
 			return response, nil
 		}
 		selectedStart++
 	}
-}
-
-func threadReadContentSize(response appwire.ThreadReadResponse) (int, error) {
-	encoded, err := json.Marshal(response.Thread.Turns)
-	if err != nil {
-		return 0, fmt.Errorf("marshal transcript item turns: %w", err)
-	}
-	return len(encoded), nil
-}
-
-func threadTurnsListContentSize(response appwire.ThreadTurnsListResponse) (int, error) {
-	encoded, err := json.Marshal(response.Data)
-	if err != nil {
-		return 0, fmt.Errorf("marshal transcript item turns: %w", err)
-	}
-	return len(encoded), nil
 }
 
 func validateSourceItemContinuation(result transcriptItemCandidateResult, candidates []appitempaging.TranscriptItemCandidate) error {
