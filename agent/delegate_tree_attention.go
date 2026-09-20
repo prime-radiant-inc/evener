@@ -69,7 +69,7 @@ func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegate
 	// bypass the cache: read, fold, and post-read stat exactly like the
 	// uncached path, leaving the memo untouched.
 	if result.Value.sessionID != expectedSessionID {
-		fold, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		fold, _, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
 		if err != nil {
 			return delegateAttentionFold{}, err
 		}

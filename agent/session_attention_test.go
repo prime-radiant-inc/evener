@@ -159,7 +159,7 @@ func TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend(t *test
 
 	compute := readExistingDelegateAttentionFoldCompute
 	calls := 0
-	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
 		calls++
 		return compute(path, sessionID)
 	}
@@ -259,24 +259,24 @@ func TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible(t *testing.T)
 	// The compute seam folds the file as it stands, then an entry lands after
 	// the fold's EOF but before the reader's size check.
 	compute := readExistingDelegateAttentionFoldCompute
-	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
-		fold, err := compute(path, sessionID)
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
+		fold, consumed, err := compute(path, sessionID)
 		if err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
 		appender, _, err := transcript.OpenWriterForSession(path, sessionID)
 		if err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
 		racing := schema.NewTurn(schema.TurnSteering, llm.User("attention that landed during the read"))
 		racing.AttentionID = racingID
 		if err := appender.AppendDurable(racing); err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
 		if err := appender.Close(); err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
-		return fold, nil
+		return fold, consumed, nil
 	}
 	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
 
@@ -334,9 +334,9 @@ func TestReadExistingDelegateAttentionFoldRemovalRacingTheFoldErrors(t *testing.
 	// after the reader's size stat, before the fold's open — and then runs
 	// the real reader, which returns missing-as-empty.
 	compute := readExistingDelegateAttentionFoldCompute
-	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
 		if err := os.Remove(path); err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
 		return compute(path, sessionID)
 	}
@@ -344,6 +344,82 @@ func TestReadExistingDelegateAttentionFoldRemovalRacingTheFoldErrors(t *testing.
 
 	if _, err := readExistingDelegateAttentionFold(path, sessionID); err == nil {
 		t.Fatal("a removal racing the fold read as an empty fold instead of erroring")
+	}
+}
+
+// TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds pins the
+// reader's side of a repair racing the fold: a crashed writer leaves a torn
+// trailing line, and recovery truncates it — possibly while a status sweep is
+// folding the same transcript. The fold reads the repaired content, so the
+// read must serve that fold; reporting an offset the repair invalidated
+// (a size stat'd before the read) instead makes the next foldcache tail probe
+// reach past the truncated file and fails the read.
+func TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds(t *testing.T) {
+	const (
+		sessionID   = "child-memo-fold-repair"
+		attentionID = "delegate:delivery-fold-repair"
+	)
+	stateDir := t.TempDir()
+	path := transcriptPath(stateDir, sessionID)
+	now := time.Unix(1700000000, 0).UTC()
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("attention under a racing repair"))
+	steering.AttentionID = attentionID
+	if err := writer.AppendDurable(steering); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A crashed writer's torn trailing line — bytes with no terminating
+	// newline — extends the file past what recovery will keep.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"turn":{"kind":"steering","truncated`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The compute seam runs the repair inside the read's window: the torn tail
+	// is truncated away before the fold opens the file.
+	compute := readExistingDelegateAttentionFoldCompute
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
+		if err := os.Truncate(path, repaired.Size()); err != nil {
+			return delegateAttentionFold{}, 0, err
+		}
+		return compute(path, sessionID)
+	}
+	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
+
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read racing a repair: %v", err)
+	}
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) {
+		t.Fatalf("read racing a repair pending = %v, want [%s]", got, attentionID)
+	}
+	// The next read, over the repaired file and the real compute, must also
+	// succeed: the repair is done, the transcript is whole again.
+	readExistingDelegateAttentionFoldCompute = compute
+	after, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read after the repair: %v", err)
+	}
+	if got := after.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) {
+		t.Fatalf("read after the repair pending = %v, want [%s]", got, attentionID)
 	}
 }
 
