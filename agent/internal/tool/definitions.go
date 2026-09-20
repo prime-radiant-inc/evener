@@ -97,6 +97,30 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
+// runAfterParamDescription documents the optional run_after parameter the
+// file-mutation tools gain under Action Fusion (SoL-Pi auto-research design,
+// mechanism 1).
+const runAfterParamDescription = "Optional shell command executed inside this same tool call, after the mutation applies. Its output and exit status return in this observation, so an edit-then-check cycle needs no separate shell round trip. The command runs non-interactively in the session's working directory, exactly like a foreground shell call. Use it when the command does not need to inspect the mutation result first; keep commands that must read the result as a separate shell call. The mutation stands even when the command fails — the failure appears in this observation and you decide what to do next. A malformed value is rejected before the mutation applies."
+
+// WithRunAfter returns def with the optional run_after parameter added to its
+// schema (Action Fusion). The input definition is not mutated; the result
+// carries exactly the input's properties plus run_after, which stays
+// optional (the required list is unchanged).
+func WithRunAfter(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	if params == nil {
+		params = map[string]any{"type": "object"}
+	}
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+		params["properties"] = props
+	}
+	props["run_after"] = map[string]any{"type": "string", "description": runAfterParamDescription}
+	def.Parameters = params
+	return def
+}
+
 // DelegateSandboxSchema describes the sandbox control that the current
 // session can actually enforce. Available=false removes the sandbox knob;
 // an explicit value is still rejected by the handler rather than ignored.

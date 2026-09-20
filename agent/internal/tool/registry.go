@@ -468,12 +468,20 @@ func (r *Registry) Register(t RegisteredTool) error {
 		t.Limit = defaultToolLimit(t.Definition.Name)
 	}
 	if t.Schema == nil {
-		// Reuse already-compiled schema when re-registering a tool (e.g.
-		// registerCoreTools re-registers tools from NewRegistry). This
-		// avoids recompilation and guards against transient jsonschema
-		// library panics from os.Getwd() failures in ephemeral worktrees.
+		// Reuse the already-compiled schema when re-registering a tool with the
+		// SAME parameter schema (e.g. registerCoreTools re-registers the
+		// profile registry's definitions with real executors). This avoids
+		// recompilation and guards against transient jsonschema library panics
+		// from os.Getwd() failures in ephemeral worktrees. A changed parameter
+		// schema must recompile: reusing by name alone would silently validate
+		// calls against the stale schema (Action Fusion's run_after property
+		// would stay rejected by the seeded additionalProperties:false schema).
+		// compileSchema memoizes by marshaled params, so this is a cache lookup,
+		// not a fresh compile.
 		r.mu.RLock()
-		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil {
+		existing, ok := r.tools[t.Definition.Name]
+		sameParams := ok && existing.Schema != nil && sameSchemaParams(existing.Definition.Parameters, t.Definition.Parameters)
+		if sameParams {
 			t.Schema = existing.Schema
 		}
 		r.mu.RUnlock()
@@ -503,6 +511,25 @@ func (r *Registry) Register(t RegisteredTool) error {
 	}
 	r.tools[t.Definition.Name] = t
 	return nil
+}
+
+// sameSchemaParams reports whether two parameter maps are the same schema:
+// json.Marshal sorts map keys, so equal schemas marshal to equal bytes. Two
+// nil maps are the same (compileSchema gives both the same empty-object
+// default); exactly one nil is not (safely recompile rather than guess).
+func sameSchemaParams(a, b map[string]any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
 }
 
 // Definitions returns the tool definitions for all registered tools.

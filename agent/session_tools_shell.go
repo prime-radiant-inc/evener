@@ -283,15 +283,27 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
 	_ = reg.Register(tool.RegisteredTool{
-		Definition: tool.DefApplyPatch(),
+		Definition: mutationToolDef(deps, tool.DefApplyPatch()),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			runAfter, err := parseRunAfterArg(args)
+			if err != nil {
+				return "", err
+			}
+			if runAfter != "" {
+				if err := runAfterShellReady(reg); err != nil {
+					return "", err
+				}
+			}
 			patch := fmt.Sprint(args["patch"])
 			fm, ok := env.(execenv.FileMutator)
 			if !ok {
 				return "", errors.New("apply_patch: execution environment does not support file mutation")
 			}
-			return tool.ApplyPatch(fm, patch)
+			result, err := tool.ApplyPatch(fm, patch)
+			if err == nil && runAfter != "" {
+				result = fuseRunAfter(ctx, reg, env, runAfter, result)
+			}
+			return result, err
 		},
 	})
 
