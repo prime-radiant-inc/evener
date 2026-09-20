@@ -361,8 +361,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	}
 	state := deriveRestoredState(restoredHistory, divergence, origins)
 	pending, _ := deriveRestoredAskPending(restoredHistory, divergence, origins)
-	s.askPending = pending
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	if transitioned {
+		// The settlement is atomic with the state publication: a no-op
+		// transition (already settled, or closing) leaves the live pending
+		// set untouched rather than half-settling it against an unchanged
+		// state.
+		s.askPending = pending
+	}
 	release(transitioned, turnMS)
 }
 
