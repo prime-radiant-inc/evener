@@ -6403,8 +6403,8 @@ test("a short warning title keeps its leading whitespace when it's nowhere near 
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
-// mobile's warning fallback reads them from item.warning when text is blank -
-// see mobile/src/conversation/project.ts's warningFallbackText).
+// mobile's warning row reads them from item.warning when text is blank - see
+// mobile/src/conversation/project.ts's warningItem).
 test("a message-less warning with a title leaves text blank instead of falling back to the raw frame", () => {
   let model = warningTurnModel();
 
