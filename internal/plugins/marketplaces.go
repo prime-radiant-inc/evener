@@ -181,6 +181,10 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
+//
+// There is no refusal for an already-registered name, so calling it again with
+// the same name and a different source re-sources that marketplace in place; a
+// failed save leaves the previously recorded clone as it was.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
@@ -232,6 +236,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	}
 
 	installLoc := src.Path // directory source: in place
+	aside := ""
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
 		old, err := m.swapInClone(staging, installLoc)
@@ -239,9 +244,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 			_ = marketplaceRemoveAll(staging)
 			return MarketplaceRef{}, err
 		}
-		if old != "" {
-			_ = marketplaceRemoveAll(old)
-		}
+		aside = old
 	} else {
 		_ = marketplaceRemoveAll(staging)
 	}
@@ -250,11 +253,14 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
+			if rollbackErr := undoCloneSwap(installLoc, aside); rollbackErr != nil {
 				return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
 			}
 		}
 		return MarketplaceRef{}, m.saveFailed(name, marketplacesFileName, err)
+	}
+	if aside != "" {
+		_ = marketplaceRemoveAll(aside)
 	}
 	return ref, nil
 }
@@ -711,13 +717,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if swappedIn == "" {
 			return nil
 		}
-		if err := marketplaceRemoveAll(swappedIn); err != nil {
-			return fmt.Errorf("removing the swapped-in clone %s: %w", swappedIn, err)
-		}
-		if asideClone == "" {
-			return nil
-		}
-		return restoreRename("old clone", asideClone, swappedIn)
+		return undoCloneSwap(swappedIn, asideClone)
 	}
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
@@ -1315,6 +1315,21 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 		return "", nil
 	}
 	return old, nil
+}
+
+// undoCloneSwap reverses a swapInClone whose caller's later step failed: the
+// swapped-in clone goes and the aside copy the swap displaced is renamed back
+// into dest. A caller whose work might still fail keeps the aside path for
+// exactly this, so the store keeps pointing at the clone the surviving store
+// file records instead of at the source the failed step had already fetched.
+func undoCloneSwap(dest, aside string) error {
+	if err := marketplaceRemoveAll(dest); err != nil {
+		return fmt.Errorf("removing the swapped-in clone %s: %w", dest, err)
+	}
+	if aside == "" {
+		return nil
+	}
+	return restoreRename("old clone", aside, dest)
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
