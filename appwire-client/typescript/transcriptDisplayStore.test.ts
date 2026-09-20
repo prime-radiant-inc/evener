@@ -803,6 +803,74 @@ describe("the direct write", () => {
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
   });
 
+  test("a superseded write's support flap does not clear its successor's live preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const olderReply = deferred<TranscriptDisplayPatchResponse>();
+    const newerReply = deferred<TranscriptDisplayPatchResponse>();
+    let patches = 0;
+    client.on(patchMethod, () => {
+      patches += 1;
+      return (patches === 1 ? olderReply : newerReply).promise;
+    });
+    const olderWrite = store.getState().patchHubDefault("desktop", desktopConfig);
+    const newerWrite = store.getState().patchHubDefault("desktop", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+
+    store.setSupport("unknown");
+    olderReply.reject(new Error("older boom"));
+    expect(await olderWrite).toEqual(hubDefault(3, desktopConfig));
+
+    // The read that restores support carries an unchanged canonical. The
+    // older write lost the layout's token to the newer one, so its dead
+    // continuation must not have marked the preview for that read to clear:
+    // the newer write's live preview survives it.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    store.setSupport("supported");
+    await vi.waitFor(() => expect(store.getState().hubLoading).toBe(false));
+    expect(store.getState().drafts.desktop).toEqual(proposed);
+
+    newerReply.resolve(patchAnswer("desktop", hubDefault(4, proposed)));
+    expect(await newerWrite).toEqual(hubDefault(4, proposed));
+    expect(store.getState().hub.desktop).toEqual(hubDefault(4, proposed));
+    expect(store.getState().drafts.desktop).toBeUndefined();
+  });
+
+  test("a support flap during internal-failure recovery still strands the unseen preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const read = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => read.promise);
+    client.on(patchMethod, () => {
+      throw internalError();
+    });
+    const write = store.getState().patchHubDefault("desktop", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+
+    store.setSupport("unknown");
+    read.resolve({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    });
+    expect(await write).toEqual(hubDefault(3, desktopConfig));
+    expect(store.getState().drafts.desktop).toEqual(proposed);
+
+    // The recovery GET proved the write never landed, but the flap struck
+    // after it, so the continuation had to strand the preview at the
+    // recovery fence: the read that restores support clears it.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    store.setSupport("supported");
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+  });
+
   test("an internal PATCH failure reconciles the canonical state through GET", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);

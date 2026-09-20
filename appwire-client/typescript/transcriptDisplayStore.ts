@@ -433,6 +433,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     patchTokens.set(layout, token);
     const stillMine = () => fence.liveHub(generation) && patchTokens.get(layout) === token;
     const retained = () => getState().hub[layout] ?? confirmed;
+    // A support flap (generation unchanged, hub not live) can kill a
+    // continuation that still owns the layout's write token without
+    // retiring the payload, so the preview's write settled unseen: mark it
+    // for the next authoritative read, which clears it even at an unchanged
+    // revision - that read proves the write never landed. A token loss
+    // strands nothing (a newer write owns the preview now), and a
+    // generation change's retirement leaves the preview to the
+    // stranded-preview rules.
+    const strandedByFlap = () =>
+      fence.isCurrent(generation) && !fence.liveHub(generation) && patchTokens.get(layout) === token;
     // A newer write on this layout owns the preview from here on, so a
     // support flap stranding an older write must not reach this one.
     strandedPreviews.delete(layout);
@@ -456,14 +466,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       return canonical;
     } catch (error) {
       if (!stillMine()) {
-        // A support flap (generation unchanged, hub not live) killed this
-        // continuation without retiring the payload, so the preview's
-        // write settled unseen: mark it for the next authoritative read,
-        // which clears it even at an unchanged revision - that read proves
-        // the write never landed. A newer write's token loss strands
-        // nothing (it owns the preview now), and a generation change's
-        // retirement leaves the preview to the stranded-preview rules.
-        if (fence.isCurrent(generation) && !fence.liveHub(generation)) strandedPreviews.add(layout);
+        if (strandedByFlap()) strandedPreviews.add(layout);
         return retained();
       }
       const applied = postApplyDefault(error, layout);
@@ -475,7 +478,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         for (let attempt = 0; attempt < 2; attempt++) {
           const readsBefore = successfulHubReads;
           await reconcileHubDefaults();
-          if (!stillMine()) return retained();
+          if (!stillMine()) {
+            if (strandedByFlap()) strandedPreviews.add(layout);
+            return retained();
+          }
           const reconciled = getState().hub[layout];
           if (
             successfulHubReads > readsBefore &&
