@@ -65,23 +65,28 @@ function SheetHarness({
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
 }) {
   const connectionClient = useConnectionStore((state) => state.client);
-  const marketplaces = useExtensionsStore((state) => state.marketplaces);
-  const [appliedRemovalNames, setAppliedRemovalNames] = useState<ReadonlySet<string>>(() => new Set());
+  const marketplacesPublicationVersion = useExtensionsStore((state) => state.marketplacesPublicationVersion);
+  const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<{
+    client: typeof connectionClient;
+    names: ReadonlyMap<string, number>;
+  }>(() => ({ client: connectionClient, names: new Map() }));
 
-  // The dependency is intentionally observed even though the effect body only
-  // resets the page-owned marker when that identity changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset the durable marker on client replacement
   useEffect(() => {
-    setAppliedRemovalNames(new Set());
+    setAppliedRemovalGuard((current) =>
+      current.client === connectionClient ? current : { client: connectionClient, names: new Map() },
+    );
   }, [connectionClient]);
   useEffect(() => {
-    if (marketplaces === null) return;
-    const currentNames = new Set(marketplaces.map((marketplace) => marketplace.name));
-    setAppliedRemovalNames((names) => {
-      const next = new Set([...names].filter((appliedName) => currentNames.has(appliedName)));
-      return next.size === names.size ? names : next;
+    if (appliedRemovalGuard.client !== connectionClient) return;
+    setAppliedRemovalGuard((current) => {
+      if (current.client !== connectionClient) return current;
+      const next = new Map([...current.names].filter(([, baseline]) => baseline >= marketplacesPublicationVersion));
+      return next.size === current.names.size ? current : { client: current.client, names: next };
     });
-  }, [marketplaces]);
+  }, [appliedRemovalGuard.client, connectionClient, marketplacesPublicationVersion]);
+
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === connectionClient ? new Set(appliedRemovalGuard.names.keys()) : new Set<string>();
 
   return (
     <MarketplaceSheet
@@ -92,9 +97,14 @@ function SheetHarness({
       setExpandedMarketplaces={setExpandedMarketplaces}
       appliedRemovalNames={appliedRemovalNames}
       connectionClient={connectionClient}
-      onAppliedRemoval={(appliedName, owner) => {
+      onAppliedRemoval={(appliedName, owner, publicationVersion) => {
         if (connectionStore.getState().client !== owner) return;
-        setAppliedRemovalNames((names) => new Set(names).add(appliedName));
+        setAppliedRemovalGuard((current) => {
+          if (current.client !== owner) return current;
+          const names = new Map(current.names);
+          names.set(appliedName, publicationVersion);
+          return { client: owner, names };
+        });
       }}
     />
   );
@@ -744,7 +754,7 @@ test("an applied cleanup failure that still lists the target refreshes and block
 
   await waitFor(() => expect(removeCalls(fake)).toBe(1));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(1));
-  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("an applied but unavailable cleanup failure closes confirmation, refreshes, and blocks retry", async () => {
@@ -767,13 +777,13 @@ test("an applied but unavailable cleanup failure closes confirmation, refreshes,
     ).toBe(true),
   );
   expect(screen.queryByRole("dialog", { name: "Remove marketplace" })).toBeNull();
-  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   expect(removeCalls(fake)).toBe(1);
 
   act(() => extensionsStore.setState({ marketplaces: [ACME, OTHER] }));
   select("other");
   select("acme");
-  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 // The confirm names the entry the sheet currently shows, so a confirm left

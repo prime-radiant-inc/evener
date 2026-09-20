@@ -170,6 +170,17 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     return next;
   }
 
+  function retireCatalogsAbsentFrom(
+    catalogs: Map<string, MarketplaceCatalogEntry>,
+    marketplaces: MarketplaceEntry[],
+  ): Map<string, MarketplaceCatalogEntry> {
+    const present = new Set(marketplaces.map(({ name }) => name));
+    return retireBrowseCatalogs(
+      catalogs,
+      [...catalogs.keys()].filter((name) => !present.has(name)),
+    );
+  }
+
   function publishMarketplaceSnapshot(marketplaces: MarketplaceEntry[]) {
     nextMarketplacesPublicationVersion += 1;
     return {
@@ -247,7 +258,11 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
           // The list, and the two fields that belong to it, go through the fence:
           // see plugins.ts's mutate for why the live answer owns all three.
-          return () => set(publishMarketplaceSnapshot(resp.marketplaces));
+          return () =>
+            set((s) => ({
+              ...publishMarketplaceSnapshot(resp.marketplaces),
+              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+            }));
         },
         onFailure
           ? (error) => {
@@ -257,7 +272,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
                 if (issuedIn !== generation) return;
                 set((s) => ({
                   ...publishMarketplaceSnapshot(applied),
-                  ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
+                  browseCatalogs: retireCatalogsAbsentFrom(
+                    retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
+                    applied,
+                  ),
                 }));
               };
             }
@@ -282,7 +300,11 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         // running, and its failure would put "Failed to load" over a newer
         // write's list.
         return readRevisioned(listRevision, () => client.request("evener/marketplace/list", {}), {
-          onAnswer: (resp) => () => set(publishMarketplaceSnapshot(resp.marketplaces)),
+          onAnswer: (resp) => () =>
+            set((s) => ({
+              ...publishMarketplaceSnapshot(resp.marketplaces),
+              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+            })),
           onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),
         });
       },
