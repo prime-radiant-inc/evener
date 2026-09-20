@@ -120,14 +120,18 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 
 // sessionScratchBases lists, in allocation-preference order, every base a
 // session on this workspace may end up in: the requested base (or the temp dir)
-// and the user cache dir, each canonical and listed once. Allocation stops at
-// the first; a reclaim has to visit them all, because a workspace that contains
-// the temp dir sends its own sessions to the cache dir instead.
+// and the user cache dir, each canonical and listed once, plus every world-usable
+// host temp base a session TEMP CONTAINER (session_tmp.go) may have been created
+// in. Allocation stops at the first; a reclaim has to visit them all, because a
+// workspace that contains the temp dir sends its own sessions to the cache dir
+// instead, and a temp container deliberately does not use the temp dir at all
+// (os.TempDir() is private on macOS and can be private on Linux).
 func sessionScratchBases(requested, workspaceRoot string) []string {
 	candidates := []string{preferredSessionScratchCandidate(requested)}
 	if cache, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, cache)
 	}
+	candidates = append(candidates, worldTempBases...)
 	var bases []string
 	for _, candidate := range candidates {
 		base, ok := validSessionScratchBase(candidate, workspaceRoot)
