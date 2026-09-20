@@ -501,7 +501,7 @@ func TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList(t *testing.T)
 	if err := os.Rename(record, aside); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	// The removal's own record, at the phase a crash before its commit point
+	// The removal's own record, under the in-doubt name a crash before its commit point
 	// leaves: a credential-only instance has no providers.toml entry, so this
 	// record is the whole of what tells recovery the copy is wanted.
 	intent := filepath.Join(filepath.Dir(record), oauthIntentName("openai-codex", 1757000000000000000))

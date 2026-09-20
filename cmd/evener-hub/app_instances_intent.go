@@ -333,6 +333,13 @@ func landOAuthIntent(path string) (string, error) {
 	if err := renameNoReplace(path, landedPath); err != nil {
 		return path, err
 	}
+	// A stored key staged beside the record (a removal stages one, oauthKeySidecar)
+	// is part of the record's durable state and moves with it: recovery pairs the
+	// two by name, so a staging left under the in-flight name would be left behind
+	// the moment the record lands.
+	if err := moveStagedRemovalKey(path, landedPath); err != nil {
+		return landedPath, err
+	}
 	if err := syncDir(filepath.Dir(path)); err != nil {
 		return landedPath, err
 	}
@@ -364,17 +371,31 @@ func unlandOAuthIntent(path string) (string, error) {
 	if err := renameNoReplace(path, inFlight); err != nil {
 		return path, err
 	}
+	if err := moveStagedRemovalKey(path, inFlight); err != nil {
+		return inFlight, err
+	}
 	if err := syncDir(filepath.Dir(path)); err != nil {
 		return inFlight, err
 	}
 	return inFlight, nil
 }
 
+// syncDirHook, when set, is consulted before each directory sync. It observes
+// the sync - what has already happened on disk when it runs is the ordering a
+// test cannot see after the fact - and an error from it fails that sync, so a
+// test can inject one. It is nil in production.
+var syncDirHook func(dir string) error
+
 // syncDir fsyncs a directory, so a rename that has just published (or withdrawn)
 // a record survives a power failure. A directory the process cannot open is not
 // a failure of the mutation - the rename itself landed, and the next start reads
 // the directory as it is - so an open failure is reported, not enforced.
 func syncDir(dir string) error {
+	if syncDirHook != nil {
+		if err := syncDirHook(dir); err != nil {
+			return err
+		}
+	}
 	f, err := os.Open(dir)
 	if err != nil {
 		return err

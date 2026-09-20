@@ -1477,12 +1477,14 @@ func (c *hubInstancesController) moveCredentials(oldName, newName, intentPath st
 }
 
 // beginRemoval writes a removal's intent record before the first byte of any
-// copy moves. The record is written whenever the auth directory exists, which is
-// the only place a record path or a parked copy can be: a state root that never
-// held one has nothing a crash could strand, and the removal skips the record
-// there.
+// copy moves. It is written whenever a stored credential may be present, which
+// is not only the auth directory: a stored key lives in credentials.toml, so a
+// key-only removal creates the directory rather than skipping its record - the
+// record is where the key it clears is staged, and a removal that cleared a key
+// with nothing durable left of it would lose the user's only credential to a
+// crash (beginRename creates it for the same reason).
 func (c *hubInstancesController) beginRemoval(name string, configBacked bool) (string, error) {
-	path, err := c.writeIntent(removalIntent(name, configBacked), false)
+	path, err := c.writeIntent(removalIntent(name, configBacked), true)
 	if err != nil {
 		return "", fmt.Errorf("remove %s: record the removal for startup recovery: %w", name, err)
 	}
@@ -1509,6 +1511,12 @@ func (c *hubInstancesController) beginRename(oldName, newName string) (string, e
 // A record that will not come away is reported beside the refusal rather than
 // swallowed.
 func (c *hubInstancesController) abandonIntent(path string, cause error) error {
+	// The record and everything staged with it go together: a staging left beside
+	// no record is debris nothing reads (the store's key is still there, which is
+	// why the record is being abandoned at all).
+	if serr := spendStagedRemovalKey(path); serr != nil {
+		cause = fmt.Errorf("%w; the stored key staged beside its record could not be spent (%w)", cause, serr)
+	}
 	if path == "" {
 		return cause
 	}
@@ -1757,6 +1765,12 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		return err
 	}
+	// The stored key is cleared before the config write commits, and the record
+	// alone cannot bring it back: stage the bytes beside the record, so a crash in
+	// that window leaves the next start both the evidence and the bytes.
+	if err := stageRemovalKey(intentPath, storedKey, hasStoredKey); err != nil {
+		return c.abandonIntent(intentPath, fmt.Errorf("remove %s: stage its stored key for startup recovery: %w", name, err))
+	}
 	oauthAside, err := c.setAsideOAuthFile(name)
 	if err != nil {
 		// Nothing has been deleted yet, so the removal has nothing to recover:
@@ -1907,8 +1921,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		// that cannot be carried there leaves the removal in doubt - the copy it
 		// parked would be put back by the next start - so it rolls back here,
 		// through the same path a failed reload takes, and never reports the
-		// removal as standing.
-		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, intentPath, oauthAside, configChanged, frame, supplies, err)
+		// removal as standing. A rename that LANDED and then failed its directory
+		// sync is the one case where the record is not where this call left it:
+		// the helper reports the name it now holds, and the rollback has to
+		// un-land THAT name - un-landing the in-flight one no-ops on a file that
+		// is no longer there, and a rolled-back removal would leave a landed
+		// record startup reads as the removal having stood.
+		return c.rollBackFailedRemoval(before, name, storedKey, hasStoredKey, landedPath, oauthAside, configChanged, frame, supplies, err)
 	}
 	intentPath = landedPath
 	if err := c.reg.Reload(); err != nil {
@@ -1935,9 +1954,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		return removeApplied(fmt.Errorf("removed %s, but %w", name, err))
 	}
 	// The removal stood and its copies are gone, so the record has nothing left
-	// to describe. A record that will not come away is debris the next start
-	// removes (an intent whose name holds no copies is spent by the sweep), not a
-	// reason to fail a removal whose durable work landed.
+	// to describe - and the stored key it staged is gone with the removal it
+	// described, so the staging goes now rather than waiting for a start that
+	// would read a landed record and spend it there. A record that will not come
+	// away is debris the next start removes (an intent whose name holds no copies
+	// is spent by the sweep), not a reason to fail a removal whose durable work
+	// landed.
+	_ = spendStagedRemovalKey(intentPath)
 	_ = removeOAuthIntent(intentPath)
 	return nil
 }
@@ -2641,6 +2664,17 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	if err := os.Rename(path, aside); err != nil {
 		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
 	}
+	// The parked name is durable only once its directory is synced, and every
+	// step after this one is durable on its own: a power loss that dropped this
+	// rename while the credentials deletion or the config write survived would
+	// leave a removal the config says happened with the record still at its
+	// canonical path - a state no startup pass reads as a removal at all. The
+	// sync is therefore part of the park, and a failure refuses the removal
+	// before anything is deleted: the caller abandons the record it wrote, and
+	// the copy it parked is an orphan the config decides.
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return "", fmt.Errorf("remove %s: sync %s so the name the copy was just parked under is durable before the removal deletes anything: %w", name, filepath.Dir(path), err)
+	}
 	// The step that takes the record away records the change the instance
 	// mutation stands for - this is the primitive's equivalent of the stored-key
 	// and record deletions removeCredentials marks - and a restore that puts the
@@ -2819,6 +2853,22 @@ func findFreeAsideName(dir, name string, want int64) (string, int64, asideSearch
 		return "", 0, asideSearchDirUnreadable, rerr
 	}
 	highest, have := highestAsideStamp(entries, name)
+	// The record this copy belongs to is written FIRST, and its own stamp steps
+	// past every record already filed for the name - so a copy seeded from the
+	// copies alone can be parked BELOW its record's stamp: a lingering record
+	// stamped above the clock (a step backward, a snapshot restored) is stepped
+	// past by the record while this copy stays at the clock's reading. Recovery
+	// attributes a copy to a record only while the record's stamp is at or below
+	// the copy's (restoreUncommittedOAuthAsides), so an inverted pair reads as an
+	// orphan - and an orphan of a name the config does not carry is swept, losing
+	// the only credential of a removal that never committed. The copy therefore
+	// steps past both record markers too, so the order the stamps carry is the
+	// order of the mutations whatever the clock does.
+	for _, marker := range []string{oauthIntentMarker, oauthLandedMarker} {
+		if s, ok := highestStampedStamp(entries, name, marker); ok && (!have || s > highest) {
+			highest, have = s, true
+		}
+	}
 	return stepFreeAsideName(filepath.Join(dir, name+".json"), want, highest, have)
 }
 
@@ -2938,6 +2988,16 @@ func completeRenameIntentAt(stateDir string, store *credentials.Store, intentPat
 		// key still needs moving, and guessing would spend a record whose key
 		// never moved. The record stays for the pass that can.
 		return false, []string{fmt.Sprintf("finish the rename of %q to %q: the credentials store was not provided, so its stored key cannot be moved", oldName, newName)}
+	}
+	// A key already filed under the new name is the user's - supplied after the
+	// rename was interrupted - and Store.Move replaces its destination, so moving
+	// this rename's key onto it would destroy a key nothing else holds. The live
+	// rename refuses this same case ("would overwrite ...; clear that first"), and
+	// recovery must not do what the live path refuses: the move is refused, the
+	// key that blocks it is named, and the record stays for the pass that can
+	// finish the rename once the destination is clear.
+	if _, taken := store.Get(newName); taken {
+		return false, []string{fmt.Sprintf("finish the rename of %q to %q: a stored key is already filed under %q, and moving this rename's key onto it would overwrite it; clear that key to let the rename finish", oldName, newName, newName)}
 	}
 	// One persist, so the key is never briefly filed under both names or neither.
 	if err := store.Move(oldName, newName); err != nil {
@@ -3590,12 +3650,36 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 				nameProblems = append(nameProblems, fmt.Sprintf("deleted the parked copy %s of %q: nothing else of that credential is on disk and no removal wants it, so those bytes were the last copy a human could have put back by hand", c.name, name))
 			}
 		}
+		// A stored key staged beside a removal's record is the stored half of what
+		// that removal cleared: put it back when the removal did NOT stand (the
+		// staging is the only copy of the bytes left), and let it go with the
+		// record when it did.
+		for ri := range st.records {
+			f := st.records[ri]
+			if f.parseErr != nil || !f.ranked || f.intent.op != oauthOpRemove || stood[ri] {
+				continue
+			}
+			if _, serr := os.Lstat(removedKeyPath(f.path)); serr != nil {
+				continue
+			}
+			more := restoreStagedRemovalKey(f.path, name, store)
+			nameProblems = append(nameProblems, more...)
+			if len(more) > 0 {
+				settled = false
+			}
+		}
 		// The records are spent once the name they describe is resolved. A pass
 		// that could not settle one keeps it, so the next start tries again.
 		if settled {
 			for _, f := range st.records {
 				if f.parseErr != nil {
 					continue
+				}
+				if f.intent.op == oauthOpRemove {
+					if err := spendStagedRemovalKey(f.path); err != nil {
+						nameProblems = append(nameProblems, fmt.Sprintf("spend the stored key staged beside the record %s of %q (%v)", f.path, name, err))
+						continue
+					}
 				}
 				if err := removeOAuthIntent(f.path); err != nil {
 					nameProblems = append(nameProblems, fmt.Sprintf("spend the intent %s of %q, whose work is resolved (%v)", f.path, name, err))
@@ -3718,11 +3802,119 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	return nil
 }
 
+// oauthKeySidecar is the suffix that stages a removal's stored key beside its
+// intent record. The record can bring the OAuth half of a crashed removal back;
+// the stored key lives in credentials.toml, which the removal clears before its
+// config write commits, so only a copy of the bytes can bring that half back.
+// The staging is fsynced, spent once the key is back in the store or the removal
+// stood, and deliberately not one of the classified record/copy shapes: recovery
+// pairs it with its record by name and every copy rule skips it.
+const oauthKeySidecar = ".key"
+
+// removedKeyPath names the file that stages the stored key of the removal whose
+// record is intentPath.
+func removedKeyPath(intentPath string) string {
+	return intentPath + oauthKeySidecar
+}
+
+// moveStagedRemovalKey carries a removal's staged stored key to the name its
+// record now holds, so the record and the bytes staged beside it are always
+// paired by name. No staging at the source is the ordinary case for a rename's
+// record and for a removal with no stored key.
+func moveStagedRemovalKey(fromRecordPath, toRecordPath string) error {
+	from, to := removedKeyPath(fromRecordPath), removedKeyPath(toRecordPath)
+	if err := renameNoReplace(from, to); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// stageRemovalKey durably stages the stored key a removal is about to clear.
+func stageRemovalKey(intentPath, key string, present bool) error {
+	if intentPath == "" || !present {
+		return nil
+	}
+	path := removedKeyPath(intentPath)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "staged-key-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, werr := f.WriteString(key); werr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return werr
+	}
+	// The bytes are the only copy of the key the moment the store's entry is
+	// cleared, so they are fsynced before the rename that publishes them.
+	if serr := f.Sync(); serr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return serr
+	}
+	if cerr := f.Close(); cerr != nil {
+		_ = os.Remove(tmp)
+		return cerr
+	}
+	if merr := os.Chmod(tmp, 0o600); merr != nil {
+		_ = os.Remove(tmp)
+		return merr
+	}
+	if rerr := os.Rename(tmp, path); rerr != nil {
+		_ = os.Remove(tmp)
+		return rerr
+	}
+	return syncDir(dir)
+}
+
+// spendStagedRemovalKey removes the key staged beside a removal's record. A
+// missing staging is not an error: a removal of an instance with no stored key
+// stages nothing, and a staging already spent lost nothing.
+func spendStagedRemovalKey(intentPath string) error {
+	if intentPath == "" {
+		return nil
+	}
+	if err := os.Remove(removedKeyPath(intentPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// restoreStagedRemovalKey puts a removal's staged stored key back into the LIVE
+// store, for a removal that did not stand: the key is the instance's again and
+// the staging is the only copy of the bytes left. A key filed since the removal
+// started is the user's newer one and is never overwritten. What it could not do
+// is returned, so a staging that will not come back is never silent.
+func restoreStagedRemovalKey(intentPath, name string, store *credentials.Store) []string {
+	path := removedKeyPath(intentPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return []string{fmt.Sprintf("read the stored key %s staged for %q (%v)", path, name, err)}
+	}
+	if store == nil {
+		return []string{fmt.Sprintf("put the stored key staged for %q back (%s): the credentials store was not provided", name, path)}
+	}
+	if _, filed := store.Get(name); filed {
+		return nil
+	}
+	if err := store.Set(name, string(raw)); err != nil {
+		return []string{fmt.Sprintf("put the stored key staged for %q back (%s: %v)", name, path, err)}
+	}
+	return nil
+}
+
 // resolveRemovalIntent settles a removal's intent record after its rollback: a
-// record whose name still has a parked copy stays, with its phase back at
-// STARTED - the truth about a removal that did not finish moving the credential
-// back, and what a credential-only removal's recovery reads - and one whose
-// copies are all back where they belong is spent. The delete is best-effort: a
+// record whose name still has a parked copy stays, returned to its in-doubt name
+// - the truth about a removal that did not finish moving the credential back,
+// and what a credential-only removal's recovery reads - and one whose copies are
+// all back where they belong is spent. The delete is best-effort: a
 // record with no copy left is spent by the next start (its sweep has nothing to
 // act on and removes it), not a reason to fail a rollback whose durable work
 // landed. What it could not do is returned, so a phase that will not go back to
@@ -3730,6 +3922,28 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 func (c *hubInstancesController) resolveRemovalIntent(intentPath, name string) []string {
 	if intentPath == "" {
 		return nil
+	}
+	// The stored key staged beside this record is spent exactly when it cannot be
+	// needed any more: the store holds the key again, so the rollback put it back.
+	// While it does not, the record and the staging are BOTH kept - the record is
+	// the evidence the next start reads and the staging is the only copy of the
+	// bytes - so startup can put the stored key back.
+	if _, serr := os.Lstat(removedKeyPath(intentPath)); serr == nil {
+		if _, filed := c.auth.creds.Get(name); !filed {
+			kept := []string{fmt.Sprintf("keep the removal record %s and the stored key staged beside it (%s), so the next start puts the stored key of %q back: this rollback did not", intentPath, removedKeyPath(intentPath), name)}
+			// The record is kept, but its NAME still has to say what startup must
+			// do with the copy it parked: a record left landed reads as a removal
+			// that stood, and a standing credential-only removal's copy is swept -
+			// so the rollback returns the record to its in-doubt name even though
+			// it cannot spend it.
+			if _, uerr := unlandOAuthIntent(intentPath); uerr != nil {
+				kept = append(kept, fmt.Sprintf("return the removal record %s of %q to its in-doubt name, so the copy it parked is put back rather than swept (%v)", intentPath, name, uerr))
+			}
+			return kept
+		}
+		if err := spendStagedRemovalKey(intentPath); err != nil {
+			return []string{fmt.Sprintf("spend the stored key staged beside the removal record %s of %q, which the rollback has put back (%v)", intentPath, name, err)}
+		}
 	}
 	left, err := c.parkedCopies(name)
 	if err != nil {
