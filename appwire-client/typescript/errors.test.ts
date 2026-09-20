@@ -8,6 +8,7 @@ import {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -79,6 +80,18 @@ describe("the applied-removal discriminator is bound to appwire/errors.go", () =
       isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
     ).toBe(false);
     expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
+  });
+});
+
+// The marketplace remove-applied discriminator is the marketplace-side
+// sibling of the applied-removal family: a marketplace removal that stood -
+// unregister and clone cleanup both done - whose response could not re-read
+// the updated list. Every consumer must reconcile rather than retry, and a
+// hub-side rename of it has to break this binding rather than silently read
+// the standing removal as a failed one.
+describe("the marketplace remove-applied discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorMarketplaceRemoveApplied).toBe(goErrorInfo("ErrorMarketplaceRemoveApplied"));
   });
 });
 

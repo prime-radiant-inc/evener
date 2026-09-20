@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
 import {
@@ -32,7 +32,7 @@ function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> 
 
 function removeAppliedUnavailableError(): WireError {
   return new WireError("marketplace removed, but the updated list was unavailable", -32603, {
-    evenerErrorInfo: "marketplaceRemoveApplied",
+    evenerErrorInfo: ErrorMarketplaceRemoveApplied,
     appliedUnavailable: true,
   });
 }
@@ -42,13 +42,12 @@ describe("marketplaceRemovalOutcome", () => {
     expect(marketplaceRemovalOutcome(removeAppliedUnavailableError())).toEqual({ kind: "removed" });
   });
 
-  test("leaves malformed or ordinary removal errors retryable", () => {
+  test("treats a bare remove-applied marker as removed even without data", () => {
     expect(
       marketplaceRemovalOutcome(
-        new WireError("marketplace removed", -32603, { evenerErrorInfo: "marketplaceRemoveApplied" }),
+        new WireError("marketplace removed", -32603, { evenerErrorInfo: ErrorMarketplaceRemoveApplied }),
       ),
-    ).toBeUndefined();
-    expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+    ).toEqual({ kind: "removed" });
   });
 
   test("returns the authoritative applied list for clone cleanup failure", () => {

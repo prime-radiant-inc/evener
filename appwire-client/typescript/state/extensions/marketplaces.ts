@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClient } from "../../client";
-import { errorText, WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   MarketplaceAddParams,
@@ -89,34 +89,44 @@ export interface MarketplacesStore
 
 export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
 
-/** Extracts the updated list from a marketplaceUnregisteredCloneRemains
- * rejection (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
- * already applied on the hub before its clone's own removal failed, so
- * Data.applied is the current list with the target already gone - reconcile
- * from it even though the call still rejects, the same way keybindingsStore's
- * rejectionPayload reads a post-rename durable failure's applied state.
- * Returns undefined for any other rejection. A recognized marker with missing,
- * unavailable, or malformed applied data is still an applied-but-unconfirmed
- * outcome: the unregister already landed, but callers must reconcile through
- * their normal fetch path rather than retrying the removal or treating it as
- * an authoritative empty list. */
+/** Classifies the hub's post-apply marketplace removal rejections
+ * (appwire/errors.go) for UI consumers. Both markers mean the removal already
+ * stood on the hub, so no classified outcome is ever retryable - the caller
+ * reports what happened and reconciles through its normal fetch path:
+ *  - marketplaceUnregisteredCloneRemains
+ *    (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
+ *    applied before its clone's own removal failed, so Data.applied is the
+ *    current list with the target already gone - reconcile from it even
+ *    though the call still rejects, the same way keybindingsStore's
+ *    rejectionPayload reads a post-rename durable failure's applied state.
+ *    A recognized marker with missing, unavailable, or malformed applied
+ *    data is still an applied-but-unconfirmed outcome: the unregister
+ *    already landed, but callers must reconcile rather than treat the zero
+ *    value as an authoritative empty list.
+ *  - marketplaceRemoveApplied (appwire.MarketplaceRemoveAppliedData): the
+ *    removal and its clone cleanup completed, but the fresh list read
+ *    failed - removed, with no clone litter to warn about.
+ * Any other rejection returns undefined and stays retryable. */
 export type MarketplaceRemovalOutcome =
   | { kind: "applied"; marketplaces: MarketplaceEntry[] }
   | { kind: "unavailable" }
   | { kind: "removed" };
 
-/** Classifies the hub's applied-with-litter rejection for UI consumers. The
- * unregister already landed, so a valid applied list is authoritative even
- * though the clone cleanup failed. When the hub could not re-read the list,
- * callers must keep the current list and reconcile through their normal fetch
- * path rather than treating the zero value as an empty list. */
+/** Classifies a marketplace removal rejection that the hub says already
+ * applied, for UI consumers. A clone-litter rejection's valid applied list is
+ * authoritative even though the clone cleanup failed; when the hub could not
+ * re-read the list, callers must keep the current list and reconcile through
+ * their normal fetch path rather than treating the zero value as an empty
+ * list. A remove-applied rejection - removal and cleanup completed, only the
+ * response's list read failed - is removed: report neutrally, with no litter
+ * warning and no retry, because a retry finds the marketplace already gone. */
 export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
   if (!(error instanceof WireError)) return undefined;
-  if (error.evenerErrorInfo === "marketplaceRemoveApplied") {
-    if (!error.data || typeof error.data !== "object") return undefined;
-    const data = error.data as { appliedUnavailable?: unknown };
-    return data.appliedUnavailable === true ? { kind: "removed" } : undefined;
-  }
+  // The remove-applied marker alone proves the removal and its cleanup
+  // completed: the hub emits it only after both landed (appwire/errors.go),
+  // and its documented rule is reconcile-don't-retry, so no payload shape may
+  // demote the standing removal back to a retryable failure.
+  if (error.evenerErrorInfo === ErrorMarketplaceRemoveApplied) return { kind: "removed" };
   if (error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains") return undefined;
   if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
   const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
