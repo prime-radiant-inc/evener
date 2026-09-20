@@ -3,7 +3,7 @@
 // framework-free store and fences every request by the active ready generation.
 
 import type { AppwireClient } from "./client";
-import { errorText, WireError, wireRejectionPayload } from "./errors";
+import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
 import { createSettingsHubGeneration, retireSettingsHubPayload } from "./settingsHubGeneration";
@@ -145,6 +145,20 @@ function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDi
   if (!(error instanceof WireError) || error.code !== -32013 || !isRecord(error.data)) return undefined;
   if (error.data.evenerErrorInfo !== "conflict" || error.data.layout !== layout) return undefined;
   return fromWireDefault(error.data.current);
+}
+
+// postApplyDefault extracts the applied canonical value from a
+// transcriptDisplayPostApply error (appwire/errors.go's
+// ErrorTranscriptDisplayPostApply): the patch already landed on the hub
+// before a follow-up durable step failed, so the caller must reconcile from
+// it instead of treating the write as rejected. The payload names the layout
+// separately from the applied value (appwire/transcript_display.go's
+// TranscriptDisplayPostApplyData), and a payload naming another layout is
+// not this write's answer - the same rule conflictCurrent applies.
+function postApplyDefault(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || error.code !== -32603 || !isRecord(error.data)) return undefined;
+  if (error.data.evenerErrorInfo !== "transcriptDisplayPostApply" || error.data.layout !== layout) return undefined;
+  return fromWireDefault(error.data.applied);
 }
 
 function decodePatchReply(
@@ -423,7 +437,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (!stillMine()) {
         return getState().hub[layout] ?? confirmed;
       }
-      const applied = wireRejectionPayload(error, "transcriptDisplayPostApply", "applied", fromWireDefault);
+      const applied = postApplyDefault(error, layout);
       if (applied !== undefined) {
         applyHubDefault(layout, applied, {
           ...clearPreview(layout),

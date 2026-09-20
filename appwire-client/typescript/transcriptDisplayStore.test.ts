@@ -526,6 +526,52 @@ describe("lifecycle fencing", () => {
   });
 });
 describe("the direct write", () => {
+  test("an atomic first read clears a contradicted stranded preview and keeps the matching one", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const desktopReply = deferred<TranscriptDisplayPatchResponse>();
+    const mobileReply = deferred<TranscriptDisplayPatchResponse>();
+    let patches = 0;
+    client.on(patchMethod, () => ((patches += 1) === 1 ? desktopReply : mobileReply).promise);
+    const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    const mobileWrite = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    store.endReadyGeneration();
+    // The first read of the new generation contradicts only the desktop
+    // preview: its payload differs from the stranded draft and arrives after
+    // the preview's base revision. The mobile payload IS the stranded draft.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(4, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    }));
+    const publications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.loaded) publications.push(state);
+    });
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+
+    expect(publications).toHaveLength(1);
+    const [publication] = publications;
+    if (publication === undefined) throw new Error("expected exactly one publication");
+    expect(publication).toMatchObject({
+      loaded: true,
+      hub: {
+        desktop: hubDefault(4, desktopConfig),
+        mobile: hubDefault(3, proposed),
+      },
+      drafts: { mobile: proposed },
+    });
+    expect(publication.drafts.desktop).toBeUndefined();
+    unsubscribe();
+    desktopReply.resolve(patchAnswer("desktop", hubDefault(3, proposed)));
+    mobileReply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await desktopWrite;
+    await mobileWrite;
+  });
+
   test("an atomic first read clears only contradicted stranded previews", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
@@ -544,13 +590,20 @@ describe("the direct write", () => {
     const partialPublications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
     const unsubscribe = store.subscribe((state) => {
       if (state.loaded) publications.push(state);
-      if (state.hubLoading && state.hub.desktop?.config.level === "tools") partialPublications.push(state);
+      if (
+        state.hubLoading &&
+        state.hub.desktop?.config.content.kind === "preset" &&
+        state.hub.desktop.config.content.level === "tools"
+      )
+        partialPublications.push(state);
     });
     await store.getState().refreshHubDefaults();
 
     expect(partialPublications).toHaveLength(0);
     expect(publications).toHaveLength(1);
-    expect(publications[0]).toMatchObject({
+    const [publication] = publications;
+    if (publication === undefined) throw new Error("expected exactly one publication");
+    expect(publication).toMatchObject({
       loaded: true,
       hub: {
         desktop: hubDefault(3, proposed),
@@ -558,7 +611,7 @@ describe("the direct write", () => {
       },
       drafts: { desktop: proposed },
     });
-    expect(publications[0].drafts.mobile).toBeUndefined();
+    expect(publication.drafts.mobile).toBeUndefined();
     unsubscribe();
     reply.resolve({ layout: "desktop", revision: 3, config: toWireConfig(proposed) });
     await write;
@@ -664,6 +717,7 @@ describe("the direct write", () => {
     client.on(patchMethod, () => {
       throw new WireError("sync transcript display state: boom", -32603, {
         evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "mobile",
         applied: { ...toWireDefault(hubDefault(4, mobileConfig)), futureField: "ignored" },
       });
     });
@@ -685,6 +739,7 @@ describe("the direct write", () => {
       });
       throw new WireError("sync transcript display state: boom", -32603, {
         evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "mobile",
         applied: toWireDefault(hubDefault(3, proposed)),
       });
     });
@@ -692,6 +747,23 @@ describe("the direct write", () => {
     expect(applied).toEqual(hubDefault(7, mobileConfig));
     expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
     expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a post-apply payload naming another layout is not this write's answer", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("sync transcript display state: boom", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "desktop",
+        applied: toWireDefault(hubDefault(4, mobileConfig)),
+      });
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(store.getState().hubErrors.mobile).toEqual("sync transcript display state: boom");
   });
 
   test("an internal PATCH failure reconciles the canonical state through GET", async () => {
