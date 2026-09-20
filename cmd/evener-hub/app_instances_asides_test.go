@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3652,6 +3653,284 @@ func TestInstances_RemoveRollsBackALandedCommitWhoseSyncFailed(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveToleratesADirectorySyncTheFilesystemCannotDo: fsync on a
+// directory is not something every filesystem can do - a network or FUSE mount
+// answers ENOSYS, ENOTSUP or EINVAL - and there the sync asks for a durability
+// step the filesystem has no way to take. Every step of the removal itself still
+// landed, so failing the mutation would refuse a removal on a filesystem that is
+// merely unable to promise what the sync asks; the unsupported answers are
+// tolerated the way the deletion log tolerates them
+// (hubcore.deletionSyncUnsupported), and the removal lands.
+func TestInstances_RemoveToleratesADirectorySyncTheFilesystemCannotDo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"ENOSYS", syscall.ENOSYS},
+		{"ENOTSUP", syscall.ENOTSUP},
+		{"EINVAL", syscall.EINVAL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInstancesFixture(t, nil)
+			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+				t.Fatalf("SaveAuth: %v", err)
+			}
+			// Every directory sync this removal takes answers the way a
+			// filesystem without directory fsync does.
+			syncDirHook = func(string) error { return tc.err }
+			defer func() { syncDirHook = nil }()
+
+			if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+				t.Fatalf("Remove with every directory sync answering %v = %v, want the removal to land: the rename it is reporting as a failure landed, and this filesystem cannot do the durability step", tc.name, err)
+			}
+			cfg, rerr := os.ReadFile(f.tomlPath)
+			if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				t.Fatalf("read providers.toml: %v", rerr)
+			}
+			if strings.Contains(string(cfg), "providers.work") {
+				t.Fatalf("providers.toml still carries [providers.work] (%q), want the removal to have landed", cfg)
+			}
+		})
+	}
+}
+
+// TestInstances_RemovePutsBackTheCopyItParkedWhenTheParkSyncFailed: the park's
+// rename can land and then its directory sync fail. The removal is refused right
+// there - nothing has been deleted - and the record it wrote is abandoned, since
+// the mutation never started. But by then the copy IS parked, and for an instance
+// whose only credential is that record (a credential-only instance has no config
+// entry to carry it) a parked copy with no record of its own is debris startup
+// DELETES: the refusal would destroy the very credential it preserved. The parked
+// name therefore comes back with the failure, and the removal puts those bytes
+// back before it abandons anything.
+func TestInstances_RemovePutsBackTheCopyItParkedWhenTheParkSyncFailed(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk-the-only-credential"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if err := os.MkdirAll(oauthDir(f), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "groq", makeOAuthRecord("groq", "groq@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	dir := oauthDir(f)
+	// The sync after the park's rename is the one that fails: the copy is parked
+	// by the time the hook sees it, and the removal has deleted nothing yet.
+	syncDirHook = func(d string) error {
+		if d != dir {
+			return nil
+		}
+		entries, _ := os.ReadDir(d)
+		for _, e := range entries {
+			if inst, _, ok := parseOAuthAside(e.Name()); ok && inst == "groq" {
+				return errors.New("sync injected to fail")
+			}
+		}
+		return nil
+	}
+	defer func() { syncDirHook = nil }()
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err == nil {
+		t.Fatal("Remove = nil, want the failed park reported")
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "groq")); statErr != nil {
+		t.Fatalf("the parked record was not put back (%v): the removal was refused, and startup reads a parked copy with no record of its own as debris and deletes the credential", statErr)
+	}
+	for _, e := range mustReadDir(t, dir) {
+		if inst, _, ok := parseOAuthAside(e.Name()); ok && inst == "groq" {
+			t.Fatalf("the copy is still parked as %s, want it back at the instance's record path", e.Name())
+		}
+	}
+	// Nothing changed, so the next start has nothing to resolve - and, above all,
+	// nothing of the refused removal's to delete.
+	if _, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); rerr != nil {
+		t.Fatalf("startup recovery after the refused removal = %v, want nothing to resolve", rerr)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "groq")); statErr != nil {
+		t.Fatalf("startup recovery deleted the record of a removal that was refused (%v)", statErr)
+	}
+	if key, ok := f.store.Get("groq"); !ok || key != "gk-the-only-credential" {
+		t.Fatalf("the stored key = (%q, %v), want the user's only credential still filed", key, ok)
+	}
+}
+
+// mustReadDir reads a directory a test has already created.
+func mustReadDir(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	return entries
+}
+
+// TestRestoreUncommittedOAuthAsidesFinishesARenameWhoseKeyAlreadyMoved: a pass
+// that reached the rename's key move and then reported a problem leaves the key
+// filed under the new name with the record still waiting. The next pass sees a
+// key under the new name - the RENAME'S OWN, which that move put there, not one
+// the user supplied afterwards - and must finish the rename. Refusing there is a
+// state no pass can leave: the record could never be spent, the credential would
+// stay filed under a name the config no longer points at, and every start would
+// demand a key be cleared that the rename itself put there.
+func TestRestoreUncommittedOAuthAsidesFinishesARenameWhoseKeyAlreadyMoved(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	// Exactly what the interrupted pass's Store.Move left: the key under the new
+	// name, nothing under the old one.
+	if err := f.store.Set("personal", "sk-the-renames-own-key"); err != nil {
+		t.Fatalf("Set(personal): %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	record := renameAt(t, f, "work", "personal", "1757000000000000000")
+
+	_, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the rename finished: the key under the new name is the one this rename already moved", err)
+	}
+	if key, ok := f.store.Get("personal"); !ok || key != "sk-the-renames-own-key" {
+		t.Fatalf("the stored key under \"personal\" = (%q, %v), want the rename's own key left where the rename put it", key, ok)
+	}
+	if _, statErr := os.Lstat(record); statErr == nil {
+		t.Fatalf("the rename record %s was kept, want it spent once the rename finished", record)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record is still filed under the old name (Lstat = %v), want it carried to the new one", statErr)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "personal")); statErr != nil {
+		t.Fatalf("the record was not carried to the new name (%v), want the whole rename finished", statErr)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesSpendsAStagingLeftUnderTheInFlightName: a
+// record is renamed to its landed name at its commit point and the stored key
+// staged beside it is not - the two are separate renames, so a crash between them
+// leaves the staging beside a LANDED record while it is still filed under the
+// in-flight name. Recovery pairs a staging with its record by name
+// (removedKeyPath), so a staging path that follows the record's landed phase is
+// invisible to the pass reading the landed record: it is never spent with a
+// standing removal and never put back with one that did not stand, and the bytes
+// of a key it cleared sit on disk beside a removal no reader connects them to.
+// One record's staging has ONE name, whichever phase its record is in.
+func TestRestoreUncommittedOAuthAsidesSpendsAStagingLeftUnderTheInFlightName(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.other]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	const stamp = int64(1757000000000000000)
+	// A standing removal: its record is landed and the config no longer carries
+	// the name, so the key it cleared is gone with it and the staging is spent.
+	record := removalAt(t, f, "work", true, true, strconv.FormatInt(stamp, 10))
+	staging := removedKeyPath(filepath.Join(oauthDir(f), oauthIntentName("work", stamp)))
+	if err := os.WriteFile(staging, []byte("sk-the-removed-key\n"), 0o600); err != nil {
+		t.Fatalf("write the staging: %v", err)
+	}
+	if want := filepath.Join(oauthDir(f), oauthIntentName("work", stamp)+oauthKeySidecar); staging != want {
+		t.Fatalf("fixture: the staging %s is not the name a crash between the record's landing and the staging's own move leaves (%s)", staging, want)
+	}
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the standing removal resolved", err)
+	}
+	if _, statErr := os.Lstat(record); statErr == nil {
+		t.Fatalf("the landed record %s was kept, want it spent", record)
+	}
+	if _, statErr := os.Lstat(staging); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the staging %s survived (Lstat = %v), want it spent with the standing removal: a crash between the record's landing and the staging's own move is what files it under the in-flight name", staging, statErr)
+	}
+}
+
+// TestInstances_RemoveFinishesARenameIntoTheNameItRemoves: a rename of another
+// instance ONTO this name that never finished keeps that instance's credential
+// under the OLD name while the config already carries this one - the config is
+// written before any credential moves. Removing this name takes away the entry
+// that credential is being carried to, and the next start then reads the rename
+// as one that never landed (the config no longer carries the new name), spends
+// its record without moving anything, and leaves the credential stranded under a
+// name neither the config nor any pass reads. The rename path resolves an
+// unfinished rename into the name it is about to take (finishPendingRename); a
+// removal takes that name away, so it resolves it too - finishing the rename
+// first, so the credential it was carrying is deleted by the removal the user
+// asked for rather than left behind.
+func TestInstances_RemoveFinishesARenameIntoTheNameItRemoves(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "personal", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The interrupted rename's half: the credential is still filed under the name
+	// it came from, and the config already carries the name it was going to.
+	if err := f.store.Set("work", "sk-the-rename-in-flight"); err != nil {
+		t.Fatalf("Set(work): %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	renameAt(t, f, "work", "personal", "1757000000000000000")
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "personal"}); err != nil {
+		t.Fatalf("Remove = %v, want the removal to land: an unfinished rename into the name is resolved first", err)
+	}
+	if key, ok := f.store.Get("work"); ok {
+		t.Fatalf("the stored key of the unfinished rename is still filed under \"work\" as %q, want the removal to carry it out: no config carries either name now", key)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record of the unfinished rename is still filed under \"work\" (Lstat = %v), want the removal to carry it out", statErr)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "personal")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record is still filed under \"personal\" (Lstat = %v), want the removal to have deleted the credential it carried", statErr)
+	}
+	if names := intentNames(t, f); len(names) != 0 {
+		t.Fatalf("the intent records %v survived the removal, want the rename resolved and every record of the removal spent", names)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesResolvesTheOldNameOfARenameThatNeverLanded:
+// a rename record whose config never reached the new name is spent by the pass -
+// the rename did not happen - and the only reason the old name was held out of
+// the one rule goes with it. Marking the old name rename-owned for the whole pass
+// (the mark is set before the completion runs) leaves its parked copies
+// unclassified: a copy of a name the config still carries IS the instance's
+// credential, so a pass that skips it leaves the credential parked under a name
+// no reader reads, and the next pass - with the record gone - reads those bytes
+// as debris and deletes them.
+func TestRestoreUncommittedOAuthAsidesResolvesTheOldNameOfARenameThatNeverLanded(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	// The rename never landed: the config still names the OLD instance only, so
+	// the record is the pre-commit-point one.
+	parked := parkedAt(t, f, "work", "1757000000000000000", "the credential this instance parked\n")
+	record := renameAt(t, f, "work", "personal", "1757000000000000001")
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the name resolved", err)
+	}
+	if _, statErr := os.Lstat(record); statErr == nil {
+		t.Fatalf("the rename record %s was kept, want it spent: the config never reached %q, so the rename did not happen", record, "personal")
+	}
+	got, rerr := os.ReadFile(authopenai.AuthFilePath(f.stateDir, "work"))
+	if rerr != nil {
+		t.Fatalf("the copy the name parked was not put back (%v): with the rename spent nothing else owns %q, so the one rule has to resolve its credential", rerr, "work")
+	}
+	if string(got) != "the credential this instance parked\n" {
+		t.Fatalf("the record at %q = %q, want the parked bytes", authopenai.AuthFilePath(f.stateDir, "work"), got)
+	}
+	if _, statErr := os.Lstat(parked); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the copy is still parked at %s (Lstat = %v), want it back at the instance's record path", parked, statErr)
+	}
+}
+
 // TestRestoreUncommittedOAuthAsidesRefusesToOverwriteAStoredKeyUnderTheNewName:
 // finishing a rename moves the stored key in the live store, and Store.Move
 // replaces its destination. A key filed under the NEW name is the user's - they
@@ -3793,8 +4072,11 @@ func TestRestoreUncommittedOAuthAsidesSpendsAStoredKeyAStandingRemovalStaged(t *
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 	parkedAt(t, f, "openai-codex", "1757000000000000000", "the credential the standing removal deleted\n")
 	record := removalAt(t, f, "openai-codex", false, true, "1757000000000000000")
-	if err := os.WriteFile(record+".key", []byte("sk-the-removed-key"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", record+".key", err)
+	// The staging the removal wrote before the record landed: its own name is the
+	// one the record's (instance, stamp) pair gives, not the landed name's.
+	staging := removedKeyPath(record)
+	if err := os.WriteFile(staging, []byte("sk-the-removed-key"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", staging, err)
 	}
 
 	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
@@ -3803,8 +4085,8 @@ func TestRestoreUncommittedOAuthAsidesSpendsAStoredKeyAStandingRemovalStaged(t *
 	if key, ok := f.store.Get("openai-codex"); ok {
 		t.Fatalf("the stored key of a removal that stood came back as %q, want it left deleted", key)
 	}
-	if _, statErr := os.Lstat(record + ".key"); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("the staged key survives at %s (Lstat = %v), want it spent with the standing removal", record+".key", statErr)
+	if _, statErr := os.Lstat(staging); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the staged key survives at %s (Lstat = %v), want it spent with the standing removal", staging, statErr)
 	}
 }
 

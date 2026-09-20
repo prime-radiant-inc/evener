@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"primeradiant.com/evener/llm/registry"
 )
@@ -333,13 +334,12 @@ func landOAuthIntent(path string) (string, error) {
 	if err := renameNoReplace(path, landedPath); err != nil {
 		return path, err
 	}
-	// A stored key staged beside the record (a removal stages one, oauthKeySidecar)
-	// is part of the record's durable state and moves with it: recovery pairs the
-	// two by name, so a staging left under the in-flight name would be left behind
-	// the moment the record lands.
-	if err := moveStagedRemovalKey(path, landedPath); err != nil {
-		return landedPath, err
-	}
+	// The stored key staged beside the record (a removal stages one,
+	// oauthKeySidecar) needs no move of its own here: its name is the record's
+	// (instance, stamp) pair and not its phase (removedKeyPath), so the bytes stay
+	// paired with the record whichever name the record is filed under. A staging
+	// that travelled with this rename could be stranded by a crash between the two
+	// renames, under a name nothing pairs with a record and nothing ever spends.
 	if err := syncDir(filepath.Dir(path)); err != nil {
 		return landedPath, err
 	}
@@ -371,9 +371,8 @@ func unlandOAuthIntent(path string) (string, error) {
 	if err := renameNoReplace(path, inFlight); err != nil {
 		return path, err
 	}
-	if err := moveStagedRemovalKey(path, inFlight); err != nil {
-		return inFlight, err
-	}
+	// The staging needs no move back for the same reason it needed none on the
+	// way in: it is named for the record's (instance, stamp) pair, not its phase.
 	if err := syncDir(filepath.Dir(path)); err != nil {
 		return inFlight, err
 	}
@@ -383,17 +382,29 @@ func unlandOAuthIntent(path string) (string, error) {
 // syncDirHook, when set, is consulted before each directory sync. It observes
 // the sync - what has already happened on disk when it runs is the ordering a
 // test cannot see after the fact - and an error from it fails that sync, so a
-// test can inject one. It is nil in production.
+// test can inject one. An injected error goes through the same
+// dirSyncFailure every real sync does, so the answers a filesystem without
+// directory fsync gives (dirSyncUnsupported) can be pinned through it. It is nil
+// in production.
 var syncDirHook func(dir string) error
 
 // syncDir fsyncs a directory, so a rename that has just published (or withdrawn)
 // a record survives a power failure. A directory the process cannot open is not
 // a failure of the mutation - the rename itself landed, and the next start reads
 // the directory as it is - so an open failure is reported, not enforced.
+//
+// Neither is a filesystem that has no directory fsync to offer: there the sync
+// asks for a durability step the filesystem cannot take, and every step of the
+// mutation itself landed, so failing would refuse every removal and every rename
+// on such a mount (a network or FUSE filesystem answers ENOSYS, ENOTSUP or
+// EINVAL) over a promise this process has no way to keep. The unsupported answers
+// are tolerated the way the deletion log tolerates them
+// (hubcore.deletionSyncUnsupported); every other failure is reported, and the
+// caller decides what a step it could not make durable means for the mutation.
 func syncDir(dir string) error {
 	if syncDirHook != nil {
 		if err := syncDirHook(dir); err != nil {
-			return err
+			return dirSyncFailure(err)
 		}
 	}
 	f, err := os.Open(dir)
@@ -401,7 +412,32 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return f.Sync()
+	return dirSyncFailure(f.Sync())
+}
+
+// dirSyncFailure maps the outcome of a directory sync to the one thing its
+// callers act on: nil for a sync that happened and for one the filesystem has no
+// way to do, and the failure itself for anything else. Both entry points into a
+// sync - the real fsync and the test seam - go through it, so what the callers
+// tolerate cannot depend on which one reported.
+func dirSyncFailure(err error) error {
+	if err == nil || dirSyncUnsupported(err) {
+		return nil
+	}
+	return err
+}
+
+// dirSyncUnsupported reports whether a directory sync failed because the
+// filesystem cannot do one. The set is the deletion log's
+// (hubcore.deletionSyncUnsupported): ENOSYS and ENOTSUP where the operation is
+// not implemented at all, and EINVAL where it is refused as one this file type
+// does not support. A filesystem that cannot sync a directory is not a mutation
+// that failed, and the callers of syncDir treat the tolerated answers as the
+// sync having been taken care of.
+func dirSyncUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EINVAL)
 }
 
 // removeOAuthIntent removes one intent record once its mutation is resolved. A
@@ -415,6 +451,15 @@ func removeOAuthIntent(path string) error {
 		return err
 	}
 	return nil
+}
+
+// intentStillFiled reports whether a mutation's record is still on disk, which is
+// what tells a caller that a later pass still owns the mutation it describes: a
+// record is spent (removeOAuthIntent) exactly when its mutation is resolved, so a
+// caller that finds it gone has nothing left to hold anything back for.
+func intentStillFiled(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // oauthAsideStampText returns the stamp text a parked copy's name carries. The

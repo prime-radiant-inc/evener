@@ -1711,6 +1711,23 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		return err
 	}
 
+	// A rename ONTO this name that never finished still has its credential filed
+	// under the name it came from, because the config is written before any
+	// credential moves. The removal below takes away the entry that credential is
+	// being carried to, and the next start would then read the rename as one that
+	// never landed - the config it asks no longer carries the new name - and spend
+	// its record without moving anything, leaving the credential stranded under a
+	// name neither the config nor any recovery pass reads. The rename path resolves
+	// an unfinished rename into the name it is about to take (finishPendingRename)
+	// for the same reason; a removal takes that name away, so it resolves it too,
+	// and refuses rather than deleting the name a credential is still being
+	// carried to. Resolution runs before anything here is mutated, and it changes
+	// no config: the rename landed in providers.toml already, or its completion
+	// would have been refused.
+	if pending := c.finishPendingRename(name, l, nil); len(pending) > 0 {
+		return appwire.Conflict(fmt.Sprintf("removing %q cannot start while a rename into it is unfinished: %s", name, strings.Join(pending, "; ")))
+	}
+
 	// The confirmation this removal carries names the row the client listed, so
 	// a name another client has re-pointed since (a removal and a recreation
 	// under it, or an edit to its base_url) is refused rather than having its
@@ -1775,6 +1792,19 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		// Nothing has been deleted yet, so the removal has nothing to recover:
 		// the record it just wrote must not outlive the refusal.
+		//
+		// A park that failed AFTER its rename landed hands back the name the copy
+		// was parked under, and those bytes go back before anything is abandoned:
+		// a credential-only instance has no config entry to carry it, so a parked
+		// copy whose record is gone is debris the next start deletes - a refused
+		// removal destroying the credential it refused to remove. A copy that
+		// cannot be put back keeps the record instead, so the pass that can
+		// resolve it finds both it and the bytes staged beside it.
+		if oauthAside != "" {
+			if backErr := c.putParkedOAuthRecordBack(name, oauthAside); backErr != nil {
+				return fmt.Errorf("%w; the instance's OAuth record is parked under %s and could not be put back (%w), so the record %s was kept for startup recovery", err, oauthAside, backErr, intentPath)
+			}
+		}
 		return c.abandonIntent(intentPath, err)
 	}
 
@@ -2673,7 +2703,13 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	// before anything is deleted: the caller abandons the record it wrote, and
 	// the copy it parked is an orphan the config decides.
 	if err := syncDir(filepath.Dir(path)); err != nil {
-		return "", fmt.Errorf("remove %s: sync %s so the name the copy was just parked under is durable before the removal deletes anything: %w", name, filepath.Dir(path), err)
+		// The rename landed, so these bytes ARE parked; only its durability is
+		// unproven. The removal is refused here and has deleted nothing, so the
+		// name the copy now holds goes back with the failure: the caller puts the
+		// bytes where it found them (or, when it cannot, keeps the record that
+		// still names the copy), and either way startup never reads a credential
+		// this refusal preserved as debris of a removal that stood.
+		return aside, fmt.Errorf("remove %s: sync %s so the name the copy was just parked under is durable before the removal deletes anything: %w", name, filepath.Dir(path), err)
 	}
 	// The step that takes the record away records the change the instance
 	// mutation stands for - this is the primitive's equivalent of the stored-key
@@ -2682,6 +2718,21 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	// cannot put it back is an applied change whatever else fails.
 	c.applied.markApplied()
 	return aside, nil
+}
+
+// putParkedOAuthRecordBack returns a copy a refused removal parked to the name
+// the instance's record belongs at, and syncs the directory so the name it is
+// filed under survives a power failure. It is a no-replace move for the reason
+// the park is: bytes at the canonical path are whoever wrote them - a sign-in
+// that raced this removal - and undoing a park must not destroy them. The caller
+// keeps the removal's record when this fails, so the pass that can resolve the
+// copy finds it and the bytes staged beside it.
+func (c *hubInstancesController) putParkedOAuthRecordBack(name, parked string) error {
+	target := authopenai.AuthFilePath(c.auth.stateDir, name)
+	if err := renameNoReplace(parked, target); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(target))
 }
 
 // maxAsideStamp is the largest stamp a copy name can carry. The searches refuse
@@ -2956,7 +3007,9 @@ func (c *hubInstancesController) readIntents() ([]oauthIntentFile, error) {
 // Provider when it reads back. Both halves are idempotent - Store.Move is a
 // no-op when the old name holds nothing, and the carry moves only what is still
 // filed under the old name - so it is safe at every crash point and on every
-// start. It reports whether it moved anything, which is what asks the caller for
+// start: the overwrite guard below refuses only a move that would happen, so a
+// rename whose key is already filed under the new name is finished rather than
+// refused. It reports whether it moved anything, which is what asks the caller for
 // the reload that publishes it, and what it could not finish; the record is
 // spent only when the whole move landed.
 //
@@ -2996,8 +3049,18 @@ func completeRenameIntentAt(stateDir string, store *credentials.Store, intentPat
 	// recovery must not do what the live path refuses: the move is refused, the
 	// key that blocks it is named, and the record stays for the pass that can
 	// finish the rename once the destination is clear.
-	if _, taken := store.Get(newName); taken {
-		return false, []string{fmt.Sprintf("finish the rename of %q to %q: a stored key is already filed under %q, and moving this rename's key onto it would overwrite it; clear that key to let the rename finish", oldName, newName, newName)}
+	//
+	// The refusal belongs to a move that would happen. With nothing filed under
+	// the old name there is no move to make - Store.Move is a documented no-op
+	// then - and a key under the new name can only be this rename's OWN: the pass
+	// that moved it reached the move and then reported a problem, which is what
+	// kept the record for this pass. Reading it as the user's would refuse for
+	// ever over a state a previous pass created, leaving the credential filed
+	// under a name the config no longer points at.
+	if _, moving := store.Get(oldName); moving {
+		if _, taken := store.Get(newName); taken {
+			return false, []string{fmt.Sprintf("finish the rename of %q to %q: a stored key is already filed under %q, and moving this rename's key onto it would overwrite it; clear that key to let the rename finish", oldName, newName, newName)}
+		}
 	}
 	// One persist, so the key is never briefly filed under both names or neither.
 	if err := store.Move(oldName, newName); err != nil {
@@ -3500,12 +3563,21 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 		if f.parseErr != nil || f.intent.op != oauthOpRename || held[f.inst] {
 			continue
 		}
-		renamed[f.inst] = true
 		moved, more := completeRenameIntentAt(stateDir, store, f.path, f.intent.inst, f.intent.new, layer, cfgErr)
 		if moved {
 			restored = true
 		}
 		problems = append(problems, more...)
+		// The old name is rename-owned only while a pass will still complete the
+		// rename. A record the config says never landed is spent by the call above,
+		// and nothing will come for the copies this skip holds back: they are the
+		// instance's credential again, and the one rule has to classify them. A
+		// record kept for a later pass (a config that could not be read, no store to
+		// move a key with, a move that failed, a key blocking it) still owns the name
+		// and still holds its copies back.
+		if moved || intentStillFiled(f.path) {
+			renamed[f.inst] = true
+		}
 	}
 	// Every other name is resolved by the one rule.
 	for _, name := range order {
@@ -3812,24 +3884,24 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 const oauthKeySidecar = ".key"
 
 // removedKeyPath names the file that stages the stored key of the removal whose
-// record is intentPath.
+// record is intentPath. The name does NOT follow the record's phase: the record
+// is renamed to its landed name at its commit point, and a staging whose own name
+// travelled with that rename would be left behind by a crash between the two -
+// filed under a name no record pairs with, where the copy rules skip it and no
+// pass ever spends it. Both phases of one record therefore share one staging
+// name: the in-flight record's own name plus oauthKeySidecar.
 func removedKeyPath(intentPath string) string {
-	return intentPath + oauthKeySidecar
-}
-
-// moveStagedRemovalKey carries a removal's staged stored key to the name its
-// record now holds, so the record and the bytes staged beside it are always
-// paired by name. No staging at the source is the ordinary case for a rename's
-// record and for a removal with no stored key.
-func moveStagedRemovalKey(fromRecordPath, toRecordPath string) error {
-	from, to := removedKeyPath(fromRecordPath), removedKeyPath(toRecordPath)
-	if err := renameNoReplace(from, to); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+	dir, name := filepath.Split(intentPath)
+	if _, _, landed, ok := parseOAuthIntent(name); ok && landed {
+		// The parser reads the TRAILING phase marker (an instance name may itself
+		// hold the marker, which is why the grammar reads names that way), so the
+		// splice takes the same one: directory, instance and stamp are kept, and
+		// only the phase marker becomes the in-flight one.
+		if i := strings.LastIndex(name, oauthLandedMarker); i >= 0 {
+			name = name[:i] + oauthIntentMarker + name[i+len(oauthLandedMarker):]
 		}
-		return err
 	}
-	return nil
+	return filepath.Join(dir, name) + oauthKeySidecar
 }
 
 // stageRemovalKey durably stages the stored key a removal is about to clear.
