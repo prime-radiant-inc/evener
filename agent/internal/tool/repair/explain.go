@@ -2252,8 +2252,8 @@ func unsatType(v any) bool {
 // for a lower bound. A bound that does not parse as an integer leaves the
 // base's declaration in place, matching how constraintMessage reads it.
 func tighterBound(base, overlay any, upper bool) any {
-	bi, bok := schemaInt(base)
-	oi, ook := schemaInt(overlay)
+	bf, bok := schemaFloat(base)
+	of, ook := schemaFloat(overlay)
 	if !bok || !ook {
 		if base != nil {
 			return base
@@ -2261,12 +2261,12 @@ func tighterBound(base, overlay any, upper bool) any {
 		return overlay
 	}
 	if upper {
-		if oi < bi {
+		if of < bf {
 			return overlay
 		}
 		return base
 	}
-	if oi > bi {
+	if of > bf {
 		return overlay
 	}
 	return base
@@ -3853,31 +3853,29 @@ func exampleBoundsValid(m map[string]any, typ string) bool {
 	if m == nil {
 		return true
 	}
-	// A same-node enum/const value set governs the placeholder: the renderer
-	// emits an actual member (examplePropertyPlaceholder), which satisfies the
-	// set, so only an empty (unsatisfiable) set makes the example unprovable.
-	// Keep this in step with examplePlaceholderSatisfies (issue #622 review).
-	if _, ok := m["const"]; ok {
-		return true
-	}
-	if list := valueList(m["enum"]); list != nil {
-		return len(list) > 0
+	// A same-node enum/const value set is rendered as an actual member that also
+	// satisfies the schema's modelable constraints (examplePropertyPlaceholder /
+	// exampleValueSetMember). When no member can be proven valid the example is
+	// unprovable, so the guard returns false (issue #622 review).
+	if _, hasEnum := m["enum"]; hasEnum || m["const"] != nil {
+		_, ok := exampleValueSetMember(m)
+		return ok
 	}
 	if declared, present := m["type"]; present && !valueMatchesTypes(examplePlaceholderValue(typ), typeNames(declared)) {
 		return false
 	}
 	switch typ {
 	case "integer", "number":
-		if n, ok := schemaInt(m["minimum"]); ok && 0 < n {
+		if n, ok := schemaFloat(m["minimum"]); ok && 0 < n {
 			return false
 		}
-		if n, ok := schemaInt(m["exclusiveMinimum"]); ok && 0 <= n {
+		if n, ok := schemaFloat(m["exclusiveMinimum"]); ok && 0 <= n {
 			return false
 		}
-		if n, ok := schemaInt(m["maximum"]); ok && 0 > n {
+		if n, ok := schemaFloat(m["maximum"]); ok && 0 > n {
 			return false
 		}
-		if n, ok := schemaInt(m["exclusiveMaximum"]); ok && 0 >= n {
+		if n, ok := schemaFloat(m["exclusiveMaximum"]); ok && 0 >= n {
 			return false
 		}
 	case "string", "":
@@ -3912,28 +3910,27 @@ func examplePlaceholderValid(m map[string]any, typ string) bool {
 	if m == nil {
 		return true
 	}
-	// The renderer emits an actual member of a same-node enum/const set, which
-	// satisfies it; only an empty set is unprovable.
-	if _, ok := m["const"]; ok {
-		return true
-	}
-	if list := valueList(m["enum"]); list != nil {
-		return len(list) > 0
+	// The renderer emits a member of a same-node enum/const set that satisfies
+	// the schema's modelable constraints; when none can be proven valid the
+	// example is unprovable.
+	if _, hasEnum := m["enum"]; hasEnum || m["const"] != nil {
+		_, ok := exampleValueSetMember(m)
+		return ok
 	}
 	if declared, present := m["type"]; present && !valueMatchesTypes(examplePlaceholderValue(typ), typeNames(declared)) {
 		return false
 	}
 	if typ == "integer" || typ == "number" {
-		if n, ok := schemaInt(m["minimum"]); ok && 0 < n {
+		if n, ok := schemaFloat(m["minimum"]); ok && 0 < n {
 			return false
 		}
-		if n, ok := schemaInt(m["exclusiveMinimum"]); ok && 0 <= n {
+		if n, ok := schemaFloat(m["exclusiveMinimum"]); ok && 0 <= n {
 			return false
 		}
-		if n, ok := schemaInt(m["maximum"]); ok && 0 > n {
+		if n, ok := schemaFloat(m["maximum"]); ok && 0 > n {
 			return false
 		}
-		if n, ok := schemaInt(m["exclusiveMaximum"]); ok && 0 >= n {
+		if n, ok := schemaFloat(m["exclusiveMaximum"]); ok && 0 >= n {
 			return false
 		}
 	}
@@ -4022,20 +4019,65 @@ func examplePropertyPlaceholder(prop any, typ string) string {
 	return exampleValue(prop, typ)
 }
 
-// exampleValueSetMember returns the value the renderer uses for a schema's
-// same-node enum/const set: the const, or the first enum member. ok is false
-// when the schema declares neither, or declares an empty (unsatisfiable) set.
+// exampleValueSetMember returns a member of a schema's same-node enum/const
+// value set that also satisfies its modelable constraints (type, string length,
+// pattern, numeric bounds). ok is false when the schema declares no value set,
+// declares an empty one, or no member can be proven valid — so the caller omits
+// the example rather than coach a rejected value (issue #622 review).
 func exampleValueSetMember(m map[string]any) (any, bool) {
 	if c, ok := m["const"]; ok {
-		return c, true
+		if exampleMemberSatisfies(m, c) {
+			return c, true
+		}
+		return nil, false
 	}
 	if list := valueList(m["enum"]); list != nil {
-		if len(list) == 0 {
-			return nil, false
+		for _, v := range list {
+			if exampleMemberSatisfies(m, v) {
+				return v, true
+			}
 		}
-		return list[0], true
+		return nil, false
 	}
 	return nil, false
+}
+
+// exampleMemberSatisfies reports whether a candidate value satisfies the
+// modelable constraints a property schema carries alongside its enum/const set:
+// declared type, string length bounds, a string pattern, and numeric bounds.
+func exampleMemberSatisfies(m map[string]any, v any) bool {
+	if declared, present := m["type"]; present && !valueMatchesTypes(v, typeNames(declared)) {
+		return false
+	}
+	if s, ok := v.(string); ok {
+		n := utf8.RuneCountInString(s)
+		if lim, ok := schemaInt(m["minLength"]); ok && n < lim {
+			return false
+		}
+		if lim, ok := schemaInt(m["maxLength"]); ok && n > lim {
+			return false
+		}
+		if pat, ok := m["pattern"].(string); ok {
+			if matched, err := regexp.MatchString(pat, s); err != nil || !matched {
+				return false
+			}
+		}
+	}
+	if f, ok := schemaFloat(v); ok {
+		if lim, ok := schemaFloat(m["minimum"]); ok && f < lim {
+			return false
+		}
+		if lim, ok := schemaFloat(m["exclusiveMinimum"]); ok && f <= lim {
+			return false
+		}
+		if lim, ok := schemaFloat(m["maximum"]); ok && f > lim {
+			return false
+		}
+		if lim, ok := schemaFloat(m["exclusiveMaximum"]); ok && f >= lim {
+			return false
+		}
+	}
+	return true
 }
 
 // exampleValue renders a property's placeholder: examplePlaceholder for

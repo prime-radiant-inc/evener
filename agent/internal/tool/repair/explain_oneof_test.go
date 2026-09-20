@@ -1458,3 +1458,82 @@ func TestPropertyForbidden_PatternPropertiesOnDeclaredProperty(t *testing.T) {
 		t.Fatal("declared property matched by patternProperties:false not forbidden")
 	}
 }
+
+// An enum member chosen for an Example must satisfy the property's other
+// modelable constraints, so a member the schema rejects is never rendered.
+func TestExampleForParams_EnumMemberSatisfiesOtherConstraints(t *testing.T) {
+	lengthSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"speed"},
+		"properties": map[string]any{
+			"speed": map[string]any{"type": "string", "enum": []string{"verbose", "fast"}, "maxLength": 4},
+		},
+	}
+	got := exampleForParams(lengthSchema)
+	if !strings.Contains(got, `"fast"`) || strings.Contains(got, `"verbose"`) {
+		t.Fatalf("example must pick the enum member satisfying maxLength: %q", got)
+	}
+	patternSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "enum": []string{"bad", "good"}, "pattern": "^good$"},
+		},
+	}
+	if got := exampleForParams(patternSchema); !strings.Contains(got, `"good"`) || strings.Contains(got, `"bad"`) {
+		t.Fatalf("example must pick the enum member satisfying pattern: %q", got)
+	}
+	typedSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"n"},
+		"properties": map[string]any{
+			"n": map[string]any{"type": "integer", "enum": []any{"auto", float64(1)}},
+		},
+	}
+	if got := exampleForParams(typedSchema); strings.Contains(got, `"auto"`) || !strings.Contains(got, `1`) {
+		t.Fatalf("example must pick the type-compatible enum member: %q", got)
+	}
+}
+
+// A const the schema otherwise rejects cannot be rendered, so the Example is
+// omitted rather than coaching a value that fails validation.
+func TestExampleForParams_ImpossibleConstOmitsExample(t *testing.T) {
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "const": "toolong", "maxLength": 3},
+		},
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted for a const the schema rejects: %q", got)
+	}
+}
+
+// A fractional minimum must not be truncated to an integer when the placeholder
+// is checked: the numeric placeholder 0 violates minimum 0.5.
+func TestExampleForParams_FractionalMinimumOmitsExample(t *testing.T) {
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"n"},
+		"properties": map[string]any{
+			"n": map[string]any{"type": "number", "minimum": 0.5},
+		},
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted for a value below a fractional minimum: %q", got)
+	}
+}
+
+// tighterBound must keep fractional bounds rather than truncating them.
+func TestTighterBound_PreservesFractional(t *testing.T) {
+	if got := tighterBound(1.1, 1.9, false); got != 1.9 {
+		t.Fatalf("minimum tighter bound = %v, want 1.9", got)
+	}
+	if got := tighterBound(1.9, 1.1, false); got != 1.9 {
+		t.Fatalf("minimum tighter bound = %v, want 1.9", got)
+	}
+	if got := tighterBound(4.4, 4.9, true); got != 4.4 {
+		t.Fatalf("maximum tighter bound = %v, want 4.4", got)
+	}
+}
