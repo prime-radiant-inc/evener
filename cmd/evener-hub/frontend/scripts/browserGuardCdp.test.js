@@ -524,13 +524,14 @@ test("a failed navigate takes the load wait down with it", async () => {
   assert.equal(liveTimers(), before);
 });
 
-// waitForFonts spends TWO bounded phases inside the page - the
-// font-registration poll, then a capped wait for fonts.ready - and their sum
-// must stay well below the evaluate() wrapper's 30000ms ceiling. On #2071's
-// head roborev caught the gap: after a poll consumed its whole deadline, the
-// unbounded fonts.ready await could overrun the outer timer, so a genuinely
-// fontless or font-stalled document died as an opaque Runtime.evaluate
-// timeout instead of one of this guard's actionable diagnostics.
+// waitForFonts runs on one coordinated in-page deadline: the registration
+// poll owns the whole budget and the fonts.ready await races the remainder,
+// capped by FONT_READY_TIMEOUT_MS. RoboRev caught the two gaps this pins:
+// an unbounded fonts.ready await could overrun the evaluate() wrapper's
+// 30000ms ceiling and turn every diagnostic into an opaque Runtime.evaluate
+// timeout, and a registration budget shorter than the observed >10s
+// stylesheet-application windows under load would let the poll expire early
+// and report a still-registering document as fontless.
 
 test("the registration poll and the fonts.ready cap together stay under the evaluate() ceiling", () => {
   assert.ok(
@@ -538,9 +539,18 @@ test("the registration poll and the fonts.ready cap together stay under the eval
     "both in-page budgets must be positive waits, not disabled",
   );
   assert.ok(
-    FONT_POLL_DEADLINE_MS + FONT_READY_TIMEOUT_MS <= 20000,
-    `poll ${FONT_POLL_DEADLINE_MS}ms + ready cap ${FONT_READY_TIMEOUT_MS}ms must leave the 30000ms ` +
-      `evaluate() wrapper headroom, or a fontless document dies as an opaque timeout instead of the diagnostic`,
+    FONT_POLL_DEADLINE_MS > 10000,
+    "the registration poll must cover the observed stylesheet-application windows exceeding 10s under load",
+  );
+  assert.ok(
+    FONT_READY_TIMEOUT_MS <= FONT_POLL_DEADLINE_MS,
+    "the fonts.ready cap must never exceed the shared deadline",
+  );
+  assert.ok(
+    FONT_POLL_DEADLINE_MS <= 20000,
+    `the shared in-page deadline (${FONT_POLL_DEADLINE_MS}ms) bounds every wait in the page, and must leave ` +
+      `the 30000ms evaluate() wrapper headroom, or a fontless document dies as an opaque timeout instead ` +
+      `of the diagnostic`,
   );
 });
 
@@ -571,6 +581,21 @@ test("a fontless document exhausts the poll, then still collects and reports", a
   });
   const result = await collectFontStatusInPage({ pollMs: 0, readyMs: 20 });
   assert.equal(result.stalled, false);
+  assert.deepEqual(result.documents, [{ label: "the top document", faces: [] }]);
+});
+
+test("a fontless document whose fonts.ready hangs reports the stall immediately", async () => {
+  vi.stubGlobal("document", {
+    fonts: { size: 0, ready: new Promise(() => {}), forEach: () => {} },
+    querySelectorAll: () => [],
+  });
+  const started = Date.now();
+  const result = await collectFontStatusInPage({ pollMs: 0, readyMs: 5000 });
+  assert.equal(result.stalled, true);
+  assert.ok(
+    Date.now() - started < 1000,
+    "an exhausted budget must cap fonts.ready at the zero remainder, not at readyMs",
+  );
   assert.deepEqual(result.documents, [{ label: "the top document", faces: [] }]);
 });
 

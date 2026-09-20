@@ -385,26 +385,28 @@ export async function evaluate(send, expression) {
  * stylesheet application that registers the faces misreads "not arrived yet"
  * as "declares none". Under sustained machine load that race fired across
  * guards (overflowguard, then retirementguard) while every case passed
- * standalone. The in-page wait has TWO phases and BOTH must stay comfortably
- * BELOW the evaluate() wrapper's 30000ms ceiling, or the outer timer fires
- * first and a genuinely fontless or font-stalled document reports an opaque
- * Runtime.evaluate timeout instead of the actionable diagnostics below: the
- * registration poll capped at FONT_POLL_DEADLINE_MS, then the fonts.ready
- * await - unbounded while any load hangs - raced against FONT_READY_TIMEOUT_MS
- * and reported as a stall. Their sum is pinned by test at 20000ms, leaving
- * the ceiling 10s of headroom.
+ * standalone. The in-page wait runs on ONE coordinated deadline: the
+ * registration poll owns the whole FONT_POLL_DEADLINE_MS budget - it has to,
+ * because stylesheet application was observed taking more than 10s under
+ * sustained load - and the fonts.ready await, unbounded while any load
+ * hangs, races the budget's REMAINDER, capped at FONT_READY_TIMEOUT_MS, and
+ * reports a stall as data. No wait in the page can outlast FONT_POLL_DEADLINE_MS,
+ * pinned by test at 20000ms so the evaluate() wrapper's 30000ms ceiling
+ * always fires last: a genuinely fontless or font-stalled document reports
+ * one of the actionable diagnostics below, never an opaque timeout.
  */
 
-// How long the in-page registration poll waits for every document's font set
-// to stop being empty before the guard concludes a document declares no web
-// fonts. Registration follows stylesheet application, so this is generous;
-// it only has to lose to the evaluate() ceiling, never win against it.
-export const FONT_POLL_DEADLINE_MS = 12000;
+// The registration poll's deadline, which is also the TOTAL in-page budget:
+// the fonts.ready await below runs on this deadline's remainder. It must
+// cover the stylesheet-application windows observed exceeding 10s under
+// sustained machine load, and it must lose to the evaluate() ceiling, never
+// win against it.
+export const FONT_POLL_DEADLINE_MS = 20000;
 
-// How long the in-page fonts.ready await may take before the guard calls the
-// wait stalled. A font load that hangs never settles, and fonts.ready waits
-// for it forever; without this cap that wait would spend the evaluate()
-// wrapper's whole remaining budget.
+// The most the fonts.ready await may take once the poll exits early. When the
+// poll spends the whole budget waiting on a fontless document, the remainder
+// is zero and the await reports a stalled load immediately instead of
+// hanging on it.
 export const FONT_READY_TIMEOUT_MS = 8000;
 
 // The in-page half of waitForFonts, exported so the wire tests can call it
@@ -427,14 +429,16 @@ export async function collectFontStatusInPage({ pollMs, readyMs }) {
   while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  // fonts.ready is unbounded while any load hangs, so it gets its own cap and
-  // the stall reports as data; clearing the cap timer keeps a settled wait
-  // from holding the guard process open for the loser's remaining ms.
+  // fonts.ready is unbounded while any load hangs, so it is raced against the
+  // shared deadline's remainder (never more than readyMs); a stall reports as
+  // data, and clearing the cap timer keeps a settled wait from holding the
+  // guard process open for the loser's remaining ms.
+  const remaining = Math.max(deadline - Date.now(), 0);
   let readyCap;
   const settled = await Promise.race([
     Promise.all(found.map(({ doc }) => doc.fonts.ready)).then(() => true),
     new Promise((resolve) => {
-      readyCap = setTimeout(() => resolve(false), readyMs);
+      readyCap = setTimeout(() => resolve(false), Math.min(readyMs, remaining));
     }),
   ]).finally(() => clearTimeout(readyCap));
   return {
