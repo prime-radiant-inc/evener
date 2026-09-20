@@ -779,6 +779,61 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.mobile).toEqual("sync transcript display state: boom");
   });
 
+  test("an accepted canonical read clears the layout's stale write error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("boom", -32000);
+    });
+    await expect(store.getState().patchHubDefault("desktop", proposed)).rejects.toThrow("boom");
+    expect(store.getState().hubErrors.desktop).toBe("boom");
+
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(4, proposed)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.desktop).toEqual(hubDefault(4, proposed));
+    expect(store.getState().hubErrors.desktop).toBeUndefined();
+    expect("desktop" in store.getState().hubErrors).toBe(false);
+  });
+
+  test("an accepted change notification clears the layout's stale write error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("boom", -32000);
+    });
+    await expect(store.getState().patchHubDefault("desktop", proposed)).rejects.toThrow("boom");
+    expect(store.getState().hubErrors.desktop).toBe("boom");
+
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "desktop", revision: 4, config: toWireConfig(proposed) },
+    });
+    expect(store.getState().hub.desktop).toEqual(hubDefault(4, proposed));
+    expect(store.getState().hubErrors.desktop).toBeUndefined();
+    expect("desktop" in store.getState().hubErrors).toBe(false);
+  });
+
+  test("a stale canonical read keeps the layout's stale write error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("boom", -32000);
+    });
+    await expect(store.getState().patchHubDefault("desktop", proposed)).rejects.toThrow("boom");
+    expect(store.getState().hubErrors.desktop).toBe("boom");
+
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(2, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
+    expect(store.getState().hubErrors.desktop).toBe("boom");
+  });
+
   test("a preview stranded by a support flap clears when the next read confirms the write did not land", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
