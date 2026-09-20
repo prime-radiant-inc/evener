@@ -1,0 +1,12 @@
+{
+  "captured_utc": "2026-09-20T04:56:49.042809+00:00",
+  "verified_commit": "9642e477fe9a00bd0bdc3c8f3fb32f1793ca799f",
+  "tracked_packet_files": 967,
+  "all_working_files_match_committed_blobs": true,
+  "original_handoff_and_rawreviews_script_present": true,
+  "rawreviews_shell_syntax": "PASS",
+  "secret_scan_all_handoffs": "PASS: 21957504 bytes, no leaks",
+  "remote_archive_count": 129,
+  "remote_archive_shas_verified": true,
+  "review2710_disposition": "Both missing-resource findings resolved by inclusion and tracked-object verification. No claim of a second RoboRev PASS."
+}
