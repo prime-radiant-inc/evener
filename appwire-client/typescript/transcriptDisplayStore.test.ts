@@ -226,6 +226,39 @@ describe("hub defaults", () => {
     expect(store.getState().loaded).toBe(true);
   });
 
+  test("a direct generation replacement fences a notification until its first read confirms", async () => {
+    const client = serving(hubDefault(7, desktopConfig), hubDefault(7, mobileConfig));
+    const store = await readyStore(client);
+    let reads = 1;
+    const first = deferred<TranscriptDisplayDefaults>();
+    let requestStarted!: () => void;
+    const requestObserved = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    client.on(getMethod, () => {
+      reads += 1;
+      if (reads === 2) requestStarted();
+      return reads === 2
+        ? first.promise
+        : {
+            desktop: toWireDefault(hubDefault(9, proposed)),
+            mobile: toWireDefault(hubDefault(9, proposed)),
+          };
+    });
+    store.beginReadyGeneration();
+    const refresh = store.getState().refreshHubDefaults();
+    await requestObserved;
+    store.getState().applyHubChange({ layout: "mobile", revision: 9, config: proposed });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
+    first.resolve({
+      desktop: toWireDefault(hubDefault(8, desktopConfig)),
+      mobile: toWireDefault(hubDefault(8, mobileConfig)),
+    });
+    await refresh;
+    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+    expect(reads).toBe(3);
+  });
+
   test("a change arriving while the first read fails survives to the next successful read", async () => {
     const client = new FakeClient("ready");
     let reads = 0;
