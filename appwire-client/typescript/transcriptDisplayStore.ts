@@ -167,8 +167,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   });
 
   function beginReadyGeneration(): void {
+    const replacingGeneration = fence.generation >= 0;
     beginReadyGenerationCore();
-    if (fence.awaitingFirstPayload && getState().loaded) setState({ loaded: false });
+    if (replacingGeneration) retirePayload();
   }
 
   function detachHub(): void {

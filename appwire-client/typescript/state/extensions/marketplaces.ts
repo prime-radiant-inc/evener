@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClient } from "../../client";
-import { errorText, WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   MarketplaceAddParams,
@@ -89,24 +89,52 @@ export interface MarketplacesStore
 
 export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
 
-/** Extracts the updated list from a marketplaceUnregisteredCloneRemains
- * rejection (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
- * already applied on the hub before its clone's own removal failed, so
- * Data.applied is the current list with the target already gone - reconcile
- * from it even though the call still rejects, the same way keybindingsStore's
- * rejectionPayload reads a post-rename durable failure's applied state.
- * Returns undefined for any other rejection, or when the hub's own follow-up
- * read to build Data.applied failed too (Data.appliedUnavailable): there is
- * then nothing to reconcile from. */
-function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
-    return undefined;
-  if (!error.data || typeof error.data !== "object") return undefined;
+/** Classifies the hub's post-apply marketplace removal rejections
+ * (appwire/errors.go) for UI consumers. Both markers mean the removal already
+ * stood on the hub, so no classified outcome is ever retryable - the caller
+ * reports what happened and reconciles through its normal fetch path:
+ *  - marketplaceUnregisteredCloneRemains
+ *    (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
+ *    applied before its clone's own removal failed, so Data.applied is the
+ *    current list with the target already gone - reconcile from it even
+ *    though the call still rejects, the same way keybindingsStore's
+ *    rejectionPayload reads a post-rename durable failure's applied state.
+ *    A recognized marker with missing, unavailable, or malformed applied
+ *    data is still an applied-but-unconfirmed outcome: the unregister
+ *    already landed, but callers must reconcile rather than treat the zero
+ *    value as an authoritative empty list.
+ *  - marketplaceRemoveApplied (appwire.MarketplaceRemoveAppliedData): the
+ *    removal and its clone cleanup completed, but the fresh list read
+ *    failed - removed, with no clone litter to warn about.
+ * Any other rejection returns undefined and stays retryable. */
+export type MarketplaceRemovalOutcome =
+  | { kind: "applied"; marketplaces: MarketplaceEntry[] }
+  | { kind: "unavailable" }
+  | { kind: "removed" };
+
+/** Classifies the hub's post-apply marketplace removal rejections for UI
+ * consumers; each marker's reconcile rule is documented on
+ * MarketplaceRemovalOutcome above. Any other rejection returns undefined and
+ * stays retryable. */
+export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
+  if (!(error instanceof WireError)) return undefined;
+  // The hub emits this marker only after the removal and its cleanup both
+  // landed (appwire/errors.go), so the marker alone is the proof.
+  if (error.evenerErrorInfo === ErrorMarketplaceRemoveApplied) return { kind: "removed" };
+  if (error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains") return undefined;
+  if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
   const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
-  if (data.appliedUnavailable) return undefined;
-  if (!data.applied || typeof data.applied !== "object") return undefined;
+  if (data.appliedUnavailable) return { kind: "unavailable" };
+  if (!data.applied || typeof data.applied !== "object") return { kind: "unavailable" };
   const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
-  return Array.isArray(marketplaces) ? (marketplaces as MarketplaceEntry[]) : undefined;
+  return Array.isArray(marketplaces)
+    ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
+    : { kind: "unavailable" };
+}
+
+function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
+  const outcome = marketplaceRemovalOutcome(error);
+  return outcome?.kind === "applied" ? outcome.marketplaces : undefined;
 }
 
 export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {
@@ -246,7 +274,6 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           return () =>
             set((s) => ({
               ...publishMarketplaceSnapshot(resp.marketplaces),
-              marketplacesLoading: false,
               browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
             }));
         },

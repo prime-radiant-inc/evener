@@ -23,9 +23,9 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
-import type { ToolRenderProps } from "../toolRenderers";
-import { registerToolRenderer } from "../toolRenderers";
+import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
+  delegateStableState,
   effectiveRowKind,
   resolveRowKey,
   type SubagentRow,
@@ -43,6 +43,7 @@ const RECENT_QUOTES_CAP = 5;
 
 const CLASS = {
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
+  lifecycle: requireClass(styles.lifecycle, "subagentmodule.module.css", "lifecycle"),
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
   statusWord: requireClass(styles.statusWord, "subagentmodule.module.css", "statusWord"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
@@ -115,9 +116,21 @@ const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
 // deliberately absent from every surface a delegate renders on: it is
 // wake-delivery plumbing the owner driver consumes on its own, never a
 // reader-facing status.
-export function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
   const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
   return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
+}
+
+// The status word both delegate status surfaces render, owning its own DOM
+// identity (one testid plus kind state) so consumers find it with one
+// selector wherever it renders: the standalone DelegateStatusLine, collapsed
+// rows, and the card's merged first line, expanded rows.
+function DelegateStatusWord({ kind, stable }: { kind: SubagentRowKind; stable: EvenerDelegateInfo | undefined }) {
+  return (
+    <span className={CLASS.statusWord} data-testid="delegate-status-word" data-kind={kind}>
+      {delegateLifecycleLabel(kind, stable)}
+    </span>
+  );
 }
 
 // True when a delegate call's parsed output still yields a card row - the
@@ -258,13 +271,11 @@ function SubagentCard({
       {/* The card's FIRST line is the status line: the lifecycle word leads,
           and the turn/call counts and run clock ride WITH it on one line. The
           child's latest words (the quote) follow below, secondary. */}
-      <div className={CLASS.stats} data-testid="subagent-stats" data-kind={displayKind}>
+      <div className={CLASS.stats} data-testid="subagent-stats" data-status-line="delegate" data-kind={displayKind}>
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
           {STATUS_GLYPH[displayKind]}
         </span>
-        <span className={CLASS.statusWord} data-testid="subagent-status-word">
-          {delegateLifecycleLabel(displayKind, stable)}
-        </span>
+        <DelegateStatusWord kind={displayKind} stable={stable} />
         {/* Each segment rides behind the word, behind its own separator -
             never a dangling "·" advertising a segment that has no data. */}
         {statsSegments.map((segment) => (
@@ -404,6 +415,25 @@ function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
   );
 }
 
+// The standalone status line a collapsed (or card-less) delegate row shows
+// below the intent line - the descriptor's statusLine hook (toolRenderers.ts)
+// mounts it, so this module owns the surface end-to-end with the card's own
+// first line: same word component, same state attributes, same
+// data-status-line identity.
+function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
+  const { parsed, stable, kind } = delegateStableState(item, live, sessionRef, thread);
+  // While the expanded card renders, its own first line carries the lifecycle
+  // word; a standalone div here would duplicate it on back-to-back lines.
+  // Collapsed - or for an activation-only receipt whose card renders nothing -
+  // this line is the row's only status surface.
+  if (expanded && delegateOutputHasCard(parsed)) return null;
+  return (
+    <div className={CLASS.lifecycle} data-testid="delegate-lifecycle" data-status-line="delegate" data-kind={kind}>
+      <DelegateStatusWord kind={kind} stable={stable} />
+    </div>
+  );
+}
+
 registerToolRenderer({
   match: "delegate",
   fold: "never", // a delegate card is never folded away into a run
@@ -421,6 +451,7 @@ registerToolRenderer({
     return str(parsed, "transcript_ref");
   },
   body: DelegateBody,
+  statusLine: DelegateStatusLine,
   // A delegate call is a status card, not a fold-to-open tool row - the same
   // reasoning as task_list's own `autoExpand: () => true`. Child watching
   // exists only while the body is expanded, for quotes and stats; the

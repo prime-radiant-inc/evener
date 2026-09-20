@@ -54,16 +54,12 @@ export async function measureEditorialTranscript() {
         const tools = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="tool-call-item"]'));
         const opens = Array.from(host.querySelectorAll<HTMLElement>('button[aria-label="Open transcript"]'));
         // A delegate's status line is the card's merged stats line while the
-        // body is expanded (subagent-stats, carrying data-kind) and
-        // ToolCallItem's standalone div once collapsed.
-        const statusLines = Array.from(
-          host.querySelectorAll<HTMLElement>('[data-testid="subagent-stats"], [data-testid="delegate-lifecycle"]'),
-        );
-        const statusWords = Array.from(
-          host.querySelectorAll<HTMLElement>(
-            '[data-testid="subagent-status-word"], [data-testid="delegate-lifecycle"]',
-          ),
-        );
+        // body is expanded and the standalone lifecycle div once collapsed;
+        // data-status-line marks both, so one selector finds the line
+        // whichever surface is mounted.
+        const statusLines = Array.from(host.querySelectorAll<HTMLElement>('[data-status-line="delegate"]'));
+        // The status word carries its own testid on either surface.
+        const statusWords = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="delegate-status-word"]'));
         const outside = [...tools, ...opens, ...statusLines]
           .filter((element) => {
             const r = element.getBoundingClientRect();

@@ -59,7 +59,7 @@ test("preview collaborators use the supplied owner projection, not the stale lau
       "unknown",
       "unknown",
     ]);
-    expect(view.getAllByTestId("subagent-status-word").map((word) => word.textContent)).toEqual([
+    expect(view.getAllByTestId("delegate-status-word").map((word) => word.textContent)).toEqual([
       "Running",
       "Idle · reported",
       "Failed",

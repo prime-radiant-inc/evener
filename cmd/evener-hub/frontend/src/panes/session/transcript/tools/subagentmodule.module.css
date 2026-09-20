@@ -11,13 +11,11 @@
   color: var(--ink-mid);
 }
 
-.lifecycle[data-kind="running"],
-.stats[data-kind="running"] .statusWord {
+.statusWord[data-kind="running"] {
   color: var(--alive-ink);
 }
 
-.lifecycle[data-kind="failed"],
-.stats[data-kind="failed"] .statusWord {
+.statusWord[data-kind="failed"] {
   color: var(--danger-ink);
 }
 

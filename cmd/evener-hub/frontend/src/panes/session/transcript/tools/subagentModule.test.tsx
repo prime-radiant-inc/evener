@@ -1213,6 +1213,53 @@ test("the stable lifecycle owns the card while child content status changes, and
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("✓");
 });
 
+// The status word owns its DOM identity (testid + state attrs) on every
+// surface it renders, and both status-line containers carry data-status-line,
+// so script-side selectors stay single: one testid finds the word, one
+// attribute finds the line, whichever surface is mounted. The NeedsAttention
+// flag is plumbing and never reaches the word, even when the projection
+// carries it.
+test("the status word and status line carry one identity across both surfaces", async () => {
+  seedCurrentDelegate("ref_identity", "dlg_identity", "running", undefined, { needsAttention: true });
+  const user = userEvent.setup();
+  const turn: TurnModel = { id: "identity", status: "completed", items: [] };
+  const { container } = render(
+    <ToolCallItem
+      item={delegateItem({
+        id: "d_identity",
+        callId: "call_identity",
+        turnId: turn.id,
+        argumentsJSON: JSON.stringify({ prompt: "identity check" }),
+        output: JSON.stringify({ delegate_id: "dlg_identity", status: "running", transcript_ref: "local:child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_identity"
+      live={false}
+    />,
+  );
+
+  // Expanded: the card's merged line is the one status line, and the word
+  // inside it carries identity and state.
+  const stats = screen.getByTestId("subagent-stats");
+  expect(stats.dataset.statusLine).toBe("delegate");
+  const word = within(stats).getByTestId("delegate-status-word");
+  expect(word.dataset.kind).toBe("running");
+  expect(word.dataset.attention).toBeUndefined();
+  expect(container.querySelectorAll('[data-status-line="delegate"]')).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="delegate-status-word"]')).toHaveLength(1);
+
+  // Collapsed: the standalone line takes over; the same two selectors still
+  // find exactly one line and one word.
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  await user.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!);
+  const lifecycle = screen.getByTestId("delegate-lifecycle");
+  expect(lifecycle.dataset.statusLine).toBe("delegate");
+  const standaloneWord = within(lifecycle).getByTestId("delegate-status-word");
+  expect(standaloneWord.dataset.kind).toBe("running");
+  expect(standaloneWord.dataset.attention).toBeUndefined();
+  expect(container.querySelectorAll('[data-status-line="delegate"]')).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="delegate-status-word"]')).toHaveLength(1);
+});
 // The card's head (tag + open) duplicated the delegate tool row it sits under.
 // Both are gone from the card: the row carries identity and the open control.
 test("the card is headless: no tag, no open button inside it", () => {
