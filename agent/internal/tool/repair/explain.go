@@ -1922,13 +1922,6 @@ func mergeSchema(base, overlay map[string]any) map[string]any {
 	return out
 }
 
-// mergeAllowedValues intersects the allowed-value sets of two conjunctive
-// schemas, where a set is an "enum" list (narrowed by a same-node "const") or a
-// single-valued "const". It returns the shared values as a []any, an empty
-// non-nil []any when the conjunction is unsatisfiable, or nil when neither side
-// constrains the value. The empty slice (distinct from nil "unconstrained") lets
-// unsatisfiability propagate through further merges, so a later node cannot
-// resurrect a value an earlier node already excluded.
 // mergeConjunctiveApplicator combines two declarations of a keyword whose two
 // schema values both apply to the same instance (additionalProperties, items,
 // propertyNames for the value; patternProperties is map-shaped and handled by
@@ -1961,6 +1954,13 @@ func mergeConjunctiveApplicator(base, overlay any) any {
 	return mergeSchema(bm, om)
 }
 
+// mergeAllowedValues intersects the allowed-value sets of two conjunctive
+// schemas, where a set is an "enum" list (narrowed by a same-node "const") or a
+// single-valued "const". It returns the shared values as a []any, an empty
+// non-nil []any when the conjunction is unsatisfiable, or nil when neither side
+// constrains the value. The empty slice (distinct from nil "unconstrained") lets
+// unsatisfiability propagate through further merges, so a later node cannot
+// resurrect a value an earlier node already excluded.
 func mergeAllowedValues(base, overlay map[string]any) any {
 	ba, bSet := allowedValues(base)
 	oa, oSet := allowedValues(overlay)
@@ -2885,10 +2885,8 @@ func propertyForbidden(schema map[string]any, name string) bool {
 	if schema == nil {
 		return false
 	}
-	if declared, ok := schemaProps(schema)[name]; ok {
-		b, isBool := declared.(bool)
-		return isBool && !b
-	}
+	// patternProperties apply to declared property names too, so evaluate every
+	// matching pattern before the declared/additionalProperties fallbacks.
 	matched := false
 	for pattern, sub := range schemaChildMap(schema["patternProperties"]) {
 		if ok, err := regexp.MatchString(pattern, name); err != nil || ok {
@@ -2897,6 +2895,10 @@ func propertyForbidden(schema map[string]any, name string) bool {
 				return true
 			}
 		}
+	}
+	if declared, ok := schemaProps(schema)[name]; ok {
+		b, isBool := declared.(bool)
+		return isBool && !b
 	}
 	if matched {
 		return false
@@ -3851,6 +3853,16 @@ func exampleBoundsValid(m map[string]any, typ string) bool {
 	if m == nil {
 		return true
 	}
+	// A same-node enum/const value set governs the placeholder: the renderer
+	// emits an actual member (examplePropertyPlaceholder), which satisfies the
+	// set, so only an empty (unsatisfiable) set makes the example unprovable.
+	// Keep this in step with examplePlaceholderSatisfies (issue #622 review).
+	if _, ok := m["const"]; ok {
+		return true
+	}
+	if list := valueList(m["enum"]); list != nil {
+		return len(list) > 0
+	}
 	if declared, present := m["type"]; present && !valueMatchesTypes(examplePlaceholderValue(typ), typeNames(declared)) {
 		return false
 	}
@@ -3899,6 +3911,14 @@ func exampleBoundsValid(m map[string]any, typ string) bool {
 func examplePlaceholderValid(m map[string]any, typ string) bool {
 	if m == nil {
 		return true
+	}
+	// The renderer emits an actual member of a same-node enum/const set, which
+	// satisfies it; only an empty set is unprovable.
+	if _, ok := m["const"]; ok {
+		return true
+	}
+	if list := valueList(m["enum"]); list != nil {
+		return len(list) > 0
 	}
 	if declared, present := m["type"]; present && !valueMatchesTypes(examplePlaceholderValue(typ), typeNames(declared)) {
 		return false
@@ -3983,11 +4003,39 @@ func exampleObject(schema map[string]any, expandNested bool) string {
 		}
 		placeholder := examplePlaceholder(typ)
 		if expandNested {
-			placeholder = exampleValue(propSchema, typ)
+			placeholder = examplePropertyPlaceholder(propSchema, typ)
 		}
 		parts = append(parts, fmt.Sprintf("%q: %s", name, placeholder))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// examplePropertyPlaceholder renders a required property's value: an actual
+// member of a same-node enum/const value set when present (so the Example
+// satisfies the constraint the call failed), otherwise the generic placeholder.
+func examplePropertyPlaceholder(prop any, typ string) string {
+	if p := schemaChildMap(prop); p != nil {
+		if member, ok := exampleValueSetMember(p); ok {
+			return formatEnumValue(member)
+		}
+	}
+	return exampleValue(prop, typ)
+}
+
+// exampleValueSetMember returns the value the renderer uses for a schema's
+// same-node enum/const set: the const, or the first enum member. ok is false
+// when the schema declares neither, or declares an empty (unsatisfiable) set.
+func exampleValueSetMember(m map[string]any) (any, bool) {
+	if c, ok := m["const"]; ok {
+		return c, true
+	}
+	if list := valueList(m["enum"]); list != nil {
+		if len(list) == 0 {
+			return nil, false
+		}
+		return list[0], true
+	}
+	return nil, false
 }
 
 // exampleValue renders a property's placeholder: examplePlaceholder for

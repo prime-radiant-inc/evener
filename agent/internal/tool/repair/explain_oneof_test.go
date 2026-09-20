@@ -1415,3 +1415,46 @@ func TestExplainSchemaError_RefWrappedPresentEnumStaysGeneric(t *testing.T) {
 		t.Fatalf("$ref-wrapped arm enum must fall back to the generic mismatch: %q", msg)
 	}
 }
+
+// A required property whose schema carries enum/const is rendered as an actual
+// member of that set, so the Example satisfies the constraint the call failed
+// rather than emitting a placeholder the set rejects.
+func TestExampleObjectValid_RendersEnumOrConstMember(t *testing.T) {
+	enumSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"status"},
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string", "enum": []string{"complete", "blocked"}},
+		},
+	}
+	if !exampleObjectValid(enumSchema) {
+		t.Fatal("valid enum-member example rejected")
+	}
+	if got := exampleForParams(enumSchema); !strings.Contains(got, `"complete"`) || strings.Contains(got, `"..."`) {
+		t.Fatalf("example must render an enum member: %q", got)
+	}
+	constSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "const": "fast"},
+		},
+	}
+	if got := exampleForParams(constSchema); !strings.Contains(got, `"fast"`) {
+		t.Fatalf("example must render the const member: %q", got)
+	}
+}
+
+// patternProperties apply to declared names too, so a declared property matched
+// by patternProperties:false is forbidden.
+func TestPropertyForbidden_PatternPropertiesOnDeclaredProperty(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"x": map[string]any{"type": "string"}},
+		"patternProperties":    map[string]any{"^x$": false},
+		"additionalProperties": true,
+	}
+	if !propertyForbidden(schema, "x") {
+		t.Fatal("declared property matched by patternProperties:false not forbidden")
+	}
+}

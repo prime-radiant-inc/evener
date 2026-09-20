@@ -90,7 +90,7 @@ func TestExplainSchemaError_TaskListUpdateCallerGolden(t *testing.T) {
 	got := ExplainSchemaError("task_list", taskListParams(), taskListUpdateArgs(), "tasks/0", "")
 	want := "task_list: missing required argument \"type\" in tasks[0].\n" +
 		"Required arguments in tasks[0] for action \"append\": type (string), description (string), prompt (string).\n" +
-		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"...\"}]} " +
+		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"open\"}]} " +
 		"Your action \"update\" takes \"updates\" (sent: tasks)."
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
@@ -108,7 +108,7 @@ func TestExplainSchemaError_TaskListAppendCallerGolden(t *testing.T) {
 	got := ExplainSchemaError("task_list", taskListParams(), args, "updates/0", "")
 	want := "task_list: missing required argument \"status\" in updates[0].\n" +
 		"Required arguments in updates[0] for action \"update\": id (integer), status (string).\n" +
-		"Example: {\"action\": \"append\", \"tasks\": [{\"description\": \"...\", \"prompt\": \"...\", \"type\": \"...\"}]} " +
+		"Example: {\"action\": \"append\", \"tasks\": [{\"description\": \"...\", \"prompt\": \"...\", \"type\": \"research\"}]} " +
 		"Your action \"append\" takes \"tasks\" (sent: updates)."
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
@@ -129,7 +129,7 @@ func TestExplainSchemaError_SameBranchCallerGetsBranchExample(t *testing.T) {
 	got := ExplainSchemaError("task_list", taskListParams(), args, "tasks/0", "")
 	want := "task_list: missing required argument \"prompt\" in tasks[0].\n" +
 		"Required arguments in tasks[0]: type (string), description (string), prompt (string).\n" +
-		"Example: {\"action\": \"append\", \"tasks\": [{\"description\": \"...\", \"prompt\": \"...\", \"type\": \"...\"}]}"
+		"Example: {\"action\": \"append\", \"tasks\": [{\"description\": \"...\", \"prompt\": \"...\", \"type\": \"research\"}]}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -150,7 +150,7 @@ func TestExplainSchemaError_PresentFieldInWrongBranchNamesBranch(t *testing.T) {
 	}
 	got := ExplainSchemaError("task_list", taskListParams(), args, "tasks/0/type", "type")
 	want := "task_list: argument \"tasks[0].type\" has the wrong type or value.\n" +
-		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"...\"}]} " +
+		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"open\"}]} " +
 		"(this failure is in the array for action \"append\"; your action \"update\" takes \"updates\", not tasks)"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
@@ -182,7 +182,7 @@ func TestExplainSchemaError_TopLevelTaggedArrayWrongTypeGolden(t *testing.T) {
 	args := map[string]any{"action": "update", "tasks": "oops"}
 	got := ExplainSchemaError("task_list", taskListParams(), args, "tasks", "type")
 	want := "task_list: argument \"tasks\" has the wrong type or value.\n" +
-		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"...\"}]}"
+		"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0, \"status\": \"open\"}]}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
