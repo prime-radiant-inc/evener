@@ -641,6 +641,95 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 	}
 }
 
+// TestClientMutation_DrainEmitsConsumedClientMutationIDs (issue #1704) verifies
+// the drain's own QueueChanged push names the client mutation ids it consumed,
+// so a client can settle those optimistic records by positive evidence instead
+// of inferring consumption from sequence order.
+func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	wantConsumed := make([]string, len(snapshot.InputQueue))
+	for i, entry := range snapshot.InputQueue {
+		wantConsumed[i] = entry.ClientMutationID
+	}
+
+	evs, stop := captureEvents(sess)
+	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      "drain-consumed",
+		ExpectedQueueRevision: snapshot.QueueRevision,
+	})
+	stop()
+	if err != nil {
+		t.Fatalf("clientMutationDrain: %v", err)
+	}
+
+	var latest *events.QueueChangedData
+	for _, ev := range *evs {
+		if ev.Kind != events.EventQueueChanged {
+			continue
+		}
+		data := ev.Data.(events.QueueChangedData)
+		latest = &data
+	}
+	if latest == nil {
+		t.Fatal("no QueueChanged event observed for the drain")
+	}
+	if !slices.Equal(latest.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("ConsumedClientMutationIDs = %v, want %v", latest.ConsumedClientMutationIDs, wantConsumed)
+	}
+}
+
+// TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs (issue #1704)
+// verifies the consumed ids ride the durable mutation result: a replayed
+// drain (no fresh push, since reflectDurableInputQueue never runs on replay)
+// still reports them, so a client whose first receipt was lost can settle
+// those optimistic records from the retry's own response.
+func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T) {
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	wantConsumed := make([]string, len(snapshot.InputQueue))
+	for i, entry := range snapshot.InputQueue {
+		wantConsumed[i] = entry.ClientMutationID
+	}
+	params := appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      "drain-replay-consumed",
+		ExpectedQueueRevision: snapshot.QueueRevision,
+	}
+
+	first, err := sess.clientMutationDrain(params)
+	if err != nil {
+		t.Fatalf("clientMutationDrain: %v", err)
+	}
+	if !slices.Equal(first.Receipt.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("first receipt ConsumedClientMutationIDs = %v, want %v", first.Receipt.ConsumedClientMutationIDs, wantConsumed)
+	}
+
+	replayed, err := sess.clientMutationDrain(params)
+	if err != nil {
+		t.Fatalf("clientMutationDrain (replay): %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("replay disposition = %q, want replayed", replayed.Receipt.Disposition)
+	}
+	if !slices.Equal(replayed.Receipt.ConsumedClientMutationIDs, wantConsumed) {
+		t.Fatalf("replayed receipt ConsumedClientMutationIDs = %v, want %v", replayed.Receipt.ConsumedClientMutationIDs, wantConsumed)
+	}
+}
+
 func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
@@ -1941,6 +2030,75 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 	}
 	if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "probe" {
 		t.Fatalf("activation events = %v, want [probe]", names)
+	}
+}
+
+func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testing.T) {
+	root := skillFixtureRoot(t)
+	names := []string{"skill-1", "skill-2"}
+	body := skillSelectionFixtureBody("INLINE_BODY")
+	sources := make(map[string]string)
+	for _, name := range names {
+		sources[name] = writeSkillMDAndReturn(t, root, name, body)
+	}
+	const original = "Run /skill-1 and then /skill-2"
+	const mutationID = "inline-skill-references"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-inline", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+	evs, stop := captureEvents(s)
+
+	response, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: original},
+			{Type: "skill", Name: names[0]},
+			{Type: "skill", Name: names[1]},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	var originalCount int
+	for _, text := range userMessageTexts(requests[0]) {
+		if text == original {
+			originalCount++
+		}
+	}
+	if originalCount != 1 {
+		t.Fatalf("provider input = %q, want complete inline sentence exactly once", userMessageTexts(requests[0]))
+	}
+	envelopes := requestSkillEnvelopes(t, requests[0])
+	if len(envelopes) != len(names) {
+		t.Fatalf("skill envelopes = %d, want %d", len(envelopes), len(names))
+	}
+	for i, envelope := range envelopes {
+		if envelope.Doc.Name != names[i] || envelope.Doc.Source != sources[names[i]] || envelope.Doc.Instructions != body {
+			t.Fatalf("envelope %d = %+v, want complete selected skill %q", i, envelope.Doc, names[i])
+		}
+		assertSelectionObligation(t, s, response.Turn.ID+":"+names[i], response.Turn.ID, mutationID)
+	}
+	stop()
+	input := findClientMutationTurn(s, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil {
+		t.Fatalf("no typed skill input recorded: %+v", input)
+	}
+	if input.SkillState.Input.OriginalText != original || !slices.Equal(input.SkillState.Input.Names, names) {
+		t.Fatalf("typed input = %+v, want original sentence and both names", input.SkillState.Input)
+	}
+	if strings.Count(input.Message.Text(), original) != 1 {
+		t.Fatalf("transcript user message = %q, want complete inline sentence exactly once", input.Message.Text())
+	}
+	if got := skillActivatedEventNames(*evs); !slices.Equal(got, names) {
+		t.Fatalf("activation events = %v, want %v", got, names)
 	}
 }
 

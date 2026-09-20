@@ -3,10 +3,12 @@ package launchcheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 )
 
 // launchCheckLoadClient is the injectable hook for tests. Production code
@@ -152,7 +155,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 }
 
 func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDiagnostic {
-	message := redactLaunchCheckDiagnostic(err.Error())
+	message := launchCheckDiagnosticMessage(err)
 	info := diagnostic.FromFields(string(diagnostic.SourceProvider), "", "", message)
 	return appwire.ModelListDiagnostic{
 		Provider: provider,
@@ -161,6 +164,61 @@ func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDia
 		Message:  message,
 		Hint:     info.Hint,
 	}
+}
+
+// launchCheckDiagnosticMessage renders the one-line reason a provider's model
+// listing failed. The picker prints it inline under the model list
+// ("provider — reason"), so it must stop at the failure's class rather than
+// quote the failure: an endpoint that answers 404 with an HTML page puts that
+// page in the message otherwise, and a missing credential quotes the
+// registry's whole remediation warning. The classes carry machine-readable
+// facts (the spent-allowance category, the status code, the sentinel), so
+// the line stays one short reason; every other failure keeps its own —
+// redacted — text.
+func launchCheckDiagnosticMessage(err error) string {
+	// An exhausted allowance keeps its class ahead of the bare status: it
+	// arrives as 429 (or a provider's 403 billing-cycle exhaustion), and the
+	// category on the typed error is the specific fact; the status alone
+	// would read as a transient throttle.
+	if llm.Kind(err) == llm.KindQuotaExceeded {
+		return "usage limit reached"
+	}
+	if status := launchCheckHTTPStatus(err); status != 0 {
+		return "HTTP " + strconv.Itoa(status)
+	}
+	if errors.Is(err, llm.ErrNoCredential) {
+		return "no credential"
+	}
+	return redactLaunchCheckDiagnostic(err.Error())
+}
+
+// launchCheckHTTPStatus reports the first provider HTTP status along the
+// error's unwrap spine, seeing through the configuration wrappers (the google
+// protocol's regional-Vertex remap) that bury the classified HTTP error under
+// a ConfigurationError whose own status is zero: errors.As alone would stop at
+// that wrapper, whose cause holds the status whose prose the line must not
+// quote. The spine can branch — an errors.Join node answers only
+// Unwrap() []error, which errors.Unwrap cannot descend into, and errors.As
+// stops at the first llm.Error in branch order — so every branch is visited,
+// in chain order, until a nonzero status is found.
+func launchCheckHTTPStatus(err error) int {
+	var llmErr llm.Error
+	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
+		return llmErr.StatusCode()
+	}
+	if u, ok := err.(interface{ Unwrap() error }); ok {
+		if status := launchCheckHTTPStatus(u.Unwrap()); status != 0 {
+			return status
+		}
+	}
+	if branches, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, branch := range branches.Unwrap() {
+			if status := launchCheckHTTPStatus(branch); status != 0 {
+				return status
+			}
+		}
+	}
+	return 0
 }
 
 func redactLaunchCheckDiagnostic(text string) string {

@@ -340,10 +340,16 @@ Foreground timeout / promotion return shape:
   "status": "running",
   "reason": "foreground_timeout",
   "timed_out": true,
+  "wait_elapsed_ms": 120000,
   "output": "bounded output text",
   "truncated": false
 }
 ```
+
+`wait_elapsed_ms` is how long the foreground wait actually blocked before the
+promotion. It lets the agent's pacing arithmetic use the real wait (the session
+command timeout that expired) rather than the duration the command was asked to
+run, which can be much longer.
 
 Shell approval is not fully designed here. If policy requires approval before a shell command may start, Evener must not execute before approval. The shipped contract permits either:
 
@@ -1358,8 +1364,10 @@ Rules:
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
-  by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
-  never steers, resumes, or stops the delegate.
+  by `delegate_id`, and it repeats once per further ten-minute window while the
+  delegate stays silent and running. Fresh activity resets the baseline, so a
+  progressing delegate never fires. The watchdog only reports—it never steers,
+  resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
 - The `end_turn=true` warning naming still-running jobs depends on whether the
   session outlives the turn. Where it does, the warning keeps promising each

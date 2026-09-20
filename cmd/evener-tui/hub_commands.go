@@ -445,9 +445,9 @@ func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
 	if merged.Delta == "" {
 		merged.Delta = older.Delta
 	}
-	if merged.Images == nil {
-		merged.Images = older.Images
-	}
+	// Output and input images each have one rule: see appwire.MergeOutputImages
+	// and appwire.MergeInputImages.
+	merged.Images = appwire.MergeInputImages(older.Images, merged.Images)
 	if merged.ToolName == "" {
 		merged.ToolName = older.ToolName
 	}
@@ -466,9 +466,7 @@ func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
 	if merged.Error == "" {
 		merged.Error = older.Error
 	}
-	if merged.OutputImages == nil {
-		merged.OutputImages = older.OutputImages
-	}
+	merged.OutputImages = appwire.MergeOutputImages(older.OutputImages, merged.OutputImages)
 	if merged.Status == "" || tuiStatusRank(merged.Status) < tuiStatusRank(older.Status) {
 		merged.Status = older.Status
 	}

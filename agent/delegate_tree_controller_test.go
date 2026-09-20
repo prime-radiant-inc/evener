@@ -298,6 +298,8 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "controller alias composite", source: `package agent; type active = delegateTreeController; func probe() { _ = active{} }`, symbol: "delegateTreeController"},
 		{name: "controller alias new", source: `package agent; type active = delegateTreeController; func probe() { _ = new(active) }`, symbol: "delegateTreeController"},
 		{name: "lifecycle call", source: `package agent; func probe(controller *delegateTreeController, reservation *delegateStartReservation) { _, _ = controller.CommitStart(reservation) }`, symbol: "CommitStart"},
+		{name: "reconcile requirements call", source: `package agent; func probe(controller *delegateTreeController) { _ = controller.ReconcileRequirements() }`, symbol: "ReconcileRequirements"},
+		{name: "stop reconcile requirements call", source: `package agent; func probe(controller *delegateTreeController, stop *delegateStopState) { _, _ = controller.stopReconcileRequirements(stop) }`, symbol: "stopReconcileRequirements"},
 		{name: "bound lifecycle alias", source: `package agent; func probe(controller *delegateTreeController) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
@@ -404,6 +406,7 @@ var delegateControllerLifecycleMethods = map[string]bool{
 	"CloseResumability":                   true,
 	"Close":                               true,
 	"ReconcileRequirements":               true,
+	"stopReconcileRequirements":           true,
 	"Reconcile":                           true,
 	"ReportAttentionResolved":             true,
 	"ReportAttentionConsumed":             true,
@@ -492,8 +495,8 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_jobs.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                        1,
 	{filename: "status.go", function: "(*Session).DetailedStatus", kind: "lifecycle method", symbol: "Snapshot"}:                                                                       1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                                    1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "Reconcile"}:                                                1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }
 
 type delegateControllerDormancyViolation struct {
@@ -693,11 +696,15 @@ type delegateTreeController struct{}
 type delegateTreeControllerConfig struct{}
 type delegateStartReservation struct{}
 type delegateStartCommit struct{}
+type delegateStopState struct{}
+type delegateReconcileRequirements struct{}
 type Session struct{}
 type delegateToolResultCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
+func (*delegateTreeController) ReconcileRequirements() delegateReconcileRequirements { return delegateReconcileRequirements{} }
+func (*delegateTreeController) stopReconcileRequirements(*delegateStopState) (delegateReconcileRequirements, bool) { return delegateReconcileRequirements{}, true }
 func (*Session) appendDelegateSteeringDurably(string, string) {}
 func (*Session) resolveAttentionDurably([]string, string) {}
 func (*delegateToolResultCommit) Complete(bool) {}

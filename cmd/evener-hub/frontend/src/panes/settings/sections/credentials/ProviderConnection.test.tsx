@@ -1,5 +1,10 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
-import { FINGERPRINT_UNAVAILABLE_ERROR, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import {
+  ErrorEndpointConflict,
+  FINGERPRINT_UNAVAILABLE_ERROR,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -93,7 +98,7 @@ test("popular Gemini uses the real google identity, independently of provider na
 // catalogue. Its connection is the OAuth flow - the provider reads no API key
 // - so selecting the popular card must reach the Codex sign-in rather than a
 // key field.
-test("the popular list offers OpenAI Codex and starts its sign-in", async () => {
+test("popular grid offers OpenAI Codex and starts its sign-in", async () => {
   const { user, client } = setup();
   await user.click(await screen.findByRole("button", { name: "OpenAI Codex" }));
   expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
@@ -109,6 +114,32 @@ test("the popular list offers OpenAI Codex and starts its sign-in", async () => 
   const starts = client.calls.filter((call) => call.method === "evener/auth/device/start");
   expect(starts).toHaveLength(1);
   expect(starts[0]!.params).toMatchObject({ provider: "openai-codex" });
+});
+
+// Codex's auth modes are oauth-only, so the key link has nothing to point at -
+// but the billing line is exactly the help a subscription user needs: it says
+// to sign in instead of pasting a key. It must render even though the provider
+// never offers the API-key branch.
+test("an oauth-only provider renders its billing line without a key link", async () => {
+  const { user } = setup();
+  await choose(user, "OpenAI Codex");
+  expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+  expect(
+    screen.getByText("Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key."),
+  ).toBeTruthy();
+});
+
+// The apiKey providers keep both halves: the key link and the billing line.
+test("an apiKey provider still renders its key link and its billing line", async () => {
+  const { user } = setup();
+  await choose(user, "Anthropic");
+  expect(screen.getByRole("link", { name: "Get an API key" }).getAttribute("href")).toBe(
+    "https://console.anthropic.com/settings/keys",
+  );
+  expect(
+    screen.getByText("Claude subscriptions do not include API billing. API usage is billed separately."),
+  ).toBeTruthy();
 });
 
 // The first screen is the popular set and nothing else. Everything the
@@ -1366,7 +1397,7 @@ test("the flow's own recovery read carries its commitment and leaves the flow us
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
   client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
@@ -1395,7 +1426,7 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
   // What the recovery re-read finds: the moved endpoint, nothing stored.
@@ -1490,7 +1521,7 @@ test("a refused assertion is reported as a changed connection, not an endpoint f
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: ErrorEndpointConflict },
     );
   });
 

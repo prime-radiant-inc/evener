@@ -106,12 +106,37 @@ test("disabled blocks toggling via the visible label too", async () => {
   expect(onChange).not.toHaveBeenCalled();
 });
 
-test("disabled marks the native control inert (not focusable)", () => {
-  render(<Switch label="Notifications" checked={false} onChange={() => {}} disabled />);
+// A refusal has to keep the keyboard: the click that starts a toggle makes the
+// very switch it was made on unavailable, and a natively disabled control
+// cannot hold focus (Chrome drops it to <body>), which forced the surface to put
+// focus back elsewhere and scroll there - the jump users saw. `pending` is that
+// refusal; it keeps the control focusable while toggle() blocks the activation.
+test("pending is a refusal: the control keeps focus and blocks activation", async () => {
+  const onChange = vi.fn();
+  render(<Switch label="Notifications" checked={false} onChange={onChange} pending />);
+  const toggle = screen.getByRole("switch") as HTMLButtonElement;
+  expect(toggle.getAttribute("aria-disabled")).toBe("true");
+  expect(toggle.disabled).toBe(false); // not the native attribute
+
+  toggle.focus();
+  expect(document.activeElement).toBe(toggle);
+
+  await userEvent.setup().click(toggle);
+  expect(onChange).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(toggle);
+});
+
+test("disabled is the native attribute: inert and out of the tab order", async () => {
+  const onChange = vi.fn();
+  render(<Switch label="Notifications" checked={false} onChange={onChange} disabled />);
   const toggle = screen.getByRole("switch") as HTMLButtonElement;
   expect(toggle.disabled).toBe(true);
+  expect(toggle.getAttribute("aria-disabled")).toBeNull();
+
   toggle.focus();
   expect(document.activeElement).not.toBe(toggle);
+  await userEvent.setup().click(toggle);
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 test("is keyboard-focusable when enabled", () => {

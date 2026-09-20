@@ -7,17 +7,16 @@
 // in it too - the same row→detail-sheet collection-page idiom the
 // marketplacesPlugins redesign introduced (a sibling workstream; the
 // idiom's design-system writeup lands with it) - instead of a per-row
-// button cluster. The secret-entry and multi-step flows (apiKey/credential
-// JSON/OAuth) stay dialogs: opening one from the sheet replaces it
-// (single-mutable-editor invariant below).
+// button cluster. The secret-entry and multi-step flows
+// (add/apiKey/credential JSON/OAuth) stay dialogs: opening one from the
+// sheet replaces it (single-mutable-editor invariant below).
 //
 // Updated for the provider registry's instance wire shape (spec §11.3):
-// instances group by providerId, and a providers.toml load error surfaces as a
-// diagnostics banner that disables every instance-CRUD action until it clears
-// (writesRefused) - Set key/Sign in/Clear/Clear stored key/Test credentials
-// are unaffected, since none of them write providers.toml. Adding an instance
-// (the form that authors providers.toml) is not this section's own action: the
-// guided connector owns it, and the header action below opens that flow.
+// instances group by providerId, the add form is fed availableProviders, and
+// a providers.toml load error surfaces as a diagnostics banner that disables
+// every instance-CRUD action until it clears (writesRefused) - Set key/Sign
+// in/Clear/Clear stored key/Test credentials are unaffected, since none of
+// them write providers.toml.
 //
 // Single-mutable-editor invariant: `openEditor` is ONE section-level state
 // value (a discriminated union), so opening a second editor always replaces
@@ -31,8 +30,10 @@ import {
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
+  isInstanceRemoveApplied,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -53,7 +54,7 @@ import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./
 import styles from "./CredentialsSection.module.css";
 import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
-import { ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -72,6 +73,7 @@ const CLASS = {
 };
 
 type OpenEditor =
+  | { kind: "add" }
   | { kind: "apiKey"; name: string; expectedEndpointFingerprint?: string }
   | { kind: "credentialJson"; name: string; expectedEndpointFingerprint?: string }
   | OAuthEditor
@@ -89,6 +91,16 @@ type PendingConfirm = {
   expectedEndpointFingerprint?: string;
 } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
+
+// What a confirm-gated action (Remove, Clear, Clear stored key) says when the
+// hub refuses the destination the confirmation asserted: the name moved since
+// the row was read, so nothing was sent. The credential test's own sentence
+// ends "and test again" and the sheet's save wording ends "so the change was
+// not saved" - neither fits a confirmed removal or clear, so this is the
+// actions' own wording, kept here beside them rather than in the client package
+// where only cross-client messages live.
+const ENDPOINT_CHANGED_CONFIRM_ERROR =
+  "This instance changed to a different endpoint since this confirmation was opened, so nothing was changed. The provider list was refreshed; review its destination and try again.";
 
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
 // stray OAuth record notices, and registry warnings (InstanceListResponse.
@@ -114,6 +126,23 @@ export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The connector's escape must retain the full editor, not reopen itself. */
+  // fullEditor selects the raw add-instance entry (the form that authors
+  // providers.toml) instead of the guided connector. Only
+  // ConnectProviderDialog's own "Full provider settings" view passes it; the
+  // Settings pane renders the section without it so its header action opens the
+  // guided flow, which is the reachable path to the full editor from there.
+  fullEditor?: boolean;
+  /** Reports a successful rename from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection kept
+   * mounted behind the full settings view - can follow it instead of searching
+   * for the old one. */
+  onInstanceRenamed?: (from: string, to: string) => void;
+  /** Reports a successful removal from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection
+   * kept mounted behind the full settings view - can drop its retained editing
+   * state: an instance later recreated under the same name is a new entity. */
+  onInstanceRemoved?: (name: string) => void;
 }
 
 // NO_PENDING_KEYS is the shared empty set a render with no sheet open hands
@@ -129,7 +158,11 @@ function withoutKey(current: ReadonlySet<string>, key: string): ReadonlySet<stri
   return next;
 }
 
-export function CredentialsSection(_props: CredentialsSectionProps) {
+export function CredentialsSection({
+  fullEditor = false,
+  onInstanceRenamed,
+  onInstanceRemoved,
+}: CredentialsSectionProps) {
   const {
     instances,
     availableProviders,
@@ -350,31 +383,43 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         // The store's own listing IS the applied response when the removal won
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
-        // before the removal is reported as done. What must be gone is the
-        // *authored* row: a name the environment also supplies comes back as an
-        // implicit instance the moment the authored entry is removed, and
-        // requiring the name itself to vanish would report a removal that
-        // happened as unconfirmed.
+        // before the removal is reported, or the guided owner's reset fires on
+        // a listing that never lost it. What must be gone is the row the USER
+        // owns: a name the environment also supplies comes back as a row the
+        // host derives (env:<VAR>, ADC, a keyless local default), and
+        // requiring it to vanish would report a removal that happened as
+        // unconfirmed. `implicit` alone is not that test - a stored key and a
+        // signed-in Codex record are implicit rows the removal does delete, so
+        // a stale listing still holding one must not be confirmed (and a
+        // surviving one is not "environment access"). fromEnvironment answers
+        // it by source.
         const removed = (instances: InstanceEntry[]) =>
-          !instances.some((instance) => instance.name === name && !instance.implicit);
+          !instances.some((instance) => instance.name === name && !fromEnvironment(instance));
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
           // Close the confirm dialog with the failure: the row is gone on the
           // host, so re-issuing the remove can only fail on a missing instance.
-          // The row the listing still shows is one this client read before the
-          // removal landed, so the listing has to be re-read before a retry can
-          // even be offered.
           setPendingConfirm(null);
           toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
+          // A superseded verdict is not a failure: the removal's RPC resolved
+          // and only its response was discarded, so the entry left the host,
+          // and the listing that still shows it is one this client read before
+          // the removal landed. The guided owner has to hear about it anyway -
+          // what it retains for this name (a typed credential draft, a saved or
+          // configured verdict) describes an instance that no longer exists,
+          // and a name recreated under it would inherit that state. The applied
+          // path is the opposite case: the hub's own response still held an
+          // authored row, so the removal did not happen and is not reported.
+          if (!applied) onInstanceRemoved?.(name);
           return;
         }
-        // The authored entry is gone, but the environment can still supply
-        // access under this name, and the row that remains in the listing says
-        // so. "Removed instance X" alone would read as "no access under this
-        // name any more", which is not what the hub's own listing reports.
+        // The user's row is gone, but the environment can still supply access
+        // under this name, and the row that remains in the listing says so.
+        // "Removed instance X" alone would read as "no access under this name
+        // any more", which is not what the hub's own listing reports.
         const stillSupplied = credentialsStore
           .getState()
-          .instances.some((instance) => instance.name === name && instance.implicit);
+          .instances.some((instance) => instance.name === name && fromEnvironment(instance));
         // The name can survive the removal as an environment-supplied implicit
         // row, and a sheet left open on it would keep the removed instance's
         // dirty draft attached to a row the user never edited - a save from it
@@ -387,15 +432,50 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
             ? `Removed instance ${name}; environment access for it is still active`
             : `Removed instance ${name}`,
         );
+        onInstanceRemoved?.(name);
       }
       setPendingConfirm(null);
     } catch (err) {
+      // The removal applied before it failed: the hub deleted the instance's
+      // credential (or its config entry) and could not put it back, so the
+      // removal stands. Reconcile it - close the confirmation and the sheet,
+      // re-read the listing, tell the owning editor the instance is gone -
+      // rather than report a failed Remove whose retry targets a missing
+      // instance. The discriminator is authoritative, so this does not wait on
+      // the listing to confirm it, and the selection is cleared the way the
+      // success path clears it: a sheet left open on the name keeps the removed
+      // instance's dirty draft attached to a row the user never edited, and a
+      // save from it would author a new override out of that draft.
+      if (kind === "remove" && isInstanceRemoveApplied(err)) {
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", friendlyErrorMessage(err));
+        onInstanceRemoved?.(name);
+        return;
+      }
       if (recoverStaleListing(err)) {
         // The confirmation holds the destination fingerprint the row showed when
         // it was opened, which is the connection that is gone: a retry against
         // the listing that lands next has to capture it again, so the dialog
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // row was read, so nothing was sent. The confirmation holds that stale
+        // fingerprint, so leave the user able to retry - close the dialog, clear
+        // the selection the way the action's own success path does (a sheet left
+        // open would keep operating on the destination that moved), re-read the
+        // listing, and warn in this client's own words. The next confirmation
+        // captures the fingerprint now on screen; reported as a failed action,
+        // the open dialog would re-send the same refused assertion. Mirrors the
+        // mobile and TUI confirm paths.
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", ENDPOINT_CHANGED_CONFIRM_ERROR);
         return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
@@ -435,24 +515,30 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // re-render (see oauthDialogs.tsx's own comment on that effect).
   const closeEditor = useCallback(() => setOpenEditor(null), []);
   const rootRef = useRef<HTMLDivElement>(null);
-  // The pane swaps its rows out for a skeleton while a read is in flight and for
-  // the error banner when one fails, so any of those transitions - and any
-  // listing that no longer carries the focused row - can unmount the control
-  // holding the keyboard. The hook re-homes it to the pane's first control; a
-  // commit that removes nothing leaves focus where it was.
+  // A listing that no longer carries the focused row can unmount the control
+  // holding the keyboard (the rows themselves stay mounted through reads and
+  // through failed ones, so those are no longer cases here). The hook re-homes
+  // focus to the pane's first control; a commit that removes nothing leaves it
+  // where it was.
   useFocusRehome(rootRef);
 
   return (
     <div className={CLASS.root} ref={rootRef}>
       <div className={CLASS.headerRow}>
-        {/* Never gated by the write refusal: this opens the guided connector,
-            whose credential writes go to the credential store (a different
-            file), and a registry whose user layer failed to load still serves
-            the curated/implicit providers it did read (cmd/evener-hub/
-            main_test.go's broken-layer case), so disabling the entry point
-            would hide a path that works. The connector's own configuration
-            step surfaces the refusal when it needs a providers.toml write. */}
-        <Button onClick={() => setConnecting(true)}>Connect provider</Button>
+        {/* Only the raw add-instance action authors providers.toml, so only it
+            is gated by the write refusal. The guided connector stays reachable:
+            its credential writes go to the credential store (a different file),
+            and a registry whose user layer failed to load still serves the
+            curated/implicit providers it did read (cmd/evener-hub/main_test.go's
+            broken-layer case), so disabling the entry point would hide a path
+            that works. The connector's own configuration step surfaces the
+            refusal when it needs a config write. */}
+        <Button
+          onClick={() => (fullEditor ? setOpenEditor({ kind: "add" }) : setConnecting(true))}
+          disabled={fullEditor && writesRefused}
+        >
+          {fullEditor ? "+ Add provider instance" : "Connect provider"}
+        </Button>
       </div>
 
       {connecting && (
@@ -477,40 +563,44 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           load error, the user-layer note, a stray OAuth notice - so while the
           rows on screen belong to a connection that is gone they describe a
           listing this one never read. Suppressed until this connection's own
-          read lands. */}
+          read lands, the same way the management dialog suppresses them. */}
       {/* Gated on the raw marker rather than staleListingHeld: a warning
           describes the listing that produced it, and that is true even when the
           listing carried no rows to act on. */}
       {!listingFromPreviousConnection && <Diagnostics diagnostics={diagnostics} />}
 
-      {loading && <Skeleton />}
+      {/* The skeleton is for the state it was written for - nothing to show yet
+          - never for a read that is merely in flight. The rows a refresh would
+          have swapped out are the listing the user is reading: replacing them
+          makes the pane flicker on every background read and unmounts the row
+          the keyboard is on (the connection dialog keeps its own rows for the
+          same reason). A failed read keeps the listing it already had
+          (readListing), so those rows stay too, with the banner above them. */}
+      {loading && instances.length === 0 && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
-      {!loading &&
-        !error &&
-        (instances.length === 0 ? (
-          <EmptyState title="No provider instances configured." />
-        ) : (
-          <div className={CLASS.groups}>
-            {groups.map((group) => (
-              <div key={group.providerId} className={CLASS.group}>
-                {/* `name || id`, the same label the Add dialog gives a
-                    provider - one pane must not name a provider two ways. */}
-                <div className={CLASS.groupHeader}>
-                  {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
-                </div>
-                <ul className={CLASS.list}>
-                  {group.instances.map((instance) => (
-                    <InstanceRow
-                      key={instance.name}
-                      instance={instance}
-                      onSelect={() => setSelectedInstance(instance.name)}
-                    />
-                  ))}
-                </ul>
+      {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {instances.length > 0 && (
+        <div className={CLASS.groups}>
+          {groups.map((group) => (
+            <div key={group.providerId} className={CLASS.group}>
+              {/* `name || id`, the same label the Add dialog gives a
+                  provider - one pane must not name a provider two ways. */}
+              <div className={CLASS.groupHeader}>
+                {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
               </div>
-            ))}
-          </div>
-        ))}
+              <ul className={CLASS.list}>
+                {group.instances.map((instance) => (
+                  <InstanceRow
+                    key={instance.name}
+                    instance={instance}
+                    onSelect={() => setSelectedInstance(instance.name)}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
 
       <InstanceSheet
         name={selectedInstance}
@@ -538,7 +628,11 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           )
         }
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
-        onRenamed={(next) => setSelectedInstance(next)}
+        onRenamed={(next) => {
+          const previous = selectedInstance;
+          setSelectedInstance(next);
+          if (previous !== null && previous !== next) onInstanceRenamed?.(previous, next);
+        }}
         onClear={() => {
           if (selectedInstance !== null) {
             setPendingConfirm({
@@ -592,6 +686,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         }
       />
 
+      {openEditor?.kind === "add" && (
+        <AddInstanceDialog availableProviders={availableProviders} onCancel={closeEditor} onSuccess={closeEditor} />
+      )}
       {openEditor?.kind === "apiKey" &&
         (() => {
           const target = findInstance(openEditor.name);

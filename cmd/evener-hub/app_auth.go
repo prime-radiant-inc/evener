@@ -295,7 +295,7 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	// refused here, before a flow is recorded (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthLoginStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthLoginStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
 	}
 	c.mu.Lock()
 	if c.flows == nil {
@@ -405,11 +405,8 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	delete(c.flows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
-	}
-	return appwire.AuthLoginCompleteResponse{Status: status}, nil
+	status, err := c.statusAfterWrite(provider, c.openAIInstanceStatus)
+	return appwire.AuthLoginCompleteResponse{Status: status}, err
 }
 
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
@@ -474,11 +471,8 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 	}
-	status, statusErr := c.openAIInstanceStatus(name)
-	if statusErr != nil {
-		return appwire.AuthLogoutResponse{}, statusErr
-	}
-	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+	status, err := c.statusAfterWrite(name, c.openAIInstanceStatus)
+	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
 }
 
 // credentialWriteBetween runs inside a credential write's critical section,
@@ -529,6 +523,28 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
 	return nil
+}
+
+// statusByProvider adapts Status to statusAfterWrite's reader shape, for a
+// caller whose write is a file-layer credential (ApiKeySet, ApiKeyClear,
+// CredentialJsonSet).
+func (c *hubAuthController) statusByProvider(name string) (appwire.AuthStatusResponse, error) {
+	return c.Status(appwire.AuthStatusParams{Provider: name})
+}
+
+// statusAfterWrite answers a write that has already landed with the
+// instance's status, read through read - c.statusByProvider for a file-layer
+// credential write, c.openAIInstanceStatus for one that already landed the
+// OAuth record (LoginComplete, Logout, DevicePoll). A read that fails does
+// not unwrite what it is reading, so it is reported as an applied write,
+// with the provider named in the returned status and the rest left at what
+// could not be read.
+func (c *hubAuthController) statusAfterWrite(name string, read func(string) (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
+	status, err := read(name)
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
 }
 
 // reloadRegistryLocked re-derives the instance set after a credential changed:
@@ -653,7 +669,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 // ApiKeyClear removes a stored file-layer key without touching any other
@@ -686,7 +702,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
@@ -749,7 +765,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// have nothing to compare (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthDeviceStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthDeviceStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
@@ -853,11 +869,10 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
-	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, nil
+	// Authorized and applied: the record is saved. The state is what the
+	// handler reads to tell this from a pending poll, which writes nothing.
+	status, err := c.statusAfterWrite(provider, c.openAIInstanceStatus)
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
 }
 
 func (c *hubAuthController) config() authopenai.Config {
@@ -1050,7 +1065,7 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
 	if asserted == "" {
 		if keyErr != nil {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
 		}
 		return nil
 	}
@@ -1063,10 +1078,10 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	// is nothing to check only while the hub can key a fingerprint or has no
 	// state root at all.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
 	}
 	if current != asserted {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
 	}
 	return nil
 }
@@ -1104,7 +1119,7 @@ func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
 	if started == "" {
 		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
+			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
 		}
 		return nil
 	}
@@ -1113,10 +1128,10 @@ func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key 
 	// can no longer describe is one whose record nobody can place, so it is
 	// refused rather than filed somewhere the user never signed in for.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
+		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
 	}
 	if current != started {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
+		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
 	}
 	return nil
 }
@@ -1175,7 +1190,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterWrite(name, c.statusByProvider)
 }
 
 // requiresGCPADC returns an InvalidParams error when the named instance does

@@ -18,11 +18,11 @@ this card is rebuilt around, because they invert what it used to say:
   field now, not a client convention.
 - **The losing tab does NOT drop text into the composer.** `sendAskAnswers` /
   `dropComposedTextIntoComposer` are gone with the vanilla frontend (`660376f78`).
-  `askDockStore.sendBatch` (`composer/askDock/askDockStore.ts:243-269`) awaits only the
+  `askDockStore.sendBatch` (`appwire-client/typescript/askDock.ts:418-449`) awaits only the
   **durable outbox enqueue**, then removes the batch and records its keys in
-  `excludedKeys` forever (`:113-138`) — so the dock clears in both tabs before either
+  `excludedKeys` forever (`:269-296`) — so the dock clears in both tabs before either
   `turn/start` has been answered. The rejection surfaces later, through the durable
-  recovery path (`stores/mutationDispatcher.ts:104-108` →
+  recovery path (`appwire-client/typescript/state/mutation/dispatcher.ts:202-206` →
   `Composer.tsx:271-297` / `composer/queue/QueueStrip.tsx:345-393`), never as an inline
   composer drop. `sendBatch`'s own `catch` + toast (`AskDock.tsx:295-306`) is for a
   **local enqueue** failure only; a lost race does not reach it.

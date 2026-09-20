@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -88,7 +87,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	// child), so the fallthrough below keeps the same dirs: the catalog then
 	// shows what the resulting session loads instead of going empty.
 	pluginDirs := resolved.Effective.PluginDirs
-	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins); err != nil {
+	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins, cfg.PluginManager); err != nil {
 		// Same admission rule thread/start uses (app_threadlifecycle.go): a
 		// resolver failure is fatal when a selection must be honored, and
 		// always when the failure IS the caller leaving (canceled/deadline on
@@ -118,15 +117,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 			Description: cmd.Description, ArgumentHint: cmd.ArgumentHint, Source: cmd.Source,
 		})
 	}
-	sort.Slice(commands, func(i, j int) bool {
-		if commands[i].Name != commands[j].Name {
-			return commands[i].Name < commands[j].Name
-		}
-		if commands[i].PluginName != commands[j].PluginName {
-			return commands[i].PluginName < commands[j].PluginName
-		}
-		return commands[i].Source < commands[j].Source
-	})
+	sortCommandDescriptors(commands)
 	// Skill advertisement uses session startup's portable discovery (the same
 	// builder the past-thread catalog uses) so the pre-session catalog shows
 	// exactly what the resulting session loads, with the catalog's real

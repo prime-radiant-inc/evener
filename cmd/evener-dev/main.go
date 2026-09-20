@@ -14,9 +14,12 @@ import (
 )
 
 var subcommands = map[string]func(args []string) int{
-	"agent-shards": runAgentShards,
-	"covstmt":      covstmtMain,
-	"module-lint":  lintMain,
+	"agent-shards":     runAgentShards,
+	"check-gate-flags": checkGateFlagsMain,
+	"covstmt":          covstmtMain,
+	"list-build-flags": listBuildFlagsMain,
+	"module-lint":      lintMain,
+	"root-test-flags":  rootTestFlagsMain,
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -33,8 +34,27 @@ type delegateStopState struct {
 }
 
 type delegateStopDriver struct {
-	done chan struct{}
-	err  error
+	done   chan struct{}
+	err    error
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// newDelegateStopDriver mints a driver whose drain is bounded by a context the
+// close joins cancel once they give up on it. Without that wake a driver parked
+// on delegate stop progress would outlive the closed store for the life of the
+// process: nothing else signals a stop whose evidence can never advance again.
+func newDelegateStopDriver() *delegateStopDriver {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &delegateStopDriver{done: make(chan struct{}), ctx: ctx, cancel: cancel}
+}
+
+// abandon cancels the drain context so the driver exits even when it is parked
+// on stop progress. It is safe on a nil driver and on an already-finished one.
+func (d *delegateStopDriver) abandon() {
+	if d != nil && d.cancel != nil {
+		d.cancel()
+	}
 }
 
 type delegateStopResult struct {
@@ -134,13 +154,13 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 	root := c.rootRuntime
 	startDriver := false
 	if stop != nil && stop.driver == nil {
-		stop.driver = &delegateStopDriver{done: make(chan struct{})}
+		stop.driver = newDelegateStopDriver()
 		c.stopDriver = stop.driver
 		startDriver = true
 	} else if stop != nil && stop.driver.err != nil {
 		select {
 		case <-stop.driver.done:
-			stop.driver = &delegateStopDriver{done: make(chan struct{})}
+			stop.driver = newDelegateStopDriver()
 			c.stopDriver = stop.driver
 			startDriver = true
 		default:
@@ -688,6 +708,17 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
+	return c.drainStopAbandonable(ctx, stop, root, nil)
+}
+
+// drainStopAbandonable is drainStop plus an optional abandon signal. The stop
+// driver passes its own cancellable context's Done channel, so a close join
+// timeout -- which cancels that context -- can break the drain out of a busy
+// branch that never waits on the context. The close's own drains pass nil: they
+// keep reconciling even after their budget is cancelled, which the stop's final
+// reconciliation relies on, and only the wait at the loop's foot observes their
+// context.
+func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}) error {
 	if stop == nil {
 		return nil
 	}
@@ -707,7 +738,18 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			return nil
 		default:
 		}
-		requirements := c.ReconcileRequirements()
+		// The drain's busy branches below (stale requirements, reconcile-busy,
+		// and repair/attention plans) re-enter the loop without waiting on the
+		// context. An abandoned driver would otherwise spin forever, so check
+		// the abandon signal at each such boundary; the wait at the loop's foot
+		// still prefers exact progress over cancellation.
+		requirements, current := c.stopReconcileRequirements(stop)
+		if !current {
+			if drainAbandoned(abandon) {
+				return ctx.Err()
+			}
+			continue
+		}
 		evidence, err := collectDelegateReconcileEvidence(c.stateDir, requirements)
 		if err != nil {
 			return err
@@ -718,6 +760,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
+				if drainAbandoned(abandon) {
+					return ctx.Err()
+				}
 				continue
 			}
 			return err
@@ -743,6 +788,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			}
 		}
 		if len(plans.attention) != 0 || len(plans.shellRepairs) != 0 {
+			if drainAbandoned(abandon) {
+				return ctx.Err()
+			}
 			continue
 		}
 		if !delegateStopDone(stop) {
@@ -753,8 +801,22 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 	}
 }
 
+// drainAbandoned reports whether an abandon signal has fired. A nil signal
+// never reports abandoned.
+func drainAbandoned(abandon <-chan struct{}) bool {
+	if abandon == nil {
+		return false
+	}
+	select {
+	case <-abandon:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
-	err := c.drainStop(context.Background(), stop, root)
+	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done())
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)
@@ -828,6 +890,9 @@ func (c *delegateTreeController) joinExactStopReconcileDriver(ctx context.Contex
 			c.mu.Unlock()
 			return true, err
 		default:
+			// The bounded join is giving up on this driver; cancel its drain so
+			// it cannot stay parked forever once the store closes behind it.
+			driver.abandon()
 			return false, ctx.Err()
 		}
 	}
@@ -851,6 +916,9 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 		return nil
 	default:
 	}
+	if observe := observeDelegateStopWait.Load(); observe != nil {
+		(*observe)()
+	}
 	select {
 	case <-stop.done:
 		return nil
@@ -869,6 +937,13 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 		}
 	}
 }
+
+// observeDelegateStopWait, when stored, runs just before a stop drain parks on
+// delegate stop progress. Tests store it to prove the reconcile driver is parked
+// before a close wakes it; empty in production. An atomic pointer keeps the read
+// in waitForDelegateStopProgress race-free against a test storing or clearing
+// the hook, the same convention as ObserveCloseStopJoin.
+var observeDelegateStopWait atomic.Pointer[func()]
 
 func executeDelegateCancelPlan(plan delegateCancelPlan) {
 	for _, cancel := range plan.cancel {

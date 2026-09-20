@@ -28,8 +28,13 @@ import {
   readLegacyPreference,
   readTranscriptDisplayLocal,
 } from "./prefs";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
+// This store's own guard: keybindings.ts wires the same connectionStore
+// client through its own instance, so the two never contend over one shared
+// registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
 const LOCAL_KEYS: Record<ViewportClass, string> = {
   desktop: "evener.prefs.transcriptDisplay.desktop",
@@ -422,10 +427,16 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
-  unwireReady = client.onReady(() => {
-    const epoch = beginReadyGeneration(client);
-    void refreshFor(client, epoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        const epoch = beginReadyGeneration(client);
+        void refreshFor(client, epoch);
+      },
+    ),
+  );
   if (client.state === "ready") {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
@@ -604,6 +615,25 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         });
         return canonical;
       } catch (error) {
+        const applied = postApplyDefault(error, layout);
+        if (applied !== undefined) {
+          if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
+            return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
+          }
+          // The patch APPLIED before a follow-up durable step failed: the hub
+          // already published applied and will broadcast it to every other
+          // client. Reconcile from it the same way the success path above
+          // does, rather than treating this write as rejected.
+          applyHubDefault(layout, applied);
+          const drafts = { ...transcriptDisplayStore.getState().drafts };
+          delete drafts[layout];
+          transcriptDisplayStore.setState({
+            drafts,
+            hubError: null,
+            hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
+          });
+          return applied;
+        }
         const canonical = conflictCurrent(error, layout);
         if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
           if (canonical !== undefined) applyHubDefault(layout, canonical);
@@ -641,6 +671,21 @@ function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDi
   const data = error.data as Record<string, unknown>;
   if (data.evenerErrorInfo !== "conflict" || data.layout !== layout) return undefined;
   return fromWireDefault(data.current);
+}
+
+// postApplyDefault extracts the applied canonical value from a
+// transcriptDisplayPostApply error (evener/errors.go's
+// ErrorTranscriptDisplayPostApply, hubcore.TranscriptDisplayPostApplyError):
+// the patch already landed on the hub before a follow-up durable step
+// failed, so the caller must reconcile from it instead of treating the
+// write as rejected - the same shape as conflictCurrent above, keyed off a
+// different error code and evenerErrorInfo.
+function postApplyDefault(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || error.code !== -32603 || typeof error.data !== "object" || error.data === null)
+    return undefined;
+  const data = error.data as Record<string, unknown>;
+  if (data.evenerErrorInfo !== "transcriptDisplayPostApply" || data.layout !== layout) return undefined;
+  return fromWireDefault(data.applied);
 }
 
 connectionStore.subscribe(onConnectionChange);

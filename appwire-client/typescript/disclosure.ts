@@ -19,13 +19,11 @@ export interface DisclosureState {
 export interface ExplicitChoice {
   readonly open: boolean;
   readonly revision: number;
-  readonly baselineGeneration: number | undefined;
 }
 
 export interface DisclosureBaseline {
   readonly open: boolean;
   readonly ids: ReadonlySet<string>;
-  readonly generation: number;
   readonly startedRevision: number;
 }
 
@@ -52,6 +50,7 @@ export interface DisclosureStore extends FrameworkFreeStore<DisclosureState> {
 }
 
 const SCOPE_SEPARATOR = "\0";
+const SCOPE_SEPARATOR_CODE = SCOPE_SEPARATOR.charCodeAt(0);
 
 /** The store's stable key for a disclosure inside a render scope. */
 export function scopedDisclosureId(scope: string, id: string): string {
@@ -76,8 +75,12 @@ function baselineForId(baselines: ReadonlyMap<string, DisclosureBaseline>, id: s
   let match: DisclosureBaseline | undefined;
   let matchLength = -1;
   for (const [scope, baseline] of baselines) {
+    // The selector runs on every store change for every mounted Disclosure, so
+    // it tests the scope and its separator in place rather than allocating a
+    // `${scope}${SCOPE_SEPARATOR}` prefix string per baseline per run.
+    if (!id.startsWith(scope) || id.charCodeAt(scope.length) !== SCOPE_SEPARATOR_CODE) continue;
     const prefixLength = scope.length + SCOPE_SEPARATOR.length;
-    if (id.startsWith(`${scope}${SCOPE_SEPARATOR}`) && prefixLength > matchLength) {
+    if (prefixLength > matchLength) {
       match = baseline;
       matchLength = prefixLength;
     }
@@ -97,9 +100,8 @@ export function createDisclosureStore(): DisclosureStore {
   const setOpen: DisclosureStore["setOpen"] = (id, open) => {
     setState((s) => {
       const next = new Map(s.open);
-      const baseline = baselineForId(s.baselines, id);
       const revision = s.revision + 1;
-      next.set(id, { open, revision, baselineGeneration: baseline?.generation });
+      next.set(id, { open, revision });
       return { open: next, revision };
     });
   };
@@ -120,7 +122,6 @@ export function createDisclosureStore(): DisclosureStore {
       setState((s) => {
         const previous = s.baselines.get(scope);
         const enteringOpenBaseline = open && previous?.open !== true;
-        const generation = enteringOpenBaseline ? (previous?.generation ?? 0) + 1 : (previous?.generation ?? 0);
         const startedRevision = enteringOpenBaseline ? s.revision : (previous?.startedRevision ?? s.revision);
         const nextOpen = new Map(s.open);
         if (open) {
@@ -134,7 +135,7 @@ export function createDisclosureStore(): DisclosureStore {
           }
         }
         const baselines = new Map(s.baselines);
-        baselines.set(scope, { open, ids: new Set(ids), generation, startedRevision });
+        baselines.set(scope, { open, ids: new Set(ids), startedRevision });
         return { open: nextOpen, baselines };
       });
     },

@@ -713,11 +713,13 @@ function SelectedConnection({
             Credential saved for {name}. {row && activeSourceLabel(row)}
           </p>
         )}
-        {help && modes.includes("apiKey") && (
+        {help && (
           <>
-            <a href={help.keyUrl} target="_blank" rel="noreferrer">
-              Get an API key
-            </a>
+            {modes.includes("apiKey") && (
+              <a href={help.keyUrl} target="_blank" rel="noreferrer">
+                Get an API key
+              </a>
+            )}
             <p>{help.billing}</p>
           </>
         )}

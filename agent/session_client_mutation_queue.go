@@ -11,7 +11,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -220,22 +219,18 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
-	// Refuse only a wake that has something to claim. An idle poll against a
-	// dead transcript claims nothing and loses nothing, and answering it with an
-	// error would turn every poll into a logged failure for the rest of the
-	// session's life; the start path takes the same shape by checking after its
-	// runnable test. Parked work is idle work for this purpose: a Stop holds the
-	// queue and the steering rail, and both claims below refuse a held entry, so
-	// asking the claims' own predicates is what keeps the refusal and the claim
-	// from disagreeing about what counts as work. Predicates rather than the
-	// claims themselves because claiming is the durable act this guard exists to
-	// prevent.
-	if s.wakeHasClaimableWork() {
-		if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
-			return "", false, err
-		}
+	// Each claim below decides the poisoned-transcript refusal on the same
+	// generation it claims on, so nothing here has to read a claimability
+	// snapshot the claim might then contradict. A wake that claims nothing --
+	// an idle poll, or work a Stop parked in the meantime -- stands down
+	// quietly, because answering it with an error would turn every poll into a
+	// logged failure for the rest of the session's life; a wake that would
+	// claim a poisoned transcript refuses before announcing a turn it cannot
+	// record.
+	queued, refusal := s.popQueueHeadRefusingPoison()
+	if refusal != nil {
+		return "", false, refusal
 	}
-	queued := s.popQueueHead()
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.steeringParkedNow() {
 		// A wake the daemon buffered before the last attempt failed -- the
 		// steer's own acceptance wake, held while the input that then ran the
@@ -244,8 +239,11 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		return "", false, nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
-		var claimed bool
-		if queued, claimed = s.claimSteeringCarrierInput(); !claimed {
+		carrier, carrierRefusal := s.claimSteeringCarrierInput()
+		if carrierRefusal != nil {
+			return "", false, carrierRefusal
+		}
+		if !carrier.SteeringCarrier {
 			// Another mutation already owns the active-turn slot, or an
 			// interrupt fence is ending one: this wake cannot name itself.
 			// Stand down rather than run unaddressable -- the steering stays
@@ -253,14 +251,35 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// contract mintRunningTurnID's callers rely on.
 			return "", false, nil
 		}
+		queued = carrier
 		// The claim is handed back by the run itself, on every exit: the
 		// drain loop after each turn, and the entry gate when it refuses a
 		// closed session before the loop (releaseSteeringCarrierClaim). One
 		// owner, so nothing here releases it a second time.
 	}
 	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) || queued.SteeringCarrier {
-		if onRunnable != nil && queued.StableTurnID != "" {
-			onRunnable(queued.StableTurnID)
+		// The claims above decided their refusals on the generations they
+		// committed against, so a poisoning can still land between a decision and
+		// its commit. The announcement is made under the transcript's write door
+		// rather than after a check outside it: a poisoning append records the
+		// poison while holding that door, so the announce is ordered against every
+		// poisoning. Either it is already visible -- nothing is announced, and the
+		// claim goes back -- or it lands after the announce, where it is the
+		// ordinary refusal the run below meets.
+		announceRefusal := s.attachedTranscript().WhileHealthy(func() {
+			if onRunnable != nil && queued.StableTurnID != "" {
+				onRunnable(queued.StableTurnID)
+			}
+		})
+		if announceRefusal != nil {
+			if queued.SteeringCarrier {
+				s.releaseSteeringCarrierClaim(queuedClientMutationIdentityOf(queued))
+			} else if queued.ClientMutationID != "" {
+				if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {
+					return "", false, errors.Join(errWhileHealthyRefuses(announceRefusal), fmt.Errorf("return claimed input: %w", restoreErr))
+				}
+			}
+			return "", false, errWhileHealthyRefuses(announceRefusal)
 		}
 		ctx = withQueuedClientMutation(ctx, queued)
 		// Prepare the claimed input's skill selection at actual consumption:
@@ -273,12 +292,15 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// leave it in no queue and no transcript; turn completion is the queue's
 		// own restore, the same one the environment-append failure uses.
 		//
-		// Keyed on the poisoned error alone, deliberately. Every other
-		// pre-incorporation failure either unwinds where it happened or is
-		// reclaimed by startup recovery, and a wider key would re-queue a turn
-		// already recorded in the transcript — an incorporation marking that
-		// fails after the entry is durable would deliver the message twice.
-		if errors.Is(err, transcript.ErrWriterPoisoned) &&
+		// Keyed on the transcript's own refusals -- poisoned or closed -- and
+		// nothing wider, deliberately. Every other pre-incorporation failure
+		// either unwinds where it happened or is reclaimed by startup recovery,
+		// and a wider key would re-queue a turn already recorded in the
+		// transcript — an incorporation marking that fails after the entry is
+		// durable would deliver the message twice. A close can land after the
+		// claim and announce, so it owes the same give-back the poisoned case
+		// gets; left claimed, its active turn stays pinned until a restart.
+		if transcriptRefusedClaim(err) &&
 			!s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
 			if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {
 				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
@@ -297,23 +319,29 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 // -- rather than minting a fresh one, so the id returned in that mutation's
 // Applied receipt is the id that actually runs.
 //
-// Returns ok=false when nothing is claimable: an interrupt fence is ending a
-// turn, another mutation already holds the active-turn slot, or (a benign
-// race with whatever cleared hasPendingUserSteering's answer between the
+// It returns a zero carrier when nothing is claimable: an interrupt fence is
+// ending a turn, another mutation already holds the active-turn slot, or (a
+// benign race with whatever cleared hasPendingUserSteering's answer between the
 // caller's check and this call) no user steering is left pending. The caller
-// treats every case the same way -- stand down -- because the steering that
-// prompted the wake, if still queued, stays queued for whichever turn runs
+// treats every such case the same way -- stand down -- because the steering
+// that prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
-func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
+//
+// It returns a refusal instead when it would have claimed on a poisoned
+// transcript. That refusal is decided on the same generation the claim acts on
+// (inside the mutate below), so a poisoning or a Stop that lands after the
+// caller decided the steer was runnable cannot hand the steer to a turn the
+// transcript cannot record.
+func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering carrier admission failed: %v", admissionErr)})
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
 	// Eligibility is decided on one sample: the store as the serializer holds
 	// it, plus the in-flight set taken under s.mu just before -- the serializer
@@ -323,16 +351,34 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 	if s.cfg.testOnly.steeringCarrierClaiming != nil {
 		s.cfg.testOnly.steeringCarrierClaiming()
 	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the claim reads only the writer's own lock inside, so
+	// the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
+	var carrier queuedInput
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
 		if id, turnID := claimableSteeringCarrier(snapshot, inFlight); turnID != "" {
+			// The refusal is part of the claim decision, on the generation this
+			// claim commits against. Returning it from the mutation is what
+			// keeps the refusal from committing anything -- a nil return would
+			// save the generation the claim then declined to change.
+			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+				return refusal
+			}
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
 		}
 		return nil
-	}); err != nil {
+	})
+	// A refusal is the transcript's, not the store's: distinguish it from a
+	// claim write that failed, which parks the steer with a warning instead.
+	if transcriptRefusedClaim(err) {
+		return queuedInput{}, err
+	}
+	if err != nil {
 		// A refused write parks the steer the way a failed append does: it
 		// stays accepted and queued, runnable (hasRunnableUserSteering keeps
 		// the session from resting), and nothing here arms a wake of its own
@@ -341,9 +387,9 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 		// returns nil above.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		s.parkSteering()
-		return queuedInput{}, false
+		return queuedInput{}, nil
 	}
-	return carrier, carrier.SteeringCarrier
+	return carrier, nil
 }
 
 // steeringCarrierRailOpen reports whether the steering rail is open to a claim
@@ -361,8 +407,8 @@ func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
 
 // claimableSteeringCarrier names the first eligible pending steer and the
 // reserved turn it already owns, or "" when no steer is ready to carry one. The
-// claim above walks the order once through this; the gate's predicate asks it
-// the same question without taking anything.
+// claim above walks the order once through this; nothing else decides carrier
+// eligibility, so a caller cannot ask a different question of the same order.
 //
 // inFlight is the session's steeringInFlight sample: a steer a turn popped and
 // is appending, or one whose append landed and whose incorporation write the
@@ -414,24 +460,6 @@ func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) car
 		return carrierSteerUndelivered
 	}
 	return carrierSteerDelivered
-}
-
-// steeringCarrierClaimable reports whether claimSteeringCarrierInput would take a
-// carrier turn: the rail is open and a steer is ready to use it. Like
-// queueHeadClaimable it is the whole of that decision, so a caller asking
-// whether this session has steering it could actually run asks the question the
-// claim asks.
-func steeringCarrierClaimable(snapshot *clientMutationSnapshot, inFlight map[string]string) bool {
-	_, turnID := claimableSteeringCarrier(snapshot, inFlight)
-	return steeringCarrierRailOpen(snapshot) && turnID != ""
-}
-
-// wakeHasClaimableWork reports whether this wake has work it could actually
-// take, by the same predicates the two claims decide with.
-func (s *Session) wakeHasClaimableWork() bool {
-	inFlight := s.steeringInFlightSample()
-	snapshot := s.clientMutations.snapshot()
-	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot, inFlight)
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored
@@ -531,7 +559,12 @@ func queueResponseFromRecord(threadID string, record clientMutationRecord, dispo
 	return response, nil
 }
 
-func (s *Session) reflectDurableInputQueue() {
+// reflectDurableInputQueue publishes the durable queue's current state as a
+// QUEUE_CHANGED event. consumedClientMutationIDs names entries a caller's own
+// transition just consumed (a drain folding the queue into steering) so the
+// push carries that one-shot fact alongside the durable snapshot; every other
+// caller passes none, and the field is absent on the wire (issue #1704).
+func (s *Session) reflectDurableInputQueue(consumedClientMutationIDs ...string) {
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
 	snapshot := s.clientMutations.snapshot()
@@ -547,11 +580,9 @@ func (s *Session) reflectDurableInputQueue() {
 	s.inputQueue = queue
 	data := s.queueChangedDataLocked()
 	data.Revision = snapshot.QueueRevision
-	data.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
-	for i, entry := range snapshot.InputQueue {
-		data.ClientMutationIDs[i] = entry.ClientMutationID
-	}
+	data.ClientMutationIDs = clientMutationQueueClientMutationIDs(snapshot.InputQueue)
 	s.mu.Unlock()
+	data.ConsumedClientMutationIDs = consumedClientMutationIDs
 	s.emit(events.EventQueueChanged, data)
 }
 
@@ -735,6 +766,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	}
 	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
 	var response appwire.TurnDrainAsSteerResponse
+	var consumedClientMutationIDs []string
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
@@ -773,10 +805,15 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
+		consumedClientMutationIDs = clientMutationQueueClientMutationIDs(entries)
 		steeringInput := combineClientMutationInputs(entries, params.Input)
 		snapshot.InputQueue = remaining
 		snapshot.QueueRevision++
 		response = appwire.TurnDrainAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
+		// Durable, so a replay reports it too: replayClientMutationResult
+		// unmarshals this same JSON, and the replay branch below never calls
+		// reflectDurableInputQueue to re-announce it any other way.
+		response.Receipt.ConsumedClientMutationIDs = consumedClientMutationIDs
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -804,7 +841,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		s.wakeForPendingSteering()
 		return replayed, nil
 	}
-	s.reflectDurableInputQueue()
+	s.reflectDurableInputQueue(consumedClientMutationIDs...)
 	s.reflectDurableClientSteering()
 	s.wakeForPendingSteering()
 	return response, nil
@@ -1108,6 +1145,18 @@ func clientMutationQueueIDs(entries []clientMutationQueueEntry) []string {
 	return ids
 }
 
+// clientMutationQueueClientMutationIDs is clientMutationQueueIDs' counterpart
+// for the CLIENT's own identity on each entry (ClientMutationID), rather than
+// the daemon-minted stable queue-entry id: it names entries by the identity a
+// client's own optimistic record was enqueued under.
+func clientMutationQueueClientMutationIDs(entries []clientMutationQueueEntry) []string {
+	ids := make([]string, len(entries))
+	for i, entry := range entries {
+		ids[i] = entry.ClientMutationID
+	}
+	return ids
+}
+
 func removeQueuedMutationSource(snapshot *clientMutationSnapshot, entry clientMutationQueueEntry, executionState string) {
 	delete(snapshot.BudgetReservations, entry.ClientMutationID)
 	record, ok := snapshot.Journal[entry.ClientMutationID]
@@ -1400,6 +1449,42 @@ func (s *Session) clientMutationUserTranscriptIncorporated(clientMutationID, sta
 		pending.TurnID == stableTurnID
 }
 
+// clientMutationTranscriptHolds reports whether this session's history already
+// holds a turn for this client mutation and stable turn id. It is not the store's
+// incorporation mark: the user-input turn is written to the transcript before
+// that mark is stored, so a mark that failed leaves an execution the store still
+// calls "claimed" whose turn is already on disk. Requeueing that one appends and
+// processes the message twice.
+func (s *Session) clientMutationTranscriptHolds(clientMutationID, stableTurnID string) bool {
+	items := s.clientMutationTranscriptItems(clientMutationID, stableTurnID)
+	return items.User || items.Failure
+}
+
+// claimedQueuedRecordedInTranscript samples which of this session's claimed queue
+// executions the transcript already holds, keyed by client mutation id.
+//
+// Callers MUST take this before they enter the store serializer: the transcript
+// scan takes Session.mu, and the serializer never waits on it. It is the same
+// shape as recordedSteeringAwaitingMark, which exists for the same reason.
+func (s *Session) claimedQueuedRecordedInTranscript() map[string]bool {
+	if s == nil || s.clientMutations == nil {
+		return nil
+	}
+	var recorded map[string]bool
+	for id, pending := range s.clientMutations.snapshot().PendingExecutions {
+		if pending.Method != clientMutationMethodQueue || pending.ExecutionState != "claimed" {
+			continue
+		}
+		if s.clientMutationTranscriptHolds(id, pending.TurnID) {
+			if recorded == nil {
+				recorded = make(map[string]bool)
+			}
+			recorded[id] = true
+		}
+	}
+	return recorded
+}
+
 func (s *Session) beginClientMutationFailure(clientMutationID string, cause error) error {
 	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
@@ -1603,39 +1688,61 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 	returned := false
 	// For the fence this completion may finalize; sampled outside the mutate.
 	recordedIDs, recorded := s.recordedSteeringAwaitingMark()
+	// Whether the transcript already holds this execution's turn, also sampled
+	// outside the mutate: the transcript scan takes Session.mu, and the store
+	// serializer must never wait on it.
+	claimedRecorded := s.claimedQueuedRecordedInTranscript()
 	fenceFinalized := false
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
 			return nil
 		}
-		// A queued turn that was claimed but never incorporated did not run, and
+		// A queued turn that was claimed and never recorded did not run, and
 		// settling it here would lose it: the entry is already out of the input
 		// queue and nothing else puts it back within this process. Return the
 		// claim instead. The ordinary way to reach this is a cancelled context,
 		// and a Stop is what cancels it (katas e519 + nss1).
+		//
+		// "claimed" is not enough: the user-input turn is written to the
+		// transcript before its incorporation mark, so a mark that failed leaves
+		// a claimed execution whose turn is already on disk. Requeueing that one
+		// appends and processes the message a second time, so the transcript
+		// decides, on the fact the caller sampled outside this serializer.
+		//
+		// A recorded claim is not left claimed either: that would keep the active
+		// turn pinned on a message the session already ran, wedging every later
+		// turn until a restart. The transcript holding the turn IS the thing
+		// incorporation records, so the execution is promoted and settles through
+		// the same path an incorporated one takes -- no second append, no second
+		// run, and the active turn is cleared below.
 		if pending.ExecutionState == "claimed" && pending.Method == clientMutationMethodQueue {
-			record := snapshot.Journal[clientMutationID]
-			if err := returnClaimedQueuedMutation(snapshot, clientMutationID, pending, &record); err != nil {
-				return err
+			if claimedRecorded[clientMutationID] {
+				pending.ExecutionState = "incorporated"
+				snapshot.PendingExecutions[clientMutationID] = pending
+			} else {
+				record := snapshot.Journal[clientMutationID]
+				if err := returnClaimedQueuedMutation(snapshot, clientMutationID, pending, &record); err != nil {
+					return err
+				}
+				record.ExecutionState = "accepted"
+				snapshot.Journal[clientMutationID] = record
+				snapshot.QueueRevision++
+				returned = true
+				// The turn-boundary half of wms7. A turn claimed out of the queue and
+				// stopped during its PRE-TURN WORK ends here, not in the incorporated
+				// branch below, so reporting the Stop only from there left the drain
+				// loop hearing "a bare host cancellation" -- and running the very
+				// message the user stopped, which it has just put back on the queue.
+				//
+				// Nothing is finalized here: the interrupt does that after this
+				// completion returns, which is exactly why the fence is still legible
+				// from this branch and why reporting it costs nothing.
+				if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+					stopFinalized = true
+				}
+				return nil
 			}
-			record.ExecutionState = "accepted"
-			snapshot.Journal[clientMutationID] = record
-			snapshot.QueueRevision++
-			returned = true
-			// The turn-boundary half of wms7. A turn claimed out of the queue and
-			// stopped during its PRE-TURN WORK ends here, not in the incorporated
-			// branch below, so reporting the Stop only from there left the drain
-			// loop hearing "a bare host cancellation" -- and running the very
-			// message the user stopped, which it has just put back on the queue.
-			//
-			// Nothing is finalized here: the interrupt does that after this
-			// completion returns, which is exactly why the fence is still legible
-			// from this branch and why reporting it costs nothing.
-			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
-				stopFinalized = true
-			}
-			return nil
 		}
 		if pending.ExecutionState != "incorporated" {
 			return nil
@@ -1659,7 +1766,9 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
 			stopFinalized = true
 			fenceFinalized = true
-			return finalizeClientMutationInterrupt(snapshot, s.ID(), recorded)
+			finalized, finalizeErr := finalizeClientMutationInterrupt(snapshot, s.ID(), recorded, claimedRecorded)
+			returned = returned || finalized
+			return finalizeErr
 		}
 		return nil
 	})

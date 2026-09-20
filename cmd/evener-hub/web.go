@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // WebServer wires routes and middleware.
@@ -27,6 +28,11 @@ type WebServer struct {
 	navigation *NavigationService
 	sources    *appsource.Registry
 	startedAt  time.Time
+	// hostAdmin is the remote-admin proxy controller owning the per-host
+	// config-notification fan-outs. main.go binds its hostAttached wakeup to
+	// the sshconn attach-event path so an EventAttached rebinds a
+	// backoff-sleeping fan-out immediately.
+	hostAdmin *hubHostAdminController
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -119,6 +125,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
 		}
 	}
+	// The one *plugins.Manager every plugin surface shares: the plugin CRUD
+	// handlers, a launch's plugin-inventory resolution (thread/start,
+	// evener/spawn/slashCatalog), and the three background maintenance paths
+	// in main_background.go (hubStartUpgrade, seedHubMarketplaces,
+	// startHubPluginMaintenance's GC) all reach this same instance instead of
+	// each minting its own over a possibly different root (#1780).
+	if cfg.PluginManager == nil {
+		cfg.PluginManager = plugins.NewManager(cfg.PluginRoot)
+	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
 		cfg:                       cfg,
@@ -138,7 +153,13 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	web.appRPC = server
+	web.hostAdmin = hostAdmin
+	// Wired here, after the server exists, rather than inside the
+	// constructor: this is the one place that both built cfg.PluginManager
+	// and now has a broadcaster to give it.
+	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
@@ -152,7 +173,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 // serializing concurrent resume requests on the same session_id. It shares the
 // registry the RPC auto-resume path uses (cfg.ResumeLocks) so the two paths
 // serialize against each other.
-func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
+func (s *WebServer) lockForSession(sessionID string) *hubcore.ResumeMutex {
 	if s.cfg.ResumeLocks == nil {
 		s.cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}
@@ -204,8 +225,11 @@ func (s *WebServer) Handler() http.Handler {
 	// already authorized browser can read the token.
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 
-	// App-wire RPC
-	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
+	// App-wire RPC. The edge stamps the cooperative bridge-origin marker onto
+	// the connection's request context before accepting, so every handler can
+	// read the request's routing origin (component 07, §"Host-routing origin
+	// guard").
+	mux.HandleFunc("/rpc", s.serveAppWireRPC)
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
@@ -235,6 +259,20 @@ func (s *WebServer) Handler() http.Handler {
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
 	return record(auth(httpsec.CSPMiddleware(mux)))
+}
+
+// serveAppWireRPC wraps the AppWire edge so a connection presenting the
+// cooperative bridge marker is marked remote-originated for every request it
+// carries. The marker is read here, at accept time, and stamped into the
+// request context the edge derives its per-request handler contexts from, so
+// handlers reach it through hostRoutingOrigin rather than by re-reading a
+// header. A connection without the marker (the local browser, TUI, or CLI) is
+// local-originated.
+func (s *WebServer) serveAppWireRPC(w http.ResponseWriter, r *http.Request) {
+	if isBridgeOriginRequest(r) {
+		r = r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge))
+	}
+	s.appRPC.ServeWebSocket(w, r)
 }
 
 // handleIndex serves the SPA shell for "/", "/new", and every other page route

@@ -57,16 +57,17 @@ const askItem = {
   id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
   argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
 };
+const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
-assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
 const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
-const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions(askModel), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
-const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions({ turns: [{ items: [askItem] }] })); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
+const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions(askModel)); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
@@ -233,7 +234,7 @@ const pathRows = client.buildPathRows({
   value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
-assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.deepEqual(client.pickablePathRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 assert.equal(client.parseTaskListData(null), null);
 assert.deepEqual(client.parseTaskListData([]), []);
 const taskRows = client.parseTaskListData([
@@ -274,6 +275,11 @@ assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: fa
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+const projectorTurn = { id: "turn1", status: "completed", items: [{ id: "item1", type: "userMessage", text: "hi" }] };
+const projection = client.projectThread({ turns: [projectorTurn] }, displayConfig);
+assert.equal(projection.turns[0].entries[0].kind, "item");
+assert.equal(projection.turns[0].entries[0].id, "item1");
+assert.equal(typeof client.ACTION_SUMMARY_UNAVAILABLE, "string");
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
@@ -292,6 +298,21 @@ client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
+  // The twelve storage-port methods neither outbox fixture exercises: the
+  // type-use program and the smoke script embed this one definition and add the
+  // two calls each of them actually makes (enqueueIntent, listTargetRefs).
+  const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  enqueueInterruptAndCancel: () => Promise.reject(new Error("inert")),
+  getOptimistic: () => Promise.resolve(undefined),
+  listOptimistic: () => Promise.resolve([]),
+  getRecovery: () => Promise.resolve(undefined),
+  nextDispatchable: () => Promise.resolve(undefined),
+  markAttempted: () => Promise.resolve(false),
+  markUnknown: () => Promise.resolve(false),
+  settleReceipt: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(false),
+  restoreProvenAbsent: () => Promise.resolve([]),
+  transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off
   // its entry module below. A subpath with no entry here is not qualified,
@@ -335,6 +356,72 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
+    // The connection state layer: the client-swap safety and
+    // notification-following a host's own connection store wraps, over an
+    // AppwireClientLike only - no handshake, no view binding, so a bare Node
+    // consumer needs no socket. AppwireClientLike and FeatureSet are root
+    // exports, not this barrel's own surface, so the type-use program imports
+    // them itself rather than relying on the generated import block.
+    "./state/connection": {
+      esmTypeUses: `import type { AppwireClientLike, FeatureSet } from "@evener/appwire-client";
+const fakeClient: AppwireClientLike = {
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} as FeatureSet }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "idle",
+  terminalReason: null,
+};
+const store: ConnectionStore = createConnectionStore();
+const state: ConnectionStoreState = store.getState();
+store.connect(fakeClient);
+void state;
+const stop = onConnectionNotification(store, () => undefined);
+stop();`,
+      cjsTypeUses: `const connectionState: client.ConnectionStoreState = client.createConnectionStore().getState(); void connectionState;`,
+      // A store with no client wired starts idle; connect() mirrors an
+      // already-"ready" client's state (a reconnect scenario) and wires its
+      // client-swap safety; onConnectionNotification follows the client the
+      // store holds - all without opening a socket.
+      smoke: `let notified = 0;
+const readyClient = {
+  stateChangeHandlers: new Set(),
+  notificationHandlers: new Set(),
+  state: "ready",
+  terminalReason: null,
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification(cb) {
+    this.notificationHandlers.add(cb);
+    return () => this.notificationHandlers.delete(cb);
+  },
+  onReady: () => () => undefined,
+  onStateChange(cb) {
+    this.stateChangeHandlers.add(cb);
+    return () => this.stateChangeHandlers.delete(cb);
+  },
+  retryNow: () => undefined,
+};
+const connectionStore = client.createConnectionStore();
+assert.equal(connectionStore.getState().state, "idle");
+assert.equal("connect" in connectionStore.getState(), false);
+connectionStore.connect(readyClient);
+assert.equal(connectionStore.getState().state, "ready");
+assert.equal(connectionStore.getState().client, readyClient);
+const stopNotifications = client.onConnectionNotification(connectionStore, () => {
+  notified += 1;
+});
+for (const cb of readyClient.notificationHandlers) cb({ method: "evener/plugin/updated", params: {} });
+assert.equal(notified, 1);
+stopNotifications();
+`,
+    },
     // The navigation state layer, published as one subpath rather than through
     // the root: both apps' navigation stores are built on it, it is not part of
     // the client surface every consumer takes, and a barrel is the seam later
@@ -342,14 +429,24 @@ assert.equal(typeof client.readDocFile, "function");
     "./state/navigation": {
       esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
 const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;
-const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;`,
-      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
+const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;
+const memoryExpansion = new Map<string, boolean>();
+const navigationPersistence: NavigationPersistence = { readExpansion: () => new Map(memoryExpansion), writeExpansion: () => undefined };
+const navigation: NavigationStore = createNavigationStore({ persistence: navigationPersistence });
+const navigationState: NavigationStoreState = navigation.getState();
+const navigationSources: ReturnType<typeof selectSources> = selectSources(navigationState); void navigationSources;`,
+      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;
+const navigationStoreState: client.NavigationStoreState = client.createNavigationStore({ persistence: { readExpansion: () => new Map(), writeExpansion: () => undefined } }).getState(); void navigationStoreState;`,
       // One call per module: types (keyID, the offset rule), immutable (the
       // freeze and the equality), codec (a snapshot normalized into a graph),
       // merge (an empty delta onto a manifest that carries no metadata, which
       // the merge refuses as an invalid base), invalidation (the wildcard
       // reaching a project page), revalidator (an instance carries its
-      // generation).
+      // generation), store (a store built over a memory persistence port
+      // reads its expansion at creation, writes a toggle back through the
+      // port, and re-reads the port on reset - with no client wired, so
+      // nothing opens a socket), selectors (an unloaded store names no launch
+      // sources and no needs-you rows, and the row age formatter is pure).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -369,6 +466,20 @@ assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }),
 const revalidator = new client.NavigationRevalidator("g");
 assert.equal(revalidator.generationID, "g");
 revalidator.dispose();
+assert.equal(client.projectNodeExpansionKey("p"), "projectnode:p");
+const seededExpansion = new Map([["projectnode:p", true]]);
+const navigationStore = client.createNavigationStore({
+  persistence: { readExpansion: () => new Map(seededExpansion), writeExpansion: (m) => seededExpansion.clear() || m.forEach((v, k) => seededExpansion.set(k, v)) },
+});
+assert.equal(navigationStore.getState().expanded.get("projectnode:p"), true);
+assert.equal(navigationStore.getState().mode, "unknown");
+navigationStore.getState().toggleExpanded("projectnode:p");
+assert.equal(seededExpansion.get("projectnode:p"), false);
+navigationStore.reset();
+assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
+assert.deepEqual(client.selectSources(navigationStore.getState()), []);
+assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
+assert.equal(client.relativeAge(new Date().toISOString()), "now");
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
@@ -415,16 +526,25 @@ Promise.all([
 });
 `,
     },
-    // The extensions state layer - the marketplaces store, with the plugins
-    // and directories stores to follow - published as one subpath for the same
-    // reason state/navigation is: a layer both apps build their settings
-    // surfaces on, not part of the client surface every consumer takes.
+    // The extensions state layer - the marketplaces, installed-plugins and
+    // launch-layer stores - published as one subpath for the same reason
+    // state/navigation is: a layer both apps build their settings surfaces on,
+    // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
-const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;`,
-      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;`,
-      // A store built over a client that rejects everything: the list fetch
+const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
+const pluginsClient: PluginsClient = marketplacesClient;
+const plugins: PluginsStore = createPluginsStore(pluginsClient);
+const revision: ListRevision = createListRevision(); void plugins; void revision;
+const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
+const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
+const layerClient: LaunchLayerClient = marketplacesClient;
+const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
+      // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
       // promise chain rather than await: the CommonJS consumer has no
@@ -432,6 +552,25 @@ const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces;
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplacesStore = client.createMarketplacesStore(offline);
 assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+const pluginsStore = client.createPluginsStore(offline);
+assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(pluginsStore.getState().pluginRevision, 0);
+pluginsStore.connectionChanged(offline, "ready");
+const keyed = client.createKeyedRevision();
+const keyedRevision = keyed.issue("acme");
+keyed.retire("acme");
+assert.equal(keyed.current("acme", keyedRevision), false);
+const layerStore = client.createLaunchLayerStore(offline);
+assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(layerStore.getState().launchLayer, null);
+const listRevision = client.createListRevision();
+const first = listRevision.next();
+listRevision.fence();
+let fencedAnswerPublished = false;
+listRevision.publish(first, () => {
+  fencedAnswerPublished = true;
+});
+assert.equal(fencedAnswerPublished, false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()
@@ -443,6 +582,232 @@ marketplacesStore
   .then(() => {
     assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
     marketplacesStore.dispose();
+    return pluginsStore.getState().fetchPlugins();
+  })
+  .then(() => {
+    assert.equal(pluginsStore.getState().pluginsError, "offline");
+    return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
+  })
+  .then(() => {
+    pluginsStore.dispose();
+    return layerStore.getState().fetchLaunchLayer();
+  })
+  .then(() => {
+    assert.equal(layerStore.getState().launchLayerError, "offline");
+    return assert.rejects(layerStore.getState().setLaunchLayer({ pluginDirs: [] }), /offline/);
+  })
+  .then(() => layerStore.dispose())
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`,
+    },
+    // The mutation state layer: the durable record shapes both apps' outboxes
+    // store, the provenance rule their projections ask (did THIS client
+    // submit it), the pure reconciliation that turns durable records plus a
+    // live model into the rows a composer's queue renders, and the
+    // pending-turns projection store built on that reconciliation. Published
+    // as its own subpath because a host's storage and scheduling stay out of
+    // the package - this is the shape, the rule, the reconciliation and the
+    // store alone. Every call here is synchronous apart from the store's own
+    // triple, and the store's ports are fakes: there is no client port to
+    // script.
+    "./state/mutation": {
+      esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
+const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
+const record: MutationRecord = { ...intent, version: 1, clientMutationId: "cmid", intentSequence: 0, createdAt: 0 };
+const outboxRecord: MutationOutboxRecord = { ...record, state: "submitting" };
+const optimisticRecord: MutationOptimisticRecord = { ...record, state: "accepted" };
+const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: "rejected" };
+const outboxState: MutationOutboxState = outboxRecord.state;
+const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
+const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+const pendingMethod: PendingMethod = "send";
+const pendingState: PendingTurnState = "submitting";
+const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
+const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
+const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
+const threadsPort: PendingTurnsThreadsPort = { getThreadModel: () => undefined };
+const draftPort: PendingTurnsDraftPort = {
+  readDraftRevision: () => 0,
+  readComposerDraft: () => ({ text: "", skillNames: [] }),
+  clearDraft: () => undefined,
+};
+const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort, identity });
+const pendingTurnsState: PendingTurnsState = pendingTurnsStore.getState();
+const submittedDraft: SubmittedDraft = { draftRevisionAtStart: 0, text: "hi", skillNames: [] };
+const outboxStorage: MutationOutboxStorage = {
+  enqueueIntent: () => Promise.resolve(outboxRecord),
+  listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
+${inertOutboxStorageMethods}
+};
+// A complete ready client, type-checked here: the outbox's lookup must accept
+// a full AppwireClientLike, not just a state field. The runtime smoke below
+// repeats it in plain JavaScript, where the same object cannot be annotated.
+const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
+  connect: () => Promise.resolve({} as never),
+  request: () => Promise.resolve({} as never),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({} as never),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const outboxOptions: MutationOutboxOptions = { getClient: () => readyClient, onDiscover: () => undefined };
+const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
+const reason: MutationDiscoveryReason = "enqueue";
+const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+// The dispatcher always supplies a target ref, so a consumer whose lookup
+// requires one must stay assignable to its port; the ref-less outbox lookup
+// (above) must not have loosened it.
+const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
+const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
+void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
+const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
+const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
+const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;
+const pendingTurnsState: client.PendingTurnsState = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: { readDraftRevision: () => 0, readComposerDraft: () => ({ text: "", skillNames: [] }), clearDraft: () => undefined },
+  identity,
+}).getState(); void pendingTurnsState;
+const channel: client.MutationOutboxChannel = {
+  postMessage: () => undefined,
+  close: () => undefined,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
+void channel;`,
+      // createClientIdentity is a factory, not a module singleton: two
+      // instances over two storages get two identities, and one instance's
+      // identity is memoized across repeated calls. Both take their random
+      // source explicitly - no default to globalThis.crypto lives in the
+      // package. createSecureUUID is the same helper mutation ids use; a
+      // source with no randomUUID proves the getRandomValues fallback runs,
+      // and a source with neither proves the non-crypto fallback runs rather
+      // than throwing. reconcilePendingEntries needs no model to prove it
+      // runs: an absent one is the same "no live projection yet" case a
+      // fresh composer starts from. The pending-turns store is built over
+      // fake threads/draft ports plus one of the identities below:
+      // beginSubmission's guard, its release and the empty-projection read
+      // all prove the store runs without a real thread store or composer-
+      // draft storage behind it.
+      smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
+const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
+const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
+const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, identityRandomSource);
+const firstId = identityA.ownClientId();
+assert.equal(identityA.ownClientId(), firstId);
+assert.notEqual(identityB.ownClientId(), firstId);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
+assert.equal(identityA.isOwnMutationRecord({}), true);
+const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
+assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
+assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
+const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array });
+assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+const insecureUUID = client.createSecureUUID({});
+assert.match(insecureUUID, /^insecure-/);
+assert.deepEqual(
+  client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
+  [],
+);
+const draftState = { revision: 0, text: "", skillNames: [] };
+const pendingTurnsStore = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: {
+    readDraftRevision: () => draftState.revision,
+    readComposerDraft: () => ({ text: draftState.text, skillNames: draftState.skillNames }),
+    clearDraft: () => {
+      draftState.text = "";
+    },
+  },
+  identity: identityA,
+});
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), false);
+pendingTurnsStore.endSubmission("ref-a");
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
+// The outbox over a memory storage port: no channel, no lifecycle target and
+// no timer, which is exactly what a host without them passes. One enqueue
+// commits through the port and announces the ref it landed under, and stop()
+// awaits the discovery it queued — all of it synchronous in shape (one promise
+// chain, no timers), so a CommonJS consumer with no top-level await can prove
+// it.
+const enqueued = [];
+const discovered = [];
+const memoryOutboxStorage = {
+  enqueueIntent(intent) {
+    const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+    enqueued.push(record);
+    return Promise.resolve(record);
+  },
+  listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+};
+// A complete AppwireClientLike: the runtime consumer is plain JavaScript, so
+// the double cannot be type-annotated here, but it supplies every member so a
+// strict TypeScript consumer copying it would compile. Only its state field is
+// read by the outbox below.
+const readyClient = {
+  connect: () => Promise.resolve({}),
+  request: () => Promise.resolve({}),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({}),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const memoryOutbox = new client.MutationOutbox(
+  memoryOutboxStorage,
+  {
+    getClient: () => readyClient,
+    onDiscover: (targetRefs, reason) => {
+      discovered.push({ targetRefs, reason });
+    },
+  },
+);
+memoryOutbox
+  .start()
+  .then(() =>
+    memoryOutbox.enqueueIntent({
+      targetRef: "local:thread-1",
+      method: "turn/queue",
+      payload: {},
+      attachments: [],
+      optimisticDisplay: null,
+    }),
+  )
+  .then((record) => {
+    assert.equal(record.clientMutationId, "cmid-1");
+    return memoryOutbox.stop();
+  })
+  .then(() => {
+    assert.deepEqual(
+      discovered.map((entry) => entry.reason),
+      ["startup", "enqueue"],
+    );
+    assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .then(() => {
+    // MutationDispatcher is a runtime export reachable over the same memory
+    // port as the outbox above: with no client wired, nextDispatchable's own
+    // inert undefined stops dispatchTargets before any transport attempt,
+    // proving the export resolves at all - a real attempt needs a transport,
+    // which is the unit suite's job, not qualification's.
+    const dispatcher = new client.MutationDispatcher(memoryOutboxStorage, { getClient: () => null });
+    return dispatcher.dispatchTargets(["local:thread-1"]);
   })
   .catch((err) => {
     console.error(err);

@@ -17,40 +17,55 @@ import type {
   MarketplaceAddParams,
   PluginRefParams,
 } from "@evener/appwire-client";
-import { createMarketplacesStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  type PluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import {
+  PLUGIN_MUTATION_BUSY,
+  runGatedMutation,
+  type PluginMutationGate,
+} from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import type { InstalledPlugins } from "./installedPlugins";
 import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-// The marketplaces store keeps each failed request's own text; this screen
-// shows the same copy for every failure, as the web's section translates its
-// at render.
+// The stores keep each failed request's own text; this screen shows the same
+// copy for every failure, as the web's section translates its at render.
 const MARKETPLACES_FAILED =
   "Could not load marketplaces. Try again when connected.";
 const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
+export const INSTALLED_PLUGINS_FAILED =
+  "Could not load installed plugins. Try again when connected.";
+const WRITE_FAILED =
+  "Could not confirm the change. Refresh and check its status before trying again.";
 
 export function MarketplaceBrowser({
   client,
   hubName,
   installed,
+  gate,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
   hubName: string;
-  installed: InstalledPlugins;
+  installed: PluginsStore;
+  // The screen's plugin-mutation gate, shared with the installed list: a
+  // write started here keeps running after this view is gone, so the lock
+  // it takes has to outlive the view - and living at the screen means the
+  // installed list sees a marketplace write as busy too, and vice versa.
+  gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
-  const plugins = useSyncExternalStore(
-    installed.subscribe,
-    installed.getSnapshot,
-  );
+  const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
+  // Marketplace writes take the same gate an install does; see
+  // pluginMutationGate.ts for why the gate exists.
+  const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [selected, setSelected] = useState<string | null>(null);
-  const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -94,25 +109,26 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
-  const busy = mutating || plugins.busy;
+  // Every write goes through the gate; a refusal reads as busy, a throw as
+  // failure.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    setMutating(true);
-    try {
-      await action();
-    } catch {
-      if (revision.current === version)
-        setError(
-          "Could not confirm the change. Refresh and check its status before trying again.",
-        );
-    } finally {
-      setMutating(false);
-    }
+    const outcome = await runGatedMutation(gate, action);
+    if (revision.current !== version) return;
+    if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
+    else if (outcome === "failed") setError(WRITE_FAILED);
+  }
+  function install(target: PluginRefParams) {
+    void act(() => plugins.installPlugin(target.plugin, target.marketplace));
   }
   const marketplace = state.marketplaces?.find(
     (item) => item.name === selected,
   );
+  function refresh() {
+    if (!marketplace || busy) return;
+    void act(() => state.refreshMarketplace(marketplace.name));
+  }
   function remove() {
     if (!marketplace || busy) return;
     const name = marketplace.name;
@@ -123,8 +139,8 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current === version)
-            void act(() => state.removeMarketplace(name));
+          if (revision.current !== version) return;
+          void act(() => state.removeMarketplace(name));
         },
       },
     ]);
@@ -135,6 +151,8 @@ export function MarketplaceBrowser({
   );
   const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
   const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
+  const installedError =
+    plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
   const browsing = catalog?.status === "loading";
   const header = (
     <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -156,12 +174,7 @@ export function MarketplaceBrowser({
           {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
-            <Action
-              disabled={busy}
-              onPress={() => {
-                void act(() => state.refreshMarketplace(selected));
-              }}
-            >
+            <Action disabled={busy} onPress={refresh}>
               Refresh source
             </Action>
             <Action disabled={busy} onPress={remove}>
@@ -181,7 +194,7 @@ export function MarketplaceBrowser({
               { color: colors.text, borderColor: colors.border },
             ]}
           />
-          <ErrorMessage message={catalogError || plugins.error} />
+          <ErrorMessage message={catalogError || installedError} />
           {catalogError && (
             <Action
               onPress={() => {
@@ -191,10 +204,10 @@ export function MarketplaceBrowser({
               Retry catalog
             </Action>
           )}
-          {plugins.error && (
+          {installedError && (
             <Action
               onPress={() => {
-                void installed.refresh();
+                void plugins.fetchPlugins();
               }}
             >
               Retry installed status
@@ -255,11 +268,11 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={busy || !plugins.plugins || !!plugins.error}
+                  disabled={busy || !plugins.plugins || !!installedError}
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
-                    else void act(() => installed.install(target));
+                    else install(target);
                   }}
                 >
                   {existing ? "Installed · Open" : "Install"}
@@ -310,8 +323,9 @@ export function MarketplaceBrowser({
         <AddMarketplace
           client={client}
           hubName={hubName}
+          gate={gate}
           onClose={() => setAdding(false)}
-          onAdd={state.addMarketplace}
+          onAdd={(params) => state.addMarketplace(params)}
         />
       )}
     </>
@@ -321,11 +335,15 @@ export function MarketplaceBrowser({
 function AddMarketplace({
   client,
   hubName,
+  gate,
   onClose,
   onAdd,
 }: {
   hubName: string;
+  gate: PluginMutationGate;
   onClose(): void;
+  /** The write itself; the gate around it lives here, so a refusal keeps the
+   * modal open on the busy copy just as it does everywhere else. */
   onAdd(params: MarketplaceAddParams): Promise<void>;
   client: ConversationClientLike;
 }) {
@@ -347,8 +365,8 @@ function AddMarketplace({
     setBusy(true);
     setError(null);
     const value = source.trim();
-    try {
-      await onAdd({
+    const outcome = await runGatedMutation(gate, () =>
+      onAdd({
         name: name.trim(),
         source:
           kind === "github"
@@ -356,16 +374,19 @@ function AddMarketplace({
             : kind === "directory"
               ? { kind, path: value }
               : { kind, url: value },
-      });
-      if (alive.current) onClose();
-    } catch {
-      if (alive.current)
-        setError(
-          "Could not confirm the marketplace was added. Check the list and source before trying again.",
-        );
-    } finally {
-      if (alive.current) setBusy(false);
+      }),
+    );
+    if (!alive.current) return;
+    setBusy(false);
+    if (outcome === "refused") {
+      setError(PLUGIN_MUTATION_BUSY);
+      return;
     }
+    if (outcome === "failed")
+      setError(
+        "Could not confirm the marketplace was added. Check the list and source before trying again.",
+      );
+    else onClose();
   }
   return (
     <Modal

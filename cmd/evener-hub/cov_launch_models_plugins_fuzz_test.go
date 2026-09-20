@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
 )
@@ -192,7 +191,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		t.Cleanup(func() { newPluginAutoUpgradeTicker = oldTicker })
 		daemonCtx, cancel := context.WithCancel(ctx)
 		ticker.cancel = cancel
-		startPluginAutoUpgradeDaemon(daemonCtx, plugins.NewManager(t.TempDir()), time.Hour, nil)
+		startPluginAutoUpgradeDaemon(daemonCtx, plugins.NewManager(t.TempDir()), time.Hour)
 		if !ticker.stopped {
 			t.Fatal("daemon did not stop ticker")
 		}
@@ -206,7 +205,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		t.Cleanup(func() { pluginAutoUpgradeTick = oldTick })
 		notifyCtx, notifyCancel := context.WithCancel(ctx)
 		notifyCancel()
-		startPluginAutoUpgradeDaemon(notifyCtx, plugins.NewManager(t.TempDir()), time.Hour, appserver.NewServer(appserver.ServerConfig{ServerName: "test"}))
+		startPluginAutoUpgradeDaemon(notifyCtx, plugins.NewManager(t.TempDir()), time.Hour)
 
 		oldUpgrade := runHubSelfUpgrade
 		runHubSelfUpgrade = func(context.Context, selfupdate.Options) (selfupdate.Result, error) {

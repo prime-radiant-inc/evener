@@ -26,7 +26,7 @@
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
-**ChatGPT / Codex** sign-in are separate connections. For the latter, choose its
+**OpenAI Codex** sign-in are separate connections. For the latter, choose its
 sign-in route and follow the device or browser/redirect instructions instead of
 pasting an API key. Availability depends on your account and provider terms.
 
@@ -52,8 +52,8 @@ pasting an API key. Availability depends on your account and provider terms.
   From the connector, management → **Full provider settings** retains the full
   add/editor route, including custom instances, rename, reset overrides,
   replace/clear stored credentials, logout, source inspection, and explicit
-  default management. The session model chooser also offers **Connect another
-  provider**; only an explicit model pick requests a session model switch.
+  default management. In the session model chooser, only an explicit model
+  pick requests a session model switch.
 
 ## Repair or return
 

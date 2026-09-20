@@ -1208,7 +1208,7 @@ describe("mutations returning the updated instance list", () => {
     const fake = connectFakeClient();
     const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "" });
+      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "", originClientId: "test-tab" });
       return created;
     });
     await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
@@ -1218,7 +1218,7 @@ describe("mutations returning the updated instance list", () => {
   test("edit() calls evener/instance/edit and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://x", originClientId: "test-tab" });
       return LIST_RESPONSE;
     });
     await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
@@ -1309,7 +1309,7 @@ describe("mutations returning the updated instance list", () => {
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     await credentialsStore.getState().remove("work");
@@ -1319,7 +1319,7 @@ describe("mutations returning the updated instance list", () => {
   test("setDefault() calls evener/instance/setDefault and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/setDefault", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return LIST_RESPONSE;
     });
     await credentialsStore.getState().setDefault("work");
@@ -1579,6 +1579,102 @@ describe("host-partitioned instance lists (component 07b)", () => {
     // the listing it was refreshing is still the one the store holds.
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
   });
+
+  // The release above and the read it orphans are ordered rather than racing:
+  // the transition clears the in-flight read's loading flag, the answer that
+  // read was waiting for cannot commit (it belongs to the client that is gone),
+  // and the read every consumer issues next - the pane's provider setup re-runs
+  // on the connection change, and this is that read - is the one that lands. The
+  // ordering that would hurt is the orphaned answer arriving LAST: it must still
+  // be refused rather than overwriting the newer listing or leaving the
+  // partition claiming a load is in flight.
+  test("a released host read cannot outlive the transition that replaced it", async () => {
+    const fake = connectFakeClient();
+    let finishReleased!: (value: HostForwardedResult) => void;
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finishReleased = resolve;
+        }),
+    );
+    const released = fetchHost("buildbox");
+    await Promise.resolve();
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(true);
+
+    fake.emitStateChange("reconnecting");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+
+    // The connection comes back: the transport refuses a call while it is
+    // reconnecting, so the read every consumer issues next happens here.
+    fake.emitReady();
+    const afterReconnect: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, name: "after-reconnect" }],
+      availableProviders: [],
+    };
+    fake.on("evener/host/request", () => afterReconnect as unknown as HostForwardedResult);
+    await fetchHost("buildbox");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterReconnect.instances);
+
+    finishReleased(REMOTE_LIST as unknown as HostForwardedResult);
+    await released;
+
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterReconnect.instances);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+  });
+
+  // The generation above orders reads across a CONNECTION transition, never
+  // between two reads of the SAME host: both overlapping fetchHost calls capture
+  // one generation, so the older answer can commit over the newer partition.
+  // The product reaches that state without anything unusual — a mount-time load
+  // of the selected host raced by the 250ms wrapped-notification refetch, or a
+  // user's retry — so the per-host order needs its own monotonic sequence, the
+  // same guard the package's credential instances store puts on its listing
+  // reads (appwire-client's instances.ts requestVersion).
+  test("an older in-flight remote load cannot overwrite a newer one for the same host", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(value: HostForwardedResult) => void> = [];
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    // The most recently parked request is the newest read; answering it out of
+    // order is the whole shape under test, so the resolver is taken by the end
+    // of the queue rather than by a bare index.
+    const answerLatest = (): ((value: HostForwardedResult) => void) => {
+      const resolve = answers.pop();
+      if (!resolve) throw new Error("no in-flight forwarded request to answer");
+      return resolve;
+    };
+
+    const stale = fetchHost("buildbox");
+    await Promise.resolve();
+    const newer = fetchHost("buildbox");
+    await Promise.resolve();
+    expect(answers).toHaveLength(2);
+
+    // The NEWER request answers first. The older one then lands with the answer
+    // it computed before it: a credential change on the host, a retry, or any
+    // other read that started earlier and finished later.
+    const afterEdit: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, name: "edited-on-the-host" }],
+      availableProviders: [],
+    };
+    answerLatest()(afterEdit as unknown as HostForwardedResult);
+    await newer;
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterEdit.instances);
+
+    answerLatest()(REMOTE_LIST as unknown as HostForwardedResult);
+    await stale;
+
+    // The superseded answer is dropped instead of committing over the newer
+    // partition, and the partition is not left claiming a load is still running.
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterEdit.instances);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+  });
 });
 
 describe("auth RPCs: thin proxies, no local state mutation", () => {
@@ -1684,7 +1780,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("remove() forwards the expected endpoint fingerprint when given one", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work" });
+      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     expect(await credentialsStore.getState().remove("work", "fp-work")).toBe(true);
@@ -1714,7 +1810,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("the destructive wrappers omit the fingerprint when none was captured", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
-      expect(params).toEqual({ name: "work" });
+      expect(params).toEqual({ name: "work", originClientId: "test-tab" });
       return { instances: [], availableProviders: [] };
     });
     fake.on("evener/auth/apiKey/clear", (params) => {

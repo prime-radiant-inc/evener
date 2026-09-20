@@ -299,6 +299,32 @@ type testConfig struct {
 	// written, before the store write -- where a test arms a write fault that
 	// refuses exactly that claim. Nil in production.
 	steeringCarrierClaiming func()
+	// beforeSteeringInjectedPublish observes a delivered steer's live event
+	// about to be published, immediately after clearAskPendingForResolvingSteer
+	// ran -- the ordering RoboRev #1806 member-3 Medium's fix depends on
+	// (the server refreshes its ask facet on this event, so the clear must be
+	// visible before it fires). Tests use it to sample askPendingCount() at
+	// exactly that point. Nil in production.
+	beforeSteeringInjectedPublish func()
+	// clientMutationStartClaiming observes a durable start claim about to be
+	// written, after ProcessClientMutationStart's cheap poison pre-check and
+	// before the claim's own refusal -- the window a poisoning lands in. Nil in
+	// production.
+	clientMutationStartClaiming func()
+	// clientMutationStartAnnounced observes a start that has claimed and
+	// announced, immediately before the turn runs -- the window a close lands in,
+	// where the post-run give-back decides whether the claim goes back. Nil in
+	// production.
+	clientMutationStartAnnounced func()
+	// queueHeadClaimInSerializer observes a queue-head claim entering the
+	// mutation-store serializer, after the transcript writer was sampled under
+	// s.mu. A lock-order test holds Session.mu and fails if this fires. Nil in
+	// production.
+	queueHeadClaimInSerializer func()
+	// queueHeadClaimSampled observes a queue-head claim that has finished its
+	// Session.mu work (the transcript writer sample) and is about to enter the
+	// serializer. Nil in production.
+	queueHeadClaimSampled func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)

@@ -428,12 +428,13 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 // probeInstallerDefaultExecutable reports the host's installer-default evener
 // path (~/.local/bin/evener) when a regular file exists there, and ok=false when
 // it does not. deployTarget falls back to that location to provision a fresh
-// host; preflight and expectedHubExecutable consult it too, so a host whose
-// binary already lives there but is absent from the non-interactive PATH is
-// recognized as running the controller's build rather than re-deployed to on
-// every reconnect. A probe failure is read as absent: this is best-effort
-// discovery, and the deploy path re-resolves (surfacing a real transport error)
-// when nothing is found.
+// host; preflight consults it too and records what it finds as the host's
+// resolved target, which expectedHubExecutable reads, so a host whose binary
+// already lives there but is absent from the non-interactive PATH is recognized
+// as running the controller's build rather than re-deployed to on every
+// reconnect. A probe failure is read as absent: this is best-effort discovery,
+// and the deploy path re-resolves (surfacing a real transport error) when
+// nothing is found.
 func (m *Manager) probeInstallerDefaultExecutable(ctx context.Context, host hostreg.Host) (string, bool) {
 	remote := `if [ -n "${HOME-}" ] && [ -f "${HOME-}/.local/bin/evener" ]; then printf '%s\n' "${HOME-}/.local/bin/evener"; fi`
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)

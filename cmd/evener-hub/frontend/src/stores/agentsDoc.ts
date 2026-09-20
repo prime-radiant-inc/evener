@@ -14,19 +14,13 @@
 // requireClient() throws outside any try/catch, matching stores/credentials.ts:
 // "no client connected" is a programmer error, not a state to degrade into.
 
-import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@evener/appwire-client";
+import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore, onConnectionNotification } from "./connection";
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("agentsDoc store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+const { requireClient } = connectedClientPort("agentsDoc");
 
 export interface AgentsDocStoreState {
   /** The last document the hub confirmed - null until the first fetch lands. */
@@ -114,9 +108,6 @@ export function useAgentsDocStore<T>(selector?: (state: AgentsDocStoreState) => 
 
 // --- notification wiring ----------------------------------------------------
 
-let wiredClient: AppwireClientLike | null = null;
-let unsubscribeNotifications: (() => void) | undefined;
-
 function handleNotification(n: AnyNotification): void {
   if (n.method !== "evener/settings/agentsDoc/changed") return;
   // A broadcast is the hub's own authoritative view of the file, so a read
@@ -127,16 +118,15 @@ function handleNotification(n: AnyNotification): void {
   agentsDocStore.setState({ doc: n.params, error: null, loading: false });
 }
 
-function attachNotifications(client: AppwireClientLike | null): void {
-  if (client === wiredClient) return; // already wired to this exact client
-  unsubscribeNotifications?.();
-  wiredClient = client;
-  unsubscribeNotifications = client?.onNotification(handleNotification);
-}
-
 // React to the connection store rather than reading it once: this module can
 // be evaluated before AppShell's connect() effect runs (stores/extensions.ts
-// documents the mount-order race in full).
+// documents the mount-order race in full). The notification subscription is
+// the shared wiring (stores/connection.ts's thin wrapper over the package's
+// onConnectionNotification): it wires whichever client the store holds now and
+// re-wires on every swap, detaching the replaced one, so this module owns only
+// the connection transitions it acts on.
+onConnectionNotification(handleNotification);
+
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
     requestVersion += 1;
@@ -145,7 +135,6 @@ connectionStore.subscribe((state, previous) => {
     // section on its Skeleton forever (stores/credentials.ts does the same).
     agentsDocStore.setState({ loading: false });
   }
-  attachNotifications(state.client);
   // Once a view has read the file, every reconnect has to re-read it - an
   // automatic one reuses this same client, so a drop and recovery is a state
   // transition and nothing else. The `changed` broadcasts that landed while
@@ -163,16 +152,14 @@ connectionStore.subscribe((state, previous) => {
       .catch(() => {});
   }
 });
-const initialClient = connectionStore.getState().client;
-if (initialClient) attachNotifications(initialClient);
 
-// resetAgentsDocStoreForTests resets the singleton between tests, including
-// the module-private wiring above. No production code should ever call this.
+// resetAgentsDocStoreForTests resets the singleton between tests. The
+// notification wiring above is left alone: onConnectionNotification detaches
+// the outgoing client on its own the moment the store's `client` clears (the
+// tests' own beforeEach does that), so a reset has nothing to unwind. No
+// production code should ever call this.
 export function resetAgentsDocStoreForTests(): void {
   requestVersion += 1;
   requestedDoc = false;
-  unsubscribeNotifications?.();
-  unsubscribeNotifications = undefined;
-  wiredClient = null;
   agentsDocStore.setState({ doc: null, loading: false, error: null });
 }

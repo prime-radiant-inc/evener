@@ -191,6 +191,7 @@ no router (reserved).
 | `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
+| `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
 
 ## Notifications (server → client)
 
@@ -222,7 +223,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -740,6 +741,28 @@ _(no fields)_
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
 
 
+### `HostAttachParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+
+
+### `HostAttachResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `attached` | `bool` |  |  |
+| `host` | `string` | yes |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
+| `protocolVersion` | `string` | yes |  |
+| `hubVersion` | `string` | yes |  |
+| `os` | `string` | yes |  |
+| `arch` | `string` | yes |  |
+| `features` | `*appwire.FeatureSet` | yes |  |
+
+
 ### `HostForwardedResult`
 
 _(no fields)_
@@ -795,6 +818,7 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -814,6 +838,8 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEntry`
@@ -840,6 +866,7 @@ _(no fields)_
 | `hasStoredOAuth` | `bool` |  |  |
 | `envVar` | `string` | yes |  |
 | `shadowedEnvVar` | `string` | yes |  |
+| `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
@@ -870,6 +897,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceRemoveParams`
@@ -878,6 +906,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -885,6 +914,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetModelDisabledParams`
@@ -894,6 +924,7 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `ItemLifecycleParams`
@@ -1817,6 +1848,7 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `queue` | `appwire.QueueState` |  |  |
+| `consumedClientMutationIds` | `[]string` | yes |  |
 
 
 ### `ThreadReadParams`
@@ -1928,6 +1960,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `status` | `appwire.ThreadStatus` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
+| `askPending` | `*bool` | yes |  |
 | `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
 
 

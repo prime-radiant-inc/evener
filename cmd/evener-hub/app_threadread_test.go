@@ -566,6 +566,31 @@ func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.P
 	return thread
 }
 
+// TestPastEntryThreadStampsInstanceID pins the past-session read's
+// EvenerThread.InstanceID. A session with no live daemon has no instance of its
+// own, so the read must fall back to the thread id exactly as the daemon-backed
+// read does (firstLocalNonEmpty(entry.InstanceID, threadID)). Both frontends key
+// fork and queue affordances on instanceId, and the hub advertises forkFromTurn
+// on these sessions, so the forkable past session a client trusts on the wire
+// must carry one rather than read as undefined.
+func TestPastEntryThreadStampsInstanceID(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
+	if err != nil {
+		t.Fatalf("pastEntryThread: %v", err)
+	}
+	if thread.Evener.InstanceID != sessionID {
+		t.Fatalf("instanceId = %q, want the thread id fallback %q", thread.Evener.InstanceID, sessionID)
+	}
+	if thread.Evener.AskPending {
+		t.Fatalf("askPending = true for a past session with no live ask")
+	}
+}
+
 func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusCompleted}
@@ -1147,9 +1172,10 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
 // (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename) are true; the turn-in-flight controls (steer,
-// interrupt, queue) are false because a cold exited session has no active turn
-// for them to act on.
+// (send, fork, goal, rename) are true; steer, interrupt and queue are false
+// because the hub cannot carry them out for a thread with no daemon — it
+// resumes on send alone, so a cold set advertising them would promise a turn
+// action nothing is there to take.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")

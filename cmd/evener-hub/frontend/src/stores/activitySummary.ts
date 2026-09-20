@@ -1,17 +1,21 @@
 import type { ActivityCounts } from "@evener/appwire-client";
 import {
   errorKind,
-  errorText,
   friendlyErrorMessage,
   isActionUnavailable,
   isThreadNotFound,
+  type PanelLoadFailure,
+  panelLoadFailure,
   parseActivityTree,
-  sessionActionError,
-  sessionActionHeadline,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { type ActivityFetchResult, activityPanelStore, retainedActivityTree } from "./activityPanel";
+import {
+  type ActivityFetchResult,
+  activityPanelStore,
+  linkActivitySummary,
+  retainedActivityTree,
+} from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 // A refresh that arrived while a root fetch was in flight. Nothing re-runs
@@ -78,6 +82,11 @@ function entryFor(entries: Map<string, ActivitySummaryEntry>, ref: string): Acti
 // previous life could still complete with (publish/fail match on requestID).
 let nextRequestID = 0;
 
+// The one name this panel's failure goes by, the same convention the tasks
+// panel keeps (taskPanelState.ts's LOAD_FAILURE): both branches of failureFor
+// report it.
+const LOAD_FAILURE = "Couldn't load activity";
+
 // A "hub-unreachable" rejection here is, with the caller-side ready-gate in
 // stores/threads.ts (issue #195's RCA), either requireReadyClient's own
 // ClientNotReadyError (waited out the bounded timeout - the hub is
@@ -90,16 +99,15 @@ let nextRequestID = 0;
 // function at all: requireReadyClient makes the caller's promise wait
 // rather than reject, so there is nothing to fail on - consistent with
 // ConnectionBanner's own "reconnecting is silent, self-healing" design.
-function failureFor(err: unknown): { headline: string; detail?: string; sentence: string } {
+function failureFor(err: unknown): PanelLoadFailure {
   if (errorKind(err) === "hub-unreachable") {
-    const headline = "Couldn't load activity";
+    const headline = LOAD_FAILURE;
     const detail = friendlyErrorMessage(err);
     return { headline, detail, sentence: `${headline}: ${detail}` };
   }
-  const headline = sessionActionHeadline("Couldn't load activity", err);
-  const sentence = sessionActionError("Couldn't load activity", err);
-  const detail = errorText(err).trim();
-  return detail ? { headline, detail, sentence } : { headline, sentence };
+  // Everything else is the package's shared failure encoding, so this panel
+  // and the tasks panel can never say two different things about one rejection.
+  return panelLoadFailure(LOAD_FAILURE, err);
 }
 
 // A continuation owns the panel's request ID until its page merges. Any root
@@ -300,6 +308,26 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     set({ entries: new Map() });
   },
 }));
+
+/** Registers the summary side of ActivitySummaryLink, which the panel store
+ * requires before it fetches a continuation page. The app calls this once at
+ * startup, beside its other store inits; returns the unlink. */
+export function initActivitySummary(): () => void {
+  return linkActivitySummary({
+    summaryGeneration: (ref) => activitySummaryStore.getState().entries.get(ref)?.requestID,
+    onContinuationSettled(ref, { summaryRequestID, debt }) {
+      // The badge settles against the tree the panel just committed; only then
+      // does a root refresh queued behind this page (refreshRoot deferred it
+      // rather than replace the tree mid-page) get its turn.
+      const summary = activitySummaryStore.getState();
+      if (debt && summaryRequestID !== undefined) {
+        if (debt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
+        else summary.publishContinuationCounts(ref, summaryRequestID, debt.counts);
+      }
+      summary.issuePendingRootFetch(ref);
+    },
+  });
+}
 
 registerPanelStoreEvictor({
   refs: () => activitySummaryStore.getState().entries.keys(),

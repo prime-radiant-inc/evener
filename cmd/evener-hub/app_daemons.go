@@ -239,14 +239,21 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	// calls BeginForceStop/PersistForceStop: the daemon stays the retirement
 	// authority and this path leaves no recovery fence behind.
 	aliases := forceStopAliases(entry)
-	for _, id := range aliases {
-		cfg.ResumeLocks.For(id).Lock()
-	}
+	// The retire request carries a context, so acquire each alias through it and
+	// release the prefix already held when a later alias blocks past
+	// cancellation instead of hanging and retaining the earlier aliases.
+	acquired := 0
 	defer func() {
-		for _, alias := range slices.Backward(aliases) {
+		for _, alias := range slices.Backward(aliases[:acquired]) {
 			cfg.ResumeLocks.For(alias).Unlock()
 		}
 	}()
+	for _, id := range aliases {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			return appwire.DaemonRetireResponse{}, err
+		}
+		acquired++
+	}
 	if err := ctx.Err(); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
@@ -265,6 +272,13 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		return appwire.DaemonRetireResponse{}, err
 	}
 	if err := deletionFenceError(cfg, params.Identity.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.DaemonRetireResponse{}, err
+	}
+	// A deletion record may name any alias in the ownership group, not only
+	// the ref the request addressed (the e68ec81fa class): every alias's
+	// reservation is already held here, so the whole group is fenced before
+	// the retire RPC is forwarded.
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
 	// No automatic fallback against a peer that cannot answer the current

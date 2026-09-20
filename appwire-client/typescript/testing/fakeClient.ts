@@ -196,7 +196,26 @@ export class FakeClient implements AppwireClientLike {
     this.retryNowCalls += 1;
   }
 
-  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+  // Mirrors AppwireClient.resumeThread's ordering, which is what makes
+  // "Stop during the resume's reconnect" a testable state: the real class
+  // forces a reconnect, awaits it, and only then runs beforeRequest,
+  // synchronously before the resume RPC (../client.ts). A Stop that lands
+  // inside that await is therefore seen by the guard and cancels the resume.
+  //
+  // This fake owns no socket, so there is nothing to reconnect and no
+  // `connected` promise to await; "after reconnect settles" here means one
+  // microtask hop, which reproduces the only property of that await a caller
+  // can observe: control returns to the caller BEFORE the guard runs, so a
+  // cancellation staged in the same turn is one the guard has to see. It is
+  // deliberately a hop and never a timer - the fake has no clock, and no test
+  // should have to advance one to reach this ordering. Running the guard
+  // synchronously instead (as this fake used to) let a test stage a Stop
+  // "during the reconnect" that the guard had already passed, proving nothing
+  // about production; a test that needs the full reconnect race still belongs
+  // on the real client with FakeSocket (client.test.ts, reconnect.test.ts).
+  async resumeThread(ref: string, options?: { beforeRequest?: () => void }): ReturnType<AppwireClient["resumeThread"]> {
+    await Promise.resolve();
+    options?.beforeRequest?.();
     return this.request("thread/resume", { ref });
   }
 
@@ -262,4 +281,69 @@ export class FakeClient implements AppwireClientLike {
   emitReady(initialize: InitializeResponse = this.latestInitialize): void {
     this.emitStateChange("ready", initialize);
   }
+}
+
+/** A request handler that throws `message`: scripts a method to fail. */
+export function failing(message: string): () => never {
+  return () => {
+    throw new Error(message);
+  };
+}
+
+/** Scripts `method` to hang and hands back the resolver of the request in
+ * flight. FakeClient.request() defers the handler by one microtask, so the
+ * resolver exists only after that has flushed; callers await a microtask
+ * before releasing. */
+export function deferRequest<T>(fake: FakeClient, method: MethodName): (value: T) => void {
+  let release!: (value: T) => void;
+  fake.on(
+    method,
+    () =>
+      new Promise<T>((resolve) => {
+        release = resolve;
+      }) as never,
+  );
+  return (value: T) => release(value);
+}
+
+// The generic request scripts a parametrized suite needs: one store's method
+// names are data to it, and fake.on/emitNotification are typed per method, so
+// the cast lives here once instead of in a closure per store per script.
+
+/** Scripts `method` to answer with `response`. */
+export function answerRequests(fake: FakeClient, method: MethodName, response: unknown): void {
+  fake.on(method, (() => response) as never);
+}
+
+/** Scripts `method` to reject with `message`. */
+export function failRequests(fake: FakeClient, method: MethodName, message: string): void {
+  fake.on(method, failing(message) as never);
+}
+
+/** One in-flight request's settlement, either way: resolve() answers it,
+ * reject() fails it. */
+export interface Settlement {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+}
+
+/** Scripts `method` to hang and hands back one settlement per call, so several
+ * requests to it can be in flight and be settled — either way — out of order.
+ * deferRequest's multi-call reverse: that one keeps a single resolver, which is
+ * only ever the last call's, and can only answer. */
+export function gateSettlements(fake: FakeClient, method: MethodName): Settlement[] {
+  const settlements: Settlement[] = [];
+  fake.on(
+    method,
+    () =>
+      new Promise((resolve, reject) => {
+        settlements.push({ resolve, reject });
+      }) as never,
+  );
+  return settlements;
+}
+
+/** How many requests `method` has received. */
+export function callsTo(fake: FakeClient, method: MethodName): number {
+  return fake.calls.filter((call) => call.method === method).length;
 }

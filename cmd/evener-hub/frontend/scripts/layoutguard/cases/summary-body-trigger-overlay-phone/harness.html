@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>summary-body-trigger-overlay-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  .railBox { box-sizing: border-box; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ToolRow.tsx's two-level row when the summary line is open: the body trigger
+     is an ABSOLUTE overlay across the summary line
+     (.summaryLine[data-body-trigger="true"] .bodyTrigger { position: absolute;
+     inset: 0 }), while the real summary text and its inline chevron are
+     pointer-transparent siblings above it:
+
+       <div class="row" data-intent="true">
+         <button class="trigger">intent …</button>
+         <div class="summaryLine" data-body-trigger="true">
+           <button class="bodyTrigger"><span class="chevron">…</span></button>
+           <span class="summary">Read src/app.ts <span class="chevron">…</span></span>
+         </div>
+       </div>
+
+     On a phone the tap-floor block gives the trigger min-height: 44px. An
+     absolute box with top/bottom 0 forced to 44px overflows its short
+     containing block downward unless the container carries a matching minimum
+     height, so the invisible button escapes into the rows below. -->
+<div class="fixtures"></div>
+<script>
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+function rowHtml(id, summary) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true">
+      <button type="button" class="trigger" id="trigger-${id}" aria-expanded="true">
+        <span class="intent" id="intent-${id}">Summarize the file</span>
+      </button>
+      <div class="summaryLine" id="line-${id}" data-body-trigger="true">
+        <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="false"></button>
+        <span class="summary" id="summary-${id}">${summary}<span class="chevron" data-open="false">${CHEVRON_SVG}</span></span>
+      </div>
+    </div>`;
+}
+
+const CONFIGS = [
+  { key: "short-summary", summary: "Read src/app.ts", label: "390px phone, short one-line summary" },
+  { key: "long-summary", summary: "Read src/panes/session/transcript/ToolRow.tsx and return the first forty lines verbatim", label: "390px phone, long wrapping summary" },
+];
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  section.className = "fixture";
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.innerHTML = rowHtml(c.key, c.summary);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+window.measure = () => {
+  return CONFIGS.map((c) => {
+    const line = box(document.getElementById(`line-${c.key}`));
+    const body = box(document.getElementById(`body-${c.key}`));
+    return {
+      id: c.key,
+      label: c.label,
+      line,
+      body,
+      overflowsTop: line.top - body.top,
+      overflowsBottom: body.bottom - line.bottom,
+      escapesLeft: line.left - body.left,
+      escapesRight: body.right - line.right,
+    };
+  });
+};
+</script>
+</body>
+</html>

@@ -22,7 +22,7 @@
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { configFingerprint, resolveEffectiveConfig } from "@evener/appwire-client";
+import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -32,9 +32,8 @@ import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { SessionChrome } from "./chrome/SessionChrome";
@@ -128,14 +127,38 @@ function RestartRequiredNotice({
       if (resumeRequired) {
         const { client, state } = connectionStore.getState();
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        const { thread } = await client.resumeThread(sessionRef);
+        // Baseline every Stop generation BEFORE the resume starts: the resume
+        // may return a different identity, and that new ref can be named by a
+        // Stop while the resume RPC is still in flight (any surface already
+        // tracking the resumed ref records it). A fence captured after the
+        // resolve would take that Stop as its baseline and never fire, so both
+        // refs are checked against their pre-resume generations.
+        const stopBaseline = resumeStopBaseline();
+        // beforeRequest runs before the resumed identity is knowable, so a
+        // per-ref fence cannot name it: a Stop acknowledged against ANY ref in
+        // the reconnect window (the resumed identity among them) suppresses
+        // the resume RPC. Once the RPC resolves and the new identity exists,
+        // the checks below name both refs exactly.
+        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopBaseline });
         refreshedRef = thread.evener.ref;
+        // During the post-resume hydration the pane still shows the old ref
+        // (the navigate below has not run), so a Stop against EITHER ref must
+        // cancel it: the old ref is what the visible Stop names, the new one
+        // is what another holder of the resumed session names.
+        const identityFence = () => {
+          stopBaseline(sessionRef);
+          stopBaseline(refreshedRef);
+        };
+        identityFence();
+        await threadsStore.getState().refreshThread(refreshedRef, identityFence);
+        identityFence();
         if (refreshedRef !== sessionRef) {
           const url = paneToURL("session", { ref: refreshedRef });
           if (url !== null) navigate(url, { replace: true });
         }
+      } else {
+        await threadsStore.getState().refreshThread(refreshedRef);
       }
-      await threadsStore.getState().refreshThread(refreshedRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -502,18 +525,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
                 resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
               />
             )}
-            {/* A FENCED notLoaded session (resumeRequired -> Send=false)
-                renders no composer card at all, which leaves the ⋯ menu -
-                the only force-stop surface - unmounted. Force stop matters
-                most in exactly that state: a stalled or fenced snapshot may
-                still have a daemon to stop. With Send=true the composer's
-                follow-up card exists and carries the menu, so this mount is
-                scoped to send === false to never render a second one.
-                Owner-retained sessions are excluded - their notice directs
-                recovery to the owner. */}
+            {/* Recovery keeps the composer and its menu mounted. Retain the
+                fallback only for other local snapshots with no Send surface;
+                owner-retained sessions direct recovery to their owner. */}
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
+              !restartPending &&
               !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>

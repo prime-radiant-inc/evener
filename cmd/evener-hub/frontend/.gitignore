@@ -1,4 +1,7 @@
-node_modules/
+# No trailing slash: the lane's test setup symlinks node_modules to the shared
+# checkout, and a symlink is not a directory for ignore matching.
+node_modules
+.vite-cache/
 dist/*
 !dist/PLACEHOLDER
 .tsbuildinfo

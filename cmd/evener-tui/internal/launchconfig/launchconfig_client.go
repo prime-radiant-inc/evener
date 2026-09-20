@@ -176,11 +176,22 @@ type InstanceSetDefaultMsg struct {
 
 type InstanceRemoveMsg struct {
 	Name string
+	// EndpointFingerprint is the endpoint the removal was confirmed against,
+	// taken from the InstanceEntry the panel showed. CmdInstanceRemove sends it
+	// so the hub can refuse a name another client has re-pointed since.
+	EndpointFingerprint string
 }
 
 type InstanceMutateResultMsg struct {
 	List appwire.InstanceListResponse
 	Err  error
+	// RenameTo is the new name an edit submitted (InstanceEditParams.NewName),
+	// carried on the result whether or not the edit applied. The hub answers a
+	// rename that stood before a later step failed with
+	// ErrorInstanceRenamePersisted and no listing, so the model can only follow
+	// the instance to its new name when the request's own target travels with
+	// the result.
+	RenameTo string
 }
 
 func CmdInstanceList(client *appwire.Client) tea.Cmd {
@@ -209,16 +220,16 @@ func CmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) 
 		defer cancel()
 		var resp appwire.InstanceListResponse
 		err := client.Request(ctx, appwire.MethodEvenerInstanceEdit, params, &resp)
-		return InstanceMutateResultMsg{List: resp, Err: err}
+		return InstanceMutateResultMsg{List: resp, Err: err, RenameTo: params.NewName}
 	}
 }
 
-func CmdInstanceRemove(client *appwire.Client, name string) tea.Cmd {
+func CmdInstanceRemove(client *appwire.Client, name, endpointFingerprint string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name, ExpectedEndpointFingerprint: endpointFingerprint}, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }

@@ -37,7 +37,7 @@ import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
-import Spawn from "./Spawn";
+import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
@@ -203,6 +203,10 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
+  // The explicit attach trigger (component 06's Connect): the picker fires
+  // evener/host/attach when a remote host is selected or its Connect action is
+  // tapped. Tests that assert the call override or inspect fake.calls.
+  fake.on("evener/host/attach", () => ({ attached: true }));
   // Host-routed discovery (component 07b): a selected remote host's calls go
   // through evener/host/request, so the same answers are wired here. Tests that
   // pin host-specific values override this handler in `configure`.
@@ -213,6 +217,13 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
 
 function modelListRequests(fake: FakeClient): ModelListParams[] {
   return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
+}
+
+/** Every evener/host/attach the pane issued, for the picker's attach assertions. */
+function attachCalls(fake: FakeClient): { host: string }[] {
+  return fake.calls
+    .filter((call) => call.method === "evener/host/attach")
+    .map((call) => call.params as { host: string });
 }
 
 function renderSpawn(client: FakeClient, focused = true) {
@@ -1341,61 +1352,70 @@ test("missing credentials surface setup in the composer without opening a dialog
 
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
   const user = userEvent.setup();
-  let available = false;
-  const teamLocal = {
+  let saved = false;
+  const row = {
     name: "team-local",
-    providerId: "ollama",
+    providerId: "team-local",
     protocol: "openai-chat",
-    auth: "none",
+    auth: "bearer",
     implicit: false,
     isDefault: false,
     activeSource: "none",
     hasStoredOAuth: false,
-    credentialRequired: false,
-    baseUrl: "http://localhost:11434/v1",
-    endpointFingerprint: "fp-team-local",
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://team.example/v1",
+    endpointFingerprint: "fp-team",
   };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [teamLocal],
+      instances: saved ? [{ ...row, activeSource: "store", hasStoredFile: true }] : [],
       availableProviders: [
         {
-          id: "ollama",
-          name: "Local endpoint",
-          protocol: "openai-chat",
-          auth: "none",
-          implicit: false,
-          authModes: [],
-          setup: teamLocal,
+          id: row.providerId,
+          name: "Team local",
+          protocol: row.protocol,
+          auth: row.auth,
+          implicit: row.implicit,
+          authModes: row.authModes,
+          setup: row,
         },
       ],
     }));
     fake.on("model/list", () => ({
-      data: available
+      data: saved
         ? [
             { provider: "team-local", model: "served-model", displayName: "Served model" },
             { provider: "other", model: "unrelated", displayName: "Unrelated model" },
           ]
         : [],
     }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return { provider, supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
     fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
     fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "handoff-draft");
   await setWorkingDir(user, "/tmp/handoff-project");
-  await user.click(modelTrigger());
-  const connect = await screen.findByRole("button", { name: "Connect another provider" });
-  await user.click(connect);
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
     await vi.dynamicImportSettled();
   });
+  // team-local is not one of the curated providers the picker leads with, so
+  // its card shows behind the catalogue disclosure.
   await user.click(await screen.findByText("Show all providers"));
-  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
-  available = true;
-  await user.click(await screen.findByRole("button", { name: "Check connection" }));
+  await user.click(screen.getByRole("button", { name: "Team local" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
   await user.click(await screen.findByRole("button", { name: "Continue" }));
+  // The completed connection hands off to the picker, which reopens scoped to
+  // the connected instance: its models are offered, the unrelated provider's
+  // are not.
   const option = await screen.findByRole("option", { name: /Served model/ });
   expect(screen.queryByRole("option", { name: /Unrelated model/ })).toBeNull();
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -3823,8 +3843,7 @@ test("onboarding a second draft scope does not forget the first scope's explicit
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
 });
 
-test("provider onboarding on an unmanaged harness does not require a model", async () => {
-  const user = userEvent.setup();
+test("an unmanaged harness with a resolved default model does not demand a model choice", async () => {
   window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-draft");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-draft", JSON.stringify({ harness: "external" }));
   const fake = readyClient((f) => {
@@ -3840,18 +3859,6 @@ test("provider onboarding on an unmanaged harness does not require a model", asy
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   // The external harness carries its own model through unmanaged, so the
   // resolved default keeps the chip off the required state and Start live.
-  expect(modelTrigger().textContent).not.toContain("Choose a model");
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
-
-  await user.click(modelTrigger());
-  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
-  await act(async () => {
-    await vi.dynamicImportSettled();
-  });
-  await user.keyboard("{Escape}");
-
-  // Entering the connector and canceling it is not a model choice: the pane
-  // must not start demanding one for a harness whose model it never submits.
   expect(modelTrigger().textContent).not.toContain("Choose a model");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
@@ -5435,7 +5442,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
 });
 
-test("the open spawn menu wires listbox roles and aria-activedescendant on the prompt", async () => {
+test("the open spawn menu wires listbox roles, aria-controls, and aria-activedescendant on the prompt", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
@@ -5452,9 +5459,69 @@ test("the open spawn menu wires listbox roles and aria-activedescendant on the p
   const activeId = promptField().getAttribute("aria-activedescendant");
   expect(activeId).toBeTruthy();
   expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+  // aria-controls names the listbox the prompt is completing against - the
+  // other half of the activedescendant wiring, set on the same native node.
+  const controls = promptField().getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  expect(document.getElementById(controls ?? "")).toBe(slashMenu());
 
   await user.keyboard("{Escape}");
   expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
+  expect(promptField().getAttribute("aria-controls")).toBeNull();
+});
+
+test("ArrowDown/ArrowUp move the spawn menu highlight and wrap at both ends", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // Two matches: the /reasoning-effort built-in then the /review catalog
+  // command, so index 0 is the built-in.
+  expect(slashOptions()).toHaveLength(2);
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("false");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+
+  await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+});
+
+test("clicking a spawn menu option commits it without ever blurring the prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // index 0 is the built-in /reasoning-effort, 1 /review.
+  await user.click(slashOptions()[1] as HTMLElement);
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  // The option's onMouseDown preventDefault keeps focus in the field, so the
+  // click's onSelect commits rather than racing the blur-close.
+  expect(document.activeElement).toBe(promptField());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
 
 // --- Task 6: submit interception for pre-session builtins --------------------
@@ -5760,6 +5827,86 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
   expect(button.textContent).toBe("Start");
+});
+
+test("a known /model value starts before the pane catalog lands instead of fail-closing", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The pane catalog settles 250ms after mount (CATALOG_SETTLE_MS). A deferred
+  // model/list holds it null for the whole test, so this reproduces that window
+  // deterministically: pre-fix, resolveSpawnModelItems(null) is [] and a known
+  // value fail-closes with a spurious "unknown value" toast.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(getToasts()).toEqual([]);
+});
+
+test("a shapeless /model value still refuses while the pane catalog is unloaded", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // Pending catalog = the unloaded window. The value never resolves against a
+  // catalog here, so only the provider/model shape check can refuse it: an
+  // expression that regressed to matching `matched.id` (undefined) would
+  // forward `modelProvider: "foo", model: ""` and silently drop the request.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "foo"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("a /model value bootstraps past the required-model guard after a failed catalog load", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The background model/list rejects, so the pane catalog never commits (null
+  // stamp). The hub also reports no default, so Start is gated on a model -
+  // and the old bootstrap, which required a catalog match, left Start disabled
+  // through this window even though thread/start would accept the value.
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () => {
+      throw new Error("list down");
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  await user.click(button);
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ modelProvider: "openai", model: "gpt-5" });
 });
 
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
@@ -6120,6 +6267,198 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   expect(offline.disabled).toBe(true);
   // The reason is in the option's own accessible text, not only a tooltip.
   expect(offline.textContent).toContain("offline");
+});
+
+// Selecting an already-online remote host is NOT an attach request: the
+// manifest reports the host online (its channel is attached), so the picker must
+// not spend a redundant evener/host/attach on it. Only a host the manifest
+// reports offline needs the dial, and that row's option is disabled, so the
+// Connect affordance below is the path that reaches it. Before the fix every
+// picker selection dialed, online or not.
+test("selecting an already-online remote host issues no attach call", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+
+  // The selection still moves the draft - and so the launch target - while
+  // issuing no attach call at all.
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  expect(attachCalls(fake)).toEqual([]);
+});
+
+// Two rapid activations of one Connect must dial once. The in-flight check
+// cannot read `connectingHosts` state: setConnectingHosts is asynchronous, so
+// two activations in the same batch both read the pre-update set and dial
+// twice. The guard is a ref, mutated synchronously before the request, so the
+// second activation sees the first one still in flight.
+test("a rapid double Connect dials the host once", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  // A never-resolving first dial keeps it in flight while the second activation
+  // is dispatched.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", async () => {
+      await gate;
+      return { attached: true };
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  act(() => {
+    connect.click();
+    connect.click();
+  });
+
+  expect(attachCalls(fake)).toHaveLength(1);
+  release();
+  await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
+});
+
+// Changing the host select never dials: an online row is already attached (a
+// dial would only be redundant), and an offline row's option is disabled, so a
+// select event cannot name it. The Connect button below is the single attach
+// path. Before the fix the onChange branch dialed any selected offline row, a
+// latent double-attach if the disabled rendering were ever relaxed.
+test("changing the host select issues no attach call", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  // An online selection moves the draft without an attach.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  expect(attachCalls(fake)).toEqual([]);
+
+  // Even a programmatic change to an offline row — unreachable through the
+  // disabled option in the real UI — still issues no attach: the Connect
+  // button owns that path.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "offline-host" } });
+  await settled();
+  expect(attachCalls(fake)).toEqual([]);
+
+  // The Connect button still attaches the offline host.
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "offline-host",
+      ),
+    ).toBe(true),
+  );
+});
+
+// A never-attached host is listed offline with a disabled spawn option
+// (component 06b), so the picker must offer a concrete, enabled Connect
+// affordance for it — otherwise a configured [[hosts]] entry is dead UI. The
+// Connect action issues the same evener/host/attach call.
+test("an offline host offers an enabled Connect action that attaches it", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  const offline = within(picker).getByRole("option", { name: /offline-host/ }) as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+
+  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  expect(connect.disabled).toBe(false);
+  fireEvent.click(connect);
+
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "offline-host",
+      ),
+    ).toBe(true),
+  );
+});
+
+// A Connect failure is surfaced, never a silent no-op: the row stays offline
+// and the user sees the manager's error.
+test("a failed Connect surfaces the attach error", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", () => {
+      throw new Error("host is unreachable");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  expect(await screen.findByText(/Connect offline-host failed/i)).toBeTruthy();
+});
+
+// The Connect action must survive a slow server-side attach: the Ensure seam
+// behind `evener/host/attach` spends sequential bounded phases (deploy,
+// restart, launch-contract refresh — 10 minutes each) that the AppWire
+// client's 30s default request timeout does not cover, so a deploy that would
+// succeed arrives after the client already rejected and the user sees a failed
+// toast for a host that is online. The Connect call therefore carries an
+// explicit attach timeout derived from the manager bound, and a slow attach
+// resolving inside it succeeds with no failure toast. Before the fix the call
+// passed no timeout option, so the default applied.
+test("a slow Connect attach resolves inside the attach timeout with no failure toast", async () => {
+  expect(CONNECT_ATTACH_TIMEOUT_MS).toBeGreaterThan(30_000);
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", async () => {
+      // Gated past the assertion below, so on the old code — where the call
+      // carried no timeout option — the waitFor already failed before the
+      // server answers; on the fixed code the call carries the attach timeout
+      // and the late success clears the pending marker with no failure toast.
+      await gate;
+      return { attached: true };
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  // The attach RPC carries the explicit attach timeout, not the 30s default.
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && call.opts?.timeoutMs === CONNECT_ATTACH_TIMEOUT_MS,
+      ),
+    ).toBe(true),
+  );
+  release();
+  await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
+  expect(screen.queryByText(/Connect offline-host failed/i)).toBeNull();
 });
 
 test("no host picker renders when the manifest has only local", async () => {
@@ -7594,6 +7933,51 @@ test("a remote host's catalog never sweeps the controller's saved model defaults
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
 });
 
+// The same rule in the state an unsettled manifest produces: the settled list
+// is withheld, so hostChoice is a provisional "local" while the draft still
+// names its host - and every catalog this pane reads, the sweep's included, is
+// issued against the DRAFT'S host (round nine's `submittedSource = source`).
+// The controller's stored defaults must survive it exactly as they survive a
+// settled remote target: the sweep's authority is the machine the form is
+// reading, never the withheld fallback.
+test("a revalidating manifest does not hand the controller's catalog the sweep", async () => {
+  const cwd = "/tmp/remote-sweep-revalidate";
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  const savedBlob = JSON.stringify({ harness: "evener", model: "openai/gpt-5" });
+  localStorage.setItem(`evener-hub.spawn-defaults.${cwd}`, savedBlob);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  // The host's catalog offers the openai provider but not the saved model, so a
+  // sweep running against it would delete both stored values.
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: { "model/list": { data: [{ provider: "openai", model: "gpt-4o", displayName: "openai/gpt-4o" }] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  renderSpawn(fake);
+  await settled();
+
+  // The pane's catalog is the host's: the routed model/list answers for it, and
+  // the controller's own list is never asked at all.
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) =>
+          call.method === "evener/host/request" &&
+          (call.params as HostRequestParams).method === "model/list" &&
+          (call.params as HostRequestParams).host === "buildbox",
+      ).length,
+    ).toBeGreaterThan(0),
+  );
+  expect(modelListRequests(fake)).toHaveLength(0);
+  // So the stored layer is exactly as it was stored.
+  expect(localStorage.getItem(`evener-hub.spawn-defaults.${cwd}`)).toBe(savedBlob);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+});
+
 // A host change drops the previous host's harness/schema catalogs: they describe
 // the machine that answered, and a failed load for the new host must show an
 // empty catalog rather than the previous host's, which the user could otherwise
@@ -7705,6 +8089,127 @@ test("a selected remote host's wrapped config notification reloads the pane mode
   await waitFor(() => expect(paneLoads()).toBeGreaterThan(before));
 });
 
+// The same wrapper, in the same unsettled window the picker's revalidation test
+// above pins: a withholding manifest makes hostChoice a provisional "local"
+// while the pane's catalog is still scoped to the draft's host. Keying this
+// listener on hostChoice dropped the host's own wrapper for the length of every
+// revalidation, so a credential or model change made on the host during one
+// never invalidated the catalog this form validates against (component 07b
+// review, residual).
+test("the draft's host wrapped config notification reloads the catalog while the manifest revalidates", async () => {
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: {
+        // Both host reads stay in flight: the instance partition therefore
+        // keeps one identity (nothing in the pane's catalog cache key moves
+        // with it) and every catalog request is a fresh, recorded one rather
+        // than a settled answer reused from it - the same isolation the
+        // settled version of this test uses.
+        "evener/instance/list": new Promise(() => {}),
+        "model/list": new Promise(() => {}),
+      },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const cwd = "/tmp/host-notify-revalidate";
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  renderSpawn(fake);
+  await settled();
+  // Unsettled manifest: the settled list is withheld, so hostChoice is a
+  // provisional "local" while the launch target and every discovery call stay
+  // on the draft's host.
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  const catalogLoads = (params: unknown) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === "buildbox" &&
+        (call.params as HostRequestParams).method === "model/list" &&
+        JSON.stringify((call.params as HostRequestParams).params) === JSON.stringify(params),
+    ).length;
+  // The pane passes through a harness value on its way to the settled draft
+  // scope, and issues one catalog request per scope. Wait for the SETTLED
+  // scope's own request: its promise stays in the pane's per-scope cache (the
+  // host's answer never lands), so from here only a cache invalidation - the
+  // credential generation this test is about - can issue another one.
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(0));
+  const before = catalogLoads({ cwd });
+
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(before));
+});
+
+// The other half of the same question, in the state a SETTLED manifest produces
+// when the draft's host is not launchable (offline here; a host removed from
+// the list is the same). hostChoice falls back to "local" and the write-back
+// puts that in the draft, so the machine this pane reads - and the machine it
+// would launch on - is the controller. The wrapper from the host it no longer
+// reads must therefore not move its catalog: the filter is the host that was
+// actually asked, which is what lets the pane recover when the host it DOES
+// read changes (the revalidation test above).
+test("a wrapper from a draft host the offline fallback replaced does not reload the catalog", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-offline-notify");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-offline-notify");
+  renderSpawn(fake);
+  await settled();
+
+  // The offline fallback is written into the draft (round nine), so the pane's
+  // own reads are controller-scoped from here on.
+  await waitFor(() => expect(draft.fields.getState().source).toBe("local"));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  // Hydration: the controller's catalog has answered for the SETTLED scope (the
+  // scoped load the fallback's write-back triggers). Everything before it is
+  // the mount's own churn, and every consumer after it is a cache hit.
+  const scopedCatalogLoads = () =>
+    fake.calls.filter(
+      (call) => call.method === "model/list" && (call.params as { cwd?: string }).cwd === "/tmp/host-offline-notify",
+    ).length;
+  await waitFor(() => expect(scopedCatalogLoads()).toBeGreaterThan(0));
+
+  const hostLoadsFor = (host: string) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === host &&
+        (call.params as HostRequestParams).method === "model/list",
+    ).length;
+  const before = { controller: modelListRequests(fake).length, replacedHost: hostLoadsFor("buildbox") };
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+  // Nothing to await: the claim is that nothing happens. The window is a
+  // tripwire past the pane's 250ms catalog debounce (a generation bump re-runs
+  // the catalog effect and issues a request), not the mechanism.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  // Neither the replaced host's scope nor the controller's catalog moved: the
+  // wrapper describes a machine this pane is not reading.
+  expect(hostLoadsFor("buildbox")).toBe(before.replacedHost);
+  expect(modelListRequests(fake).length).toBe(before.controller);
+});
+
 // The provider editor (ConnectProviderDialog) is controller-scoped: it reads and
 // writes the credentialsStore's top-level fields on the plain connection. A
 // remote host's provider verdict now comes from that host's own partition, so
@@ -7762,6 +8267,36 @@ test("switching hosts with the same directory drops the previous host's branch r
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
 
   await waitFor(() => expect(screen.queryByTestId("spawn-branch")).toBeNull());
+});
+
+// ...and the readout must survive the manifest going UNSETTLED again. A
+// revalidating manifest withholds its sources, so hostChoice is a provisional
+// "local" while the draft's host is still the launch and discovery target
+// (round nine) - the same window the picker above pins. Keying the readout on
+// hostChoice instead blanked a readout the pane's own evener/git/head call had
+// already answered for the draft's host, for the length of every revalidation
+// (component 07b review, residual).
+test("the branch readout keeps the draft's host while the manifest revalidates", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", () => ({ head: "local-branch" }));
+    answerRemoteHost(f, { overrides: { "evener/git/head": { head: "host-branch" } } });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-branch-revalidate");
+  renderSpawn(fake);
+  await settled();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch"));
+
+  // The fresh manifest is in flight: the settled list is withheld, so the
+  // launch target stays the draft's host (round nine) and so does the host the
+  // readout describes.
+  await act(async () => seedSources(REMOTE_SOURCES, { loading: true, stale: true }));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch");
 });
 
 // The resolved default launch config is a property of the selected host, not

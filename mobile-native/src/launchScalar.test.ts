@@ -15,9 +15,19 @@ it("distinguishes inherited values from explicit false and zero", () => {
   expect(parseLaunchScalar(option("boolean"), "false")).toBe(false);
   expect(parseLaunchScalar(option("integer"), "0")).toBe(0);
   expect(parseLaunchScalar(option("integer"), "-1")).toBe(-1);
+  expect(parseLaunchScalar(option("integer"), "9007199254740991")).toBe(9007199254740991);
 });
 it("rejects invalid integers and unavailable enum choices", () => {
-  for (const value of ["NaN", "Infinity", "1.5", "not a number"])
+  for (const value of [
+    "NaN",
+    "Infinity",
+    "1.5",
+    "not a number",
+    "12abc",
+    "1e21",
+    "9007199254740993",
+    "1.0000000000000000001",
+  ])
     expect(() => parseLaunchScalar(option("integer"), value)).toThrow();
   const select = {
     ...option("select"),

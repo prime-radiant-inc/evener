@@ -7,6 +7,7 @@ import {
   fromEnvironment,
   groupByProvider,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
@@ -324,6 +325,28 @@ describe("fromEnvironment", () => {
     ).toBe(true);
   });
 
+  test("false for an implicit instance with no source the environment supplies - none, empty, or unknown", () => {
+    // The source test is an allow-list, not a deny-list: only env:<VAR> and adc
+    // name a credential the host supplies. An implicit credential-required
+    // instance resolving no source (none/empty), and any future source this
+    // vocabulary does not know, are the user's own - the deny-list form badged
+    // them "from environment" and refused Remove with nothing to say.
+    for (const source of ["none", "", "saml"]) {
+      expect(
+        fromEnvironment(
+          instance({
+            name: "groq",
+            providerId: "groq",
+            implicit: true,
+            activeSource: source,
+            credentialRequired: true,
+          }),
+        ),
+        `activeSource ${JSON.stringify(source)}`,
+      ).toBe(false);
+    }
+  });
+
   test("true for a keyless implicit instance - a local default is not the user's own credential", () => {
     expect(
       fromEnvironment(
@@ -361,24 +384,26 @@ describe("fromEnvironment", () => {
     ).toBe(false);
   });
 
-  test("false for a Codex instance whose record the hub cannot read", () => {
-    // The registry derives the instance from the record file's existence and
-    // reports the oauth source for it either way, while the hub's own status
-    // reports no usable source for an unreadable one. The scheme, not the
-    // active source, is what says whose the instance is - and removing it is
-    // how a broken sign-in goes away.
-    expect(
-      fromEnvironment(
-        instance({
-          name: "openai-codex",
-          providerId: "openai-codex",
-          auth: "oauth-openai-codex",
-          implicit: true,
-          activeSource: "none",
-          credentialRequired: true,
-        }),
-      ),
-    ).toBe(false);
+  test("false for a Codex instance whose record the hub cannot read - none and empty alike", () => {
+    // The registry resolves a Codex instance only from its OAuth record, to
+    // `oauth` when it is readable and none when it is absent or corrupt, and a
+    // bare-controller listing can send an empty source. Neither none nor empty
+    // is on the allow-list, so a broken sign-in is the user's to remove.
+    for (const source of ["none", ""]) {
+      expect(
+        fromEnvironment(
+          instance({
+            name: "openai-codex",
+            providerId: "openai-codex",
+            auth: "oauth-openai-codex",
+            implicit: true,
+            activeSource: source,
+            credentialRequired: true,
+          }),
+        ),
+        `activeSource ${JSON.stringify(source)}`,
+      ).toBe(false);
+    }
   });
 
   test("true for a keyless-capable instance a stored key cannot keep alive", () => {
@@ -398,6 +423,37 @@ describe("fromEnvironment", () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+// renameLeavesEnvironmentRow drives the rename note. The hub computes whether
+// freeing the old name re-supplies a row - it needs ADC availability and the
+// curated set, which a client cannot see - and sends it as
+// InstanceEntry.renameLeavesRow, so the predicate reads that bit rather than
+// inferring from the credential fields. The cases that used to be inferred
+// here are pinned hub-side (TestInstances_ListExposesRenameLeavesRow and
+// TestProviderRenameLeavesInstance).
+describe("renameLeavesEnvironmentRow", () => {
+  test("true when the hub marks the row as re-derived under the old name", () => {
+    expect(renameLeavesEnvironmentRow(instance({ name: "groq", providerId: "groq", renameLeavesRow: true }))).toBe(
+      true,
+    );
+  });
+
+  test("false when the hub marks the row as leaving nothing behind", () => {
+    expect(renameLeavesEnvironmentRow(instance({ name: "work", providerId: "groq", renameLeavesRow: false }))).toBe(
+      false,
+    );
+  });
+
+  test("false when the hub did not send the bit", () => {
+    // An older hub omits renameLeavesRow (omitempty), so the ordinary note is
+    // the safe reading.
+    expect(
+      renameLeavesEnvironmentRow(
+        instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }),
+      ),
+    ).toBe(false);
   });
 });
 

@@ -8,7 +8,7 @@
 // calls — or listens for — a name the hub stopped serving.
 import { describe, expect, test, vi } from "vitest";
 import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
-import { FakeClient } from "./fakeClient";
+import { FakeClient, gateSettlements, type Settlement } from "./fakeClient";
 import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
 
 // A name the hub has never served. Cast because MethodName correctly refuses
@@ -140,5 +140,89 @@ describe("FakeClient ready handoff", () => {
 
     expect(ready).toHaveBeenNthCalledWith(1, first);
     expect(ready).toHaveBeenNthCalledWith(2, second);
+  });
+});
+
+// AppwireClient.resumeThread forces a reconnect and runs beforeRequest only
+// after it settles, synchronously before the resume RPC (../client.ts) — which
+// is the whole reason a Stop that lands during that reconnect can cancel the
+// resume. A fake that ran the guard synchronously inside its own call let a
+// test stage exactly that Stop and still pass: a green test about an ordering
+// production never has.
+describe("FakeClient resume ordering", () => {
+  test("resumeThread runs beforeRequest after the transport settles, so a cancellation landing first is observed", async () => {
+    const fake = new FakeClient();
+    let canceled = false;
+    const guard = vi.fn(() => {
+      if (canceled) throw new Error("Stop canceled this pending action; send again when ready.");
+    });
+    const resume = fake.resumeThread("ref_a", { beforeRequest: guard });
+    // The window the real client's `await connected` gives its caller: the Stop
+    // that lands here is the one the guard has to see.
+    canceled = true;
+    await expect(resume).rejects.toThrow("Stop canceled this pending action");
+    // A guarded-out resume must not send the RPC - the guard's whole point.
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+  });
+
+  test("resumeThread runs beforeRequest before the resume RPC and after the caller can act", async () => {
+    const fake = new FakeClient();
+    const order: string[] = [];
+    fake.on("thread/resume", () => {
+      order.push("resume RPC");
+      return undefined as never;
+    });
+    const resume = fake.resumeThread("ref_a", { beforeRequest: () => order.push("beforeRequest") });
+    order.push("caller");
+    await resume;
+    expect(order).toEqual(["caller", "beforeRequest", "resume RPC"]);
+  });
+});
+
+// The gate's own contract: it holds each call to `method` until the test
+// settles it, either way, one handle per call. The suites that need to answer
+// or fail a request out of order (storeLifecycle's gatedWrite, launchLayer's
+// gated read) turn on exactly this, so it is pinned here rather than only
+// through them.
+describe("FakeClient request gates", () => {
+  function gateAt(gates: Settlement[], index: number): Settlement {
+    const gate = gates[index];
+    if (!gate) throw new Error(`expected a gate at index ${index}`);
+    return gate;
+  }
+
+  test("resolves the request in flight with the value it is handed", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const reply = { ref: "ref_a" } as never;
+    const inflight = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 0).resolve(reply);
+    await expect(inflight).resolves.toBe(reply);
+  });
+
+  test("rejects the request in flight with the error it is handed", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const boom = new Error("boom");
+    const inflight = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 0).reject(boom);
+    await expect(inflight).rejects.toBe(boom);
+  });
+
+  test("hands back one gate per call, settleable out of order", async () => {
+    const fake = new FakeClient();
+    const gates = gateSettlements(fake, "thread/read");
+    const first = fake.request("thread/read", { ref: "ref_a", includeTurns: false });
+    const second = fake.request("thread/read", { ref: "ref_b", includeTurns: false });
+    await Promise.resolve();
+
+    gateAt(gates, 1).resolve("second" as never);
+    gateAt(gates, 0).resolve("first" as never);
+    await expect(first).resolves.toBe("first");
+    await expect(second).resolves.toBe("second");
   });
 });

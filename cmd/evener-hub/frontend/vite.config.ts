@@ -44,6 +44,15 @@ function restoreDistPlaceholder(): Plugin {
 
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
+  // Keep the dep-optimizer cache inside this checkout. Vite defaults it to
+  // node_modules/.vite, and fleet worktrees symlink node_modules to ONE shared
+  // install (docs/developing-evener/conventions/agent-fleets.md), so that
+  // default's dep-cache temp dir is shared by every lane and every concurrent
+  // Vite process - which races (issue #1586). path.join(__dirname, ...) is
+  // lexical and never follows the symlink, and the gate flows run one Vite
+  // process at a time (guards sequentially; make test-web starts only
+  // vitest's).
+  cacheDir: path.join(__dirname, ".vite-cache"),
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
   // so the alias is what the bundler, the dev server, Vitest and the five
@@ -57,6 +66,8 @@ export default defineConfig({
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
       "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
+      "@evener/appwire-client/state/mutation": path.join(appwirePackageDir, "state", "mutation", "index.ts"),
+      "@evener/appwire-client/state/connection": path.join(appwirePackageDir, "state", "connection", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
       "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
       // Resolution runs from the importer, and the package's test files sit
@@ -130,7 +141,7 @@ export default defineConfig({
     // Vite's `?raw`: this app's install already provides all of that, while
     // giving the package its own dev dependencies would change what
     // `npm ci --prefix appwire-client/typescript` fetches for the
-    // qualification gate, which needs only typescript and ws.
+    // qualification gate, which needs only typescript, tinykeys and ws.
     include: [
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",

@@ -69,6 +69,10 @@ const client = new FakeClient("ready");
 // ask_user call after the last user message is "live". This is the exact
 // wire shape a real ask_user call produces.
 const askThread: Thread = fixtureThread(ASK_REF, {
+  // askPending is the wire's own source for a pending ask (deriveAskQuestions.ts),
+  // stamped by the hub onto every thread/status/changed the turn ending on an
+  // ask_user call produces (server/appwire_runtime.go's stampAskPendingOnStatusChange).
+  evener: { ref: ASK_REF, capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, askPending: true },
   turns: [
     {
       id: "turn_1",

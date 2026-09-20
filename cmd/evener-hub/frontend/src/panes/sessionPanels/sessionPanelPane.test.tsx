@@ -13,7 +13,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activityPanel";
-import { activitySummaryStore } from "../../stores/activitySummary";
+import { activitySummaryStore, initActivitySummary } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { tasksPanelStore } from "../../stores/tasksPanel";
@@ -27,6 +27,8 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
+  // This suite mounts the pane without the app shell that wires the stores.
+  initActivitySummary();
 });
 
 afterEach(() => {
@@ -286,7 +288,9 @@ function activityRootTree(): ActivityTree {
 
 function continuedActivityTree(): ActivityTree {
   return {
-    revision: 2,
+    // The continuation page shares the retained tree's revision: a page from a
+    // different revision is discarded by the consumer, not grafted.
+    revision: 1,
     root: {
       kind: "session",
       sessionId: "session_a",

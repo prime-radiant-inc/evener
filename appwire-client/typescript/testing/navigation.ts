@@ -1,8 +1,10 @@
 // Navigation wire fixtures for both apps' tests and dev previews: builders for
-// the capability, manifest and session-summary shapes, and the wireV2 converter.
+// the capability and manifest shapes, and the wireV2 converter.
 import {
-  type NavigationResponse,
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
   navigationOwnedContainerKey,
+  navigationParamsToResourceKey,
   navigationRootContainerKey,
   navigationViewScope,
   type ResourceKey,
@@ -12,7 +14,7 @@ import type {
   NavigationManifest,
   NavigationReadParams,
   NavigationReadResponse,
-  NavigationSessionSummary,
+  NavigationSnapshot,
 } from "../types.gen";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
   version,
@@ -20,12 +22,6 @@ export const capability = (generationId = "generation_test", version = 1): Navig
   sequence: 0,
   readVersions: [2],
 });
-export const response = <T>(
-  data: T,
-  generationID = "generation_test",
-  revision = 1,
-  etag = '"test"',
-): NavigationResponse<T> => ({ status: 200, generationID, revision, etag, data });
 export const manifest = (overrides: Partial<NavigationManifest> = {}): NavigationManifest => ({
   generation_id: "generation_test",
   revision: 1,
@@ -35,7 +31,6 @@ export const manifest = (overrides: Partial<NavigationManifest> = {}): Navigatio
   catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   ...overrides,
 });
-export const key = (_kind: ResourceKey["kind"]): ResourceKey => ({ kind: "manifest" }) as ResourceKey;
 
 /** Complete a session fixture with the defaults the store validators require. */
 export const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
@@ -85,16 +80,6 @@ export const completeBody = (data: unknown, revision: number, gen: string): Reco
   return body;
 };
 
-// The codec's page-limit maximums (effectiveLimit in ../state/navigation/codec.ts):
-// a fixture's metadata.limit must equal the effective limit for its key.
-const SECTION_LIMIT = 50;
-const CATALOG_LIMIT = 100;
-
-const paged = (params: NavigationReadParams, limit: number): { offset: number; limit: number } => ({
-  offset: params.offset ?? 0,
-  limit: params.limit ?? limit,
-});
-
 const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   manifest: "manifest",
   section: "sessions",
@@ -104,38 +89,6 @@ const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   project: undefined,
   project_page: "sessions",
   location: "session",
-};
-
-export const paramsToResourceKey = (params: NavigationReadParams): ResourceKey => {
-  if (params.resource === "manifest") return { kind: "manifest" };
-  if (params.resource === "section")
-    return {
-      kind: "section",
-      section: params.section as "live" | "needs_you",
-      ...paged(params, SECTION_LIMIT),
-    };
-  if (params.resource === "pin_catalog") return { kind: "pin_catalog", ...paged(params, CATALOG_LIMIT) };
-  if (params.resource === "pin_section")
-    return {
-      kind: "pin_section",
-      sectionId: params.sectionId as string,
-      ...paged(params, SECTION_LIMIT),
-    };
-  if (params.resource === "catalog")
-    return {
-      kind: "catalog",
-      catalog: params.catalog as "projects" | "archived_projects" | "test_runs",
-      ...paged(params, CATALOG_LIMIT),
-    };
-  if (params.resource === "project") return { kind: "project", projectKey: params.projectKey as string };
-  if (params.resource === "project_page")
-    return {
-      kind: "project_page",
-      projectKey: params.projectKey as string,
-      tier: params.tier as "current" | "recent" | "archived",
-      ...paged(params, SECTION_LIMIT),
-    };
-  return { kind: "location", ref: params.ref as string };
 };
 
 // wireV2 converts a v1-shaped body into a valid v2 snapshot response for the
@@ -149,7 +102,7 @@ export const wireV2 = (
   revision = 1,
   gen = "generation_test",
 ): NavigationReadResponse => {
-  const key = paramsToResourceKey(params);
+  const key = navigationParamsToResourceKey(params);
   const body = completeBody(data, revision, gen);
   let counter = 0;
   const entityKey = () => `${navigationViewScope(key)}/entity/${String(++counter).padStart(64, "0")}`;
@@ -174,8 +127,8 @@ export const wireV2 = (
     typeof params.limit === "number"
       ? params.limit
       : key.kind === "catalog" || key.kind === "pin_catalog"
-        ? CATALOG_LIMIT
-        : SECTION_LIMIT;
+        ? NAVIGATION_CATALOG_LIMIT
+        : NAVIGATION_SECTION_LIMIT;
   let metadata: Record<string, unknown>;
   const rootChildren: string[] = [];
   const rootSlot = ROOT_SLOT[key.kind];
@@ -276,26 +229,97 @@ export const wireV2 = (
   } as NavigationReadResponse;
 };
 
-/** Build a NavigationSessionSummary fixture. */
-export function sessionSummary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
+// A fixed manifest/section/location reconnect fixture, shared by both apps'
+// navigation store contract suites: a same-generation reconnect that returns
+// a fresh v2 snapshot for whichever resource the store re-requests.
+export const reconnectManifestKey: ResourceKey = { kind: "manifest" };
+export const reconnectSectionKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+export const reconnectLocationKey: ResourceKey = { kind: "location", ref: "local:x" };
+const reconnectSessionValue = {
+  ref: "x",
+  host_id: "local",
+  session_id: "x",
+  title: "Session x",
+  project: "project",
+  state: "idle",
+  kind: "session",
+  live: false,
+  children: [],
+};
+export const reconnectSessionSnapshot = (
+  resource: ResourceKey,
+  metadata: Record<string, unknown>,
+  slot: "session" | "sessions",
+): NavigationSnapshot => {
+  const entityKey = `${navigationViewScope(resource)}/entity/${"7".repeat(64)}`;
   return {
-    ref: "local:test",
-    host_id: "local",
-    session_id: "test",
-    title: "test session",
-    project: "test",
-    state: "idle",
-    kind: "session",
-    live: false,
-    children: [],
-    ...overrides,
+    metadata,
+    entities: [
+      {
+        key: entityKey,
+        kind: "session",
+        value: resource.kind === "location" ? { ...reconnectSessionValue, ref: resource.ref } : reconnectSessionValue,
+      },
+    ],
+    containers: [
+      {
+        key: navigationRootContainerKey(resource, slot),
+        owner: { kind: "resource_root", slot },
+        children: [entityKey],
+      },
+      {
+        key: navigationOwnedContainerKey(entityKey, "children"),
+        owner: { kind: "entity", entityKey, slot: "children" },
+        children: [],
+      },
+    ],
   };
-}
-
-/** JSON response helper for fetch mocks. */
-export function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json", etag: '"test"' },
-  });
-}
+};
+export const reconnectV2Response = (params: NavigationReadParams): NavigationReadResponse => {
+  if (params.resource === "manifest")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 11,
+      etag: '"manifest-v2"',
+      data: {
+        metadata: manifest({ revision: 11 }),
+        entities: [],
+        containers: [
+          {
+            key: navigationRootContainerKey(reconnectManifestKey, "manifest"),
+            owner: { kind: "resource_root", slot: "manifest" },
+            children: [],
+          },
+        ],
+      },
+    };
+  if (params.resource === "section")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 22,
+      etag: '"section-v2"',
+      data: reconnectSessionSnapshot(
+        reconnectSectionKey,
+        { generation_id: "generation_test", revision: 22, offset: 0, limit: 50, remaining: 0, truncated: false },
+        "sessions",
+      ),
+    };
+  if (params.resource === "location")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 33,
+      etag: '"location-v2"',
+      data: reconnectSessionSnapshot(
+        reconnectLocationKey,
+        { generation_id: "generation_test", revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },
+        "session",
+      ),
+    };
+  throw new Error(`unexpected reconnect resource ${params.resource}`);
+};

@@ -8,12 +8,8 @@ import {
   type PanelLoadFailure,
   reconcileActivityState,
 } from "@evener/appwire-client";
-
-export { graftContinuationTree } from "@evener/appwire-client";
-
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 export type ActivityLoadState =
@@ -43,7 +39,48 @@ export type ActivityFetchResult =
   | { kind: "unsupported" }
   | { kind: "ended" }
   | { kind: "failed"; error: PanelLoadFailure }
-  | { kind: "continuation-failed"; nodeID: string; message: string };
+  | { kind: "continuation-failed"; nodeID: string; message: string }
+  // A continuation page minted against a different revision than the retained
+  // tree. It is not a failure to show the reader: the page is discarded and the
+  // consumer re-fetches a fresh root, so no continuation failure is recorded.
+  | { kind: "continuation-discarded"; nodeID: string };
+
+/** What a settled continuation page owes the summary store: the summary
+ * generation it began under (absent when no summary entry existed then) and
+ * the badge's due - the merged tree's counts, or a failure. No debt when the
+ * page landed as a fresh root, since there was no tree to merge into. */
+export interface ContinuationSettlement {
+  summaryRequestID?: number;
+  debt?: { kind: "failure" } | { kind: "counts"; counts: ActivityCounts };
+}
+
+/** The summary store's side of the seam. activitySummary.ts imports this
+ * module and registers the link at load; the panel never imports back. */
+export interface ActivitySummaryLink {
+  summaryGeneration(ref: string): number | undefined;
+  onContinuationSettled(ref: string, settlement: ContinuationSettlement): void;
+}
+
+let summaryLink: ActivitySummaryLink | undefined;
+
+/** Returns the unlink. Production registers once for the app's lifetime and
+ * drops it; a test that needs the unregistered state calls it. */
+export function linkActivitySummary(link: ActivitySummaryLink): () => void {
+  summaryLink = link;
+  return () => {
+    if (summaryLink === link) summaryLink = undefined;
+  };
+}
+
+// A continuation page cannot run unlinked: it would record an undefined
+// generation and its settlement would reach nobody, leaving the badge unpaid
+// and a queued root refresh asleep. That is a wiring mistake, so it says so.
+function requireSummaryLink(): ActivitySummaryLink {
+  if (!summaryLink) {
+    throw new Error("activityPanel store: no summary link registered; call initActivitySummary() first");
+  }
+  return summaryLink;
+}
 
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
@@ -128,12 +165,14 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   entries: new Map(),
 
   beginFetch(ref, continuation) {
+    // Read before the updater runs, so an unlinked continuation throws with
+    // the entry untouched rather than half-begun.
+    const summaryRequestID = continuation ? requireSummaryLink().summaryGeneration(ref) : undefined;
     let requestID = 0;
     set((state) => {
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
-      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
@@ -172,12 +211,16 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   },
 
   publishFetch(ref, requestID, result) {
-    let settledContinuation = false;
-    // What this page owes the summary store, decided inside the updater and
-    // paid after it: the updater stays a pure function of panel state, and a
-    // nested set can no longer land inside this store's own commit.
-    let summaryDebt: { kind: "failure" } | { kind: "counts"; counts: ActivityCounts } | undefined;
-    let summaryRequestID: number | undefined;
+    // A continuation page settles with the summary store, so its link is
+    // resolved before the updater commits: an unregistered link throws with
+    // the page still pending rather than after the entry has been cleared.
+    // The same predicate decides the settlement inside the updater.
+    const settling = get().entries.get(ref);
+    const link =
+      settling?.requestID === requestID && settling.pending?.kind === "continuation" ? requireSummaryLink() : undefined;
+    // What this page owes the summary store is decided inside the updater and
+    // reported after it, so the updater stays a pure function of panel state.
+    let settlement: ContinuationSettlement | undefined;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.requestID !== requestID) return state;
@@ -186,21 +229,48 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       let next = current;
 
       if (pending.kind === "continuation") {
-        settledContinuation = true;
-        summaryRequestID = pending.summaryRequestID;
-        if (result.kind !== "ready") summaryDebt = { kind: "failure" };
+        let debt: ContinuationSettlement["debt"];
         if (result.kind === "continuation-failed") {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
             continuationFailures: { ...current.continuationFailures, [result.nodeID]: result.message },
             pending: undefined,
           };
+        } else if (result.kind === "continuation-discarded") {
+          // The page belongs to another revision: leave the retained tree and
+          // the badge alone (no debt) and let the caller's fresh root fetch
+          // re-anchor pagination. Clearing any prior failure for this node keeps
+          // the discard from reading as a branch error.
+          const continuationFailures = { ...current.continuationFailures };
+          delete continuationFailures[result.nodeID];
+          next = {
+            ...current,
+            continuationLoadingID: undefined,
+            continuationFailures,
+            pending: undefined,
+          };
         } else if (result.kind === "ready") {
           const previousTree = retainedTree(current.load);
-          if (previousTree) {
+          if (previousTree && result.tree.revision !== previousTree.revision) {
+            // A page from another revision is not graftable. graftContinuationTree
+            // would leave the retained tree unchanged, so recording this as a
+            // merge would claim the unchanged tree's counts as the page's result
+            // and clear any prior failure. Discard it exactly like an explicit
+            // continuation-discarded result instead; the caller owns the root
+            // refetch (ActivityPanel starts one before publishing this).
+            const continuationFailures = { ...current.continuationFailures };
+            delete continuationFailures[pending.nodeID];
+            next = {
+              ...current,
+              continuationLoadingID: undefined,
+              continuationFailures,
+              pending: undefined,
+            };
+          } else if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
-            summaryDebt = { kind: "counts", counts: tree.root.counts };
+            debt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];
@@ -213,9 +283,11 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
               pending: undefined,
             };
           } else {
+            // The page landed as a fresh root: no tree to merge into, so no debt.
             next = readyRoot(current, result.tree);
           }
         } else if (result.kind === "failed") {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
@@ -226,6 +298,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             pending: undefined,
           };
         } else {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
@@ -236,6 +309,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             pending: undefined,
           };
         }
+        settlement = { summaryRequestID: pending.summaryRequestID, debt };
       } else {
         switch (result.kind) {
           case "ready":
@@ -287,17 +361,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       entries.set(ref, next);
       return { entries };
     });
-    // Same order the merge relied on when these ran inside the updater: the
-    // badge settles against the tree just committed, and only then does a root
-    // refresh queued behind this page get its turn.
-    if (summaryDebt && summaryRequestID !== undefined) {
-      const summary = activitySummaryStore.getState();
-      if (summaryDebt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
-      else summary.publishContinuationCounts(ref, summaryRequestID, summaryDebt.counts);
-    }
-    // A root refresh queued while this continuation was in flight waited for
-    // the merge above rather than replacing the panel tree mid-page.
-    if (settledContinuation) activitySummaryStore.getState().issuePendingRootFetch(ref);
+    if (settlement && link) link.onContinuationSettled(ref, settlement);
   },
 
   setExpanded(ref, expandedIDs) {
@@ -325,6 +389,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
 
   resetForTests() {
     nextRequestID = 0;
+    summaryLink = undefined;
     set({ entries: new Map() });
   },
 }));

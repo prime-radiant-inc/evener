@@ -334,9 +334,15 @@ provider; keep it out of the attach probe and expose it as an explicit refresh.
 `*Channel`.** `Channel.Handshake()` exists on the component-04 `Channel`, but
 `RemoteHubSource` holds only the seams installed from `hubcore.WebConfig`, so
 component 04 must also expose the same facts for a host by name: a
-`RemoteHostHandshake func(host string) (appwire.InitializeResponse, bool)`
-seam (backed by a `Manager.HandshakeIfAttached`, component 04, §"Go surface"),
-installed as `SetHostHandshake` (§"Registration and default-source selection").
+`RemoteHostHandshake func(host string, client *appwire.Client)
+(appwire.InitializeResponse, bool)` seam (backed by
+`remoteHostHandshakeForChannel`, built on `Manager.ChannelIfAttached` with the
+client-identity guard at the call site; component 04, §"Go surface"), installed
+as `SetHostHandshake` (§"Registration and default-source selection"). It carries
+the client the probe resolved and reports `false` when the installed channel is
+a different generation, so the probe cannot pair one connection's wire reads
+with another's handshake (the shipped seam is the same shape as
+`RemoteHostFacts`' generation guard).
 Without it the probe cannot populate `ProtocolVersion`, `HubVersion`
 (`ServerInfo`), `HubSourceID`, or `Features` for a `RemoteHubSource` — none of
 the existing `RemoteHostClient`/`RemoteHostFacts`/`RemoteHostOnline`/
@@ -382,21 +388,30 @@ The source's optional seams are installed once at registration, all from
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
   probe needs (`HostFacts`, `remote_hub_probe.go`), backed by
-  `Manager.PreflightIfAttached` (component 04, §"Go surface"): the non-dialing,
-  attached-only preflight accessor mirroring `ClientIfAttached` and
-  `HandshakeIfAttached`. `Manager` stores live channels privately, so without
-  this accessor `cmd/evener-hub/main.go` cannot construct `cfg.RemoteHostFacts`
-  and `HostCapabilities.OS`/`Arch` stay permanently unpopulated (see §"Probe
-  reaches the handshake facts…" above for the same shape on the handshake
-  facts).
+  `Manager.ChannelIfAttached` (component 04, §"Go surface").
+  `cmd/evener-hub/main.go` reads one
+  `Manager.ChannelIfAttached` value and takes the preflight from the same
+  channel whose client is the probe's `client`, refusing with a typed
+  `SessionUnavailable` when it is a different generation — the attached-only
+  form of the old `ch.Client() != client` guard, so the probe never caches a
+  snapshot assembled from two connections. `Manager` stores live channels
+  privately, so without this accessor `cmd/evener-hub/main.go` cannot construct
+  `cfg.RemoteHostFacts` and `HostCapabilities.OS`/`Arch` stay permanently
+  unpopulated (see §"Probe reaches the handshake facts…" above for the same
+  shape on the handshake facts).
 - `SetHostHandshake(cfg.RemoteHostHandshake)` — the attach handshake facts the
   capability probe needs (`ProtocolVersion`, `ServerInfo`, `SourceID`,
-  `Features`), backed by `Manager.HandshakeIfAttached` (component 04, §"Go
-  surface"). It returns the `InitializeResponse` for a host only while a live
-  channel is installed, `(zero, false)` otherwise, and takes the manager-wide
-  mutex, so it is safe from the `EventAttached` callback exactly like
-  `ClientIfAttached`. Without this seam the probe cannot populate those four
-  fields for a `RemoteHubSource` (see §"Capability probe").
+  `Features`), backed by `remoteHostHandshakeForChannel` in
+  `cmd/evener-hub/main.go` (component 04, §"Go surface"), which reads one
+  `Manager.ChannelIfAttached` value and applies the generation guard at the call
+  site (`ch.Client() == client`). It returns the `InitializeResponse` for a host
+  only while a live channel is installed and only when that channel's client is
+  the probe's `client`, `(zero, false)` otherwise; the lookup itself takes the
+  manager-wide mutex, so it is safe from the `EventAttached` callback exactly
+  like `ClientIfAttached`. `Manager.HandshakeIfAttached` exists but has no
+  production caller — the guard is deliberately not inside an accessor. Without
+  this seam the probe cannot populate those four fields for a
+  `RemoteHubSource` (see §"Capability probe").
 - `SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)` where
   `RemoteHostClientIfAttached` is `sshManager.ClientIfAttached` (component 04,
   §"Go surface") — the **non-dialing, attached-only client lookup**. It returns
@@ -691,11 +706,16 @@ a host nobody asked for. Component 04 must therefore also provide an
 client only while a live channel is installed, and reports "not attached"
 without dialing (e.g. `ClientIfAttached(host) (*appwire.Client, bool)`) — and
 component 06's snapshot must use that, not the `Ensure`-backed resolver, so the
-check and the request cannot disagree. **Implementation status:** both the gate
-and the attached-only lookup are the implementing PR's requirement; the shipped
-`refreshRemoteThreadSnapshot` (`web_api_tree.go`) iterates `s.sources.All()` with
-no attachment gate, and `RemoteHubClientFunc` is wired to `Ensure`, so neither
-exists yet.
+check and the request cannot disagree. **Implementation status:** shipped.
+`sshconn.Manager.ClientIfAttached` exists (component 04a) and is installed on
+the source through `hubcore.WebConfig.RemoteHostClientIfAttached` /
+`SetHostClientIfAttached`; `refreshRemoteThreadSnapshot`
+(`web_api_tree.go`), and its synchronous `remoteThreadFetch` fallback, gate on
+it and skip an unattached host without a call, carrying the host's
+last-known-good rows forward instead of blanking them. `RemoteHubClientFunc` is
+no longer what the source resolves calls through — the source resolves every
+call through the attached-only lookup (see the next section) — so the gate and
+the request cannot disagree.
 
 **The same gate applies to the primary `thread/list` fan-out, not only the
 snapshot.** A **non-explicit** fleet-wide `thread/list` (empty `SourceIDs`) must
@@ -712,7 +732,13 @@ manager (component 04, §"Channel lifecycle states"), the attachment-based
 that explicit list is one of the intended attach triggers (alongside component
 06's Connect action), the opposite of the implicit empty-filter fan-out. So the
 rule is: empty filter ⇒ attached-only, no dial; explicit host in `SourceIDs` ⇒
-may attach.
+may attach. **Implementation status:** shipped. `hubThreadListWithSourceTimeout`
+(`app_threadlist.go`) skips a remote source for an empty filter when the
+attached-only lookup reports it not attached, and attaches an explicitly named
+remote host (`RemoteHostClient`, the `Ensure`-backed dial) before calling the
+  source — one of the two shipped attach triggers, alongside the component-06
+  Connect action (`evener/host/attach`, the browser-reachable explicit attach
+  handler in `app_host_attach.go`).
 
 **Every other remote call is non-dialing, not just the snapshot and the
 non-explicit list.** The gate above covers the background snapshot and the
@@ -741,10 +767,21 @@ first-attach bootstrap those two drive (component 04 §5). In particular a spawn
 on an offline host is refused, not attached: component 06 disables an offline
 host for a spawn and offers the Connect action instead, so `thread/start` never
 reaches `Ensure` either. **Implementation status:** `ClientIfAttached` exists on
-the manager (04a), but the shipped `RemoteHubClientFunc` is wired to
-`Ensure` + `ch.Client()` for *all* calls (`remote_hub_source.go`), so the
-attached-only resolution for direct calls is the implementing PR's requirement,
-not a present fact.
+the manager (04a) and is now the source's resolver for *all* calls:
+`RemoteHubSource.resolveClient` (`remote_hub_source.go`) answers from
+`SetHostClientIfAttached` when installed (production), returning
+`appwire.SessionUnavailable("remote hub unavailable: <host>")` for a host with
+no live channel, and never dials. The wired `RemoteHubClientFunc` is only the
+fallback for tests that inject a client function without the attached-only seam.
+The capability probe reads its handshake facts (`ProtocolVersion`, `ServerInfo`,
+`SourceID`, `Features`) through `hubcore.WebConfig.RemoteHostHandshake` /
+`SetHostHandshake` (backed by the `remoteHostHandshakeForChannel` closure over
+`Manager.ChannelIfAttached`, with the client-identity guard at the call site)
+and its preflight facts through `RemoteHostFacts` / `SetHostFacts` (backed by
+the `remoteHostFactsForChannel` closure over `Manager.ChannelIfAttached`). The
+generation guard (`ch.Client() == client`) lives in those closures, not inside
+`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached`, which have no
+production caller.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
@@ -834,10 +871,16 @@ Ref translation detail (`remote_hub_refs.go`):
     **role** (bridge marker present ⇒ *remote-originated*; marker absent ⇒
     *local*), and the routing seam stamps that role into the request context, so
     every handler can read `origin` (empty for a local request, non-empty for a
-    remote-originated one). **Implementation status:** neither the marker header,
-    the edge's role classification, nor the request-context `origin` exists
-    today (`cmd/evener-hub/web.go`, `cmd/evener-hub/internal/hubedge/auth_token.go`); this is
-    the design record, and the code delta is a tracked follow-up.
+    remote-originated one). **Implementation status:** shipped. `evener hub
+    attach --stdio` presents the marker (`cmd/evener-hub/attach.go`), the `/rpc`
+    edge classifies the role and stamps it into the request context
+    (`cmd/evener-hub/web.go`), and the guard refuses remote-originated remote
+    dispatch at its shared seams: the `Ensure`-backed dial
+    (`guardRemoteHostDial`) and the remote-hub client resolution every
+    `RemoteHubSource` call passes through (`appsource.guardRemoteDispatch`), so
+    a request arriving over a bridge cannot ride an already-attached source
+    either. The trust basis above is unchanged: the marker is cooperative-only
+    until the role is bound to a server-verifiable signal.
     The refusal is enforced at the **typed fan-out seam**, not by a check inside
     a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
     `app_threadlist.go`) — and any other path that routes a ref to more than one
@@ -905,17 +948,26 @@ Ref translation detail (`remote_hub_refs.go`):
     as a JSON object carrying `sessionId` and `ref` as strings (empty strings
     allowed — the Go encoder emits all of them unconditionally; none of
     `JobActivityTree.Root`, `.Revision`, `JobActivitySession.SessionID`, or
-    `.Ref` carries `omitempty`). A legacy flat array, an empty object, an
-    unknown object, an object that carries `root` but not its required fields
-    (`{"root":{}}`), and a payload whose required fields carry another type all
-    fail that test, and every payload that fails it — or that passes it but
-    still fails to decode as a tree — is preserved as the `any` value it
-    arrived as, never rewritten. Semantic recognition plus pass-through is
+    `.Ref` carries `omitempty`). An empty object, an unknown object, an object
+    that carries `root` but not its required fields (`{"root":{}}`), and a
+    payload whose required fields carry another type all fail that test, and
+    every payload that fails it — or that passes it but still fails to decode
+    as a tree — is preserved as the `any` value it arrived as, never rewritten.
+    The retired flat array of `EvenerJobInfo` is recognized as its own shape
+    and is **not** pass-through: it is the array form `evener/jobs/list`
+    answered before the activity tree (docs/appwire-protocol.md,
+    `evener/jobs/list`), its only ref-valued field is `transcriptRef` (a
+    session ref for a delegate turn, the opaque `job:<id>` for a shell job),
+    and that field is translated by the same declared-field policy as a tree
+    node's. Leaving it untranslated would hand the controller a remote
+    `local:<id>` — the wrong-machine failure this section exists to prevent.
+    Recognition plus pass-through is
     therefore the only acceptable shape, and it keeps the wire field generic:
     making the wire field itself typed (`Data appwire.JobActivityTree`) breaks
     pass-through, because the stream client decodes the result with
     `json.Unmarshal` (`appwire.Client.Request`, `appwire/client.go`) and a
-    legacy flat array fails that decode instead of arriving untouched. What is
+    legacy flat array fails that decode instead of arriving as the array shape
+    the translation recognizes. What is
     not acceptable is a typed walk that silently no-ops because the runtime
     value is a `map[string]any`, or one that rewrites (and replaces) a payload
     it did not recognize. This
@@ -925,6 +977,37 @@ Ref translation detail (`remote_hub_refs.go`):
     object that carries `root` without its required fields (`{"root":{}}`), a
     legacy flat array, an unknown object, a minimal (zero-value) tree, and a
     forward-compatible tree carrying an extra field.
+    **Implementation status:** the shipped translator (`translateActivityRefs`
+    and its walk helpers, `remote_hub_refs.go`) applies the two-stage
+    recognition boundary above **before** it walks. `activityTreeRecognized` is
+    the cheap discriminator gate: it demands `revision` as a non-negative
+    integer and `root` as an object carrying `sessionId` and `ref` as strings
+    (empty strings allowed, because the wire types carry no `omitempty`).
+    `activityTreeDecodable` then decodes the payload as a complete
+    `appwire.JobActivityTree`; the decode is a gate and not a translation, so
+    the walk keeps operating on the decoded map and any key the typed struct
+    does not declare survives byte-for-byte. Every payload that fails either
+    stage — an empty object, `{"root":{}}`, a tree whose required fields carry
+    another type, an unrelated object, or a payload the discriminator gate
+    accepts but the typed tree rejects (`entries` as an object rather than an
+    array, a declared container of the wrong type, a `revision` that overflows
+    the `uint64` field) — is returned as the `any` value it arrived as. Only a
+    recognized and decodable tree is walked, and the walk itself stays
+    structural: it follows the declared containers
+    (`root`/`entries`/`job`/`delegate`/`child`/`turns`) and rewrites only the
+    ref fields those nodes declare, preserving every other key byte-for-byte.
+    The named pass-through cases are pinned by
+    `TestRemoteHubJobsListPreservesUnrecognizedPayloads`, the payloads that pass
+    the discriminator gate but fail the full decode by
+    `TestRemoteHubJobsListPreservesUndecodableTreePayloads`, the recognized tree
+    — every declared ref field, a zero `revision`, empty required strings, and a
+    forward-compatible extra field — by
+    `TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees`, and the retired flat
+    array's translation by `TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs`
+    with its unaddressable value classes (a bare id, a foreign ref, an empty
+    value) in `TestRemoteHubJobsListPreservesUnaddressableLegacyTranscriptRefs`;
+    all five run through the actual stream client, so the requirement is closed
+    rather than an open code item.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
@@ -1437,10 +1520,11 @@ network.
     Feed the `ListJobs` response through the **actual stream client**
     (`appwire.Client.Request` over a `StreamTransport` answering with the real
     JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
-    assert a recognized tree is walked and an unrecognized `Data` payload —
-    an empty object, an object carrying `root` without its required fields, an
-    unrelated object, or a legacy flat array — passes through untouched as the
-    value it received.
+    assert a recognized tree is walked, an unrecognized `Data` payload — an
+    empty object, an object carrying `root` without its required fields, or an
+    unrelated object — passes through untouched as the value it received, and a
+    legacy flat array's session-valued `transcriptRef` is translated while its
+    opaque `job:<id>` refs and bare ids are preserved.
 14. **Remote item paging round trip.** Over the scripted (or in-process) remote
     hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
     packed first page whose `OlderCursor` is the controller cursor — **not** the
@@ -1518,15 +1602,18 @@ network.
   `local:<id>` reaches the controller unrewritten. Because
   `JobsListResponse.Data` is `any` today — and stays generic, because typing it
   as `appwire.JobActivityTree` fails the stream client's decode for a legacy
-  flat array — the translation first **recognizes** an activity-tree payload
-  by its required fields and their types (`revision` a non-negative integer,
-  `root` an object carrying `sessionId` and `ref` as strings) and walks only a
-  recognized tree; every payload that is not recognized — an empty object, an
-  unknown object, an object carrying `root` without its required fields, a
-  legacy flat array — passes through untouched as the value it received.
-  "Decodes without error" is not recognition: `{}` and unrelated objects decode
-  into a zero-value `appwire.JobActivityTree`. Verified through the actual
-  stream client.
+  flat array — the translation **recognizes** an activity-tree payload by its
+  required fields and their types (`revision` a non-negative integer, `root` an
+  object carrying `sessionId` and `ref` as strings) and walks only a recognized
+  tree; every payload that is not recognized — an empty object, an unknown
+  object, an object carrying `root` without its required fields — passes
+  through untouched as the value it received. The retired flat array is
+  recognized separately and translated by its declared field: each element's
+  session-valued `transcriptRef` moves into the controller namespace while its
+  opaque `job:<id>` ref and bare ids are preserved, or the remote `local:<id>`
+  would leak to the controller. "Decodes without error" is not recognition:
+  `{}` and unrelated objects decode into a zero-value `appwire.JobActivityTree`.
+  Verified through the actual stream client.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
 - The loop guard's origin signal comes from the explicit, cooperative bridge marker

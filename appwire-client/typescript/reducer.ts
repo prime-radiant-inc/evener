@@ -4,6 +4,7 @@
 // Every function here is pure: given the same inputs, produces the same
 // (possibly reference-equal, for no-op cases) output.
 
+import { appendChunk, pendingTextJoined } from "./chunkview";
 import { type ItemImage, type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import type {
   AnyNotification,
@@ -73,213 +74,19 @@ function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
-// Streaming-delta chunk accumulation, in O(1) per delta.
-//
-// The pre-fix shape copied the whole accumulated chunk array on every delta
-// (pendingText: [...(item.pendingText ?? []), delta]) — O(current-length)
-// work per delta, O(n^2) total for an item streamed in n chunks; the
-// token-flood benchmark measured ~13x late/early per-delta cost growth at
-// 10k deltas (docs/superpowers/plans/wave4-report.md, "Token-flood
-// benchmark"). The public shape — ItemModel.pendingText: string[] of every
-// chunk, in arrival order, readable at any time mid-stream — is unchanged;
-// only the cost of producing the next state changed.
-//
-// Shape: a per-item append-only backing array plus, per fold state, an
-// IMMUTABLE fixed-length view of that backing (a Proxy over an empty array
-// target that presents backing[0..length) — real Array.prototype methods
-// work on it, Array.isArray is true, and every mutating trap throws). A
-// delta appends the chunk to the backing (O(1)) and mints a fresh view one
-// longer (O(1)) — no copy of any earlier chunk ever happens.
-// The view's brand also carries the running JOINED text (`brand.text`,
-// maintained per append), so the hot readers of a live view (settleItem,
-// AgentMessageItem's per-render markdown source) get the full text in O(1)
-// instead of paying the per-element Proxy-trap cost of a join.
-//
-// Purity: the reducer's contract is immutable updates, and this preserves
-// it OBSERVATIONALLY. The one deliberate alias — new views share the
-// backing with the view they extend — is safe because a chunk is only ever
-// appended at the index one past the current view's fixed length: no view
-// already handed out can read that index (its length is frozen), so every
-// view ever returned reads the exact same bytes for its whole life. A fold
-// whose chunk history diverges from the backing's (a delta arriving on a
-// model state whose pendingText is not the backing's latest view — the
-// replay/branch/reset interleavings that would otherwise alias a future
-// push into an old view) takes copyChunkPrefix instead, detaching from the
-// shared backing entirely. So no output of applyNotification is ever
-// mutated by a later applyNotification — same inputs, same observable
-// outputs, which is the purity the file header promises.
-//
-// Why a Proxy view rather than "mutate the item's array in place": the
-// model is handed to React and tests that treat it as deeply immutable
-// (memo comparators, hydrate-vs-fold snapshots, expect(...).toEqual). A
-// bare mutable array would change observable content under an existing
-// reference after the fact, which is exactly the purity violation this
-// design exists to avoid; the view keeps each state's snapshot frozen.
-
-// Brands a view so appendChunk can recognize its own kind. Stored as a
-// non-enumerable symbol-keyed prop that ownKeys does not report, keeping
-// the view structurally identical to a plain string[] for every consumer
-// (toEqual, JSON.stringify, spread, iteration) while appendChunk still has
-// a way to check "is this one of mine" without an O(1)-breaking lookup.
-const CHUNK_VIEW = Symbol("evener.chunkView");
-
-// The per-view brand, carried ON THE PROXY TARGET as a non-enumerable
-// symbol-keyed prop (so the traps — one shared module-level handler, not a
-// fresh closure set per view — can read it with Reflect.get on the raw
-// target). `text` is the cached join of backing[0..length); it is only
-// current while the view is the backing's newest (length ===
-// backing.length), which is exactly when the O(1) readers use it.
-interface ChunkViewBrand {
-  backing: string[];
-  length: number;
-  text: string;
-}
-
-type ChunkView = string[] & { [CHUNK_VIEW]?: ChunkViewBrand };
-
-// "5" | "12" -> 5 | 12; anything else (including "length", symbols,
-// negatives, fractions) -> undefined. Canonical numeric-string form only.
-function chunkIndex(prop: string): number | undefined {
-  const n = Number(prop);
-  return Number.isInteger(n) && n >= 0 && String(n) === prop ? n : undefined;
-}
-
-// A view's brand, in ONE trap hit (a view created by chunkView answers
-// here; anything else — a plain array from tests or hydrate — returns
-// undefined). Callers that need both the backing and the length read them
-// off this single result rather than paying the get trap twice.
-function chunkBrand(chunks: string[]): ChunkViewBrand | undefined {
-  return (chunks as ChunkView)[CHUNK_VIEW];
-}
-
-// Every view shares this ONE handler (module-level, not minted per view):
-// the per-view state it needs — the brand — rides on the target, where the
-// traps read it with Reflect.get on the raw target (no closure capture, no
-// per-delta handler allocation). Every trap mirrors the exact descriptor
-// semantics of a real Array of that length so structural equality with a
-// plain string[] holds.
-const CHUNK_VIEW_HANDLER: ProxyHandler<string[]> = {
-  get(t, prop, receiver) {
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (prop === CHUNK_VIEW) return brand;
-    if (prop === "length") return brand?.length;
-    if (typeof prop === "string" && brand !== undefined) {
-      const i = chunkIndex(prop);
-      if (i !== undefined) return i < brand.length ? brand.backing[i] : undefined;
-    }
-    return Reflect.get(t, prop, receiver);
-  },
-  has(t, prop) {
-    if (prop === CHUNK_VIEW) return false;
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (typeof prop === "string" && brand !== undefined) {
-      const i = chunkIndex(prop);
-      if (i !== undefined) return i < brand.length;
-    }
-    return Reflect.has(t, prop);
-  },
-  ownKeys(t) {
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    const length = brand?.length ?? 0;
-    const keys: string[] = [];
-    for (let i = 0; i < length; i++) keys.push(String(i));
-    keys.push("length");
-    return keys;
-  },
-  getOwnPropertyDescriptor(t, prop) {
-    if (prop === CHUNK_VIEW) return undefined;
-    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
-    if (brand !== undefined) {
-      if (prop === "length") return { value: brand.length, writable: true, enumerable: false, configurable: false };
-      if (typeof prop === "string") {
-        const i = chunkIndex(prop);
-        if (i !== undefined) {
-          if (i >= brand.length) return undefined;
-          return { value: brand.backing[i], writable: true, enumerable: true, configurable: true };
-        }
-      }
-    }
-    return Reflect.getOwnPropertyDescriptor(t, prop);
-  },
-  set() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  deleteProperty() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  defineProperty() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-  preventExtensions() {
-    throw new TypeError("pendingText views are immutable (append via the reducer)");
-  },
-};
-
-// Returns a fresh immutable view of backing[0..length). `text` (the cached
-// join of that prefix) may be passed by a caller that already knows it —
-// the append fast path does, saving the O(length) recompute.
-function chunkView(backing: string[], length: number, text?: string): string[] {
-  // A zero-length view has nothing to protect; an empty plain array is
-  // cheaper than a Proxy and toEqual-identical. Also keeps RawItemView's
-  // `chunks.length === 0` and AgentMessageItem's empty-array fallback on
-  // their existing code paths.
-  if (length === 0) return [];
-  const brand: ChunkViewBrand = { backing, length, text: text ?? backing.slice(0, length).join("") };
-  const target: string[] = [];
-  // configurable (not frozen) is REQUIRED by the Proxy invariants: a
-  // non-configurable target prop would force ownKeys to report the symbol,
-  // breaking toEqual/spread/JSON structural invisibility. Configurable, the
-  // traps below may hide it — exactly like the old closure-carried brand.
-  Object.defineProperty(target, CHUNK_VIEW, { value: brand, enumerable: false, writable: true, configurable: true });
-  return new Proxy(target, CHUNK_VIEW_HANDLER);
-}
-
-// Appends `delta` to `item.pendingText`, O(1). Fast path: the item's view
-// is the newest over its backing (the plain sequential-stream case, by far
-// the common one) — push and mint. Slow path (copy-on-branch): the item's
-// view is stale (a folded state that predates later pushes on the same
-// backing) or a plain array (hydrated/test-constructed). Copying is the
-// only correct option there: pushing onto the old view's backing would
-// overwrite a chunk some other view already reads, and pushing onto a plain
-// array would mutate an array the caller may still hold.
-function appendChunk(current: string[] | undefined, delta: string): string[] {
-  if (current === undefined) return copyChunkPrefix([], delta);
-  const brand = chunkBrand(current);
-  if (brand !== undefined && brand.length === brand.backing.length) {
-    brand.backing.push(delta);
-    return chunkView(brand.backing, brand.backing.length, brand.text + delta);
-  }
-  return copyChunkPrefix(current, delta);
-}
-
-// The joined text of a pendingText value, O(1) for a live view (the brand
-// caches it per append) and a plain join for anything else (a plain array
-// from tests or hydrate). THE one read both hot consumers — settleItem's
-// finalize and AgentMessageItem's per-render markdown source — go through,
-// so the O(1) brand-cache read lives in exactly one place.
-export function pendingTextJoined(chunks: string[]): string {
-  const brand = chunkBrand(chunks);
-  if (brand !== undefined && brand.length === brand.backing.length) return brand.text;
-  return chunks.join("");
-}
-
-// Test-only white-box accessor: the backing array a view reads (undefined
-// for a plain array). The O(1) test discriminates append from copy by
-// asserting this reference is IDENTICAL across consecutive folds — the one
-// property a per-delta copy cannot fake (chunk strings are primitives, so
-// element-level Object.is survives a copy).
-export function chunkViewBackingForTests(chunks: string[]): string[] | undefined {
-  return chunkBrand(chunks)?.backing;
-}
-
-// Detached append: copies `chunks` (a plain array or a view) and appends.
-// O(length) — only ever reached when the item's chunk history has already
-// diverged from any shared backing, so the total work across a whole
-// divergent replay is still O(n) for n deltas (one copy per branch point,
-// not per delta).
-function copyChunkPrefix(chunks: string[], delta: string): string[] {
-  const backing = [...chunks, delta];
-  return chunkView(backing, backing.length);
+// joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] —
+// per-summaryIndex chunk lists) into one string per summaryIndex, dropping
+// any paragraph that joins to nothing or to whitespace alone: a summary the
+// model opened but nothing ever streamed into is not a blank paragraph on
+// screen. Every per-summary join goes through pendingTextJoined, so a live
+// chunk view answers from its brand-cached text in O(1) rather than an
+// element-by-element Proxy walk on every render. THE reading of that field
+// for the web's think block (cmd/evener-hub/frontend/src/panes/session/
+// transcript/messages/ThinkBlock.tsx) — check each host's own reasoning
+// row before assuming it reads this too; not every consumer does.
+export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
+  if (!summaries) return [];
+  return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
 }
 
 // Thread.createdAt/updatedAt are the wire's only Unix-SECONDS stamps
@@ -306,10 +113,24 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. outputImagesToItemImages
+  // below reads the opposite way, because the wire itself means the opposite:
+  // OutputImages is omitzero, so nil (never had any) sends no key, while a
+  // non-nil empty list is the hub's only way to say "these are gone" — an
+  // explicit removal (appwire/output_images.go's nil/non-nil-empty/non-empty
+  // rule). Input images carry no removal signal at all (they're what the user
+  // sent), which is why they read every empty list the same as absent.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -356,8 +177,9 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
-  if (!images || images.length === 0) return undefined;
+  if (!images) return undefined;
   return images.map((img) => ({
     src: img.url ?? img.path ?? img.name ?? img.source,
     name: img.name,
@@ -370,9 +192,10 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // exists for an item currently streaming). A reasoning item that already
 // carries flattened text (e.g. replayed from a persisted transcript on
 // hydrate) is seeded as a single chunk so display-time joining still works;
-// live in-flight chunks accumulated via item/reasoning/summaryTextDelta are
-// preserved separately by the item/completed and turn/completed handlers
-// (mergeReasoning), since they are more complete than this seed.
+// when a later settle carries no text of its own, the live in-flight chunks
+// accumulated via item/reasoning/summaryTextDelta are preserved by the
+// item/completed and turn/completed handlers (mergeReasoning). A settle that
+// DOES carry text re-seeds through here and wins — see mergeReasoning.
 const ITEM_TEXT_PRESENCE = Symbol("itemTextPresence");
 type ItemTextPresence = "omitted" | "provided";
 type InternalItemModel = ItemModel & { [ITEM_TEXT_PRESENCE]?: ItemTextPresence };
@@ -434,17 +257,39 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
-  if (item.type === "reasoning" && item.text) {
+  // `item.text !== undefined` (not truthiness): an explicitly provided empty
+  // text is authoritative for a reasoning row exactly as it is for assistant
+  // text (mergeCompletedText), so it seeds an authoritative EMPTY summary
+  // ([[""]], which display-time joining drops to no paragraph) instead of
+  // leaving reasoningSummaries unset — unset means "the settle said nothing"
+  // to mergeReasoning, which would keep stale chunks on screen.
+  if (item.type === "reasoning" && item.text !== undefined) {
     model.reasoningSummaries = [[item.text]];
   }
   return model;
 }
 
-// The model "keeps chunks": reasoningSummaries accumulated from
-// item/reasoning/summaryTextDelta are never discarded on settlement (only
-// joined for display, by the consumer). Wins over whatever wireItemToModel
-// seeded from the settled wire item's own (usually empty) text.
+// The model "keeps chunks" only when the settle carries no text of its own.
+// An item/completed (or a "full" turn/completed item) that brings its own
+// text is authoritative for a reasoning row exactly as it is for assistant
+// text (mergeCompletedText): wireItemToModel has already seeded
+// reasoningSummaries from that text (including an explicit empty text, as the
+// authoritative-empty [[""]]), and that complete flattened reasoning replaces
+// whatever the model accumulated, so a settle can correct a row the item's
+// earlier seed or live deltas got wrong. An omitted text — the wire never
+// sends an empty Text (appwire/types.go's `text,omitempty`), and the live
+// settle carries none for reasoning — has nothing to say, so the chunks
+// accumulated from item/reasoning/summaryTextDelta survive (only ever joined
+// for display, by the consumer).
+//
+// The seed, not itemTextPresence(settled), is the signal deliberately:
+// mergeCompletedText runs before this helper in every chain and copies the
+// EXISTING item's presence onto its result when the settle omitted text, so
+// by the time this runs a previously-text-bearing item's omitted settle still
+// reads "provided" — presence here would discard the very chunks an omission
+// must preserve.
 function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (settled.reasoningSummaries) return settled;
   if (existing?.reasoningSummaries) {
     return copyItemTextPresence(settled, { ...settled, reasoningSummaries: existing.reasoningSummaries });
   }
@@ -461,6 +306,21 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
     text: existing.text + (pending === undefined ? "" : pendingTextJoined(pending)),
   });
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
+}
+
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
+function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing) return settled;
+  const images = settled.images ?? existing.images;
+  const outputImages = settled.outputImages ?? existing.outputImages;
+  if (images === settled.images && outputImages === settled.outputImages) return settled;
+  // The text-presence marker is non-enumerable, so a spread drops it: carry it
+  // the way every other merge in this chain does.
+  return copyItemTextPresence(settled, {
+    ...settled,
+    ...(images === undefined ? {} : { images }),
+    ...(outputImages === undefined ? {} : { outputImages }),
+  });
 }
 
 // item/completed's settled wire item never carries observedStartedAt/
@@ -568,36 +428,172 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
 // dropped so its TurnSeparator does not survive. (zrzr)
-function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
+// Item payloads lose page ownership during retained placement. Keep the
+// original source values beside the folded turns so inherited fields do not
+// acquire the freshness of the item that carried them. The merge tree records
+// membership at the identity-match edge; reconstructing it from final IDs
+// would lose aliases and would make hydration quadratic.
+type ToolItemSource = "fresh" | "older";
+type ToolItemSourceMembership =
+  | { item: ItemModel }
+  | { left: ToolItemSourceMembership; right: ToolItemSourceMembership };
+type ToolItemProvenance = Partial<Record<ToolItemSource, ToolItemSourceMembership>>;
+type ToolItemMergeContext = { provenance: WeakMap<ItemModel, ToolItemProvenance> };
+type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
+
+function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly TurnModel[]): ToolItemMergeContext {
+  const context: ToolItemMergeContext = { provenance: new WeakMap() };
+  const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const existing = context.provenance.get(item);
+        if (existing?.[source] !== undefined) continue;
+        context.provenance.set(item, { ...existing, [source]: { item } });
+      }
+    }
+  };
+  add("fresh", fresh);
+  add("older", older);
+  return context;
+}
+
+function combineToolItemMembership(
+  left: ToolItemSourceMembership | undefined,
+  right: ToolItemSourceMembership | undefined,
+): ToolItemSourceMembership | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return { left, right };
+}
+
+function recordMergedToolItem(
+  context: ToolItemMergeContext,
+  merged: ItemModel,
+  older: ItemModel,
+  newer: ItemModel,
+): void {
+  const olderProvenance = context.provenance.get(older);
+  const newerProvenance = context.provenance.get(newer);
+  if (olderProvenance === undefined && newerProvenance === undefined) return;
+  context.provenance.set(merged, {
+    fresh: combineToolItemMembership(olderProvenance?.fresh, newerProvenance?.fresh),
+    older: combineToolItemMembership(olderProvenance?.older, newerProvenance?.older),
+  });
+}
+
+function appendToolItemCandidates(
+  membership: ToolItemSourceMembership | undefined,
+  candidates: ToolCandidates,
+  callId: string | undefined,
+): void {
+  if (membership === undefined || callId === undefined) return;
+  const stack: ToolItemSourceMembership[] = [membership];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) continue;
+    if ("item" in current) {
+      if (isToolResultId(current.item.id)) candidates.results.push(current.item);
+      else if (isToolCallId(current.item.id)) candidates.calls.push(current.item);
+      continue;
+    }
+    stack.push(current.right, current.left);
+  }
+}
+
+type ToolResultField =
+  | "output"
+  | "error"
+  | "prevalOnly"
+  | "exitCode"
+  | "completedAt"
+  | "status"
+  | "outputImages"
+  | "raw";
+
+function collectToolCandidates(
+  normalizedTurns: TurnModel[],
+  context: ToolItemMergeContext,
+  source: ToolItemSource,
+): Map<string, ToolCandidates> {
+  const candidates = new Map<string, ToolCandidates>();
+  for (const turn of normalizedTurns) {
+    for (const item of turn.items) {
+      if (!item.callId) continue;
+      const provenance = context.provenance.get(item);
+      const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
+      appendToolItemCandidates(provenance?.[source], entry, item.callId);
+      if (entry.calls.length > 0 || entry.results.length > 0) candidates.set(item.callId, entry);
+    }
+  }
+  return candidates;
+}
+
+function collectDirectToolCandidates(turns: TurnModel[]): Map<string, ToolCandidates> {
+  const candidates = new Map<string, ToolCandidates>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (!item.callId) continue;
+      const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
+      if (isToolResultId(item.id)) entry.results.push(item);
+      else if (isToolCallId(item.id)) entry.calls.push(item);
+      candidates.set(item.callId, entry);
+    }
+  }
+  return candidates;
+}
+
+function preferredToolField<K extends ToolResultField>(
+  item: ItemModel,
+  field: K,
+  ...sources: readonly (readonly ItemModel[])[]
+): ItemModel[K] | undefined {
+  for (const candidates of sources) {
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const value = candidates[index]?.[field];
+      if (value !== undefined) return value;
+    }
+  }
+  return item[field];
+}
+
+function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel[] {
   const callIds = new Set<string>();
-  const resultByCallId = new Map<string, ItemModel>();
   for (const turn of turns) {
     for (const item of turn.items) {
       if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
-      if (item.callId && isToolResultId(item.id)) resultByCallId.set(item.callId, item);
     }
   }
-  if (resultByCallId.size === 0) return turns;
+  const freshCandidates = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
+  const olderCandidates = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
+  const resultCallIds = new Set(
+    [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
+      candidates.results.length > 0 ? [callId] : [],
+    ),
+  );
+  if (resultCallIds.size === 0) return turns;
 
   const merged: TurnModel[] = [];
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
       if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
-      if (item.callId && isToolCallId(item.id)) {
-        const result = resultByCallId.get(item.callId);
-        if (result) {
+      if (item.callId && isToolCallId(item.id) && resultCallIds.has(item.callId)) {
+        const fresh = freshCandidates.get(item.callId) ?? { calls: [], results: [] };
+        const older = olderCandidates.get(item.callId) ?? { calls: [], results: [] };
+        if (fresh.results.length > 0 || older.results.length > 0) {
+          const field = <K extends ToolResultField>(name: K) =>
+            preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
           items.push(
             copyItemTextPresence(item, {
               ...item,
-              output: result.output,
-              error: result.error,
-              prevalOnly: result.prevalOnly,
-              exitCode: result.exitCode,
-              completedAt: result.completedAt,
-              status: result.status,
-              outputImages: result.outputImages ?? item.outputImages,
-              raw: result.raw ?? item.raw,
+              output: field("output"),
+              error: field("error"),
+              prevalOnly: field("prevalOnly"),
+              exitCode: field("exitCode"),
+              completedAt: field("completedAt"),
+              status: field("status"),
+              outputImages: field("outputImages"),
+              raw: field("raw"),
             }),
           );
           continue;
@@ -662,7 +658,14 @@ function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): It
   });
 }
 
-function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+// Structural, not ItemModel-only: a wire ThreadItem carries the same
+// id/transcriptKey shape, so a caller matching a live wire item against
+// folded ItemModels (the mobile store's findFoldedItem) can call this
+// directly instead of re-implementing the rule.
+export function itemIdentityMatches(
+  left: { id: string; transcriptKey?: string },
+  right: { id: string; transcriptKey?: string },
+): boolean {
   if (left.transcriptKey && right.transcriptKey) {
     return left.transcriptKey === right.transcriptKey;
   }
@@ -687,7 +690,7 @@ function orderedItems(items: ItemModel[]): ItemModel[] {
     .map(({ item }) => item);
 }
 
-function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
+function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const merged = orderedItems(older);
   for (const current of orderedItems(newer)) {
     const index = merged.findIndex((item) => itemIdentityMatches(item, current));
@@ -695,7 +698,11 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
       merged.push(current);
     } else {
       const existing = merged[index];
-      if (existing) merged[index] = mergePageItem(existing, current);
+      if (existing) {
+        const mergedItem = mergePageItem(existing, current);
+        if (context) recordMergedToolItem(context, mergedItem, existing, current);
+        merged[index] = mergedItem;
+      }
     }
   }
   return orderedItems(merged);
@@ -709,7 +716,7 @@ function turnsMatch(left: TurnModel, right: TurnModel): boolean {
   return left.id === right.id || turnsShareItemIdentity(left, right);
 }
 
-function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
+function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMergeContext): TurnModel {
   return {
     ...older,
     ...newer,
@@ -723,7 +730,7 @@ function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
       newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
         ? older.status
         : newer.status,
-    items: mergePageItems(older.items, newer.items),
+    items: mergePageItems(older.items, newer.items, context),
   };
 }
 
@@ -835,6 +842,202 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
   return mergeOlderItemPage(model, resp);
 }
 
+type TurnFragment = {
+  turn: TurnModel;
+  source: "older" | "fresh";
+  index: number;
+  order: number;
+};
+
+type TurnFragmentGroup = {
+  fragments: TurnFragment[];
+  firstOrder: number;
+};
+
+type CoalescedTurn = {
+  turn: TurnModel;
+  olderIndexes: number[];
+  freshIndexes: number[];
+};
+
+function coalesceTurnFragments(
+  older: TurnModel[],
+  fresh: TurnModel[],
+  context?: ToolItemMergeContext,
+): CoalescedTurn[] {
+  const groups: TurnFragmentGroup[] = [];
+  const add = (turn: TurnModel, source: TurnFragment["source"], index: number, order: number): void => {
+    const fragment = { turn, source, index, order } satisfies TurnFragment;
+    const matching = groups.filter((group) =>
+      group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
+    );
+    const target = matching[0];
+    if (target === undefined) {
+      groups.push({ fragments: [fragment], firstOrder: order });
+      return;
+    }
+    target.fragments.push(fragment);
+    for (const group of matching.slice(1)) target.fragments.push(...group.fragments);
+    for (const group of matching.slice(1).reverse()) {
+      const index = groups.indexOf(group);
+      if (index !== -1) groups.splice(index, 1);
+    }
+    target.fragments.sort((left, right) => left.order - right.order);
+    target.firstOrder = target.fragments[0]?.order ?? target.firstOrder;
+  };
+
+  older.forEach((turn, index) => {
+    add(turn, "older", index, index);
+  });
+  fresh.forEach((turn, index) => {
+    add(turn, "fresh", index, older.length + index);
+  });
+
+  return groups
+    .sort((left, right) => left.firstOrder - right.firstOrder)
+    .flatMap((group) => {
+      const olderFragments = group.fragments.filter((fragment) => fragment.source === "older");
+      const freshFragments = group.fragments.filter((fragment) => fragment.source === "fresh");
+      let turn: TurnModel;
+      if (olderFragments.length === 0) {
+        const firstFresh = freshFragments[0]?.turn;
+        if (firstFresh === undefined) return [];
+        turn = freshFragments
+          .slice(1)
+          .reduce((current, fragment) => mergePageTurn(current, fragment.turn, context), firstFresh);
+      } else {
+        const firstOlder = olderFragments[0]?.turn;
+        if (firstOlder === undefined) return [];
+        const mergedOlder = olderFragments
+          .slice(1)
+          .reduce((current, fragment) => mergePageTurn(current, fragment.turn, context), firstOlder);
+        turn = freshFragments.reduce(
+          (current, fragment) => mergePageTurn(current, fragment.turn, context),
+          mergedOlder,
+        );
+      }
+      return [
+        {
+          turn,
+          olderIndexes: olderFragments.map((fragment) => fragment.index),
+          freshIndexes: freshFragments.map((fragment) => fragment.index),
+        },
+      ];
+    });
+}
+
+function firstTurnPosition(turn: TurnModel): NonNullable<ItemModel["position"]> | undefined {
+  return turn.items.reduce<NonNullable<ItemModel["position"]> | undefined>((first, item) => {
+    if (item.position === undefined) return first;
+    if (first === undefined) return item.position;
+    return item.position.entry < first.entry || (item.position.entry === first.entry && item.position.item < first.item)
+      ? item.position
+      : first;
+  }, undefined);
+}
+
+function compareTurnPositions(left: TurnModel, right: TurnModel): number | undefined {
+  const leftPosition = firstTurnPosition(left);
+  const rightPosition = firstTurnPosition(right);
+  if (leftPosition === undefined || rightPosition === undefined) return undefined;
+  return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
+}
+
+function nextPositionedTurn(turns: CoalescedTurn[], start: number): CoalescedTurn | undefined {
+  return turns.slice(start).find((turn) => firstTurnPosition(turn.turn) !== undefined);
+}
+
+function weaveTurnGap(
+  fresh: CoalescedTurn[],
+  older: CoalescedTurn[],
+  preferOlderWithoutPositions: boolean,
+): CoalescedTurn[] {
+  const result: CoalescedTurn[] = [];
+  let olderIndex = 0;
+  for (const [freshIndex, freshTurn] of fresh.entries()) {
+    const freshComparisonTurn =
+      firstTurnPosition(freshTurn.turn) === undefined ? nextPositionedTurn(fresh, freshIndex) : freshTurn;
+    while (olderIndex < older.length) {
+      const olderTurn = older[olderIndex];
+      if (olderTurn === undefined) break;
+      const comparisonTurn =
+        firstTurnPosition(olderTurn.turn) === undefined ? nextPositionedTurn(older, olderIndex) : olderTurn;
+      const comparison =
+        comparisonTurn === undefined || freshComparisonTurn === undefined
+          ? undefined
+          : compareTurnPositions(comparisonTurn.turn, freshComparisonTurn.turn);
+      if (comparison !== undefined ? comparison < 0 : preferOlderWithoutPositions) {
+        result.push(olderTurn);
+        olderIndex += 1;
+        continue;
+      }
+      break;
+    }
+    result.push(freshTurn);
+  }
+  result.push(...older.slice(olderIndex));
+  return result;
+}
+
+function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnModel[] {
+  const fresh = groups
+    .filter((group) => group.freshIndexes.length > 0)
+    .sort((left, right) => (left.freshIndexes[0] ?? 0) - (right.freshIndexes[0] ?? 0));
+  const retained = groups
+    .filter((group) => group.freshIndexes.length === 0)
+    .sort((left, right) => (left.olderIndexes[0] ?? 0) - (right.olderIndexes[0] ?? 0));
+  const oldAnchorFreshIndexes = new Array<number>(olderCount).fill(-1);
+  for (const [freshIndex, group] of fresh.entries()) {
+    for (const olderIndex of group.olderIndexes) {
+      oldAnchorFreshIndexes[olderIndex] = freshIndex;
+    }
+  }
+
+  const retainedByFreshGap = new Map<number, CoalescedTurn[]>();
+  for (const group of retained) {
+    const olderIndex = group.olderIndexes[0];
+    if (olderIndex === undefined) continue;
+    // Coalesced fresh groups can consume noncontiguous older anchors. Keep the
+    // retained gaps moving forward by the greatest fresh rank seen so far,
+    // then choose the earliest later rank that remains compatible with it.
+    const previousAnchor = oldAnchorFreshIndexes
+      .slice(0, olderIndex)
+      .reduce((greatest, freshIndex) => Math.max(greatest, freshIndex), -1);
+    const nextCompatibleAnchor =
+      previousAnchor === -1
+        ? undefined
+        : oldAnchorFreshIndexes
+            .slice(olderIndex + 1)
+            .reduce<number | undefined>(
+              (earliest, freshIndex) =>
+                freshIndex > previousAnchor && (earliest === undefined || freshIndex < earliest)
+                  ? freshIndex
+                  : earliest,
+              undefined,
+            );
+    const gap = previousAnchor === -1 ? 0 : (nextCompatibleAnchor ?? fresh.length);
+    const run = retainedByFreshGap.get(gap) ?? [];
+    run.push(group);
+    retainedByFreshGap.set(gap, run);
+  }
+
+  const anchors = fresh.flatMap((group, index) => (group.olderIndexes.length > 0 ? [index] : []));
+  const boundaries = [-1, ...anchors, fresh.length];
+  const result: CoalescedTurn[] = [];
+  for (let boundaryIndex = 0; boundaryIndex < boundaries.length - 1; boundaryIndex += 1) {
+    const previousAnchor = boundaries[boundaryIndex];
+    const nextAnchor = boundaries[boundaryIndex + 1];
+    if (previousAnchor === undefined || nextAnchor === undefined) continue;
+    const gapRun = retainedByFreshGap.get(previousAnchor === -1 ? 0 : nextAnchor) ?? [];
+    result.push(...weaveTurnGap(fresh.slice(previousAnchor + 1, nextAnchor), gapRun, previousAnchor === -1));
+    if (nextAnchor < fresh.length) {
+      const anchorTurn = fresh[nextAnchor];
+      if (anchorTurn !== undefined) result.push(anchorTurn);
+    }
+  }
+  return result.map((group) => group.turn);
+}
+
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
@@ -842,22 +1045,12 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   // before that field existed re-derives it from its own thread id.
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
-  const turns: TurnModel[] = [];
-
-  for (const older of olderTurns) {
-    const index = turns.findIndex((turn) => turnsMatch(turn, older));
-    if (index === -1) turns.push(older);
-    else if (turns[index]) turns[index] = mergePageTurn(turns[index], older);
-  }
-  for (const current of model.turns) {
-    const index = turns.findIndex((turn) => turnsMatch(turn, current));
-    if (index === -1) turns.push(current);
-    else if (turns[index]) turns[index] = mergePageTurn(turns[index], current);
-  }
+  const context = createToolItemMergeContext(model.turns, olderTurns);
+  const coalesced = coalesceTurnFragments(olderTurns, model.turns, context);
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(turns),
+    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length), context),
     olderCursor: resp.nextCursor,
   };
 }
@@ -871,9 +1064,38 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
 // close — retires the card. So a client merely watching the session drops its
 // now-stale copy live off the broadcast instead of waiting for its next
 // snapshot.
-export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
+// The fields a caller adds on top of ThreadModel, and ONLY those. ThreadModel's
+// own fields are deliberately taken from ThreadModel, not from M: the reducer
+// owns and rewrites them (clearing modelRetry, restamping lastFrameAt,
+// replacing status), so a caller that intersects one to a narrower type gets
+// ThreadModel's type back rather than a contract the fold is about to break.
+//
+// The conditional distributes over a union M: a plain Omit collapses a union to
+// its members' COMMON keys and drops each member's own extras, so a caller
+// whose model is a union would lose the field it distinguishes the members by.
+type ModelExtras<M extends ThreadModel> = M extends unknown ? Omit<M, keyof ThreadModel> : never;
+
+// Re-attaches ModelExtras at the exported boundary. The fold works on the
+// concrete model M — every case spreads it, so the runtime value already
+// carries the caller's extras — but TS cannot prove a bare generic M assignable
+// to the conditional type above, so the public entry points convert here.
+function publicModel<M extends ThreadModel>(value: unknown): ThreadModel & ModelExtras<M> {
+  return value as ThreadModel & ModelExtras<M>;
+}
+
+// The fold's own form of resolvePendingEscalation: returns the concrete model,
+// which is what applyNotificationToThread composes with. The exported wrapper
+// below presents the distributive type.
+function resolvePendingEscalationModel<M extends ThreadModel>(model: M, escalationId: string): M {
   if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
+}
+
+export function resolvePendingEscalation<M extends ThreadModel>(
+  model: M,
+  escalationId: string,
+): ThreadModel & ModelExtras<M> {
+  return publicModel<M>(resolvePendingEscalationModel(model, escalationId));
 }
 
 // notificationRoutingKey extracts the identity a frame routes by, from the
@@ -1052,7 +1274,7 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // and lose the item-routing anchor for a turn that is still in flight. The
 // snapshot reduction clears its own active turn only on an id match, for the
 // same reason.
-function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
+function foldNonActiveTurnCompleted<M extends ThreadModel>(model: M, turnId: string, stamp: Turn, now: number): M {
   const existing = model.turns.find((t) => t.id === turnId);
   const settled = mergeTurnCompletionStamp(
     existing,
@@ -1121,15 +1343,240 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 // here. `message` wins when non-blank; otherwise `warning` counts when it is
 // itself a non-blank string, or an object (and not an array) whose own
 // `message` is a non-blank string. Every other shape carries no message.
+// Returned strings are bounded from their first non-whitespace content so the
+// fold does not scan and bound the selected message a second time.
 function warningMessage(params: WarningParams): string {
-  if (typeof params.message === "string" && params.message.trim() !== "") return params.message;
+  const message = boundedWarningText(params.message);
+  if (message !== undefined) return message;
   const warning = params.warning;
-  if (typeof warning === "string" && warning.trim() !== "") return warning;
+  const warningText = boundedWarningText(warning);
+  if (warningText !== undefined) return warningText;
   if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
     const nested = (warning as { message?: unknown }).message;
-    if (typeof nested === "string" && nested.trim() !== "") return nested;
+    const nestedMessage = boundedWarningText(nested);
+    if (nestedMessage !== undefined) return nestedMessage;
   }
   return "";
+}
+
+// True when value is a non-blank string — the same "is this actually content"
+// reading warningMessage above and WarningItem.tsx's renderer both take for
+// title/hint, so the raw-frame fallback below and the structured fields it
+// would otherwise duplicate never disagree about which one has something to
+// show. A type predicate so a caller narrows `unknown` in one step instead of
+// repeating the typeof/trim check to get the same narrowing. Built on
+// boundedWarningText below, which answers the same "is there content" scan
+// as part of also bounding the value — so a caller that needs both (every
+// foldWarningParams field) pays for one walk, not two.
+export function hasWarningText(value: unknown): value is string {
+  return boundedWarningText(value) !== undefined;
+}
+
+// A frame with no message anywhere is surfaced as the frame itself
+// (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
+// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
+// contract server-side). Bounded because params is unknown on the wire and
+// can carry anything; this is package-level code feeding both hosts, and
+// neither host's own display bound can be assumed to run before something
+// else reads item.text.
+export const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
+const RAW_WARNING_FRAME_MAX_OBJECT_KEYS = 50;
+const RAW_WARNING_FRAME_MAX_DEPTH = 6;
+// Total object/array entries the prune will walk across the WHOLE frame,
+// regardless of how the size is spread across depth and breadth. The
+// per-level array/key caps alone leave a gap: many small objects, each
+// individually within the array/key/depth bounds, can still sum to a huge
+// tree for JSON.stringify to walk.
+const RAW_WARNING_FRAME_MAX_NODES = 500;
+
+// Prunes a value to a small bound before it ever reaches JSON.stringify:
+// every string truncated to RAW_WARNING_FRAME_MAX_CHARS code points,
+// every array/object to its first 50 items/keys, nesting cut off at 6
+// levels, and the whole walk cut off after RAW_WARNING_FRAME_MAX_NODES
+// entries regardless of shape. Without this, JSON.stringify(params) itself
+// walks the WHOLE frame — up to the transport's 128 MiB limit — before
+// rawWarningFrame gets a chance to slice anything; bounding the input, not
+// just the output, is what keeps that walk small regardless of how large
+// or how shaped the wire frame actually is.
+// Truncates a string to maxCodePoints code points, safely (a UTF-16 slice
+// can otherwise cut a surrogate pair in half). The one primitive every
+// string bound in this file goes through — prunedForStringify's per-field
+// and per-key truncation, and boundedCodePoints below — so a wire string
+// too big to reach ItemModel unbounded is always cut on a code-point
+// boundary, never mid-pair. A fast path for the common (short) case:
+// UTF-16 length is always >= code-point count, so no huge value means no
+// work.
+// `start` lets a caller bound a WINDOW rather than always the leading
+// prefix: the string from `start` onward is what's kept, sliced in one
+// already-bounded copy (at most maxCodePoints * 2 UTF-16 units), never the
+// whole `start`-to-end remainder — boundedWarningText below relies on this to
+// stay bounded even when `start` is itself deep into a multi-megabyte
+// string.
+function boundedPrefix(s: string, maxCodePoints: number, start = 0): string {
+  const remaining = s.length - start;
+  if (remaining <= maxCodePoints) return start === 0 ? s : s.slice(start);
+  // Bound the allocation before expanding to code points: a UTF-16 window
+  // twice the code-point limit always contains at least that many code
+  // points (every code point is at most two UTF-16 units), so slicing the
+  // string first — a cheap view, no per-character array — never drops real
+  // content.
+  let bounded = s.slice(start, start + maxCodePoints * 2);
+  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
+  // as the last unit of `bounded`. Array.from would treat that lone unit as
+  // its own broken "character" rather than dropping it; strip it before
+  // expanding so the final bounded frame never ends on one.
+  const lastUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  return Array.from(bounded).slice(0, maxCodePoints).join("");
+}
+
+function prunedForStringify(value: unknown, depth: number, budget: { remaining: number }): unknown {
+  if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
+  budget.remaining -= 1;
+  if (typeof value === "string") {
+    const bounded = boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS);
+    return bounded === value ? value : `${bounded}…`;
+  }
+  if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
+    return typeof value === "object" && value !== null ? "…" : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
+  }
+  if (typeof value === "object" && value !== null) {
+    // A wire key literally named "__proto__" is a real, own, enumerable
+    // property on the parsed object (JSON.parse never invokes a setter) -
+    // assigning into a plain `{}` here would invoke Object.prototype's
+    // __proto__ setter instead of creating an own property, silently
+    // dropping that field from the pruned result. Object.create(null) has
+    // no such setter, so every assignment below is a genuine own property.
+    const pruned: Record<string, unknown> = Object.create(null);
+    // for...in still needs one full enumeration of value's own keys (so
+    // does Object.keys/Object.entries) — that step is O(keys), the same
+    // order as the JSON.parse that produced this object in the first
+    // place, so it adds no NEW asymptotic cost on top of what parsing the
+    // wire frame already paid. What for...in avoids is allocating a
+    // [key, value] PAIR per key and READING more values than survive the
+    // cap: Object.entries reads and copies every value up front, while this
+    // loop counts and breaks, reading (and copying) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS + 1 property values regardless of
+    // how many keys the object has.
+    let taken = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (taken >= RAW_WARNING_FRAME_MAX_OBJECT_KEYS || budget.remaining <= 0) break;
+      taken++;
+      // The key-count cap above bounds how many properties survive, but
+      // says nothing about how long any one property NAME is — an
+      // oversized key would otherwise ride through verbatim, the same
+      // vector the value-length bound above closes for string values.
+      const boundedKeyPrefix = boundedPrefix(key, RAW_WARNING_FRAME_MAX_CHARS);
+      let boundedKey = boundedKeyPrefix === key ? key : `${boundedKeyPrefix}…`;
+      // Two distinct keys can share their first RAW_WARNING_FRAME_MAX_CHARS
+      // code points and truncate to the identical boundedKey - assigning
+      // straight into `pruned` would then have the second key's value
+      // silently overwrite the first's. Suffix a collision with a counter
+      // until it lands on a key `pruned` doesn't already own, so both
+      // survive (as two visibly-truncated keys) instead of one vanishing.
+      for (let collision = 2; Object.hasOwn(pruned, boundedKey); collision++) {
+        boundedKey = `${boundedKeyPrefix}…#${collision}`;
+      }
+      pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
+    }
+    return pruned;
+  }
+  return value;
+}
+
+// Applied to every string a warning frame can put into the model — message,
+// title, hint, source, and the raw fallback — so a multi-megabyte value
+// anywhere in the frame can never reach ItemModel unbounded, not just via
+// the message-less fallback path.
+function boundedCodePoints(s: string): string {
+  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS);
+}
+
+// boundedCodePoints alone always keeps the LEADING RAW_WARNING_FRAME_MAX_CHARS
+// code points — a message, title, hint, or source with more than that many
+// leading blank code points followed by real content would then be stored as
+// nothing but the blank prefix, rendering as nothing to every consumer.
+// boundedWarningText answers "is there content" and bounds it starting from
+// that content in the same walk: /\S/.exec finds the first non-whitespace
+// index without copying anything, then boundedPrefix takes its own single,
+// already-bounded slice starting there, so the window kept always contains
+// the actual content instead of the padding in front of it. undefined when
+// value isn't a non-blank string at all — hasWarningText and the fold are both
+// built on this one walk, instead of each asking "is there content" and
+// "bound it" as two separate scans. The fast
+// path only skips leading padding when truncation is actually needed
+// (matching boundedPrefix's own fast path): a short value already within the
+// bound is returned unchanged, leading whitespace included, since nothing
+// about it needs to be bounded away from at all.
+function boundedWarningText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /\S/.exec(value);
+  if (match === null) return undefined;
+  if (value.length <= RAW_WARNING_FRAME_MAX_CHARS) return value;
+  return boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS, match.index);
+}
+
+function rawWarningFrame(params: WarningParams): string {
+  const json = JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES }));
+  // prunedForStringify above already keeps `json` itself small; this bound
+  // is defense-in-depth for the code-point expansion specifically.
+  return boundedCodePoints(json);
+}
+
+// The one validated shape every warning row — live with a turn, live
+// without one, and (via the item this produces) a canonical reread — reads
+// title/hint/source from. params is unknown on the wire (WarningParams'
+// `warning` field, and title/hint despite their declared string type), so
+// this is the single place that turns it into string-or-absent fields; every
+// consumer reads the result, never params directly.
+export interface WarningFold {
+  text: string;
+  title?: string;
+  hint?: string;
+  source?: string;
+}
+
+export function foldWarningParams(params: WarningParams): WarningFold {
+  const text = warningMessage(params);
+  const title = boundedWarningText(params.title);
+  const hint = boundedWarningText(params.hint);
+  const source = boundedWarningText(params.source);
+  const foldedText = text || (title !== undefined || hint !== undefined ? "" : rawWarningFrame(params));
+  return {
+    // warningMessage and rawWarningFrame already bound the selected text;
+    // keeping that result avoids rescanning it during the fold.
+    text: foldedText,
+    // Blank is absent too, not just "not a string" — hasWarningText's own
+    // reading, which every consumer must apply anyway. Normalizing it here
+    // means a future reader is never one missed hasWarningText call away
+    // from rendering blank content. Bounded for the same reason as text:
+    // an oversized title/hint/source reaching ItemModel.warning verbatim is
+    // the same class of vector rawWarningFrame closes for the fallback.
+    // These values are reused for the title/hint presence check above, so
+    // each field is scanned and bounded once.
+    title,
+    hint,
+    source,
+  };
+}
+
+// Joins whichever WarningFold parts a caller has (title/text/hint, in
+// whatever order it passes them) into one display string, filtering out
+// blanks - the one composition rule every surface that renders a fold as a
+// single string shares, so mobile's canonical projector (title, text, hint)
+// and its live row (text, hint; title stays its own field there) never
+// drift into two different join implementations.
+export function joinWarningParts(parts: readonly (string | undefined)[]): string {
+  return parts.filter(hasWarningText).join(" — ");
 }
 
 // Folds one live wire notification into model. Most notifications carry
@@ -1139,21 +1586,33 @@ function warningMessage(params: WarningParams): string {
 // model's active turn: the active turn's own settle ends the turn, while any
 // other turn's is the no-active-turn announcement path and folds through
 // foldNonActiveTurnCompleted instead.
-export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+//
+// Generic over the model: every case builds its result by spreading `model`
+// and overriding only the fields it owns, so a caller's extra fields (native's
+// MobileConversation = ThreadModel & { items }, say) survive the fold at
+// runtime AND in the return type — the caller needs no cast and no re-spread.
+// The return is ThreadModel & ModelExtras<M>, so this holds for extra fields
+// while the fields the fold rewrites keep ThreadModel's types.
+export function applyNotification<M extends ThreadModel>(
+  model: M,
+  n: AnyNotification,
+  now: number,
+): ThreadModel & ModelExtras<M> {
   const next = applyNotificationToThread(model, n, now);
-  if (!next.modelRetry || !notificationTargetsThread(n, model)) return next;
+  if (!next.modelRetry || !notificationTargetsThread(n, model)) return publicModel<M>(next);
   // A pending retry is sticky (design doc Component 1): it survives deltas
   // and other mid-grind item completions, clearing only on a turn boundary or
   // the completion of the model's own output item — otherwise a provider
   // grinding through retries looks like the indicator vanished for no reason.
   const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
   const modelOutputCompleted = n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type);
-  if (!turnBoundary && !modelOutputCompleted) return next;
-  const { modelRetry: _superseded, ...cleared } = next;
-  return cleared;
+  if (!turnBoundary && !modelOutputCompleted) return publicModel<M>(next);
+  const cleared = { ...next };
+  delete cleared.modelRetry;
+  return publicModel<M>(cleared);
 }
 
-function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
@@ -1195,23 +1654,19 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) {
-        const folded = foldNonActiveTurnCompleted(model, turnId, params.turn, now);
         // The status is authoritative and the transcript's id can be absent
         // while the session is active (a hydrate cut between turns, or the gap
         // after turn/completed at an inline boundary). A failed completion
-        // arriving then is still the session's own failure. Its status frame
-        // follows: the agent's failure exit (agent/session_lifecycle.go
+        // arriving then is still the session's own failure, but its status
+        // frame follows: the agent's failure exit (agent/session_lifecycle.go
         // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
         // "turn_failed", announced as thread/status/changed(idle) with the
-        // capabilities inline, and that frame owns the transition. Settling
-        // idle here is a redundant safety net kept pending #1432. A failed
-        // completion for a turn another turn has since superseded (the id
-        // names a different turn) is bookkeeping about the past and leaves the
-        // status. The work-clock anchor goes with the status (the invariant
-        // thread/status/changed keeps below: no live anchor at rest).
-        const failedWithoutId =
-          params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
-        return failedWithoutId ? { ...folded, status: { type: "idle" }, activeTurnStartedAt: undefined } : folded;
+        // capabilities inline, and that frame owns the transition (the
+        // work-clock anchor goes with it — the invariant thread/status/changed
+        // keeps below: no live anchor at rest). A failed completion for a turn
+        // another turn has since superseded (the id names a different turn) is
+        // bookkeeping about the past and leaves the status too.
+        return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
@@ -1219,16 +1674,18 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
-        // read/write disjoint fields off the same `old` reference, so
-        // composition order is free) — this branch has its own settled
-        // items rather than item/completed's single one, so it maps instead
-        // of a single mapItem call.
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/
+        // mergeArguments/mergeObservedTiming read/write disjoint fields off the
+        // same `old` reference, so composition order is free) — this branch has
+        // its own settled items rather than item/completed's single one, so it
+        // maps instead of a single mapItem call. "Full" replaces the item set,
+        // not every field: an image list a payload omits is kept off `old`,
+        // exactly as item/completed keeps it.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
           return mergeObservedTiming(
-            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            mergeArguments(mergeReasoning(mergeItemImages(mergeCompletedText(identitySettled, old), old), old), old),
             old,
             now,
           );
@@ -1258,13 +1715,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         activeTurnStartedAt: undefined,
         // The status is thread/status/changed's, not this frame's: a completed
         // turn is followed by one (idle at session end, active when the next
-        // turn runs inline), so it is left alone here. A failed turn gets its
-        // frame too: the agent's failure exit (agent/session_lifecycle.go
-        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
-        // "turn_failed", announced as thread/status/changed(idle), and that
-        // frame owns the transition. Settling idle here is a redundant safety
-        // net kept pending #1432.
-        status: stamp.status === "failed" && model.status.type === "active" ? { type: "idle" } : model.status,
+        // turn runs inline), and so is a failed one — the agent's failure exit
+        // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0) emits
+        // EventSessionEnd with Reason "turn_failed", announced as
+        // thread/status/changed(idle), and that frame owns the transition.
+        status: model.status,
         lastFrameAt: now,
       };
     }
@@ -1309,7 +1764,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
                 mergeArguments(
-                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  mergeReasoning(
+                    mergeItemImages(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                    old,
+                  ),
                   old,
                 ),
                 old,
@@ -1438,6 +1896,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // "nobody counted": clearing it would blank a figure the hydrate
         // legitimately gave us. Absence at HYDRATE is where unknown lives.
         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
+        // askPending is snapshot-authoritative and this is the wire refreshing
+        // it, not the reducer deriving it: the hub stamps the flag on the frame
+        // that goes with every clear of the pending set (a resolving user turn,
+        // an interrupt), so a client stops showing "question waiting" without a
+        // reread. Same absent-means-no-update rule as the count above; the ask
+        // dock's own in-tool signal is still separate and still not this.
+        askPending: n.params.askPending ?? model.askPending,
         // Capabilities are snapshot-only too, and two of them (send, queue)
         // are defined BY this very transition: the hub gates send on "no turn
         // in flight" and queue on "a turn in flight"
@@ -1547,7 +2012,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     // targeted live frame still stamps lastFrameAt like every other case here.
     case "evener/sandbox/escalation/resolved": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...resolvePendingEscalation(model, n.params.escalationId), lastFrameAt: now };
+      return { ...resolvePendingEscalationModel(model, n.params.escalationId), lastFrameAt: now };
     }
 
     // The model holds no job LIST at this layer, so the lifecycle pair leaves
@@ -1585,6 +2050,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       // it client-side; only the liveness signal survives.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
       const params = n.params;
+      const folded = foldWarningParams(params);
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
@@ -1596,9 +2062,9 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            text: folded.text,
             status: "completed",
-            warning: { source: params.source, title: params.title, hint: params.hint },
+            warning: { source: folded.source, title: folded.title, hint: folded.hint },
           };
           return { ...turn, items: [...turn.items, item] };
         }),

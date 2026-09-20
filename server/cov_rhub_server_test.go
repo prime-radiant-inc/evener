@@ -88,4 +88,23 @@ func TestMergeAppThreadItemKeepsOutputImages(t *testing.T) {
 	if len(merged.OutputImages) != 1 || merged.OutputImages[0] != replacement[0] {
 		t.Fatalf("OutputImages=%+v, want the incoming description to win", merged.OutputImages)
 	}
+
+	// An empty list is not an absent one: it is the frame saying the images are
+	// gone, and it wins. The rule itself is appwire.MergeOutputImages's, tested
+	// as a table there; this pins that this merge calls it.
+	merged = mergeAppThreadItem(existing, appwire.ThreadItem{OutputImages: []appwire.OutputImage{}})
+	if merged.OutputImages == nil || len(merged.OutputImages) != 0 {
+		t.Fatalf("OutputImages=%+v, want the frame's explicit empty list", merged.OutputImages)
+	}
+
+	// Input images: see appwire.MergeInputImages. Nothing removes them and the
+	// field is omitempty, so an empty incoming list falls back like an absent one.
+	withInput := appwire.ThreadItem{
+		Type: "userMessage", ID: "item_1",
+		Images: []appwire.InputItem{{Type: "image", Name: "in.png"}},
+	}
+	merged = mergeAppThreadItem(withInput, appwire.ThreadItem{ID: "item_1", Images: []appwire.InputItem{}})
+	if len(merged.Images) != 1 {
+		t.Fatalf("Images=%+v, want the earlier item's own kept", merged.Images)
+	}
 }

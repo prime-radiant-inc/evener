@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -65,6 +66,32 @@ func (r *recordingBroadcaster) broadcasts() []recordedBroadcast {
 	out := make([]recordedBroadcast, len(r.sent))
 	copy(out, r.sent)
 	return out
+}
+
+// assertBroadcastMethods fails t unless b recorded at least one broadcast
+// for each of methods.
+func assertBroadcastMethods(t *testing.T, b *recordingBroadcaster, methods ...string) {
+	t.Helper()
+	got := b.broadcasts()
+	found := make(map[string]bool, len(got))
+	for _, r := range got {
+		found[r.method] = true
+	}
+	for _, method := range methods {
+		if !found[method] {
+			t.Fatalf("broadcasts = %+v, want %v", got, methods)
+		}
+	}
+}
+
+// assertOneBroadcast fails t unless b recorded exactly one broadcast, for
+// method.
+func assertOneBroadcast(t *testing.T, b *recordingBroadcaster, method string) {
+	t.Helper()
+	got := b.broadcasts()
+	if len(got) != 1 || got[0].method != method {
+		t.Fatalf("broadcasts = %+v, want exactly one %s", got, method)
+	}
 }
 
 // newScriptedAdminClient builds an initialized AppWire client backed by an
@@ -388,13 +415,19 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// remote admin proxy, so both are denied deliberately rather than left
 		// undecided — an unlisted method is refused with appwire.InvalidParams
 		// and never forwarded.
-		"evener/daemon/list":     false,
-		"evener/daemon/retire":   false,
-		"evener/dirs/create":     true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":    false,
-		"evener/git/head":        true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":  true, // discovery: the host's own harnesses
-		"evener/host/request":    false,
+		"evener/daemon/list":    false,
+		"evener/daemon/retire":  false,
+		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":   false,
+		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list": true, // discovery: the host's own harnesses
+		"evener/host/request":   false,
+		// evener/host/attach is controller-LOCAL: it dials a host this
+		// controller owns through the Ensure-backed seam. There is no host to
+		// forward to until the attach succeeds, so it is never a proxied call,
+		// and a peer hub must not be able to make this hub attach a new host by
+		// forwarding it.
+		"evener/host/attach":     false,
 		"evener/instance/create": true,
 		"evener/instance/edit":   true,
 		"evener/instance/list":   true,
@@ -933,6 +966,59 @@ func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHu
 	}
 }
 
+// TestHostAdminAttachWakesBackoffSleepingFanOut pins the round-seven M1
+// finding: an EventAttached must rebind the host-notification broker
+// immediately, not after its exponential backoff (up to 30s) expires. A
+// fan-out parked in backoff while its host is offline must subscribe — pinned
+// by observing the source's host-notification subscriber count, i.e. the
+// SubscribeHostNotifications registration that starts the fresh client's
+// drain — as soon as the attach event arrives and the host reports online.
+func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		controller.fanOut(ctx, source)
+	}()
+
+	// Let the fan-out enter backoff while the host reports offline: it must
+	// not subscribe before the attach.
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The attach flips the host online and wakes the broker for it.
+	online.Store(true)
+	controller.hostAttached("m4")
+	waitForHostNotificationSubscribers(t, source, 1,
+		"the attach event did not wake the backoff-sleeping fan-out")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
 // TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
 // of the fail-closed checks: a method the proxy may never forward is refused
 // with InvalidParams even when the host is offline, without consulting the
@@ -1122,6 +1208,76 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 	for name := range readOnly {
 		if _, ok := remoteHostAdminMethods[name]; !ok {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
+		}
+	}
+	// evener/host/attach is a controller-local mutation, never a forwarded one:
+	// it must stay off both the allow-list and the forwarded-mutation set, so the
+	// proxy can never forward a dial request to a peer hub.
+	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be on the remote-admin allow-list: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
+	if _, ok := remoteHostAdminMutationMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be classified as a forwarded mutation: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
+}
+
+// sharedHostRequestMethodsPath is the checked-in list the web UI's forwarded
+// set and this proxy's allow-list are BOTH pinned to, next to this file. Its
+// header states the whole contract; the two tests that read it are
+// TestHostAdminAllowListCoversSharedForwardedMethods here and
+// hostRouting.test.ts's inventory assertion on the frontend side.
+const sharedHostRequestMethodsPath = "host_request_methods.txt"
+
+// readSharedHostRequestMethods parses the checked-in list: one method name per
+// non-empty line, '#' comments and blank lines ignored, the same shape as the
+// fuzz registry.
+func readSharedHostRequestMethods(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(sharedHostRequestMethodsPath)
+	if err != nil {
+		t.Fatalf("read %s: %v (the cross-language pin is only real while both sides can read it)", sharedHostRequestMethodsPath, err)
+	}
+	var methods []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		methods = append(methods, line)
+	}
+	return methods
+}
+
+// TestHostAdminAllowListCoversSharedForwardedMethods pins the CROSS-LANGUAGE
+// half of the proxy's boundary, which neither side's own table can see. The
+// frontend's forwarded set (hostRouting.ts's HOST_DEPENDENT_DISCOVERY_METHODS)
+// is checked in at host_request_methods.txt and asserted there against the
+// shipped set; here every method on that list must be BOTH on this allow-list
+// and actually forwarded rather than refused. That second half matters because
+// the allow-list's own test answers only to this package's policy table: a
+// maintainer who removes a method and flips its row stays green there while the
+// browser keeps forwarding a call the proxy answers with InvalidParams.
+func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
+	methods := readSharedHostRequestMethods(t)
+	if len(methods) == 0 {
+		t.Fatalf("%s names no forwarded methods, which would make this pin vacuous", sharedHostRequestMethodsPath)
+	}
+
+	controller, _, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	for _, name := range methods {
+		if _, ok := remoteHostAdminMethods[name]; !ok {
+			t.Errorf("the web UI forwards %q but the proxy's allow-list does not name it; every remote call for it is refused with InvalidParams", name)
+			continue
+		}
+		before := len(calls())
+		if _, err := controller.Request(context.Background(), appwire.HostRequestParams{Host: "m4", Method: name}); err != nil {
+			t.Errorf("forwarded method %q was refused by the proxy: %v", name, err)
+			continue
+		}
+		if after := len(calls()); after != before+1 {
+			t.Errorf("forwarded method %q was not forwarded (remote calls %d -> %d)", name, before, after)
 		}
 	}
 }
