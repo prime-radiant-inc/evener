@@ -151,6 +151,17 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     return next;
   }
 
+  function retireCatalogsAbsentFrom(
+    catalogs: Map<string, MarketplaceCatalogEntry>,
+    marketplaces: MarketplaceEntry[],
+  ): Map<string, MarketplaceCatalogEntry> {
+    const present = new Set(marketplaces.map(({ name }) => name));
+    return retireBrowseCatalogs(
+      catalogs,
+      [...catalogs.keys()].filter((name) => !present.has(name)),
+    );
+  }
+
   const lifecycle = createStoreLifecycle<MarketplacesState>(client, {
     method: "evener/marketplace/updated",
     debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
@@ -217,7 +228,13 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
           // The list, and the two fields that belong to it, go through the fence:
           // see plugins.ts's mutate for why the live answer owns all three.
-          return () => set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
+          return () =>
+            set((s) => ({
+              marketplaces: resp.marketplaces,
+              marketplacesLoading: false,
+              marketplacesError: null,
+              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+            }));
         },
         onFailure
           ? (error) => {
@@ -229,7 +246,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
                   marketplaces: applied,
                   marketplacesLoading: false,
                   marketplacesError: null,
-                  ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
+                  browseCatalogs: retireCatalogsAbsentFrom(
+                    retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
+                    applied,
+                  ),
                 }));
               };
             }
@@ -254,7 +274,12 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         // write's list.
         return readRevisioned(listRevision, () => client.request("evener/marketplace/list", {}), {
           onAnswer: (resp) => () =>
-            set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
+            set((s) => ({
+              marketplaces: resp.marketplaces,
+              marketplacesLoading: false,
+              marketplacesError: null,
+              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+            })),
           onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),
         });
       },
