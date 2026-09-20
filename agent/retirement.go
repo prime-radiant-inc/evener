@@ -166,6 +166,30 @@ func (c *RetirementController) Changed() {
 	}
 }
 
+// Retarget changes the automatic-retirement idle deadline at runtime, from the
+// Hub's archive/unarchive decision. The settled instant is preserved, so the
+// new deadline is eligibleSince+timeout: shortening fires proportionally sooner
+// — immediately when the new timeout is below already-elapsed idle time — and
+// lengthening re-arms later. Zero restores the disabled state. A negative
+// timeout is refused without touching the armed interval. Refused while a
+// retirement claim is preparing or retiring, like every other entry point; the
+// claim re-proves the deadline against the current timeout, so a stale tick
+// from the pre-Retarget timer can never claim before the new deadline.
+func (c *RetirementController) Retarget(timeout time.Duration) error {
+	if timeout < 0 {
+		return errors.New("retirement timeout must not be negative")
+	}
+	c.mu.Lock()
+	if c.phase != "resident" {
+		c.mu.Unlock()
+		return ErrRetirementUnavailable
+	}
+	c.timeout = timeout
+	c.mu.Unlock()
+	c.Changed()
+	return nil
+}
+
 // Borrow protects an in-flight read, not a subscription's lifetime. Reads may
 // enter during preparation; Commit closes their admission before draining them.
 func (c *RetirementController) Borrow() (func(), error) {

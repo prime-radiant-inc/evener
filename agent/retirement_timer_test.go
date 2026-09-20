@@ -578,3 +578,204 @@ func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 		t.Fatal("Run did not re-establish eligibility after the refusal")
 	}
 }
+
+// TestRetirementRetargetShortensArmedInterval proves a runtime deadline change
+// reaches the armed timer: Retarget(1m) on a controller armed for 1h re-arms to
+// the shortened interval from the same settled instant, and a tick at the new
+// deadline claims.
+func TestRetirementRetargetShortensArmedInterval(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Hour {
+		t.Fatalf("first settled arm = %v, want the full 1h interval", d)
+	}
+
+	if err := h.ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Minute {
+		t.Fatalf("arm after shorten = %v, want the 1m interval", d)
+	}
+	if got := h.ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("snapshot timeout = %v, want 1m", got)
+	}
+	clk.Advance(time.Minute)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetBelowElapsedIdleFiresAtOnce proves shortening below
+// already-elapsed idle time does not wait out the new interval: the re-arm
+// clamps to now and the very next tick claims.
+func TestRetirementRetargetBelowElapsedIdleFiresAtOnce(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+	clk.Advance(30 * time.Minute)
+
+	if err := h.ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	if d := clk.awaitArm(t); d != 0 {
+		t.Fatalf("arm after below-elapsed shorten = %v, want 0 (deadline already passed)", d)
+	}
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetLengthenSurvivesStaleTick proves the lengthen path:
+// the re-arm reflects the longer remaining interval, and a stale tick from the
+// pre-lengthen timer — fired before the re-arm, delivered after — retires
+// nothing because the claim re-proves the deadline against the new timeout.
+func TestRetirementRetargetLengthenSurvivesStaleTick(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Minute, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+	clk.Advance(30 * time.Second)
+
+	if err := h.ctrl.Retarget(time.Hour); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	wantRemaining := 59*time.Minute + 30*time.Second
+	if d := clk.awaitArm(t); d != wantRemaining {
+		t.Fatalf("arm after lengthen = %v, want %v", d, wantRemaining)
+	}
+	// Stale tick: the 1m timer's deadline (t0+1m) has not passed yet under the
+	// new deadline (t0+1h); the claim must re-prove and decline.
+	clk.fire(t)
+	h.assertNoCall(t, 100*time.Millisecond)
+	if d := clk.awaitArm(t); d != wantRemaining {
+		t.Fatalf("re-arm after stale tick = %v, want %v", d, wantRemaining)
+	}
+	clk.Advance(wantRemaining)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetZeroDisarms proves retargeting to zero restores the
+// disabled state: the timer disarms, no later arm or claim happens, and the
+// snapshot reports the zero timeout.
+func TestRetirementRetargetZeroDisarms(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	if err := h.ctrl.Retarget(0); err != nil {
+		t.Fatalf("Retarget(0): %v", err)
+	}
+	clk.awaitDisarm(t)
+	clk.assertNoArmWithin(t, 100*time.Millisecond)
+	if got := h.ctrl.Snapshot().Timeout; got != 0 {
+		t.Fatalf("snapshot timeout = %v, want 0", got)
+	}
+	clk.Advance(100 * time.Hour)
+	clk.fire(t) // stale in-flight tick from the disarmed timer
+	h.assertNoCall(t, 200*time.Millisecond)
+}
+
+// TestRetirementRetargetRejectsNegative proves a negative deadline is refused
+// without disturbing the armed interval: the error returns, the snapshot keeps
+// the old timeout, and the original deadline still claims.
+func TestRetirementRetargetRejectsNegative(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	if err := h.ctrl.Retarget(-time.Minute); err == nil {
+		t.Fatal("Retarget accepted a negative timeout")
+	}
+	if got := h.ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("snapshot timeout = %v, want the unchanged 1h", got)
+	}
+	clk.assertNoArmWithin(t, 100*time.Millisecond)
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetRefusesWhilePreparing proves Retarget is fenced by the
+// admission phase like every other controller entry point: a preparing or
+// retiring controller refuses, and the refusal clears once the claim settles.
+func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	claim, _, err := ctrl.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("TryClaim(true): claim=%v err=%v", claim, err)
+	}
+	if got := ctrl.Snapshot().Phase; got != "preparing" {
+		t.Fatalf("phase = %q, want preparing", got)
+	}
+	if err := ctrl.Retarget(time.Minute); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Retarget while preparing = %v, want ErrRetirementUnavailable", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("refused Retarget changed timeout to %v", got)
+	}
+	if err := ctrl.Abort(claim, "test_done"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if err := ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget after abort: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("snapshot timeout = %v, want 1m after abort", got)
+	}
+}
