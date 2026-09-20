@@ -128,6 +128,7 @@ func ckptReminderSession(t *testing.T, flag bool, cost *registry.Cost, steps []f
 // ckptReminderRun drives one input to completion with the standard tripwire.
 func ckptReminderRun(t *testing.T, sess *Session) {
 	t.Helper()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "work", nil)

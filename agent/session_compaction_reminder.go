@@ -107,11 +107,7 @@ func (s *Session) onTaskStepCompletion(remaining int) error {
 		s.mu.Unlock()
 		return nil
 	}
-	delta := requests - s.ckptWindowOpenRequests
-	if delta < 0 {
-		delta = 0
-	}
-	s.ckptRateRequests += delta
+	s.ckptRateRequests += max(requests-s.ckptWindowOpenRequests, 0)
 	s.ckptRateWindows++
 	s.ckptWindowOpenRequests = requests
 	rate := float64(s.ckptRateRequests) / float64(s.ckptRateWindows)
