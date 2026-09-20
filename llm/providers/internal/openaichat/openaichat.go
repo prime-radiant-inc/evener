@@ -103,6 +103,16 @@ func ParseChatUsage(raw map[string]any) llm.Usage {
 	if cachedRead > 0 {
 		usage.CacheReadTokens = &cachedRead
 	}
+	// DeepSeek documents prompt_cache_miss_tokens: the tokens this request
+	// wrote into the provider's automatic prompt cache (the non-cached
+	// suffix), the same incremental-write semantics Anthropic's
+	// cache_creation carries. Mapped only when the provider reports it: a
+	// payload without the field keeps CacheWriteTokens untouched, exactly as
+	// before, and a reported zero follows the CacheReadTokens rule above —
+	// not surfaced as a pointer.
+	if miss := llm.IntFromAny(raw["prompt_cache_miss_tokens"]); miss > 0 {
+		usage.CacheWriteTokens = &miss
+	}
 	// InputTokens is new uncached input; the prompt-minus-cached subtraction above
 	// is clamped at zero, so a negative value would mean that clamp regressed.
 	invariant.Hold(usage.InputTokens >= 0, "ParseChatUsage produced negative InputTokens: %d", usage.InputTokens)

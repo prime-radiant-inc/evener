@@ -3,17 +3,24 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/all" // register the real chatcompletions protocol for the live end-to-end session
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -717,4 +724,228 @@ func absF(v float64) float64 {
 		return -v
 	}
 	return v
+}
+
+// --- End-to-end over the real OpenAI chat protocol ---
+
+// The tests above drive the scripted fake adapter, so their usage never
+// crosses a provider parser. These two drive a live session over the REAL
+// chatcompletions protocol at an httptest SSE server, pinning the whole
+// path the free models ride: provider usage payload → ParseChatUsage →
+// recorded cache-write accounting → the reminder gate.
+
+// ckptChatUsage builds the per-request chat usage payload: 2000 prompt
+// tokens of which 1000 were cache hits; with miss, the non-cached 1000 are
+// reported as DeepSeek's prompt_cache_miss_tokens — the automatic cache's
+// newly written suffix. Recorded totals per request either way: input 1000,
+// cache read 1000, cache write 1000 (with the field) — gate ratio 2.4 at the
+// second boundary with 1 remaining step.
+func ckptChatUsage(miss bool) map[string]any {
+	usage := map[string]any{
+		"prompt_tokens":         2000,
+		"completion_tokens":     100,
+		"total_tokens":          2100,
+		"prompt_tokens_details": map[string]any{"cached_tokens": 1000},
+	}
+	if miss {
+		usage["prompt_cache_miss_tokens"] = 1000
+	}
+	return usage
+}
+
+// ckptChatSSEStep renders one scripted assistant response as an SSE body:
+// a single tool-call delta (full arguments in one fragment), a
+// finish_reason chunk, a usage chunk, and the DONE terminator.
+func ckptChatSSEStep(t *testing.T, callID, tool string, args map[string]any, usage map[string]any) string {
+	t.Helper()
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal tool args: %v", err)
+	}
+	chunk := func(payload map[string]any) string {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal SSE chunk: %v", err)
+		}
+		return "data: " + string(raw) + "\n\n"
+	}
+	var b strings.Builder
+	b.WriteString(chunk(map[string]any{
+		"id": "c1", "model": "gpt-5.2",
+		"choices": []any{map[string]any{
+			"index": 0,
+			"delta": map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{map[string]any{
+					"index": 0, "id": callID, "type": "function",
+					"function": map[string]any{"name": tool, "arguments": string(argsJSON)},
+				}},
+			},
+		}},
+	}))
+	b.WriteString(chunk(map[string]any{
+		"id":      "c1",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}},
+	}))
+	b.WriteString(chunk(map[string]any{"id": "c1", "choices": []any{}, "usage": usage}))
+	b.WriteString("data: [DONE]\n\n")
+	return b.String()
+}
+
+// ckptChatSteps scripts the five responses of the standard 3-task flow.
+func ckptChatSteps(t *testing.T, usage map[string]any) []string {
+	t.Helper()
+	adds := []any{}
+	for range 3 {
+		adds = append(adds, map[string]any{"type": "implement", "description": "step", "prompt": "do it"})
+	}
+	done := func(id int) map[string]any {
+		return map[string]any{"update": []any{map[string]any{"id": id, "status": "done"}}}
+	}
+	return []string{
+		ckptChatSSEStep(t, "call_add", "task_list", map[string]any{"add": adds}, usage),
+		ckptChatSSEStep(t, "call_done1", "task_list", done(1), usage),
+		ckptChatSSEStep(t, "call_done2", "task_list", done(2), usage),
+		ckptChatSSEStep(t, "call_done3", "task_list", done(3), usage),
+		ckptChatSSEStep(t, "call_final", "communicate", map[string]any{
+			"message": "done", "end_turn": true,
+			"output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+		}, usage),
+	}
+}
+
+// ckptChatServer is the scripted chat endpoint plus a request-body capture.
+type ckptChatServer struct {
+	mu     sync.Mutex
+	bodies [][]byte
+	i      int
+	steps  []string
+}
+
+// requests returns the captured request bodies in arrival order.
+func (s *ckptChatServer) requests() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][]byte{}, s.bodies...)
+}
+
+// bodyText flattens one captured request body.
+func ckptChatBodyText(body []byte) string {
+	return string(body)
+}
+
+// ckptChatSession builds the live end-to-end fixture: a chat-protocol
+// instance over an httptest SSE server, the loop's pricing injected through
+// WithResolved, and the namer's cheap route pinned off the main transport.
+func ckptChatSession(t *testing.T, miss bool) (*Session, *ckptChatServer) {
+	t.Helper()
+	cs := &ckptChatServer{steps: ckptChatSteps(t, ckptChatUsage(miss))}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Session start lists the instance's models with a bodyless GET.
+		// Leave that listing unavailable: a successful listing makes
+		// NewSession's live-model fill re-resolve the profile from the
+		// registry, which would discard the injected pricing row the gate
+		// needs (the fail-open path keeps the caller's profile), and a
+		// served list would consume one of the scripted chat steps. A 404
+		// is a permanent, non-retried error.
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		cs.mu.Lock()
+		cs.bodies = append(cs.bodies, body)
+		step := cs.steps[min(cs.i, len(cs.steps)-1)]
+		cs.i++
+		cs.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, step)
+	}))
+	t.Cleanup(srv.Close)
+
+	clientDir := t.TempDir()
+	client := registryClientAt(t, clientDir, map[string]registry.Provider{
+		"ckptchat": {
+			Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+			APIKey: "test", Transport: registry.Transport{BaseURL: srv.URL + "/v1"},
+		},
+	}, []string{"ckptchat"})
+	profile := resolveClientProfile(t, client, "ckptchat/gpt-5.2")
+	res := profile.Resolved()
+	res.Caps.Cost = ckptReminderCost()
+	profile = withTestSessionNamer(client, profile.WithResolved(res))
+
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir:           newBucket(t),
+		CheckpointReminder: true,
+		MaxSubagentDepth:   1,
+		NoProjectPrompts:   true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	drainSessionEvents(sess)
+	return sess, cs
+}
+
+// TestCheckpointReminder_ChatProtocolCacheMissPassesGate proves the free
+// models' whole path end-to-end: an OpenAI-chat session whose provider
+// reports DeepSeek's prompt_cache_miss_tokens gets the recorded cache-write
+// accounting the gate needs, passes it, and sees the reminder ride the next
+// request — the request bodies, not a scripted adapter.
+func TestCheckpointReminder_ChatProtocolCacheMissPassesGate(t *testing.T) {
+	t.Parallel()
+	sess, cs := ckptChatSession(t, true)
+	ckptReminderRun(t, sess)
+
+	bodies := cs.requests()
+	if len(bodies) != 5 {
+		t.Fatalf("chat server saw %d requests, want 5", len(bodies))
+	}
+	if strings.Contains(ckptChatBodyText(bodies[2]), ckptReminderMarker) {
+		t.Fatal("reminder rode the request after the FIRST completion; the observed rate has no basis yet")
+	}
+	third := ckptChatBodyText(bodies[3])
+	if !strings.Contains(third, ckptReminderMarker) {
+		t.Fatal("the request after the gate-passing completion carries no reminder: the chat parser did not surface prompt_cache_miss_tokens as cache-write accounting")
+	}
+	// The wire body is JSON, so the envelope's < > arrive HTML-escaped.
+	if !strings.Contains(third, "compact_context") || !strings.Contains(third, `\u003cSYSTEM-REMINDER`) {
+		t.Fatalf("reminder on the wire lacks its envelope or the compact_context name:\n%s", third)
+	}
+	if got := strings.Count(ckptChatBodyText(bodies[4]), ckptReminderMarker); got != 1 {
+		t.Fatalf("the final request carries %d reminder turns, want exactly 1 (no second injection)", got)
+	}
+}
+
+// TestCheckpointReminder_ChatProtocolWithoutCacheMissStaysSilent pins the
+// same end-to-end path without the field: a provider that reports only
+// cached_tokens (no prompt_cache_miss_tokens) leaves the rewrite cost
+// uncomputable, so the gate stays silent even with pricing present.
+func TestCheckpointReminder_ChatProtocolWithoutCacheMissStaysSilent(t *testing.T) {
+	t.Parallel()
+	sess, cs := ckptChatSession(t, false)
+	ckptReminderRun(t, sess)
+
+	bodies := cs.requests()
+	if len(bodies) != 5 {
+		t.Fatalf("chat server saw %d requests, want 5", len(bodies))
+	}
+	for i, body := range bodies {
+		if strings.Contains(ckptChatBodyText(body), ckptReminderMarker) {
+			t.Fatalf("request %d carries a reminder with no prompt_cache_miss_tokens in the provider usage, want silence", i)
+		}
+	}
+	sess.mu.Lock()
+	issued := sess.ckptRemindersIssued
+	sess.mu.Unlock()
+	if issued != 0 {
+		t.Fatalf("remindersIssued = %d with no cache-write accounting on the wire, want 0", issued)
+	}
 }

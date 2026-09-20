@@ -42,6 +42,50 @@ func TestParseChatUsageSubtractsCachedTokensFromPrompt(t *testing.T) {
 	}
 }
 
+// TestParseChatUsageMapsDeepSeekPromptCacheMissToCacheWrite pins DeepSeek's
+// documented cache-write-equivalent field: prompt_cache_miss_tokens counts the
+// tokens this request wrote into the provider's AUTOMATIC prompt cache (the
+// non-cached suffix), the same incremental-write semantics Anthropic's
+// cache_creation carries — so it is the rewrite-cost input the checkpoint
+// compaction reminder's gate consumes. Present populates CacheWriteTokens;
+// absent leaves it untouched (no invented accounting for providers that do
+// not report the field), and a reported zero is treated like the adjacent
+// CacheReadTokens line treats one: not surfaced as a pointer.
+func TestParseChatUsageMapsDeepSeekPromptCacheMissToCacheWrite(t *testing.T) {
+	usage := ParseChatUsage(map[string]any{
+		"prompt_tokens":            float64(2000),
+		"completion_tokens":        float64(100),
+		"prompt_tokens_details":    map[string]any{"cached_tokens": float64(1000)},
+		"prompt_cache_miss_tokens": float64(1000),
+	})
+	if usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 1000 {
+		t.Errorf("CacheWriteTokens = %v, want 1000 (prompt_cache_miss_tokens)", usage.CacheWriteTokens)
+	}
+	// The miss is the non-cached portion of prompt_tokens, so InputTokens and
+	// the new cache-write count agree: both are the freshly written suffix.
+	if usage.InputTokens != 1000 {
+		t.Errorf("InputTokens = %d, want 1000 (2000 prompt - 1000 cached)", usage.InputTokens)
+	}
+
+	absent := ParseChatUsage(map[string]any{
+		"prompt_tokens":         float64(1000),
+		"completion_tokens":     float64(50),
+		"prompt_tokens_details": map[string]any{"cached_tokens": float64(900)},
+	})
+	if absent.CacheWriteTokens != nil {
+		t.Errorf("CacheWriteTokens = %v for a payload without prompt_cache_miss_tokens, want nil (no invented accounting)", absent.CacheWriteTokens)
+	}
+
+	zero := ParseChatUsage(map[string]any{
+		"prompt_tokens":            float64(100),
+		"completion_tokens":        float64(10),
+		"prompt_cache_miss_tokens": float64(0),
+	})
+	if zero.CacheWriteTokens != nil {
+		t.Errorf("CacheWriteTokens = %v for a reported zero, want nil (mirrors the CacheReadTokens zero rule)", zero.CacheWriteTokens)
+	}
+}
+
 func TestInbandErrorStatusCodeAcceptsOnlyHTTPRange(t *testing.T) {
 	for _, tc := range []struct {
 		name string
