@@ -459,3 +459,43 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 		t.Fatalf("live = %#v, want the archived remote row cleared from the Live tier", live)
 	}
 }
+
+// TestValidateDecisionSourcePrefersLiveRegistry pins the round-2 medium: an
+// archive or favorite decision may name a host added at runtime, because the
+// live registry — not only the configured entries — is the authority a
+// decision source validates against. The configured entries remain the
+// fallback when no registry is threaded.
+func TestValidateDecisionSourcePrefersLiveRegistry(t *testing.T) {
+	reg, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	if err := reg.Add(hostreg.Host{Name: "side", SSH: "s.example"}); err != nil {
+		t.Fatalf("reg.Add: %v", err)
+	}
+	refuse := func(context.Context, string) (*appwire.Client, error) {
+		return nil, errors.New("test dial refused")
+	}
+	cfg := hubcore.WebConfig{RemoteHostClient: refuse, RemoteHostRegistry: reg}
+	if err := validateDecisionSource(cfg, "side"); err != nil {
+		t.Fatalf("validateDecisionSource(side) = %v, want nil: a runtime-added host is a valid decision source", err)
+	}
+	if err := validateDecisionSource(cfg, "m4"); err != nil {
+		t.Fatalf("validateDecisionSource(m4) = %v, want nil", err)
+	}
+	if err := validateDecisionSource(cfg, "ghost"); err == nil {
+		t.Fatal("validateDecisionSource(ghost) accepted, want refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+	}
+	fallback := hubcore.WebConfig{RemoteHostClient: refuse, RemoteHosts: []hostreg.Host{{Name: "m4"}}}
+	if err := validateDecisionSource(fallback, "m4"); err != nil {
+		t.Fatalf("validateDecisionSource(m4, fallback) = %v, want nil", err)
+	}
+	if err := validateDecisionSource(fallback, "side"); err == nil {
+		t.Fatal("validateDecisionSource(side, fallback) accepted, want refusal: without a registry the configured entries are the set")
+	}
+	if err := validateDecisionSource(hubcore.WebConfig{}, "m4"); err == nil {
+		t.Fatal("validateDecisionSource(m4, no client) accepted, want refusal: no remote source can exist")
+	}
+}

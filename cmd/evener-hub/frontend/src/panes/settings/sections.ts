@@ -52,6 +52,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "skills", label: "Skills", cluster: "extensions" },
   { id: "mcp", label: "MCP servers", cluster: "extensions" },
   // --- Daemon ------------------------------------------------------------
+  { id: "hosts", label: "Hosts", cluster: "daemon" },
   { id: "hub", label: "Hub", cluster: "daemon" },
   { id: "mobile", label: "Mobile app", cluster: "daemon" },
   { id: "storage", label: "Storage", cluster: "daemon" },
