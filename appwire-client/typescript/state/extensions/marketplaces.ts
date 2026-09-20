@@ -89,6 +89,34 @@ export interface MarketplacesStore
 
 export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
 
+export type MarketplaceRemovalOutcome =
+  | { kind: "applied"; marketplaces: MarketplaceEntry[] }
+  | { kind: "unavailable" }
+  | { kind: "removed" };
+
+/** Classifies a marketplace removal rejection whose side effects are known.
+ * Clone cleanup failures retain the existing applied-list/unavailable shape.
+ * A marketplaceRemoveApplied rejection is distinct: unregister and clone
+ * cleanup both completed, but the follow-up list read did not, so callers
+ * must preserve their current snapshot and reconcile without retrying. */
+export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
+  if (!(error instanceof WireError)) return undefined;
+  if (error.evenerErrorInfo === "marketplaceRemoveApplied") {
+    if (!error.data || typeof error.data !== "object") return undefined;
+    const data = error.data as { appliedUnavailable?: unknown };
+    return data.appliedUnavailable === true ? { kind: "removed" } : undefined;
+  }
+  if (error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains") return undefined;
+  if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
+  const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
+  if (data.appliedUnavailable) return { kind: "unavailable" };
+  if (!data.applied || typeof data.applied !== "object") return { kind: "unavailable" };
+  const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
+  return Array.isArray(marketplaces)
+    ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
+    : { kind: "unavailable" };
+}
+
 /** Extracts the updated list from a marketplaceUnregisteredCloneRemains
  * rejection (appwire.MarketplaceUnregisteredCloneRemainsData): the unregister
  * already applied on the hub before its clone's own removal failed, so
@@ -99,14 +127,8 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  * read to build Data.applied failed too (Data.appliedUnavailable): there is
  * then nothing to reconcile from. */
 function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains")
-    return undefined;
-  if (!error.data || typeof error.data !== "object") return undefined;
-  const data = error.data as { applied?: unknown; appliedUnavailable?: unknown };
-  if (data.appliedUnavailable) return undefined;
-  if (!data.applied || typeof data.applied !== "object") return undefined;
-  const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
-  return Array.isArray(marketplaces) ? (marketplaces as MarketplaceEntry[]) : undefined;
+  const outcome = marketplaceRemovalOutcome(error);
+  return outcome?.kind === "applied" ? outcome.marketplaces : undefined;
 }
 
 export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {

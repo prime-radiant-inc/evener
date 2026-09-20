@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
-import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
+import {
+  createMarketplacesStore,
+  MARKETPLACE_REFETCH_DEBOUNCE_MS,
+  type MarketplacesStore,
+  marketplaceRemovalOutcome,
+} from "./marketplaces";
 
 const ACME: MarketplaceEntry = { name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 };
 const LOCAL: MarketplaceEntry = { name: "local", source: { kind: "directory", path: "/opt/plugins" }, lastUpdated: 2 };
@@ -24,6 +29,47 @@ function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> 
     ...extra,
   });
 }
+
+function appliedUnavailableError(): WireError {
+  return new WireError("marketplace removed, but the updated list was unavailable", -32603, {
+    evenerErrorInfo: "marketplaceRemoveApplied",
+    appliedUnavailable: true,
+  });
+}
+
+describe("marketplaceRemovalOutcome", () => {
+  test("classifies an applied removal with an unavailable list separately from clone litter", () => {
+    expect(marketplaceRemovalOutcome(appliedUnavailableError())).toEqual({ kind: "removed" });
+  });
+
+  test("does not treat malformed or ordinary errors as an applied removal", () => {
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("marketplace removed", -32603, { evenerErrorInfo: "marketplaceRemoveApplied" }),
+      ),
+    ).toBeUndefined();
+    expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+  });
+});
+
+describe("removeMarketplace applied-but-unconfirmed", () => {
+  test("preserves the last snapshot and exposes the applied outcome", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    fake.on("evener/marketplace/remove", () => {
+      throw appliedUnavailableError();
+    });
+
+    const removal = store.getState().removeMarketplace("acme");
+    await expect(removal).rejects.toBeInstanceOf(WireError);
+    await expect(removal.catch((error) => marketplaceRemovalOutcome(error))).resolves.toEqual({ kind: "removed" });
+    expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "evener/marketplace/remove")).toHaveLength(1);
+  });
+});
 
 describe("store shape", () => {
   test("two stores share nothing: lists, catalogs and errors stay with their own instance", async () => {
