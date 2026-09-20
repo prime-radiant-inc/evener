@@ -65,7 +65,9 @@ test("the picker's body caps the browser row so the columns scroll inside the di
   expect(bodyBlock, "the picker's .body rule must exist").toBeTruthy();
   expect(bodyBlock?.[1] ?? "").toMatch(/display:\s*flex/);
   expect(bodyBlock?.[1] ?? "").toMatch(/flex-direction:\s*column/);
-  expect(bodyBlock?.[1] ?? "").toMatch(/overflow:\s*hidden/);
+  // auto, not hidden: a viewport too short for the 340px row floor must
+  // scroll the body (the row's min-height wins over the shrink), not clip it.
+  expect(bodyBlock?.[1] ?? "").toMatch(/overflow:\s*auto/);
 
   const browserBlock = css.match(/\.browser\s*\{([^}]*)\}/);
   expect(browserBlock, "the .browser rule must exist").toBeTruthy();
@@ -75,4 +77,12 @@ test("the picker's body caps the browser row so the columns scroll inside the di
   const browseBlock = css.match(/\.browse\s*\{([^}]*)\}/);
   expect(browseBlock, "the .browse rule must exist").toBeTruthy();
   expect(browseBlock?.[1] ?? "").toMatch(/overflow-y:\s*auto/);
+
+  // On phones the browser column stacks, so the recents block must be able to
+  // shrink below its content (min-height 0) and scroll inside the dialog
+  // instead of forcing its full content height and collapsing the browse pane.
+  const mobileRecentsBlock = css.match(/@media[^{]*\{[\s\S]*?\.recents\s*\{([^}]*)\}/);
+  expect(mobileRecentsBlock, "the phone-layout .recents rule must exist").toBeTruthy();
+  expect(mobileRecentsBlock?.[1] ?? "").toMatch(/flex:\s*0 1 auto/);
+  expect(mobileRecentsBlock?.[1] ?? "").toMatch(/min-height:\s*0/);
 });

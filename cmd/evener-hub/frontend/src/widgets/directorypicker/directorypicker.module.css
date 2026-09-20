@@ -13,12 +13,12 @@
    * panel's height cap each column scrolls inside the row (the .recents and
    * .browse rules below), so a full 15-item recents list (~930px of
    * single-line rows) cannot make the whole body scroll while the sidebar's
-   * own scrollbar never engages. overflow:hidden overrides the dialog
-   * chassis's overflow:auto; a viewport too short for the 340px row floor
-   * still scrolls here because the row's min-height wins over the shrink. */
+   * own scrollbar never engages. A viewport too short for the 340px row
+   * floor scrolls the body itself - auto, not hidden, so that fallback
+   * stays reachable instead of clipping the row. */
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .browser {
@@ -228,6 +228,10 @@
     width: auto;
     border-right: 0;
     border-top: 1px solid var(--edge);
+    /* Shrink below content and scroll (overflow-y:auto above) instead of
+     * forcing the full list height and collapsing the browse pane above. */
+    flex: 0 1 auto;
+    min-height: 0;
   }
   .browse {
     padding: var(--space-3);
