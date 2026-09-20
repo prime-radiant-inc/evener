@@ -77,8 +77,9 @@ export interface MarketplacesStore
    * retired (the notification names nothing) and the list is refetched after
    * a short debounce. Idempotent. */
   start(): void;
-  /** Back to the initial state; requests still in flight publish nothing when
-   * they land. The notification subscription, if started, stays. */
+  /** Back to the reset state; publication version survives while requests
+   * still in flight publish nothing when they land. The notification
+   * subscription, if started, stays. */
   reset(): void;
   /** Terminal: unsubscribes, cancels a pending refetch and drops every reply
    * still in flight, so subscribers hear nothing more - for a host whose
