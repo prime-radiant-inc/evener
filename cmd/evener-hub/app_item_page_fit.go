@@ -85,7 +85,7 @@ func packThreadReadItemCandidates(
 			Thread:      appwire.Thread{Turns: turns},
 			OlderCursor: olderCursor,
 		}
-	}, requestedLimit...)
+	}, threadReadContentSize, requestedLimit...)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -105,7 +105,7 @@ func packThreadTurnsItemCandidates(
 			Data:       turns,
 			NextCursor: olderCursor,
 		}
-	}, requestedLimit...)
+	}, threadTurnsListContentSize, requestedLimit...)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -119,6 +119,15 @@ func packItemCandidates[T any](
 	result transcriptItemCandidateResult,
 	enrich func(T) (T, error),
 	build func([]appwire.Turn, string) T,
+	// contentSize reports the encoded size of the transcript content the packer
+	// shrinks by dropping items — the turns the response carries, not the fixed
+	// envelope (delegate statuses, task aggregates) a thread/read enrich grafts
+	// around them. The soft limit exists to bound what a page costs to
+	// transmit and to shrink when too large; an envelope no drop can remove
+	// must not drive the decision, or every window of a delegate-heavy session
+	// strips to a single item and the hub re-marshals the whole envelope once
+	// per dropped item on every click.
+	contentSize func(T) (int, error),
 	requestedLimit ...int,
 ) (T, error) {
 	var zero T
@@ -189,7 +198,7 @@ func packItemCandidates[T any](
 				return zero, err
 			}
 		}
-		size, marshalErr := packedResultSizeValue(response)
+		size, marshalErr := contentSize(response)
 		if marshalErr != nil {
 			return zero, marshalErr
 		}
@@ -198,6 +207,22 @@ func packItemCandidates[T any](
 		}
 		selectedStart++
 	}
+}
+
+func threadReadContentSize(response appwire.ThreadReadResponse) (int, error) {
+	encoded, err := json.Marshal(response.Thread.Turns)
+	if err != nil {
+		return 0, fmt.Errorf("marshal transcript item turns: %w", err)
+	}
+	return len(encoded), nil
+}
+
+func threadTurnsListContentSize(response appwire.ThreadTurnsListResponse) (int, error) {
+	encoded, err := json.Marshal(response.Data)
+	if err != nil {
+		return 0, fmt.Errorf("marshal transcript item turns: %w", err)
+	}
+	return len(encoded), nil
 }
 
 func validateSourceItemContinuation(result transcriptItemCandidateResult, candidates []appitempaging.TranscriptItemCandidate) error {
