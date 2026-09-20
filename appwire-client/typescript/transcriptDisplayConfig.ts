@@ -367,11 +367,8 @@ export function toWireDefault(value: HubTranscriptDisplayDefault): WireDefault {
   return { revision: value.revision, config: toWireConfig(value.config) };
 }
 
-/** Validates the keys this build knows (revision, config) and ignores any
- * other the hub sends - the same forward-compatible posture
- * fromWirePatchResponse's own {layout, revision, config} check already
- * takes, so a future hub field is accepted here too, not just on a PATCH
- * reply. */
+/** Validates revision and config while ignoring unknown wrapper fields,
+ * so additional hub metadata does not invalidate a usable default. */
 export function fromWireDefault(value: unknown): HubTranscriptDisplayDefault | undefined {
   if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
     return undefined;
