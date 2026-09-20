@@ -311,7 +311,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	// recordTurn retains the live pair before an ordinary transcript write
 	// reports a clean rollback. Read the transcript while attentionMu excludes
 	// another append, and hold it through state publication so this boundary
-	// sees only recorded or adopted turns.
+	// sees only recorded or adopted turns. The read parses the whole
+	// transcript file under attentionMu — the door every append and fold
+	// publication passes — so a large transcript stalls appends for the
+	// parse duration. The path is rare (only a rejected interrupt marker)
+	// and matches the existing convention (snapshotDelegateContext reads
+	// under the same door); if it ever matters in practice, derive the
+	// decisive tail from the last compaction anchor (retainedFrom already
+	// identifies it) instead of the full file.
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
 	retained := 0
@@ -336,16 +343,10 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	s.mu.Lock()
 	divergence := s.fork.divergence
 	if restoredHistory != nil {
-		// The transcript-derived history starts at its last compaction marker,
-		// and orphan repair may splice synthetic results before the fork
-		// boundary. Map the immutable full-transcript divergence into those
-		// resumed-history coordinates before consulting journal provenance.
-		divergence -= retained
-		for _, idx := range restoredRepairInsertions {
-			if idx <= divergence-1 {
-				divergence++
-			}
-		}
+		// Map the immutable full-transcript divergence into the resumed
+		// history's coordinates (retained window plus repair insertions)
+		// before consulting journal provenance.
+		divergence = mapDivergenceThroughResumedHistory(divergence, retained, restoredRepairInsertions)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
@@ -360,7 +361,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		return
 	}
 	state := deriveRestoredState(restoredHistory, divergence, origins)
-	pending, _ := deriveRestoredAskPending(restoredHistory, divergence, origins)
+	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {
 		// The settlement is atomic with the state publication: a no-op
@@ -370,6 +371,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		s.askPending = pending
 	}
 	release(transitioned, turnMS)
+	if isAskRound && len(pending) == 0 {
+		// Mirror the restore path's warning: an ask round the transcript
+		// says was pending, but none of whose questions parsed, leaves the
+		// pending-ask holds inert. An operator hitting that on the
+		// interrupt-rejection path deserves the same diagnostic a restart
+		// emits (session_init.go), and neither may ever fail the boundary.
+		s.emit(events.EventWarning, events.WarningData{Message: "interrupt boundary: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
+	}
 }
 
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and

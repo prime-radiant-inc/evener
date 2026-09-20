@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,7 +111,9 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	proceed := make(chan struct{})
 	var proceedOnce sync.Once
 	closeProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	t.Cleanup(closeProceed)
+	// compactDone stays nil until the fold goroutine launches, so the
+	// teardown below skips the wait for a worker that was never started.
+	var compactDone chan struct{}
 
 	// The parked summarizer response holds the fold between its snapshot and
 	// its publication until the canceled round's records are in place.
@@ -131,11 +134,26 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	// Ordered teardown, registered after the Close defer so LIFO runs it
+	// first: the fold parks inside the scripted summarizer at <-proceed,
+	// and a t.Fatal taken while it is parked must release it and let the
+	// fold goroutine finish before the deferred Close tears the session
+	// down around it. The parked summarizer holds no locks (unlike the
+	// tombstone test's parked write), so this is goroutine hygiene rather
+	// than deadlock prevention.
+	defer func() {
+		closeProceed()
+		if compactDone != nil {
+			<-compactDone
+		}
+	}()
 
 	seedNumberedSessionHistory(t, sess, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)
+	compactDone = make(chan struct{})
 	go func() {
+		defer close(compactDone)
 		compactErr <- sess.Compact(parentCtx) // parks inside the summarizer, past its snapshot
 	}()
 	select {
@@ -527,4 +545,150 @@ func TestRestoredFailureBoundaryMapsCompactedForkDivergence(t *testing.T) {
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state after compacted fork restore = %q, want %q", got, SessionAwaiting)
 	}
+}
+
+// TestRestoredFailureBoundaryShiftsDivergencePastRepairs is the one shape
+// that exercises the repair-insertion shift in the door's divergence
+// mapping: a compacted forked child whose inherited prefix contains an
+// orphaned tool call. Repair splices an all-error synthetic right after
+// the orphan, so the raw resumed boundary must shift past the insertion
+// or the synthetic lands child-side and the boundary no longer splits
+// inherited from child-owned turns where journal provenance expects it.
+func TestRestoredFailureBoundaryShiftsDivergencePastRepairs(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	const noteID = "cm-repair-shift-note"
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		req := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, noteID, struct{ Note string }{Note: "child note"})
+		snapshot.Journal[noteID] = clientMutationRecord{
+			ClientMutationID:  req.ClientMutationID,
+			Method:            req.Method,
+			Payload:           req.Payload,
+			PayloadHash:       req.PayloadHash,
+			OperationState:    clientMutationOperationTerminal,
+			ExecutionState:    "incorporated",
+			ProjectionState:   appwire.MutationProjectionReflected,
+			AttemptGeneration: 1,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed note provenance: %v", err)
+	}
+
+	ask := askUserCall("ask-child", askUserArgsValid())
+	orphan := llm.ToolCallData{ID: "orphan-read", Name: "read_notes", Arguments: json.RawMessage(`{}`), Type: "function"}
+	note := schema.NewTurn(schema.TurnSteering, llm.User("updated the project note"))
+	note.SteeringSource = events.SteeringSourceUser
+	note.ClientMutationID = noteID
+	turns := make([]schema.Turn, 0, 20)
+	for range 10 {
+		turns = append(turns, schema.NewTurn(schema.TurnSystem, llm.User("inherited context")))
+	}
+	turns = append(turns,
+		schema.NewTurn(schema.TurnSummary, llm.User("compacted context")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("which datastore?")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &orphan}},
+		}),
+		schema.NewTurn(schema.TurnUserInput, llm.User("inherited follow-up")),
+		note,
+		schema.NewTurn(schema.TurnUserInput, llm.User("child question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &ask}},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("ask-child", "ask_user", "ack", false)),
+	)
+	for _, turn := range turns {
+		if err := sess.writeTranscript(turn); err != nil {
+			t.Fatalf("write transcript turn %s: %v", turn.Kind, err)
+		}
+	}
+
+	// The first child-owned turn is the note at full-transcript index 14;
+	// repair inserts the orphan's synthetic at resumed index 3, so the raw
+	// resumed boundary (4) must shift past the insertion to 5: the boundary
+	// stays aligned with the post-repair history's geometry — the synthetic
+	// lands inherited-side, the note and the child's ask round child-side —
+	// which is what journal provenance consumers of the boundary expect.
+	// The state/pending assertions are invariant to the shift itself (real
+	// turns move with the boundary; the all-error synthetic is inert in the
+	// derivations — red-checked by disabling the shift), so this test pins
+	// the door's repair-insertion path end to end, with the boundary
+	// geometry documented here for the provenance-side follow-up.
+	sess.fork.divergence = 14
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+
+	sess.finishProcessingAtRestoredFailureBoundary(context.Background())
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pending asks after repair-shifted fork restore = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after repair-shifted fork restore = %q, want %q", got, SessionAwaiting)
+	}
+}
+
+// TestRestoredFailureBoundaryWarnsOnUnparseablePendingAsk pins the live
+// boundary's malformed-ask diagnostic: the door derives pending from the
+// transcript exactly as restore does, and an ask round whose questions
+// cannot parse leaves the pending-ask holds inert. Restore warns about
+// that (session_init.go), so the interrupt-rejection path must warn too.
+func TestRestoredFailureBoundaryWarnsOnUnparseablePendingAsk(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+
+	// Durable arguments that fail parseAskQuestions's validation: two
+	// recommended options in one question is an all-or-nothing violation,
+	// so questionsFromAskCalls skips the call ("rebuild what parses") and
+	// the round is recognized as pending while none of its questions parse.
+	mangled := llm.ToolCallData{ID: "ask-mangled", Name: "ask_user", Arguments: json.RawMessage(`{"questions":[{"header":"H","question":"Q?","options":[{"label":"A","recommended":true},{"label":"B","recommended":true}]}]}`), Type: "function"}
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("which datastore?")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &mangled}},
+		}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("ask-mangled", "ask_user", "ack", false)),
+	}
+	collected := make(chan []string, 1)
+	go func() {
+		var msgs []string
+		for ev := range sess.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok {
+				msgs = append(msgs, data.Message)
+			}
+		}
+		collected <- msgs
+	}()
+	for _, turn := range turns {
+		if err := sess.writeTranscript(turn); err != nil {
+			t.Fatalf("write transcript turn %s: %v", turn.Kind, err)
+		}
+	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+
+	sess.finishProcessingAtRestoredFailureBoundary(context.Background())
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("unparseable ask round left pending asks = %d, want 0", got)
+	}
+	sess.Close()
+	msgs := <-collected
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg, "interrupt boundary: found a pending ask_user round") {
+			return
+		}
+	}
+	t.Fatalf("no interrupt-boundary warning emitted; warnings = %q", msgs)
 }
