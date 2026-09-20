@@ -247,6 +247,26 @@ func requireContainerPlatform(t *testing.T) {
 	}
 }
 
+// redirectUserCacheDirForTest points os.UserCacheDir at a directory this test owns
+// (HOME and XDG_CACHE_HOME), mirroring cmd/evener's reclaim tests. It exists
+// because the crashed-scratch sweep also walks the user cache base: without it a
+// test that runs the sweep would read — and delete from — the machine's real cache
+// and temp, which AGENTS.md's determinism rule forbids.
+func redirectUserCacheDirForTest(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatalf("create cache base: %v", err)
+	}
+	return cache
+}
+
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/developing-evener/environment.md
 // documents EVENER_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
 // session's spawned commands must see EVENER_SCRATCH_DIR and TMPDIR too, not
@@ -341,6 +361,11 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 // path: once the container is old enough, the crashed-scratch sweep collects it.
 func TestCommandEnvironment_UnsandboxedTmpContainerRetainedAtClose(t *testing.T) {
 	requireContainerPlatform(t)
+	// Confine BOTH base sets the sweep walks — the scratch allocation bases come
+	// from TMPDIR and the user cache dir — so this test neither reads nor deletes
+	// the machine's real temp/cache. The world base is confined by worldTempForTest.
+	t.Setenv("TMPDIR", t.TempDir())
+	redirectUserCacheDirForTest(t)
 	worldTempForTest(t)
 	worktree := t.TempDir()
 	env := NewLocalExecutionEnvironment(worktree)

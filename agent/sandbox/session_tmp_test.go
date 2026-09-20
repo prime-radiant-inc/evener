@@ -260,6 +260,11 @@ func TestSessionTmpPrivilegeDropE2E(t *testing.T) {
 	if os.Getenv("EVENER_TMPDIR_PRIVDROP_E2E") != "1" {
 		t.Skip("set EVENER_TMPDIR_PRIVDROP_E2E=1 to run the privilege-drop end-to-end check")
 	}
+	// The sweep this test runs walks the scratch allocation bases as well as the
+	// world temp bases, so both are confined: the scratch bases to a path that does
+	// not exist, the world base to the fixture below. Without this the run would
+	// read and delete the machine's real temp/cache.
+	isolateScratchBases(t)
 	if !hostHasWorldUsableTempBase() {
 		t.Skipf("this host offers no world-usable host temp base (%v)", worldTempBases)
 	}
@@ -312,11 +317,13 @@ func TestSessionTmpPrivilegeDropE2E(t *testing.T) {
 	// acquiring our lease inside someone else's directory and removing it
 	// recursively would destroy files we do not own.
 	//
-	// The base is hermetically this test's own rather than the machine's /tmp — a
-	// sweep over the real shared temp would also pick up unrelated residue, and this
-	// check is about ownership, not about the host. It is made traversable (0711)
-	// and its child world-writable (1777) so another uid can plant a directory in
-	// it, exactly as it could in /tmp.
+	// The sweep's base set is confined to this fixture — the scratch bases are
+	// isolated above and the world base is this one — so the run cannot pick up
+	// unrelated residue or touch the machine's real temp: this check is about
+	// ownership, not about the host. The fixture root lives directly under /tmp
+	// because an arbitrary uid has to be able to reach it, and it is made
+	// traversable (0711) with a world-writable child (1777) so another uid can plant
+	// a directory in it, exactly as it could in /tmp.
 	// Directly under the world-usable /tmp rather than t.TempDir(): the test
 	// process's own temp path sits under a 0700 directory, which another uid cannot
 	// even traverse, so a fixture there would be unreachable for the very reason
