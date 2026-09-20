@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { FakeClient } from "./testing/fakeClient";
 import {
@@ -14,9 +15,10 @@ import {
   type TranscriptDisplayStore,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
-import type { AnyNotification, TranscriptDisplayDefaults } from "./types.gen";
+import type { AnyNotification, TranscriptDisplayDefaults, TranscriptDisplayPatchResponse } from "./types.gen";
 
 const getMethod = "evener/settings/transcriptDisplay/get";
+const patchMethod = "evener/settings/transcriptDisplay/patch";
 const changedMethod = "evener/settings/transcriptDisplay/changed";
 
 const desktopConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
@@ -31,6 +33,10 @@ function serving(desktop: HubTranscriptDisplayDefault, mobile: HubTranscriptDisp
   const client = new FakeClient("ready");
   client.on(getMethod, () => ({ desktop: toWireDefault(desktop), mobile: toWireDefault(mobile) }));
   return client;
+}
+
+function patchAnswer(layout: "desktop" | "mobile", value: HubTranscriptDisplayDefault): TranscriptDisplayPatchResponse {
+  return { layout, revision: value.revision, config: toWireConfig(value.config) };
 }
 
 async function readyStore(client: FakeClient): Promise<TranscriptDisplayStore> {
@@ -517,5 +523,410 @@ describe("lifecycle fencing", () => {
       hubLoading: false,
       hub: { desktop: hubDefault(3, desktopConfig), mobile: hubDefault(2, mobileConfig) },
     });
+  });
+});
+describe("the direct write", () => {
+  test("an atomic first read clears only contradicted stranded previews", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("desktop", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+
+    store.endReadyGeneration();
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, proposed)),
+      mobile: toWireDefault(hubDefault(3, desktopConfig)),
+    }));
+    store.beginReadyGeneration();
+    const publications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
+    const partialPublications: ReturnType<TranscriptDisplayStore["getState"]>[] = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.loaded) publications.push(state);
+      if (state.hubLoading && state.hub.desktop?.config.level === "tools") partialPublications.push(state);
+    });
+    await store.getState().refreshHubDefaults();
+
+    expect(partialPublications).toHaveLength(0);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]).toMatchObject({
+      loaded: true,
+      hub: {
+        desktop: hubDefault(3, proposed),
+        mobile: hubDefault(3, desktopConfig),
+      },
+      drafts: { desktop: proposed },
+    });
+    expect(publications[0].drafts.mobile).toBeUndefined();
+    unsubscribe();
+    reply.resolve({ layout: "desktop", revision: 3, config: toWireConfig(proposed) });
+    await write;
+  });
+
+  test("previews the draft, then commits the canonical response and clears it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(3, proposed));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(client.calls.at(-1)?.params).toEqual({
+      layout: "mobile",
+      expectedRevision: 2,
+      config: toWireConfig(proposed),
+    });
+  });
+
+  test("a fenced reply resolves with the current value instead of rejecting", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+  });
+
+  test("a fenced conflict resolves with the retained current value and applies nothing", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.reject(
+      new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(9, desktopConfig)),
+      }),
+    );
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+  });
+
+  test("dispose fences a direct reply and resolves with the retained current value", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.dispose();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+  });
+
+  test("a lost revision race adopts the canonical current and reports the conflict on the layout", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(4, desktopConfig)),
+      });
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(store.getState().hubErrors.mobile).toBe("revision conflict");
+  });
+
+  test("a conflict's canonical current with extra keys still decodes", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: { ...toWireDefault(hubDefault(4, desktopConfig)), futureField: "ignored" },
+      });
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+  });
+
+  test("a post-apply durable failure applies the carried canonical state and reports success", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("sync transcript display state: boom", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        applied: { ...toWireDefault(hubDefault(4, mobileConfig)), futureField: "ignored" },
+      });
+    });
+    const applied = await store.getState().patchHubDefault("mobile", proposed);
+    expect(applied).toEqual(hubDefault(4, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(store.getState().hubErrors.mobile).toBeUndefined();
+    expect(store.getState().hubError).toBeNull();
+  });
+
+  test("a post-apply payload that loses to a newer notification returns the newer value", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      client.emitNotification({
+        method: changedMethod,
+        params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
+      });
+      throw new WireError("sync transcript display state: boom", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        applied: toWireDefault(hubDefault(3, proposed)),
+      });
+    });
+    const applied = await store.getState().patchHubDefault("mobile", proposed);
+    expect(applied).toEqual(hubDefault(7, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("an internal PATCH failure reconciles the canonical state through GET", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new WireError("after rename failed", -32603, { evenerErrorInfo: "internal" });
+    });
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    }));
+    const reconciled = await store.getState().patchHubDefault("mobile", proposed);
+    expect(reconciled).toEqual(hubDefault(3, proposed));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    expect(client.calls.map((call) => call.method)).toEqual([getMethod, patchMethod, getMethod]);
+  });
+
+  test("concurrent internal failures share their authoritative GET", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const initialReads = client.calls.filter((call) => call.method === getMethod).length;
+    const read = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => read.promise);
+    client.on(patchMethod, () => {
+      throw new WireError("after rename failed", -32603, { evenerErrorInfo: "internal" });
+    });
+    const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
+    const mobileWrite = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() =>
+      expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(initialReads + 1),
+    );
+    const canonical = {
+      desktop: toWireDefault(hubDefault(4, proposed)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    };
+    read.resolve(canonical);
+    await expect(desktopWrite).resolves.toEqual(hubDefault(4, proposed));
+    await expect(mobileWrite).resolves.toEqual(hubDefault(3, proposed));
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(initialReads + 1);
+  });
+
+  test("a transient disconnect keeps the preview and identity detach drops it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+    store.detachHub();
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(1, proposed)),
+      mobile: toWireDefault(hubDefault(1, mobileConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(1, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig));
+  });
+
+  test("an unsupported transition drops the preview with the hub identity", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => new Promise<TranscriptDisplayPatchResponse>(() => {}));
+    void store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.setSupport("unsupported");
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a support flap retires the write and reloads before its fenced reply settles", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    store.setSupport("unsupported");
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(1, desktopConfig)),
+      mobile: toWireDefault(hubDefault(1, mobileConfig)),
+    }));
+    store.setSupport("supported");
+    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig)));
+
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(1, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig));
+  });
+
+  test("a reply the hub has already moved past resolves with the newer value", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
+    });
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(7, mobileConfig));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a newer confirmed payload that contradicts a stranded preview clears it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(4, desktopConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a new generation's lower-revision read still invalidates a contradicted preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(7, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(8, proposed)));
+    expect(await write).toEqual(hubDefault(7, mobileConfig));
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, mobileConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a new generation's equal-revision read still invalidates a contradicted preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, desktopConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a newer confirmed payload matching a stranded preview leaves it for the host", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await write).toEqual(hubDefault(2, mobileConfig));
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+  });
+
+  test("a malformed success changes no hub state, reports it, and clears the preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => ({ layout: "mobile", revision: 9, config: toWireConfig(proposed) }));
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow(/malformed/);
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().hubErrors.mobile).toMatch(/malformed/);
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a PATCH reply with extra keys still decodes", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => ({
+      ...patchAnswer("mobile", hubDefault(3, proposed)),
+      futureField: "ignored",
+    }));
+    const result = await store.getState().patchHubDefault("mobile", proposed);
+    expect(result).toEqual(hubDefault(3, proposed));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+  });
+
+  test("refuses without a confirmed, supported hub", async () => {
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow(/unavailable/);
+    expect(store.getState().hubErrors.mobile).toMatch(/unavailable/);
+  });
+
+  test("does not dispatch a PATCH after a preview subscriber retires the store", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    let retired = false;
+    store.subscribe((state) => {
+      if (!retired && state.drafts.mobile !== undefined) {
+        retired = true;
+        store.dispose();
+      }
+    });
+    const result = await store.getState().patchHubDefault("mobile", proposed);
+    expect(result).toEqual(hubDefault(2, mobileConfig));
+    expect(client.calls.some((call) => call.method === patchMethod)).toBe(false);
   });
 });
