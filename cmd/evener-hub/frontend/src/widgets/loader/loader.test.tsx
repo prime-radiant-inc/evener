@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Loader } from "./index";
+import styles from "./loader.module.css";
 
 afterEach(() => {
   cleanup();
@@ -120,4 +121,60 @@ test("its CSS module gates all animation behind prefers-reduced-motion: no-prefe
 
   const insideMediaBlock = css.slice(blockOpen, blockEnd);
   expect(insideMediaBlock).toMatch(/@keyframes|animation\s*:/);
+});
+
+// --- rail mode: the transcript's icon-rail seating ---------------------------
+// The content-free "Thinking…" row (ThinkBlock) seats the pulsing grid in the
+// same rail column the live/settled rows seat their bulb glyph in. jsdom
+// cannot measure the seat, so the geometry is pinned at the declaration
+// level - the same source-reading technique as the motion test above.
+
+test("rail sets the variant class on the row; the default loader does not", () => {
+  const { unmount } = render(<Loader label="Thinking…" rail />);
+  expect(screen.getByRole("status").className).toContain(styles.rail);
+  unmount();
+  render(<Loader label="Thinking…" />);
+  expect(screen.getByRole("status").className).not.toContain(styles.rail);
+});
+
+test("rail seats the grid in the standard icon slot: avatar-size, centred, speaker-gap net of the row gap", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "loader.module.css"), "utf8");
+  // The slot is the avatar column, and the 15px grid centres inside it.
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*width:\s*var\(--speaker-avatar-size\)/);
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*justify-content:\s*center/);
+  // The row's own --space-2 gap also lands between the grid and the label,
+  // so the grid's margin-right is the speaker-gap MINUS that gap - the same
+  // arithmetic ToolRow's .rowIcon uses to seat its row's text at the content
+  // edge (see toolcallitem.module.css).
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
+});
+
+test("the rail gutter pull exists only inside the 700px breakpoint, never unconditionally", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "loader.module.css"), "utf8");
+  // Same brace-counted extraction as the motion test above, for the one
+  // media block the pull may live in. Below 700px there is no reserved
+  // gutter padding to eat (runContent collapses), so an unconditional
+  // negative margin would push the glyph out of the pane.
+  const mediaStart = css.indexOf("@media (min-width: 700px)");
+  expect(mediaStart).toBeGreaterThan(-1);
+  const blockOpen = css.indexOf("{", mediaStart);
+  let depth = 0;
+  let blockEnd = -1;
+  for (let i = blockOpen; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        blockEnd = i;
+        break;
+      }
+    }
+  }
+  expect(blockEnd).toBeGreaterThan(-1);
+  const outsideMediaBlock = css.slice(0, mediaStart) + css.slice(blockEnd + 1);
+  const insideMediaBlock = css.slice(blockOpen, blockEnd);
+  expect(insideMediaBlock).toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
+  expect(outsideMediaBlock).not.toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1/);
 });

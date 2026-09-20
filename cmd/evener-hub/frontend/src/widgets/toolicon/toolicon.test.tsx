@@ -21,6 +21,10 @@ const ALL_KINDS: ToolIconKind[] = [
   "person",
   "wrench",
   "thought",
+  "check",
+  "cross",
+  "alert",
+  "info",
 ];
 
 function svgOf(container: HTMLElement): SVGSVGElement {
