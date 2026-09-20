@@ -196,13 +196,30 @@ func TestCapabilityPreambleUnsandboxed(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"git config read: `git config --list` exit 0",
 		"On PATH: go=yes node=yes rg=no",
 	}, "\n")
 	if got != want {
 		t.Errorf("unsandboxed preamble:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestCapabilityPreambleWriteBlockedKeepsTmpDir: a write-blocked OFF policy has
+// no OS sandbox — so `policy` stays nil here, exactly as capabilityFactsFromEnv
+// leaves it — but it still confines the file tools, and that shape keeps TMPDIR on
+// the session scratch so a mktemp-then-write_file workflow stays inside the file
+// tools' only writable root. The preamble must keep naming both variables there:
+// only the UNCONFINED unsandboxed shape above changed (#495).
+func TestCapabilityPreambleWriteBlockedKeepsTmpDir(t *testing.T) {
+	got := strings.Join(capabilityPreambleLines(capabilityFacts{
+		scratchDir:       "/scratch/s1",
+		fileToolConfined: true,
+		probe:            probedFacts(),
+	}), "\n")
+	if !strings.Contains(got, "Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1") {
+		t.Errorf("a file-tool-confined session keeps TMPDIR on the scratch and must say so, got:\n%s", got)
 	}
 }
 
@@ -246,7 +263,7 @@ func TestCapabilityPreambleGoAbsent(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR): /scratch/s1",
 		"git config read: `git config --list` exit 0",
 		"On PATH: go=no node=yes rg=no",
 	}, "\n")
@@ -306,7 +323,7 @@ func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"git config read: unprobed",
 		"On PATH: go=yes node=yes rg=no",
@@ -359,7 +376,7 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 	for _, want := range []string{
 		"\nSandbox: restricted (network off) — fixed for this session\n",
 		"\nPATH: inherited process environment\n",
-		"\nScratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1\n",
+		"\nScratch ($EVENER_SCRATCH_DIR): /scratch/s1\n",
 		"\nGo cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache\n",
 		"\ngit config read: `git config --list` exit 0\n",
 		"\nOn PATH: go=yes node=yes rg=no\n",
