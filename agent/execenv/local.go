@@ -176,8 +176,9 @@ type LocalExecutionEnvironment struct {
 	scratchMu sync.Mutex
 	// unsandboxedScratch is a per-session scratch dir this UNSANDBOXED env
 	// provisions on first spawn, so commandEnvironment can export
-	// EVENER_SCRATCH_DIR/TMPDIR per docs/developing-evener/environment.md's contract, which carries
-	// no sandbox-only caveat. It reuses the sandbox scratch location convention
+	// EVENER_SCRATCH_DIR per docs/developing-evener/environment.md's contract,
+	// which carries no sandbox-only caveat (TMPDIR follows the shape-dependent
+	// rule below). It reuses the sandbox scratch location convention
 	// (sandbox.NewSessionScratch) but is entirely separate from ownedSessionTmp,
 	// which only a sandboxed env owns — a sandboxed spawn's scratch vars come
 	// from sandbox.ApplyEnvFloor instead, so this is never consulted when
@@ -190,6 +191,21 @@ type LocalExecutionEnvironment struct {
 	// (AdoptSessionScratch).
 	unsandboxedScratch       *sandbox.SessionScratch
 	unsandboxedScratchFailed bool
+
+	// unsandboxedTmp is the world-usable session temp container this UNSANDBOXED
+	// env provisions on first spawn when its file tools are UNCONFINED, and whose
+	// leaf is exported as TMPDIR (unsandboxedTmpDir). TMPDIR must be a directory a
+	// child that becomes another uid can write, and this env's private 0700
+	// scratch is not one (#495); the container lives in a world-usable host temp
+	// instead, under evener's session-scratch prefix so the crashed-scratch sweep
+	// still reaps it. It is never consulted for a confined or sandboxed spawn,
+	// which keeps TMPDIR on the scratch (tmpDirNamesScratch). Provisioning is
+	// best-effort exactly as the scratch is (unsandboxedTmpFailed is sticky), and
+	// it is NOT copied by either clone path nor moved by AdoptSessionScratch: a
+	// container is disposable host-temp residue rather than session data, so each
+	// env mints its own and no retention binding has to model it.
+	unsandboxedTmp       *sandbox.SessionTmp
+	unsandboxedTmpFailed bool
 
 	// scratchMovedOut, when non-nil, runs on the SOURCE of a scratch move
 	// (AdoptSessionScratch) at the point its two fields have been taken and the
@@ -240,7 +256,7 @@ func (e *LocalExecutionEnvironment) ObserveScratchMoveWindowForTesting(fn func()
 // sandboxFS is built lazily and cached, and rebuilt when the session's scratch
 // has moved since (AdoptSessionScratch): it folds in the concrete per-session
 // scratch directory (sessionScratchPath) so the file tools reach the SAME scratch
-// dir a spawned shell command gets via $TMPDIR — regardless of which
+// dir a spawned shell command gets via $EVENER_SCRATCH_DIR — regardless of which
 // policy-replacement path built it (EnableSandbox, WithWorkingDirectory's
 // re-root, UseControlPolicy), since they all funnel through this single lazy
 // builder. The layer returned is acquired for the caller's operation; the caller
@@ -285,8 +301,8 @@ func (e *LocalExecutionEnvironment) retireFileToolLayerLocked(layer *sandboxFS) 
 }
 
 // sessionScratchPath returns the concrete per-session scratch directory this
-// env's kernel wrapper already grants spawned processes via $TMPDIR /
-// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
+// env's kernel wrapper already grants spawned processes via $EVENER_SCRATCH_DIR
+// and $TMPDIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
 // one. It reads through Wrapper rather than ownedSessionTmp because a re-rooted
 // clone (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper
 // without necessarily owning it (ownedSessionTmp is nil on a fresh clone — see
@@ -396,9 +412,11 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 }
 
 // SessionScratchDir reports the per-session scratch directory spawned commands
-// already receive as $EVENER_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
-// the write-blocked env's own owned dir, or an unsandboxed env's lazily
-// provisioned one — and "" when none has been provisioned. It deliberately never
+// already receive as $EVENER_SCRATCH_DIR — the sandboxed env's wrapper tmp, the
+// write-blocked env's own owned dir, or an unsandboxed env's lazily provisioned
+// one — and "" when none has been provisioned. It is NOT the value of $TMPDIR for
+// an unsandboxed env with unconfined file tools, which receives a world-usable
+// temp container instead (unsandboxedTmpDir). It deliberately never
 // provisions one: it is a REPORTING accessor (the session prompt's capability
 // preamble), and reporting a path must not create it, nor turn a prompt render
 // into a filesystem side effect.
@@ -560,15 +578,41 @@ func (e *LocalExecutionEnvironment) commandEnvironment(extra map[string]string) 
 // sandboxed env (Wrapper != nil) never gets scratch vars here: those come
 // from sandbox.ApplyEnvFloor at the spawn site instead, so sandboxed
 // behavior is byte-identical to before.
+//
+// EVENER_SCRATCH_DIR always names this env's private session scratch. TMPDIR
+// names the same directory only while this env's file tools are confined; an
+// unsandboxed env with UNCONFINED file tools gets a world-usable session temp
+// container instead (unsandboxedTmpDir), because that is the shape whose spawned
+// children may become another uid and a 0700 scratch is unwritable by it (#495).
+// The amended decision record — docs/superpowers/specs/2026-07-15-session-scratch-and-orchestration-posture-design.md,
+// "Environment" — is the normative statement of that rule.
 func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) map[string]string {
 	overlay := map[string]string{}
 	if e.LoginPATH != "" {
 		overlay[envvars.Path.Name] = e.LoginPATH
 	}
 	if e.Wrapper == nil {
-		if scratch := e.unsandboxedScratchDir(); scratch != "" {
-			overlay[envvars.TmpDir.Name] = scratch
+		// EVENER_SCRATCH_DIR and TMPDIR are provisioned INDEPENDENTLY. They answer
+		// different needs, so one failing must not suppress the other: a host that
+		// cannot serve a private scratch can still serve a world-usable temp, and
+		// inheriting an ambient TMPDIR — which may itself be a private directory — is
+		// exactly the failure #495 is about. Each failure leaves only its OWN
+		// variable unset (inherited) rather than re-pointing it at the other.
+		scratch := e.unsandboxedScratchDir()
+		if scratch != "" {
 			overlay[envvars.EVENERScratchDir.Name] = scratch
+		}
+		tmpDir := ""
+		if e.tmpDirNamesScratch() {
+			// The confined shape's temp IS its scratch, so an unprovisioned scratch
+			// leaves TMPDIR inherited (today's behavior) rather than inventing a path
+			// the file tools cannot write.
+			tmpDir = scratch
+		} else {
+			tmpDir = e.unsandboxedTmpDir()
+		}
+		if tmpDir != "" {
+			overlay[envvars.TmpDir.Name] = tmpDir
 		}
 	}
 	if len(overlay) == 0 {
@@ -579,10 +623,57 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	return overlay
 }
 
+// tmpDirNamesScratch reports whether this env's TMPDIR still names the session
+// scratch. An unsandboxed env whose file tools are confined — the write-blocked
+// off policy, a read-only delegate on a host with no sandbox backend — keeps the
+// scratch, and deliberately: that scratch is the file tools' ONLY writable root
+// (EnableSandbox provisions it eagerly for exactly that reason), so pointing the
+// shell's temp elsewhere would break a mktemp-then-write_file workflow. Only an
+// unsandboxed env with UNCONFINED file tools, the shape a privilege-dropping
+// child actually comes from, gets the world-usable container. A sandboxed spawn
+// never reaches overlaySessionEnv at all — sandbox.ApplyEnvFloor owns its
+// scratch vars — and keeps TMPDIR on the session temp.
+func (e *LocalExecutionEnvironment) tmpDirNamesScratch() bool {
+	if !sandbox.SessionTmpSupported {
+		// Where the POSIX container cannot exist the shape split buys nothing, so
+		// keep the pre-existing session-scratch export instead of handing the child
+		// an unrelated inherited TMPDIR.
+		return true
+	}
+	return e.Sandbox != nil && e.Sandbox.FileToolConfined()
+}
+
+// unsandboxedTmpDir lazily provisions (once) and returns this env's world-usable
+// session temp container leaf — the directory exported as TMPDIR when this env's
+// file tools are unconfined — or "" if provisioning failed. Like the scratch it
+// is a convenience, never a launch or spawn blocker: a failure leaves TMPDIR
+// inherited rather than erroring the command.
+func (e *LocalExecutionEnvironment) unsandboxedTmpDir() string {
+	e.scratchMu.Lock()
+	if tmp := e.unsandboxedTmp; tmp != nil {
+		dir := tmp.Dir
+		e.scratchMu.Unlock()
+		return dir
+	}
+	if e.unsandboxedTmpFailed {
+		e.scratchMu.Unlock()
+		return ""
+	}
+	tmp, err := sandbox.NewSessionTmp()
+	if err != nil {
+		e.unsandboxedTmpFailed = true
+		e.scratchMu.Unlock()
+		return ""
+	}
+	e.unsandboxedTmp = tmp
+	e.scratchMu.Unlock()
+	return tmp.Dir
+}
+
 // unsandboxedScratchDir lazily provisions (once) and returns this env's
 // per-session scratch directory, or "" if provisioning failed. A scratch dir is a
 // convenience, never a launch or spawn blocker: a failure silently disables the
-// EVENER_SCRATCH_DIR/TMPDIR export instead of erroring the command.
+// EVENER_SCRATCH_DIR export instead of erroring the command.
 //
 // A write-blocked env already OWNS one (EnableSandbox provisioned it, and its file
 // tools treat it as their single writable root), so this returns that rather than
@@ -648,27 +739,60 @@ func SessionScratchWorkspaceRoot(dir string) string {
 	return dir
 }
 
-// retainUnsandboxedScratch releases this env's unsandboxed per-session
-// scratch lease (if unsandboxedScratchDir ever lazily provisioned one),
-// without removing the directory — the Cleanup counterpart to
-// RetainSandboxScratch for the unsandboxed case, so a session close never
-// holds the lease open for the rest of the daemon's uptime.
+// retainUnsandboxedScratch releases the leases of the per-session directories
+// this env lazily provisioned for an unsandboxed spawn — the private scratch
+// (unsandboxedScratchDir) and the world-usable temp container
+// (unsandboxedTmpDir) — without removing either directory. It is the retain-side
+// counterpart to RetainSandboxScratch for the unsandboxed case, so a session
+// close never holds either lease open for the rest of the daemon's uptime.
+//
+// The container is RETAINED, not removed, for the same reason the scratch is: a
+// process this env deliberately did not kill can outlive the close. A detached
+// command (DetachCommand) leaves the session on purpose, keeps the TMPDIR it was
+// spawned with, and would find that directory gone if close removed it. Releasing
+// the lease instead hands the directory to the crashed-scratch sweep's 24h
+// reclaim, which is already the reaper of record for both directories.
 func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
 	if e.unsandboxedScratch != nil {
 		_ = e.unsandboxedScratch.Retain()
 	}
+	if e.unsandboxedTmp != nil {
+		_ = e.unsandboxedTmp.Retain()
+	}
+}
+
+// removeUnsandboxedTmpLocked drops this env's session temp container — removing
+// the directory as well as the lease. The caller holds scratchMu, and detaching
+// the handle under the lock is what keeps a concurrent mint from handing out a
+// directory that is being removed: once the pointer is cleared, nothing can reach
+// it. Holding scratchMu across the RemoveAll is the same allowance
+// RetainSandboxScratch and DisposeUnadoptedScratch already take — no command runs
+// here.
+//
+// It is for an env whose mint is being DISCARDED (a launch that failed before a
+// session adopted it), never for a close: a live env keeps its container, and a
+// closing one retains it, because a detached command may still be using it (see
+// retainUnsandboxedScratch). Removal is best-effort by construction — the leaf is
+// world-writable, so another uid may have left a NON-EMPTY nested 0700 subtree
+// this process cannot descend into and therefore cannot unlink — and the error is
+// dropped here because the lease is gone either way, which leaves the directory
+// to the crashed-scratch sweep.
+func (e *LocalExecutionEnvironment) removeUnsandboxedTmpLocked() {
+	tmp := e.unsandboxedTmp
+	e.unsandboxedTmp = nil
+	_ = tmp.Remove()
 }
 
 // RetainSessionScratch releases the lease of every per-session scratch
-// directory this env provisioned — the one it owns from EnableSandbox and the
-// one an unsandboxed env mints lazily on its first command — keeping both
-// directories for the human handoff. It is the retain-side twin of
-// DisposeUnadoptedScratch: a session's own teardown reaches it through Cleanup,
-// and a child whose environment must never be Cleanup'd (its process table
-// belongs to its parent) calls it directly, so neither lease is held for the
-// rest of the daemon's uptime.
+// directory this env provisioned — the one it owns from EnableSandbox, the one
+// an unsandboxed env mints lazily on its first command, and the world-usable temp
+// container such an env mints for TMPDIR — keeping the directories for the human
+// handoff. It is the retain-side twin of DisposeUnadoptedScratch: a session's own
+// teardown reaches it through Cleanup, and a child whose environment must never be
+// Cleanup'd (its process table belongs to its parent) calls it directly, so no
+// lease is held for the rest of the daemon's uptime.
 func (e *LocalExecutionEnvironment) RetainSessionScratch() {
 	e.RetainSandboxScratch()
 	e.retainUnsandboxedScratch()
@@ -853,6 +977,14 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 // to replace an exposed scratch. It must run only on such a launcher-owned mint,
 // never on an allocation the manifest still references. The next spawned command
 // lazily mints a replacement if the environment is left without one.
+//
+// The session temp container is deliberately NOT touched here. It is not part of
+// the allocation being replaced — nothing adopts a container — and this env keeps
+// working after the adopt, so its TMPDIR must keep naming a live directory for the
+// children it already spawned. Its lease is held for exactly that reason and is
+// released by the env's own close (RetainSessionScratch), which is what lets the
+// crashed-scratch sweep reclaim the directory afterwards; removing it here would
+// strand those children on a TMPDIR that no longer exists.
 func (e *LocalExecutionEnvironment) DisposeUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
@@ -880,6 +1012,10 @@ func (e *LocalExecutionEnvironment) DisposeUnadoptedScratch() {
 		e.unsandboxedScratch = nil
 		_ = tmp.Cleanup()
 	}
+	// A failed launch must not leak the world-usable temp container either: it is
+	// removable at this point because nothing has been spawned through the env that
+	// owns it.
+	e.removeUnsandboxedTmpLocked()
 }
 
 // AdoptSessionScratch moves every per-session scratch directory from `from` —

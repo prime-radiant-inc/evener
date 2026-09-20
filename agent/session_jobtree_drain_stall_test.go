@@ -247,6 +247,38 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 	assertDrainNotCut(t, sess, clk)
 }
 
+// TestDrainStallWatchdogSparePendingDelegateDelivery verifies a pending delegate
+// delivery (deliverable work, flushed by kickDriveTree every pass) keeps the
+// drain alive past the timeout. subtreeHasLiveComponent counts it as a live
+// component (session_jobtree_drain.go), so a queue entry that sits unconsumed
+// under a kick which deliberately never flushes must never be cut as a genuine
+// wedge. Its three siblings cover a running managed job, a driving child, and a
+// pending watch send; this is the hasPendingDelegateDeliveries signal.
+func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+
+	// Seed the queue the way acceptDelegateDeliveryPlan does (append under
+	// delegateDeliveryMu), so the test pins the signal subtreeHasLiveComponent
+	// reads rather than a production deferral path.
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+	defer func() {
+		sess.delegateDeliveryMu.Lock()
+		sess.pendingDelegateDeliveries = nil
+		sess.delegateDeliveryMu.Unlock()
+	}()
+
+	if !sess.hasPendingDelegateDeliveries() {
+		t.Fatal("precondition: expected a pending delegate delivery")
+	}
+	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {
+		t.Fatalf("a pending delegate delivery must not be a stall, got stalled=%v err=%v", stalled, err)
+	}
+	assertDrainNotCut(t, sess, clk)
+}
+
 // assertDrainNotCut drives the drain well past DrainStallTimeout and asserts it
 // keeps blocking (does not return, emits no stall warning). Live work must never
 // be cut. It then cancels the context to let the drain goroutine exit cleanly.
