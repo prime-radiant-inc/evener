@@ -26,7 +26,7 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { DelegateStatusWord, delegateOutputHasCard, rowFromDelegateItem } from "./tools/subagentModule";
+import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   effectiveRowKind,
   removeSubagentRow,
@@ -35,14 +35,12 @@ import {
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
-import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
-  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
 const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
@@ -264,26 +262,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
-  // While the delegate body is expanded AND its card renders, the card's own
-  // first line carries the lifecycle word (with the turn/call counts and run
-  // clock); a standalone div here would duplicate the word on back-to-back
-  // lines. Collapsed - or for an activation-only receipt whose card renders
-  // nothing - this standalone line is the row's only status surface.
-  const delegateCardRenders = delegateOutputHasCard(delegateOutput);
-  const showStandaloneLifecycle = !expanded || !delegateCardRenders;
-  // Built only when it will render: delegate cards settle auto-expanded, so
-  // the standalone line is the exception, not the steady state.
-  const lifecycle =
-    isDelegate && showStandaloneLifecycle ? (
-      <div
-        className={CLASS.lifecycle}
-        data-testid="delegate-lifecycle"
-        data-kind={delegateKind}
-        data-attention={stableDelegate?.needsAttention ? "true" : undefined}
-      >
-        <DelegateStatusWord kind={delegateKind} stable={stableDelegate} />
-      </div>
-    ) : null;
+  // The descriptor's statusLine hook renders the row's standalone status
+  // line in the slot below the summary; the delegate descriptor is the one
+  // with one, and it owns whether the line renders at all (it returns null
+  // while its expanded card carries the status).
+  const StatusLine = descriptor.statusLine;
+  const lifecycle = StatusLine ? (
+    <StatusLine item={item} live={live} sessionRef={sessionRef} cwd={cwd} expanded={expanded} thread={thread} />
+  ) : null;
 
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)

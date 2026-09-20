@@ -23,8 +23,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
-import type { ToolRenderProps } from "../toolRenderers";
-import { registerToolRenderer } from "../toolRenderers";
+import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
   effectiveRowKind,
   resolveRowKey,
@@ -43,6 +42,7 @@ const RECENT_QUOTES_CAP = 5;
 
 const CLASS = {
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
+  lifecycle: requireClass(styles.lifecycle, "subagentmodule.module.css", "lifecycle"),
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
   statusWord: requireClass(styles.statusWord, "subagentmodule.module.css", "statusWord"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
@@ -125,10 +125,12 @@ const DELEGATE_ATTENTION_MARKER = `${STATUS_GLYPH.attention} ${DELEGATE_ATTENTIO
 
 // The status word both delegate status surfaces render: the lifecycle label
 // plus the attention marker when the stable projection asks for it. The
-// standalone lifecycle line (ToolCallItem, collapsed rows) and the card's
-// merged first line (expanded rows) share it, so word, marker, and gating stay
-// identical on either surface.
-export function DelegateStatusWord({
+// standalone lifecycle line (this module's DelegateStatusLine, collapsed
+// rows) and the card's merged first line (expanded rows) share it, so word,
+// marker, and gating stay identical on either surface. The word also owns
+// its own DOM identity - one testid plus kind/attention state - so consumers
+// find it with one selector wherever it renders.
+function DelegateStatusWord({
   kind,
   stable,
   withGlyph = true,
@@ -138,10 +140,15 @@ export function DelegateStatusWord({
   withGlyph?: boolean;
 }) {
   return (
-    <>
+    <span
+      className={CLASS.statusWord}
+      data-testid="delegate-status-word"
+      data-kind={kind}
+      data-attention={stable?.needsAttention ? "true" : undefined}
+    >
       {delegateLifecycleLabel(kind, stable)}
       {stable?.needsAttention && <span> {withGlyph ? DELEGATE_ATTENTION_MARKER : DELEGATE_ATTENTION_TEXT}</span>}
-    </>
+    </span>
   );
 }
 
@@ -299,15 +306,14 @@ function SubagentCard({
       <div
         className={CLASS.stats}
         data-testid="subagent-stats"
+        data-status-line="delegate"
         data-kind={displayKind}
         data-attention={attention ? "true" : undefined}
       >
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
           {STATUS_GLYPH[attention ? "attention" : displayKind]}
         </span>
-        <span className={CLASS.statusWord} data-testid="subagent-status-word">
-          <DelegateStatusWord kind={displayKind} stable={stable} withGlyph={false} />
-        </span>
+        <DelegateStatusWord kind={displayKind} stable={stable} withGlyph={false} />
         {/* Each segment rides behind the word, behind its own separator -
             never a dangling "·" advertising a segment that has no data. */}
         {statsSegments.map((segment) => (
@@ -449,6 +455,39 @@ function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
   );
 }
 
+// The standalone status line a collapsed (or card-less) delegate row shows
+// below the intent line - the descriptor's statusLine hook (toolRenderers.ts)
+// mounts it, so this module owns the surface end-to-end with the card's own
+// first line: same word component, same state attributes, same
+// data-status-line identity.
+export function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
+  const parsed = parseJSONObject(item.output);
+  const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
+  // Same trust rule as the row's own indicator: without a session ref or a
+  // stable identity, the owner projection is not this row's to read.
+  const stable =
+    sessionRef === undefined || delegateId === undefined
+      ? undefined
+      : thread?.delegates?.find((delegate) => delegate.delegateId === delegateId);
+  const kind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stable);
+  // While the expanded card renders, its own first line carries the lifecycle
+  // word; a standalone div here would duplicate it on back-to-back lines.
+  // Collapsed - or for an activation-only receipt whose card renders nothing -
+  // this line is the row's only status surface.
+  if (expanded && delegateOutputHasCard(parsed)) return null;
+  return (
+    <div
+      className={CLASS.lifecycle}
+      data-testid="delegate-lifecycle"
+      data-status-line="delegate"
+      data-kind={kind}
+      data-attention={stable?.needsAttention ? "true" : undefined}
+    >
+      <DelegateStatusWord kind={kind} stable={stable} />
+    </div>
+  );
+}
+
 registerToolRenderer({
   match: "delegate",
   fold: "never", // a delegate card is never folded away into a run
@@ -466,6 +505,7 @@ registerToolRenderer({
     return str(parsed, "transcript_ref");
   },
   body: DelegateBody,
+  statusLine: DelegateStatusLine,
   // A delegate call is a status card, not a fold-to-open tool row - the same
   // reasoning as task_list's own `autoExpand: () => true`. Child watching
   // exists only while the body is expanded, for quotes and stats; collapsed

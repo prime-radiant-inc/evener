@@ -79,7 +79,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.lifecycle[data-attention="true"] > span,
+.lifecycle[data-attention="true"] .statusWord > span,
 .stats[data-attention="true"] .statusWord > span {
   color: var(--attention-ink);
   font-weight: var(--font-weight-medium);
