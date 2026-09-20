@@ -143,7 +143,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   // The first authoritative GET publishes both layouts and its confirmation
   // together. Subscribers therefore cannot observe loaded state while the
   // fence still accepts a restarted revision or before the read is confirmed.
-  function applyHubDefaults(defaults: TranscriptDisplayDefaults): void {
+  function applyHubDefaults(defaults: Readonly<Record<ViewportClass, HubTranscriptDisplayDefault>>): void {
     const hub = { ...getState().hub };
     for (const layout of LAYOUTS) {
       const previous = hub[layout];
