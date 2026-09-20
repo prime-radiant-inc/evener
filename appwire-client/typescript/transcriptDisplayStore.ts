@@ -223,9 +223,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
       applyHubDefault("desktop", defaults.desktop);
       if (!stillMine()) return;
-      applyHubDefault("mobile", defaults.mobile, { loaded: true, hubLoading: false });
+      applyHubDefault("mobile", defaults.mobile);
       if (!stillMine()) return;
       fence.firstPayloadApplied();
+      setState({ loaded: true, hubLoading: false });
+      if (!stillMine()) return;
       if (missedChangeNotification) {
         missedChangeNotification = false;
         void refreshFor(generation);
