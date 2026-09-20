@@ -636,7 +636,7 @@ describe("TranscriptBody", () => {
         sessionRef="ordinary:attention"
       />,
     );
-    const settledLifecycle = screen.getByTestId("delegate-lifecycle");
+    const settledLifecycle = screen.getByTestId("subagent-stats");
     expect(settledLifecycle.getAttribute("data-attention")).toBeNull();
     expect(settledLifecycle.textContent).not.toContain("Needs attention");
 
@@ -671,7 +671,7 @@ describe("TranscriptBody", () => {
       />,
     );
     await waitFor(() => {
-      const alertedLifecycle = screen.getByTestId("delegate-lifecycle");
+      const alertedLifecycle = screen.getByTestId("subagent-stats");
       expect(alertedLifecycle.getAttribute("data-attention")).toBe("true");
       expect(alertedLifecycle.textContent).toContain("Needs attention");
     });

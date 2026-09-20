@@ -1,8 +1,15 @@
+import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import { threadsStore } from "../../../../stores/threads";
 import { makeTranscriptPreviewModel } from "../../../../transcriptDisplay/previewFixture";
 
 /** Current owner evidence, deliberately separate from a tool's frozen receipt. */
-export function seedCurrentDelegate(ref: string, delegateId: string, status: string, reason?: string) {
+export function seedCurrentDelegate(
+  ref: string,
+  delegateId: string,
+  status: string,
+  reason?: string,
+  overrides?: Partial<EvenerDelegateInfo>,
+) {
   const thread = makeTranscriptPreviewModel();
   thread.ref = ref;
   thread.delegates = [
@@ -22,6 +29,7 @@ export function seedCurrentDelegate(ref: string, delegateId: string, status: str
       resumable: true,
       needsAttention: false,
       projectionRevision: 1,
+      ...overrides,
     },
   ];
   threadsStore.setState({ threads: new Map([[ref, thread]]) });

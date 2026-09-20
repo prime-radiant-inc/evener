@@ -21,7 +21,9 @@ export function measureDesktopCollaborators(identity = {nodes: []}) {
       visible:style.visibility !== 'hidden' && style.display !== 'none',
       hitElement:hit ? {tag:hit.tagName,text:hit.textContent.slice(0,100)} : null};
   };
-  const lifecycle = [...document.querySelectorAll('[data-testid="delegate-lifecycle"]')].map(target);
+  // A delegate's status line is the card's merged stats line while expanded
+  // and the standalone lifecycle div once collapsed.
+  const lifecycle = [...document.querySelectorAll('[data-testid="subagent-stats"], [data-testid="delegate-lifecycle"]')].map(target);
   const opens = [...list.querySelectorAll('[aria-label="Open transcript"]')].map(target);
   const ready = lifecycle.length === 3 && opens.length > 0 && [...lifecycle,...opens].every(t => t.connected && t.contained && t.visible && t.hit);
   return {at:performance.now(),scrollTop:list.scrollTop,scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,viewport,lifecycle,opens,ready};

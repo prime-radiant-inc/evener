@@ -11,9 +11,10 @@ import {
   parseJSONObject,
   plainQuoteLine,
   SYSTEM_PRELUDE_TURN_ID,
+  stableDelegateDisplayStatus,
   str,
 } from "@evener/appwire-client";
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, IconButton, Timestamp } from "../../../../widgets";
@@ -43,6 +44,7 @@ const RECENT_QUOTES_CAP = 5;
 const CLASS = {
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
+  statusWord: requireClass(styles.statusWord, "subagentmodule.module.css", "statusWord"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
   quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
@@ -93,6 +95,62 @@ const STATUS_GLYPH: Record<SubagentRowKind | "attention", string> = {
   unknown: "?",
   attention: "◆",
 };
+
+// The one status-word vocabulary for a delegate's lifecycle line. ToolCallItem
+// renders it standalone on a collapsed row (the delegate-lifecycle div); the
+// expanded card merges it into its own first line (subagent-stats), where the
+// turn/call counts and run clock ride WITH the word. The stable projection's
+// display status outranks the frozen receipt's kind - "Exhausted"/"Idle" name
+// the run's actual outcome, not the stale receipt.
+const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
+  running: "Running",
+  done: "Idle · reported",
+  stopped: "Stopped",
+  failed: "Failed",
+  unknown: "Status unavailable",
+};
+
+export function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+  const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
+  return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
+}
+
+// The attention marker is part of the status word: one string, shared by both
+// status surfaces so the wording cannot drift between them.
+export const DELEGATE_ATTENTION_MARKER = "◆ Needs attention";
+
+// The status word both delegate status surfaces render: the lifecycle label
+// plus the attention marker when the stable projection asks for it. The
+// standalone lifecycle line (ToolCallItem, collapsed rows) and the card's
+// merged first line (expanded rows) share it, so word, marker, and gating stay
+// identical on either surface.
+export function DelegateStatusWord({
+  kind,
+  stable,
+  attention,
+}: {
+  kind: SubagentRowKind;
+  stable: EvenerDelegateInfo | undefined;
+  attention: boolean;
+}) {
+  return (
+    <>
+      {delegateLifecycleLabel(kind, stable)}
+      {attention && <span>{DELEGATE_ATTENTION_MARKER}</span>}
+    </>
+  );
+}
+
+// True when a delegate call's parsed output still yields a card row - the
+// exact gate rowFromDelegateItem applies. An activation-only result (parsed
+// JSON with no stable delegate_id) renders no card, so its caller keeps the
+// standalone status line. Shared so the two rules cannot drift.
+export function delegateOutputHasCard(
+  parsed: Record<string, unknown> | undefined,
+  delegateId: string | undefined,
+): boolean {
+  return parsed === undefined || delegateId !== undefined;
+}
 
 // deriveQuotes flattens the child's turns into its authored lines. Two
 // exclusions, both deliberate:
@@ -232,29 +290,29 @@ function SubagentCard({
     >
       <span className={CLASS.srOnly}>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</span>
       <span className={CLASS.srOnly}>{`Status: ${effectiveStatus}`}</span>
-      {quoteText ? (
-        <em className={CLASS.quote} data-testid="subagent-quote">
-          {quoteText}
-        </em>
-      ) : (
-        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
-      )}
-      <div className={CLASS.stats} data-testid="subagent-stats">
+      {/* The card's FIRST line is the status line: the lifecycle word leads,
+          and the turn/call counts and run clock ride WITH it on one line. The
+          child's latest words (the quote) follow below, secondary. */}
+      <div
+        className={CLASS.stats}
+        data-testid="subagent-stats"
+        data-kind={displayKind}
+        data-attention={attention ? "true" : undefined}
+      >
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
           {STATUS_GLYPH[attention ? "attention" : displayKind]}
         </span>
-        {/* Segments join with a separator BETWEEN them - never a dangling
-            "·" advertising a segment that has no data. */}
-        {statsSegments.flatMap((segment, i) =>
-          i === 0
-            ? [<span key={segment}>{segment}</span>]
-            : [
-                <span key={`sep-${segment}`} className={CLASS.statsSep}>
-                  ·
-                </span>,
-                <span key={segment}>{segment}</span>,
-              ],
-        )}
+        <span className={CLASS.statusWord} data-testid="subagent-status-word">
+          <DelegateStatusWord kind={displayKind} stable={stable} attention={attention} />
+        </span>
+        {/* Each segment rides behind the word, behind its own separator -
+            never a dangling "·" advertising a segment that has no data. */}
+        {statsSegments.map((segment) => (
+          <Fragment key={segment}>
+            <span className={CLASS.statsSep}>·</span>
+            <span>{segment}</span>
+          </Fragment>
+        ))}
         <span className={CLASS.statsSpring} />
         {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
         <IconButton
@@ -271,6 +329,13 @@ function SubagentCard({
           }}
         />
       </div>
+      {quoteText ? (
+        <em className={CLASS.quote} data-testid="subagent-quote">
+          {quoteText}
+        </em>
+      ) : (
+        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
+      )}
       {open && (
         <section
           id={disclosureId}
@@ -340,7 +405,7 @@ export function rowFromDelegateItem(
   // A settled activation-only result is historical data, not a stable
   // delegate control identity. Keep an in-flight call-keyed placeholder, but
   // never turn job_id into a delegate row.
-  if (parsed && !delegateId) return null;
+  if (!delegateOutputHasCard(parsed, delegateId)) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
   const resumable = parsed && typeof parsed.resumable === "boolean" ? parsed.resumable : undefined;
