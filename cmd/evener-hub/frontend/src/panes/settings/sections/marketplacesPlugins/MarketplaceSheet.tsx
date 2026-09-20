@@ -302,7 +302,20 @@ export function MarketplaceSheet({
           void extensionsStore.getState().fetchMarketplaces();
         }
         if (liveName.current === removalName) setPendingRemove(false);
-        toasts.push("warning", "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.");
+        if (outcome.kind === "removed") {
+          // The removal and its clone cleanup both succeeded; only the updated
+          // list could not be read. No litter exists, and the reconciliation
+          // above settles the list, so nothing beyond this notice is needed.
+          toasts.push(
+            "info",
+            `Removed marketplace ${removalName}; the updated list was unavailable, so it is being refreshed.`,
+          );
+        } else {
+          toasts.push(
+            "warning",
+            "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
+          );
+        }
       } else {
         // Ordinary failures keep the existing retryable error behavior.
         toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
