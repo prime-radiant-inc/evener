@@ -17,7 +17,28 @@ import {
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
+
+function decodeUpper(value: unknown): string | undefined {
+  return typeof value === "string" ? value.toUpperCase() : undefined;
+}
+
+test("wireRejectionPayload decodes the named key when the discriminator matches", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBe("OK");
+});
+
+test("wireRejectionPayload returns undefined for a different evenerErrorInfo - the code alone is never the discriminator", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "conflict", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
+
+test("wireRejectionPayload returns undefined for a non-WireError, or when decode rejects the payload", () => {
+  expect(wireRejectionPayload(new Error("boom"), "somePostApply", "applied", decodeUpper)).toBeUndefined();
+  const malformed = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: 42 });
+  expect(wireRejectionPayload(malformed, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
 
 // goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
 // file the hub stamps every evenerErrorInfo from. Reading the source (the way
