@@ -220,7 +220,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   }
 
   function layoutError(layout: ViewportClass, message: string | undefined): Partial<TranscriptDisplayStoreFields> {
-    return { hubErrors: { ...getState().hubErrors, [layout]: message } };
+    // No error means the key is absent, never present with an undefined
+    // value: both accepted-apply paths clear the same way, and key-presence
+    // readers never see a cleared layout.
+    const hubErrors = { ...getState().hubErrors };
+    if (message === undefined) delete hubErrors[layout];
+    else hubErrors[layout] = message;
+    return { hubErrors };
   }
 
   // A preview's base and its draft clear together, whether the caller

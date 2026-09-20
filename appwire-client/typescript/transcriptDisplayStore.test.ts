@@ -795,6 +795,7 @@ describe("the direct write", () => {
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.desktop).toEqual(hubDefault(4, proposed));
     expect(store.getState().hubErrors.desktop).toBeUndefined();
+    expect("desktop" in store.getState().hubErrors).toBe(false);
   });
 
   test("an accepted change notification clears the layout's stale write error", async () => {
@@ -812,6 +813,7 @@ describe("the direct write", () => {
     });
     expect(store.getState().hub.desktop).toEqual(hubDefault(4, proposed));
     expect(store.getState().hubErrors.desktop).toBeUndefined();
+    expect("desktop" in store.getState().hubErrors).toBe(false);
   });
 
   test("a stale canonical read keeps the layout's stale write error", async () => {
