@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
@@ -54,12 +55,21 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 	}
 
 	resident := 0
+	// A runtime subtree another in-flight claim — an idle release closing a
+	// just-finalized generation — is already settling frees capacity on its
+	// failing loudly for capacity that is about to appear. An aborted claim
+	// restores residency and a later spawn recomputes, so an over-promise
+	// self-heals rather than stranding the spawn.
+	inFlight := 0
 	for id, aggregate := range c.durable {
 		if c.isResidentTerminalRuntimeLocked(id, aggregate) {
 			resident++
+			if _, covered := c.reclaiming[id]; covered {
+				inFlight++
+			}
 		}
 	}
-	needed := resident + required - c.maxRetainedTerminal
+	needed := resident + required - c.maxRetainedTerminal - inFlight
 	if needed <= 0 {
 		return nil, nil
 	}
@@ -398,4 +408,195 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 	}
 	completed = true
 	return nil
+}
+
+// ClaimIdleRuntimeRelease reserves one named quiescent terminal delegate's
+// resident runtime subtree for non-terminal idle release: the caller unhooks
+// and releases those runtimes outside the controller mutex and reports them
+// closed via CompleteRuntimeReclamation, which clears the live runtime
+// pointers so future sends and drives take the cold restore path. It is the
+// targeted counterpart of ClaimRuntimeReclamation, which selects whole
+// subtrees by retained-terminal capacity pressure; the idle release after a
+// generation finalizes wants exactly one named subtree.
+//
+// A nil claim with a nil error means "not releasable right now": the delegate
+// is missing, not terminal-idle, holds no resident runtime, or its subtree
+// intersects process work — pending deliveries, claims, watchers, recovery
+// flags, waiters, or a shared task store owned inside the subtree — that must
+// settle first. Callers skip without forcing; the delegate's next finalize or
+// the capacity reclamation backstop will retry.
+func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*delegateRuntimeReclamationClaim, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
+	if c == nil {
+		return nil, errors.New("delegate controller is unavailable")
+	}
+	if delegateID == "" {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || !c.isResidentTerminalRuntimeLocked(delegateID, aggregate) {
+		return nil, nil
+	}
+	entries, ok := c.claimableRuntimeSubtreeLocked(delegateID)
+	if !ok {
+		return nil, nil
+	}
+	if c.subtreeOwnsSharedTaskStoreLocked(entries) {
+		return nil, nil
+	}
+	c.nextToken++
+	claim := &delegateRuntimeReclamationClaim{
+		token:   c.nextToken,
+		roots:   []delegateRuntimeReclamationEntry{c.runtimeReclamationEntryLocked(delegateID)},
+		entries: entries,
+	}
+	for _, entry := range claim.entries {
+		c.reclaiming[entry.delegateID] = claim.token
+	}
+	c.reclamations[claim.token] = claim
+	c.evidenceVersion++
+	return claim, nil
+}
+
+// subtreeOwnsSharedTaskStoreLocked reports whether releasing the claim's
+// subtree would strand a shared task store resolver: some aggregate — inside
+// the subtree or anywhere else in the tree — names one of the subtree's
+// sessions as its shared task store owner. A released owner has no resident
+// runtime, so resolveStableSharedTaskStore's owner-residency requirement would
+// fail the resolver's next resume.
+func (c *delegateTreeController) subtreeOwnsSharedTaskStoreLocked(entries []delegateRuntimeReclamationEntry) bool {
+	owned := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		owned[entry.childSessionID] = struct{}{}
+	}
+	for _, aggregate := range c.durable {
+		if owner := aggregate.Descriptor.SharedTaskStoreOwnerSessionID; owner != "" {
+			if _, ok := owned[owner]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// releaseIdleRuntimeAfterFinalize non-terminally releases this just-finalized
+// stable delegate's resident runtime subtree. It unhooks each member's record
+// from its owner's subagent manager, releases every member's runtime under
+// the retirement policy — settling process-local resources, stdio MCP server
+// processes above all, while durable identity, transcripts, scratch pins, and
+// resumability stay intact — and clears the controller's live runtime
+// pointers so the next send or drive takes the cold restore path.
+//
+// The caller is the finished child's own run goroutine at the end of the
+// finalize tail: the generation outcome is durably committed, remaining
+// delegate attention is re-armed, and quiescence is reported. Every quiescence
+// precondition is checked BEFORE any teardown runs, because releaseRuntime
+// consumes the session's single teardown pass: a refusal arriving mid-release
+// would leave a half-settled runtime that can never be warm-resumed.
+//
+// It returns false — leaving the runtime warm — when any gate fails, and
+// never forces: a refused delegate retries at its next finalize or through
+// the capacity reclamation backstop. A root session (no owning delegate
+// identity) hosts the tree and must stay resident; a non-stable child has no
+// cold-restore path, so it is out of scope by construction (its parent is a
+// stable delegate, and releasing that parent drains it as a subtree member).
+func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return false
+	}
+	claim, err := s.delegateController.ClaimIdleRuntimeRelease(s.owningDelegateID)
+	if err != nil {
+		s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+		return false
+	}
+	if claim == nil {
+		return false
+	}
+	completed := false
+	defer func() {
+		// Abort only while the claim can still be meaningful: once the pointers
+		// are cleared the claim is released and Abort would just report a stale
+		// lease; every path below either completes the claim or fails before
+		// any controller mutation, so the abort path never leaves a half-done
+		// release.
+		if !completed {
+			_ = s.delegateController.AbortRuntimeReclamation(claim)
+		}
+	}()
+
+	// Gate EVERY member before unhooking or tearing ANY: these are the
+	// conditions releaseQuiescentRuntime refuses on mid-release (running jobs,
+	// pending terminal flush) plus the notification and watch-send residue a
+	// released runtime could strand.
+	for _, entry := range claim.entries {
+		if entry.runtime == nil {
+			continue
+		}
+		if !entry.runtime.idleReleasePregatesClear() {
+			return false
+		}
+	}
+
+	// Unhook first — record removal plus live-pointer clear — and only then run
+	// the teardowns, WITHOUT holding the reclamation fence across them. The
+	// fence exists to keep process work off a runtime that is being DESTROYED;
+	// this release is non-terminal, so a send racing the teardown must find a
+	// non-resident idle delegate and cold-restore a fresh runtime, exactly as
+	// it would after a daemon restart, instead of being refused target_busy by
+	// the fence. CompleteRuntimeReclamation clears only the exact pointers this
+	// claim captured, so a replacement runtime installed by such a racing send
+	// survives.
+	closed := make(map[string]*Session, len(claim.entries))
+	for _, entry := range claim.entries {
+		if entry.runtime != nil {
+			closed[entry.delegateID] = entry.runtime
+		}
+		if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
+			entry.ownerRuntime.subagents.removeSession(entry.childSessionID, entry.runtime)
+		}
+	}
+	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("idle runtime release completion failed", err))
+		return false
+	}
+	completed = true
+
+	for _, entry := range claim.entries {
+		if entry.runtime == nil {
+			continue
+		}
+		// A teardown error after the pre-gates leaves the pass spent — this
+		// runtime instance can never be warm-resumed — so unhooking is the
+		// consistent outcome either way: durable state and scratch pins survive
+		// for a cold restore, and the teardown body emits its own warnings for
+		// the settlements that did not complete, the same contract
+		// reclaimDelegateRuntimeCapacity's teardowns already follow.
+		_ = teardownChildSessionWithPolicy(context.Background(), entry.runtime, retainChildScratch, releaseRetirement)
+	}
+	return true
+}
+
+// idleReleasePregatesClear reports whether every precondition that must hold
+// BEFORE a non-terminal teardown holds for this session: no queued
+// notifications, no pending watch sends, and no job-manager runtime
+// obligations (running jobs or a pending terminal flush) that
+// releaseQuiescentRuntime would refuse on mid-release, after the single
+// teardown pass was already spent.
+func (s *Session) idleReleasePregatesClear() bool {
+	if s.peekNotifications() != 0 {
+		return false
+	}
+	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
+		return false
+	}
+	return true
 }

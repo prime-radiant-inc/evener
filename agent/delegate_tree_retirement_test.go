@@ -24,6 +24,10 @@ import (
 func newRetirementDelegateController(t *testing.T) (*Session, *delegateTreeController, *RetirementController) {
 	t.Helper()
 	root := newQueuePersistTestSession(t, t.TempDir())
+	// These fixtures exercise whole-tree retirement and idle entrypoints over
+	// LIVE child runtimes; the per-delegate idle release is a separate subject
+	// with its own test, so keep the children deliberately warm here.
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.disableDelegateIdleRelease = true })
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)

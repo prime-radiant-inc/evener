@@ -490,6 +490,18 @@ type testConfig struct {
 	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
 	childClientFactory func() *llm.Client
 
+	// disableDelegateIdleRelease suppresses the non-terminal idle release of a
+	// finalized stable delegate's runtime subtree (see
+	// releaseIdleRuntimeAfterFinalize). Production always releases, so an idle
+	// delegate's process-local resources — stdio MCP server processes above
+	// all — do not outlive its generation for the life of the daemon. The
+	// warm-supervision and retirement-admission fixtures set this because their
+	// subject is the warm-resume machinery itself — a deliberately retained
+	// runtime under an explicit in-process mode — not the retention policy the
+	// default exercises. It is inherited by child configs, so setting it on a
+	// fixture's root session covers its whole delegate tree.
+	disableDelegateIdleRelease bool
+
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,
 	// so routing it through a separate scripted client keeps its draw off the

@@ -869,6 +869,19 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	return jm.closeStoreOnly()
 }
 
+// hasRuntimeObligations reports whether the manager still holds work that
+// releaseQuiescentRuntime refuses to abandon: a running job or a pending
+// terminal flush. Callers gate a non-terminal runtime release on this so the
+// refusal cannot fire mid-release, after the single teardown pass was spent.
+func (jm *jobManager) hasRuntimeObligations() bool {
+	if jm == nil {
+		return false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return len(jm.running) != 0 || len(jm.terminalFlush) != 0
+}
+
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))

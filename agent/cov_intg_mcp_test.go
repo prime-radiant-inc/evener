@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -373,6 +376,170 @@ func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatalf("MCP server exit marker %s missing after synchronous cleanup: %v", marker, statErr)
+	}
+}
+
+// TestIntg_DelegateIdleReleasesStdioMCPServer pins the idle runtime release
+// contract: a stable delegate whose generation finalized must release its
+// resident runtime — which kills its stdio MCP server subprocess — while it
+// sits idle, and must stay resumable via the cold restore path.
+//
+// Before the fix, a finalized delegate was retained as a live session (a
+// terminal record kept warm for resume), so its plugin-provided stdio MCP
+// server process stayed alive as long as its daemon did — effectively forever
+// for a hub-spawned per-thread daemon (fleet evidence: 715 leaked chrome MCP
+// server processes across 55 daemons at diagnosis time). The exit marker
+// proves the child's server actually exited: the parent session's own server
+// (same plugin config, so the same marker path) stays connected for the whole
+// test, so a marker can only have been written by the released child's
+// server.
+func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
+	t.Parallel()
+	bin := intg_buildMCPServer(t)
+	marker := filepath.Join(t.TempDir(), "released.marker")
+
+	dir := makePluginDir(t, "mcpplug")
+	mcpJSON, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"svc": map[string]any{"command": bin, "args": []string{marker}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal .mcp.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), mcpJSON, 0644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	parentClient := llm.NewClient()
+	parentClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("parent")
+	}})
+
+	var factoryCalls atomic.Int64
+	factory := func() *llm.Client {
+		factoryCalls.Add(1)
+		c := llm.NewClient()
+		c.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("delegate done")
+		}})
+		registerTestSessionNamer(c)
+		return c
+	}
+
+	cfg := SessionConfig{
+		StateDir:        t.TempDir(),
+		PluginDirs:      []string{dir},
+		MaxSubagentDepth: 1,
+	}
+	cfg.testOnly.childClientFactory = factory
+
+	sess, err := NewSession(parentClient, withTestSessionNamer(parentClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	drainDone := make(chan struct{})
+	go func() {
+		for range sess.Events() {
+		}
+		close(drainDone)
+	}()
+	defer func() {
+		sess.Close()
+		<-drainDone
+	}()
+
+	// TRIPWIRE: scripted adapters plus an in-process MCP subprocess; the
+	// markers and completion normally settle in well under a second. 30s only
+	// fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := sess.createDelegate(ctx, delegateArgs{Task: "run once", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	delegateID := res.DelegateID
+	childID := res.ChildSessionID
+	if delegateID == "" || childID == "" {
+		t.Fatalf("createDelegate returned empty ids: %+v", res)
+	}
+	child := sess.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("delegate run did not finish: %v", ctx.Err())
+	}
+
+	// The release runs on the finalize tail right after close(done), so poll
+	// for the child's MCP server to exit rather than assuming ordering.
+	markerDeadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			break
+		}
+		if time.Now().After(markerDeadline) {
+			t.Fatalf("delegate %s finalized but its stdio MCP server subprocess is still alive: idle delegates must release their resident runtime (marker %s missing)", delegateID, marker)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for idle runtime release: %v", ctx.Err())
+		// TRIPWIRE: poll cadence, not a bound — the release runs on the finalize
+		// tail with no completion signal to await, so this only sets how often
+		// the marker file is re-checked.
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Scope: the parent's own plugin MCP server stays connected and callable.
+	if out := intg_mcpEcho(t, sess, "plugin_mcpplug_svc__echo", "parent-alive"); out != "echo: parent-alive" {
+		t.Errorf("parent MCP echo = %q, want %q", out, "echo: parent-alive")
+	}
+
+	// Resumability: a send to the idle delegate must restore it cold (a fresh
+	// child client) and complete another generation.
+	send := (delegateRuntime{owner: sess}).send(ctx, delegateID, "run again", 0).result
+	if send.Err != nil {
+		t.Fatalf("delegate_send after idle release: %+v", send)
+	}
+	restoredDeadline := time.Now().Add(15 * time.Second)
+	for {
+		restored := sess.subagents.get(childID)
+		if restored != nil && restored != child {
+			restored.mu.Lock()
+			rdone := restored.done
+			restored.mu.Unlock()
+			select {
+			case <-rdone:
+			case <-ctx.Done():
+				t.Fatalf("restored run did not finish: %v", ctx.Err())
+			}
+			break
+		}
+		if time.Now().After(restoredDeadline) {
+			t.Fatalf("delegate %s was not cold-restored by delegate_send after idle release", delegateID)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for cold restore: %v", ctx.Err())
+		// TRIPWIRE: poll cadence, not a bound — the restored record appears via
+		// the manager map with no completion signal to await, so this only sets
+		// how often the map is re-checked.
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// The cold restore reuses the restoring parent's client — the same
+	// binding a post-restart restore gets — so the spawn factory must have
+	// been called exactly once; the new record for the same child session ID
+	// completing a run is the cold-path proof.
+	if got := factoryCalls.Load(); got != 1 {
+		t.Errorf("childClientFactory calls = %d, want 1 (cold restore reuses the parent client)", got)
 	}
 }
 

@@ -2020,6 +2020,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
+		// The generation is durably settled and quiescence is reported, so the
+		// resident runtime subtree can be released: keeping it warm holds its
+		// process-local resources — stdio MCP server processes above all — for
+		// the life of the daemon. Durable identity survives for cold restore.
+		// The warm-supervision fixtures opt out; see the seam's field comment.
+		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
+			a.sess.releaseIdleRuntimeAfterFinalize()
+		}
 	}
 }
 
