@@ -128,7 +128,7 @@ func TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore(t
 	c.Register(&agenttest.ScriptedAdapter{Provider: "fold-tail-cheap", Responder: func(llm.Request) llm.Response {
 		if summaryCalls.Add(1) == 1 {
 			close(entered)
-				<-proceed
+			<-proceed
 		}
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
 	}})
@@ -244,7 +244,7 @@ func TestDeriveRestoredAskPending_FailedAskPairNeverCollects(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	askTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{
-		Role: llm.RoleAssistant,
+		Role:    llm.RoleAssistant,
 		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &ask}},
 	})
 	base := []schema.Turn{
@@ -261,7 +261,7 @@ func TestDeriveRestoredAskPending_FailedAskPairNeverCollects(t *testing.T) {
 	})
 
 	for name, history := range map[string][]schema.Turn{
-		"no-results-turn": base,
+		"no-results-turn":   base,
 		"error-placeholder": append(append([]schema.Turn{}, base...), errorResults),
 	} {
 		t.Run(name, func(t *testing.T) {
