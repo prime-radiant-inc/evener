@@ -303,9 +303,7 @@ export function MarketplaceSheet({
         }
         if (liveName.current === removalName) setPendingRemove(false);
         if (outcome.kind === "removed") {
-          // The removal and its clone cleanup both succeeded; only the updated
-          // list could not be read. No litter exists, and the reconciliation
-          // above settles the list, so nothing beyond this notice is needed.
+          // No litter exists; the reconciliation above settles the list.
           toasts.push(
             "info",
             `Removed marketplace ${removalName}; the updated list was unavailable, so it is being refreshed.`,

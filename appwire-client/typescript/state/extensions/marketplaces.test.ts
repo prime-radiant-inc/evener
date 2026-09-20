@@ -79,18 +79,18 @@ describe("marketplaceRemovalOutcome", () => {
 });
 
 describe("removeMarketplace applied-but-unconfirmed", () => {
-  test("preserves the last snapshot and exposes the applied outcome", async () => {
+  test("preserves the last snapshot and rejects with the classifiable error", async () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
+    const error = removeAppliedUnavailableError();
     fake.on("evener/marketplace/remove", () => {
-      throw removeAppliedUnavailableError();
+      throw error;
     });
 
     const removal = store.getState().removeMarketplace("acme");
-    await expect(removal).rejects.toBeInstanceOf(WireError);
-    await expect(removal.catch((error) => marketplaceRemovalOutcome(error))).resolves.toEqual({ kind: "removed" });
+    await expect(removal).rejects.toBe(error);
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
     expect(store.getState().browseCatalogs.has("acme")).toBe(true);
     expect(fake.calls.filter((call) => call.method === "evener/marketplace/remove")).toHaveLength(1);

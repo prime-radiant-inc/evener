@@ -112,20 +112,14 @@ export type MarketplaceRemovalOutcome =
   | { kind: "unavailable" }
   | { kind: "removed" };
 
-/** Classifies a marketplace removal rejection that the hub says already
- * applied, for UI consumers. A clone-litter rejection's valid applied list is
- * authoritative even though the clone cleanup failed; when the hub could not
- * re-read the list, callers must keep the current list and reconcile through
- * their normal fetch path rather than treating the zero value as an empty
- * list. A remove-applied rejection - removal and cleanup completed, only the
- * response's list read failed - is removed: report neutrally, with no litter
- * warning and no retry, because a retry finds the marketplace already gone. */
+/** Classifies the hub's post-apply marketplace removal rejections for UI
+ * consumers; each marker's reconcile rule is documented on
+ * MarketplaceRemovalOutcome above. Any other rejection returns undefined and
+ * stays retryable. */
 export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOutcome | undefined {
   if (!(error instanceof WireError)) return undefined;
-  // The remove-applied marker alone proves the removal and its cleanup
-  // completed: the hub emits it only after both landed (appwire/errors.go),
-  // and its documented rule is reconcile-don't-retry, so no payload shape may
-  // demote the standing removal back to a retryable failure.
+  // The hub emits this marker only after the removal and its cleanup both
+  // landed (appwire/errors.go), so the marker alone is the proof.
   if (error.evenerErrorInfo === ErrorMarketplaceRemoveApplied) return { kind: "removed" };
   if (error.evenerErrorInfo !== "marketplaceUnregisteredCloneRemains") return undefined;
   if (!error.data || typeof error.data !== "object") return { kind: "unavailable" };
