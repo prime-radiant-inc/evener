@@ -574,6 +574,30 @@ test("a fontless document exhausts the poll, then still collects and reports", a
   assert.deepEqual(result.documents, [{ label: "the top document", faces: [] }]);
 });
 
+test("the registration poll waits out a font that arrives mid-poll", async () => {
+  const face = { family: "Mono Test", status: "loaded" };
+  const registeredAt = Date.now() + 100;
+  const isRegistered = () => Date.now() >= registeredAt;
+  vi.stubGlobal("document", {
+    fonts: {
+      // An empty set's fonts.ready settles instantly - the real-world trap this
+      // poll exists for - so only waiting for the transition can see the face;
+      // collecting immediately would read an empty set and report "fontless".
+      get size() {
+        return isRegistered() ? 1 : 0;
+      },
+      ready: Promise.resolve(),
+      forEach: (callback) => {
+        if (isRegistered()) callback(face);
+      },
+    },
+    querySelectorAll: () => [],
+  });
+  const result = await collectFontStatusInPage({ pollMs: 1000, readyMs: 20 });
+  assert.equal(result.stalled, false);
+  assert.deepEqual(result.documents, [{ label: "the top document", faces: [face] }]);
+});
+
 test("waitForFonts reports a stalled font load as an environment problem", async () => {
   const send = async () => ({
     result: {
