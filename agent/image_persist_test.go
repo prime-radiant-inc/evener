@@ -248,6 +248,8 @@ func TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation(t *test
 		if !strings.Contains(data.Message, wantDir) {
 			t.Errorf("warning does not name the blocked attachments dir %q: %q", wantDir, data.Message)
 		}
+	// TRIPWIRE: the warning is emitted synchronously during ProcessInput, so
+	// the channel receive above is the await; 30s only fires on a hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("no diagnostic warning was emitted for the failed attachment write")
 	}
@@ -299,6 +301,8 @@ func TestProcessInput_BlockedAttachmentFile_DegradesWithoutAnnotation(t *testing
 		if !strings.Contains(data.Message, "shot.png") {
 			t.Errorf("warning does not name the failed attachment: %q", data.Message)
 		}
+	// TRIPWIRE: the warning is emitted synchronously during ProcessInput, so
+	// the channel receive above is the await; 30s only fires on a hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("no diagnostic warning was emitted for the failed attachment write")
 	}
