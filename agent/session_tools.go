@@ -1421,6 +1421,11 @@ func (s *Session) rebuildToolDefsCache() {
 	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
+			// Action Fusion: the model-visible schema gains the optional
+			// run_after parameter exactly when the registry's registered
+			// definition did (mutationToolDef at registration time), so the
+			// advertised schema and the validation schema never disagree.
+			td = s.withActionFusionSchema(td)
 			if td.Name == "delegate" {
 				td = s.delegateToolDefinition()
 				// When this session can only grant allowance 0 (own allowance 1),

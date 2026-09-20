@@ -118,6 +118,13 @@ type toolDeps struct {
 	// value: the flag is fixed for a session's lifetime.
 	turnEndsProcess bool
 
+	// actionFusion mirrors SessionConfig.ActionFusion, captured by value at
+	// registration: the run_after surface is fixed for a session's lifetime
+	// (like turnEndsProcess), and the schema and handler must agree — a
+	// runtime cfg mutation must not desynchronize the advertised schema from
+	// the registered one.
+	actionFusion bool
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -329,6 +336,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
+		actionFusion:           s.cfg.ActionFusion,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

@@ -254,6 +254,18 @@ type SessionConfig struct {
 	// retrievable on demand via the handle. Off by default.
 	ObservationPacking bool `json:"observation_packing,omitempty"`
 
+	// ActionFusion gives the file-mutation tools (edit_file, write_file,
+	// apply_patch) an optional run_after parameter: a shell command executed
+	// inside the same tool call after the mutation applies, with its output
+	// and exit status returning in the same observation. An edit-then-check
+	// cycle drops from three model requests to two. The fused command is
+	// dispatched through the session registry's shell tool, so it runs under
+	// the same execution environment, working directory, and foreground
+	// semantics as a standalone shell call. The mutation stands even when the
+	// command fails; a malformed run_after is rejected before the mutation
+	// applies. Off by default until the mechanism wins held-out validation.
+	ActionFusion bool `json:"action_fusion,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -855,6 +867,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SandboxNet:                  c.SandboxNet,
 		VisionModel:                 c.VisionModel,
 		ObservationPacking:          c.ObservationPacking,
+		ActionFusion:                c.ActionFusion,
 	}
 }
 
@@ -899,6 +912,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SandboxNet:                  s.SandboxNet,
 		VisionModel:                 s.VisionModel,
 		ObservationPacking:          s.ObservationPacking,
+		ActionFusion:                s.ActionFusion,
 	}
 }
 

@@ -46,16 +46,27 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 
 	// write_file
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefWriteFile(),
+		Definition: mutationToolDef(deps, tool.DefWriteFile()),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			runAfter, err := parseRunAfterArg(args)
+			if err != nil {
+				return "", err
+			}
+			if runAfter != "" {
+				if err := runAfterShellReady(reg); err != nil {
+					return "", err
+				}
+			}
 			path := fmt.Sprint(args["file_path"])
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
 			if err == nil {
 				deps.readGuard.TrackRead(path)
 				if warn != "" {
-					return warn + result, nil
+					result = warn + result
+				}
+				if runAfter != "" {
+					result = fuseRunAfter(ctx, reg, env, runAfter, result)
 				}
 			}
 			return result, err
@@ -66,9 +77,17 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 
 	// edit_file
 	_ = register(tool.RegisteredTool{
-		Definition: tool.DefEditFile(),
+		Definition: mutationToolDef(deps, tool.DefEditFile()),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			runAfter, err := parseRunAfterArg(args)
+			if err != nil {
+				return "", err
+			}
+			if runAfter != "" {
+				if err := runAfterShellReady(reg); err != nil {
+					return "", err
+				}
+			}
 			path := fmt.Sprint(args["file_path"])
 			replaceAll := false
 			if v, ok := args["replace_all"].(bool); ok {
@@ -77,7 +96,10 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.EditFile(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
 			if err == nil && warn != "" {
-				return warn + result, nil
+				result = warn + result
+			}
+			if err == nil && runAfter != "" {
+				result = fuseRunAfter(ctx, reg, env, runAfter, result)
 			}
 			return result, err
 		},
