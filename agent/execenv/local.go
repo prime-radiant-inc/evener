@@ -745,6 +745,13 @@ func SessionScratchWorkspaceRoot(dir string) string {
 // (unsandboxedTmpDir) — without removing either directory. It is the retain-side
 // counterpart to RetainSandboxScratch for the unsandboxed case, so a session
 // close never holds either lease open for the rest of the daemon's uptime.
+//
+// The container is RETAINED, not removed, for the same reason the scratch is: a
+// process this env deliberately did not kill can outlive the close. A detached
+// command (DetachCommand) leaves the session on purpose, keeps the TMPDIR it was
+// spawned with, and would find that directory gone if close removed it. Releasing
+// the lease instead hands the directory to the crashed-scratch sweep's 24h
+// reclaim, which is already the reaper of record for both directories.
 func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
@@ -756,30 +763,22 @@ func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	}
 }
 
-// removeUnsandboxedTmp attempts to remove this env's session temp container —
-// the world-usable directory an unsandboxed unconfined env minted for TMPDIR —
-// at session close. Unlike the private scratch, which is RETAINED for the human
-// handoff, host temp is residue: it is removed whenever it can be.
+// removeUnsandboxedTmpLocked drops this env's session temp container — removing
+// the directory as well as the lease. The caller holds scratchMu, and detaching
+// the handle under the lock is what keeps a concurrent mint from handing out a
+// directory that is being removed: once the pointer is cleared, nothing can reach
+// it. Holding scratchMu across the RemoveAll is the same allowance
+// RetainSandboxScratch and DisposeUnadoptedScratch already take — no command runs
+// here.
 //
-// Removal is best-effort by construction, and the error is deliberately dropped
-// here: the leaf is world-writable, so another uid may have left a NON-EMPTY
-// nested 0700 subtree this process cannot descend into and therefore cannot
-// unlink. The lease is released either way, which hands such a container to the
-// crashed-scratch sweep's 24h reclaim — a sweep that reports what it cannot
-// remove instead of aborting — and that is no worse than raw /tmp, where nothing
-// would reclaim it at all.
-func (e *LocalExecutionEnvironment) removeUnsandboxedTmp() {
-	e.scratchMu.Lock()
-	defer e.scratchMu.Unlock()
-	e.removeUnsandboxedTmpLocked()
-}
-
-// removeUnsandboxedTmpLocked is removeUnsandboxedTmp for a caller already
-// holding scratchMu. Detaching the handle under the lock is what keeps a
-// concurrent mint from handing out a directory that is being removed: once the
-// pointer is cleared, nothing can reach it. Holding scratchMu across the
-// RemoveAll is the same allowance RetainSandboxScratch and DisposeUnadoptedScratch
-// already take — no command runs here.
+// It is for an env whose mint is being DISCARDED (a launch that failed before a
+// session adopted it), never for a close: a live env keeps its container, and a
+// closing one retains it, because a detached command may still be using it (see
+// retainUnsandboxedScratch). Removal is best-effort by construction — the leaf is
+// world-writable, so another uid may have left a NON-EMPTY nested 0700 subtree
+// this process cannot descend into and therefore cannot unlink — and the error is
+// dropped here because the lease is gone either way, which leaves the directory
+// to the crashed-scratch sweep.
 func (e *LocalExecutionEnvironment) removeUnsandboxedTmpLocked() {
 	tmp := e.unsandboxedTmp
 	e.unsandboxedTmp = nil
@@ -978,6 +977,14 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 // to replace an exposed scratch. It must run only on such a launcher-owned mint,
 // never on an allocation the manifest still references. The next spawned command
 // lazily mints a replacement if the environment is left without one.
+//
+// The session temp container is deliberately NOT touched here. It is not part of
+// the allocation being replaced — nothing adopts a container — and this env keeps
+// working after the adopt, so its TMPDIR must keep naming a live directory for the
+// children it already spawned. Its lease is held for exactly that reason and is
+// released by the env's own close (RetainSessionScratch), which is what lets the
+// crashed-scratch sweep reclaim the directory afterwards; removing it here would
+// strand those children on a TMPDIR that no longer exists.
 func (e *LocalExecutionEnvironment) DisposeUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
@@ -1274,13 +1281,6 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	// only if a session moved ownership onto it (AdoptSessionScratch), so a
 	// clone's Cleanup never retains or removes a tmp some other env still owns.
 	defer e.RetainSessionScratch()
-
-	// The world-usable temp container is host-temp residue rather than handoff
-	// data, so its removal is attempted too — after the SIGTERM/grace/SIGKILL
-	// sequence below, since tracked children may still be writing into it.
-	// Best-effort (see removeUnsandboxedTmp); registered LIFO so it runs BEFORE the
-	// retain above, which then has no container lease left to release.
-	defer e.removeUnsandboxedTmp()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a
 	// commandRuntime so scripted runtimes own their teardown too; a legacy marker

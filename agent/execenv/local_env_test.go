@@ -332,12 +332,14 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	}
 }
 
-// TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose: the temp
-// container is host temp, not handoff data, so a session's close REMOVES it —
-// unlike the private scratch, which is retained for the human handoff. Removal is
-// best-effort by construction (a foreign nested subtree may refuse to unlink), but
-// nothing of ours is left behind in the ordinary case.
-func TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose(t *testing.T) {
+// TestCommandEnvironment_UnsandboxedTmpContainerRetainedAtClose: a close RETAINS
+// the temp container — releasing its lease, keeping the directory — exactly as it
+// retains the private scratch, and for a reason that rules out removing it: a
+// detached command leaves the session on purpose and keeps the TMPDIR it was
+// spawned with, so removing the directory at close would strand it on a path that
+// no longer exists. Retained means reclaimable, and the test proves the whole
+// path: once the container is old enough, the crashed-scratch sweep collects it.
+func TestCommandEnvironment_UnsandboxedTmpContainerRetainedAtClose(t *testing.T) {
 	requireContainerPlatform(t)
 	worldTempForTest(t)
 	worktree := t.TempDir()
@@ -353,11 +355,22 @@ func TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose(t *testing.T
 
 	env.Cleanup()
 
-	if _, err := os.Stat(container); !os.IsNotExist(err) {
-		t.Fatalf("Cleanup must reclaim the session temp container %q: %v", container, err)
+	if _, err := os.Stat(container); err != nil {
+		t.Fatalf("Cleanup must RETAIN the session temp container %q (a detached command may still be using it): %v", container, err)
 	}
 	if scratch := env.SessionScratchDir(); scratch == "" {
 		t.Fatal("Cleanup must RETAIN the private scratch for the handoff, not remove it with the temp container")
+	}
+
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(container, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.SweepCrashedSessionScratch(worktree); err != nil {
+		t.Fatalf("sweep over a released container: %v", err)
+	}
+	if _, err := os.Stat(container); !os.IsNotExist(err) {
+		t.Fatalf("a retained container whose lease the close released must be reclaimed by the sweep: %v", err)
 	}
 }
 

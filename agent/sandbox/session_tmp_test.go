@@ -1,3 +1,5 @@
+//go:build unix
+
 package sandbox
 
 import (
@@ -224,19 +226,32 @@ func TestSessionTmpFallsBackToALaterBase(t *testing.T) {
 	}
 }
 
-// TestSessionTmpUsableByArbitraryUID is the #495 regression. The permission bits
-// are asserted unconditionally — they are the entire mechanism the kernel uses
-// for a foreign user — and the live `mktemp -d` runs as another uid whenever this
-// host lets the test drop privileges.
+// TestSessionTmpPrivilegeDropE2E is the #495 field vector, end to end: a child
+// that is another uid creates its temp directory inside the container leaf.
+//
+// It is an explicit opt-in (EVENER_TMPDIR_PRIVDROP_E2E=1), per
+// docs/developing-evener/testing.md: it needs a real world-usable host temp, the
+// external `mktemp`, a `sudo` that may drop to `nobody`, and the real container
+// bases — none of which a default test may depend on. The permission bits that
+// make a foreign uid's write possible are asserted deterministically and without
+// any of that by TestSessionTmpContainerShape, and the container/leaf modes by
+// agent/execenv's TestCommandEnvironment_UnsandboxedSessionExportsScratchVars.
 //
 // Cleanup of what the other uid creates stays best-effort, and this test does not
 // assume otherwise: it attempts Remove and force-removes through the same
 // privilege-drop tool when that fails. The unremovable case — a NON-EMPTY nested
 // 0700 subtree, which the owner cannot descend into — is covered deterministically
-// and without sudo by TestSessionTmpSweepReportsUnremovableContainer. (An EMPTY
-// nested directory is removable: the sticky bit on the leaf lets the leaf's owner
-// unlink any entry, empty or not, that it is not the owner of.)
-func TestSessionTmpUsableByArbitraryUID(t *testing.T) {
+// by TestSessionTmpSweepReportsUnremovableContainer. (An EMPTY nested directory is
+// removable: the sticky bit on the leaf lets the leaf's owner unlink any entry,
+// empty or not, that it is not the owner of.)
+//
+// Run it with:
+//
+//	EVENER_TMPDIR_PRIVDROP_E2E=1 go test ./agent/sandbox -run TestSessionTmpPrivilegeDropE2E -count=1 -v
+func TestSessionTmpPrivilegeDropE2E(t *testing.T) {
+	if os.Getenv("EVENER_TMPDIR_PRIVDROP_E2E") != "1" {
+		t.Skip("set EVENER_TMPDIR_PRIVDROP_E2E=1 to run the privilege-drop end-to-end check")
+	}
 	if !hostHasWorldUsableTempBase() {
 		t.Skipf("this host offers no world-usable host temp base (%v)", worldTempBases)
 	}

@@ -73,6 +73,16 @@ process that inherits it and a private scratch is not:
   Windows it cannot, so `TMPDIR` keeps the session scratch there for every shape
   rather than being left inherited.
 
+  The container's leaf is world-writable and world-readable, exactly like `/tmp`
+  itself, because a directory an arbitrary uid can use cannot also be private.
+  **That is a disclosed cost, not an oversight:** a session's temp files are
+  readable by other local users of the host, as they would be in `/tmp`. Secrets
+  and other session-private intermediates therefore belong in
+  `EVENER_SCRATCH_DIR`, which stays `0700` and is never world-readable. The cost
+  is inherent to the requirement — a directory both private to the session owner
+  and writable by an arbitrary other uid does not exist — and this design chooses
+  usability by the child over the privacy of throwaway temp.
+
 `EVENER_SCRATCH_DIR` and the file-tool root do not vary with the shape: the
 model's file tools and its shell still name the same writable scratch, and that
 scratch stays private to the session. `HOME` is not redirected. This feature does
@@ -115,6 +125,14 @@ durability fact is normative.
   session directory from being swept.
 - Cleanup recognizes only Evener's reserved directory prefix and never removes
   unrelated operating-system temporary files.
+
+The session temp container a `TMPDIR` export uses (see "Environment") is not the
+scratch and does not follow these bullets. It is retained when the session closes
+— its lease released, its directory kept — and reclaimed by the same 24-hour
+sweep, because a detached command deliberately outlives the session and keeps the
+`TMPDIR` it was spawned with; removing the directory at close would strand it.
+Only a mint being discarded (a launch that failed before a session adopted it) is
+removed outright.
 
 ## Worktree-Isolation Posture
 

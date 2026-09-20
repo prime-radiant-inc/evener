@@ -131,7 +131,12 @@ func sessionScratchBases(requested, workspaceRoot string) []string {
 	if cache, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, cache)
 	}
-	candidates = append(candidates, worldTempBases...)
+	// Only where a session temp container can exist: elsewhere the bases are
+	// meaningless names, and walking them would let the reclaim scan directories
+	// evener never allocated in.
+	if SessionTmpSupported {
+		candidates = append(candidates, worldTempBases...)
+	}
 	var bases []string
 	for _, candidate := range candidates {
 		base, ok := validSessionScratchBase(candidate, workspaceRoot)
