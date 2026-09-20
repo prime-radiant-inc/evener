@@ -485,9 +485,12 @@ export {
 } from "./transcriptDisplayConfig";
 export type {
   HubDefaultsByLayout,
+  TranscriptDisplayChange,
   TranscriptDisplayClient,
   TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
   TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
   TranscriptDisplayStoreState,
   TranscriptDisplaySupport,
 } from "./transcriptDisplayStore";
