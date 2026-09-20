@@ -309,6 +309,15 @@ export interface DaemonIdentity {
   generation: string;
 }
 
+export interface DaemonIdleTimeoutSetParams {
+  identity: DaemonIdentity;
+  timeoutMillis: number;
+}
+
+export interface DaemonIdleTimeoutSetResponse {
+  lifecycle: DaemonLifecycle;
+}
+
 export interface DaemonLifecycle {
   phase: string;
   timeoutMillis: number;
@@ -3343,6 +3352,7 @@ export const METHOD_NAMES = [
   "evener/daemon/list",
   "evener/daemon/retire",
   "evener/daemon/status",
+  "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -3547,6 +3557,7 @@ export interface MethodTypes {
   "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
   "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
+  "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
