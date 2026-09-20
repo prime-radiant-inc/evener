@@ -1,6 +1,5 @@
 import type { AnyNotification, AppwireClientLike } from "@evener/appwire-client";
 import {
-  accessibleConfigSummary,
   configFingerprint,
   decodeLocalConfig,
   encodeLocalConfig,
@@ -18,7 +17,6 @@ import {
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { transitionTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import { connectionStore } from "./connection";
 import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
@@ -31,6 +29,7 @@ import {
   verifyLegacyWrite,
   writeLocal,
 } from "./transcriptDisplay/localStore";
+import { publishEffectiveTransition } from "./transcriptDisplay/transitions";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // This store's own guard: keybindings.ts wires the same connectionStore
@@ -96,40 +95,6 @@ let patchSerial = 0;
 const patchTokens = new Map<ViewportClass, number>();
 
 class InvalidPatchResponseError extends Error {}
-
-type EffectiveLayers = Pick<TranscriptDisplayStoreState, "viewport" | "local" | "hub">;
-
-function effectiveForLayers(layers: EffectiveLayers, layout: ViewportClass): TranscriptDisplayConfigV1 {
-  return resolveEffectiveConfig({
-    local: layers.local[layout],
-    hub: layers.hub[layout],
-    layout,
-  });
-}
-
-function publishEffectiveTransition(
-  before: EffectiveLayers,
-  after: EffectiveLayers,
-  publish: () => void,
-  targetLayout: ViewportClass,
-  force = false,
-): void {
-  const beforeConfig = effectiveForLayers(before, before.viewport);
-  const afterConfig = effectiveForLayers(after, after.viewport);
-  const afterFingerprint = configFingerprint(afterConfig);
-  const changed = configFingerprint(beforeConfig) !== afterFingerprint;
-  if (!changed && !force) {
-    publish();
-    return;
-  }
-  transitionTranscriptViews(publish, accessibleConfigSummary(afterConfig), {
-    fingerprint: afterFingerprint,
-    targetLayout,
-    force,
-    prepareRemount: force,
-    announce: changed,
-  });
-}
 
 function isLayout(value: unknown): value is ViewportClass {
   return value === "desktop" || value === "mobile";
