@@ -330,7 +330,7 @@ test("a valid local child ref opens the shared transcript action beside the focu
     focusedPaneId: "main",
   });
   const user = userEvent.setup();
-  render(<NotificationCard notification={notif({ transcriptRef: "local:child" })} />);
+  render(<NotificationCard notification={notif({ type: "delegate", transcriptRef: "local:child" })} />);
   const button = screen.getByRole("button", { name: "Open subagent" });
   expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   await user.click(button);
@@ -343,6 +343,7 @@ test("binds Open to the final notification text fragment instead of permitting a
   render(
     <NotificationCard
       notification={notif({
+        type: "delegate",
         secondary:
           "Inspect the complete delegated implementation and verify every browser geometry invariant before reporting",
         transcriptRef: "local:child",
@@ -377,7 +378,9 @@ test("the summary shows a trailing disclosure chevron that turns when the card o
 // never a flex sibling that could strand alone on a wrapped line.
 test("with a transcript ref the chevron rides inside the atomic tail unit after the Open control", () => {
   render(
-    <NotificationCard notification={notif({ secondary: "Inspect the workspace", transcriptRef: "local:child" })} />,
+    <NotificationCard
+      notification={notif({ type: "delegate", secondary: "Inspect the workspace", transcriptRef: "local:child" })}
+    />,
   );
   const chevron = screen.getByTestId("notification-chevron");
   const button = screen.getByRole("button", { name: "Open subagent" });
@@ -435,7 +438,12 @@ test("opening a child restores the notification owner as main when an unrelated 
     focusedPaneId: "unrelated",
   });
   const user = userEvent.setup();
-  render(<NotificationCard notification={notif({ transcriptRef: "local:child" })} sessionRef="local:owner" />);
+  render(
+    <NotificationCard
+      notification={notif({ type: "delegate", transcriptRef: "local:child" })}
+      sessionRef="local:owner"
+    />,
+  );
 
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
 
@@ -460,7 +468,7 @@ test("a qualified remote child ref keeps its identity when opened", async () => 
     focusedPaneId: "main",
   });
   const user = userEvent.setup();
-  render(<NotificationCard notification={notif({ transcriptRef: "remote:child" })} />);
+  render(<NotificationCard notification={notif({ type: "delegate", transcriptRef: "remote:child" })} />);
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
   expect(workspaceStore.getState().panes.find((pane) => pane.type === "transcript")?.params).toEqual({
     ref: "remote:child",
@@ -469,7 +477,32 @@ test("a qualified remote child ref keeps its identity when opened", async () => 
 
 test("missing and malformed refs have no dead open-subagent action", () => {
   for (const ref of [undefined, "", "child", "local:child:extra", "local:bad..child"]) {
-    const { unmount } = render(<NotificationCard notification={notif({ transcriptRef: ref })} />);
+    const { unmount } = render(<NotificationCard notification={notif({ type: "delegate", transcriptRef: ref })} />);
+    expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
+    unmount();
+  }
+});
+
+// A shell job's notification block carries the producer's read_transcript ref
+// for retained output ("job:<id>", agent/job_notify.go's jobTranscriptRef):
+// valid ref grammar, but there is no transcript thread behind it to open in a
+// panel, so the intent line owes no open-in-a-new-panel affordance.
+test("a shell job notification shows no open-in-a-new-panel affordance", () => {
+  render(<NotificationCard notification={notif({ jobType: "shell", transcriptRef: "job:job_x" })} />);
+  expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
+});
+
+// The open affordance opens a SUBAGENT transcript; only a delegate
+// notification carries one. Job notifications of any type - every parsed
+// type a <job-notification> block yields, whatever ref it carries - never
+// show it.
+test("job notifications of any type never show the open-subagent affordance", () => {
+  for (const type of ["job", "watch", "watch-send"] as const) {
+    const { unmount } = render(
+      <NotificationCard
+        notification={notif({ type, secondary: "Run the bounded test set", transcriptRef: "local:child" })}
+      />,
+    );
     expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
     unmount();
   }

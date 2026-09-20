@@ -285,6 +285,14 @@ excerpt:
 finished the lane
 </job-notification>`;
 
+// The openable shape: a delegate notification is the one block kind whose
+// transcript_ref names a child session thread, so it is the one that carries
+// the head's Open control (a job notification's transcript_ref is a
+// read_transcript output ref, and its card shows no open control).
+const DELEGATE_NOTIFICATION_STEERING = `<delegate-notification delegate_id="dlg_7" event="completed" status="completed" transcript_ref="local:ref_x">
+Delegate dlg_7 completed.
+</delegate-notification>`;
+
 test("delegate-notification renders a Delegate card distinct from a shell Job card", () => {
   const text = `<delegate-notification delegate_id="dlg_7" event="completed" status="completed" transcript_ref="local:ref_x">
 Delegate dlg_7 completed.
@@ -435,7 +443,12 @@ test("a notification restores its owning session to main before opening the chil
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();
   render(
-    <SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} sessionRef="local:owner" />,
+    <SteeringItem
+      item={item({ text: DELEGATE_NOTIFICATION_STEERING })}
+      turn={turn}
+      live={false}
+      sessionRef="local:owner"
+    />,
   );
 
   await user.click(screen.getByRole("button", { name: "Open subagent" }));

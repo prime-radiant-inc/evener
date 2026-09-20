@@ -231,7 +231,16 @@ export function NotificationCard({
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const chip = toneChip(notification.tone);
-  const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
+  // The head's open affordance opens a SUBAGENT transcript, so only a
+  // delegate notification earns it: its transcript_ref is a child session's
+  // thread. A job notification's transcript_ref is the producer's
+  // read_transcript ref for retained output ("job:<id>", agent/job_notify.go's
+  // jobTranscriptRef) - valid grammar with no transcript thread behind it - so
+  // job notifications of any type never show the control.
+  const transcriptRef =
+    notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
+      ? notification.transcriptRef
+      : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The title-only branch (no secondary) splits the title the same way, so
   // its chevron rides the title's final word atomically. Computed eagerly: the
