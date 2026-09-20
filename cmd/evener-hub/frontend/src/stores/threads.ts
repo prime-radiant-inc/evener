@@ -2197,7 +2197,8 @@ function publishWatchedHydration(
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch) return null;
 
-  const replayed = replayHydrationNotifications(model, pending.notifications);
+  const live = threadsStore.getState().watchedThreads.get(ref);
+  const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   pendingWatchedHydrations.delete(ref);
   storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);

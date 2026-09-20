@@ -6664,6 +6664,121 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 
+  test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    a.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(liveWatched?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+
+    const b = new FakeClient("ready");
+    const cut = { reached: false };
+    let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => resolveRefresh !== null);
+    const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
+    finishRefresh(
+      markResponseCut(
+        readResponse("ref_a", {
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_m6" },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(
+      cut,
+      "ref_a",
+      () => {
+        b.emitNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turnId: "turn_m6",
+            item: {
+              type: "agentMessage",
+              id: "item_assistant_m6",
+              turnId: "turn_m6",
+              text: "skillguard watched turn complete",
+              status: "completed",
+            },
+          },
+        });
+        b.emitNotification({
+          method: "turn/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+          },
+        });
+      },
+      () => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched,
+    );
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+    expect(model?.turns[1]?.items[0]?.text).toBe("skillguard watched turn complete");
+    expect(model?.turns[1]?.status).toBe("completed");
+    expect(model?.activeTurnId).toBeUndefined();
+  });
+
+  test("a watched refresh does not preserve a same-numbered turn from a replaced instance", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    a.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
+
+    const b = new FakeClient("ready");
+    b.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: {
+          ref: "ref_a",
+          instanceId: "replacement-instance",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          activeTurnId: "turn_m6",
+        },
+      }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5"]);
+  });
+
   test("restarts a pending initial watched hydrate on a client swap and waits for the new client's model", async () => {
     const a = connectFakeClient();
     const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
