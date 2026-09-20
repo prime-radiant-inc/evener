@@ -25,6 +25,7 @@ type environmentSyncFailureFS struct {
 	afero.Fs
 	mu                         sync.Mutex
 	failure                    error
+	syncsBeforeFailure         int
 	rollbackFailure            error
 	seekFailure                error
 	writeFailure               error
@@ -48,6 +49,11 @@ func (fs *environmentSyncFailureFS) OpenFile(name string, flag int, mode os.File
 
 func (file *environmentSyncFailureFile) Sync() error {
 	file.fs.mu.Lock()
+	if file.fs.syncsBeforeFailure > 0 {
+		file.fs.syncsBeforeFailure--
+		file.fs.mu.Unlock()
+		return file.File.Sync()
+	}
 	failure := file.fs.failure
 	file.fs.failure = nil
 	onFailure := file.fs.onFailure

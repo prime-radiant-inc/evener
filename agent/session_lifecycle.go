@@ -1278,37 +1278,60 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// Claude Code / codex. The transcript records an interrupt
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
+			interruptMarkerRejected := false
 			if isTurnCancellation(processCtx, err) {
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
-				// An interrupted turn ends idle even if it posted questions (spec
-				// §5.1): the user is demonstrably present. The cards stay rendered
-				// from the transcript regardless; only the pending set — which
-				// exists purely to drive the boundary check — clears.
-				s.clearAskPending()
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
-				turns := s.modelResponses
-				emitEnd := !s.sessionEndEmitted && !closed
-				if emitEnd {
-					s.sessionEndEmitted = true
-				}
 				s.mu.Unlock()
 
+				markerAccepted := false
 				if !closed {
 					// Append a system-reminder turn so the next request to
 					// the model includes the interrupt notice in history.
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
-					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
+					if markerErr := s.appendSteeringTurnDurablyForOwner(interruptMsg, events.SteeringKindInterrupted, s.activeTurnOwner()); markerErr != nil {
+						interruptMarkerRejected = true
+						// The cancellation is still the original turn error, but a
+						// marker that was not admitted cannot resolve the ask or
+						// open the autonomous drain. The generic failure tail settles
+						// the live boundary from the still-pending ask.
+						err = errors.Join(err, fmt.Errorf("record interrupt marker: %w", markerErr))
+					} else {
+						markerAccepted = true
+						// An interrupted turn ends idle even if it posted questions
+						// (spec §5.1): the user is demonstrably present. The cards
+						// stay rendered from the transcript regardless; only the
+						// pending set — which exists purely to drive the boundary
+						// check — clears after the marker is accepted.
+						s.clearAskPending()
+						s.finishProcessingAtBoundary(processCtx, SessionIdle)
+						s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
+					}
+				} else {
+					// A closing session cannot publish a marker. Preserve the
+					// existing close guard: settle the turn and discard its
+					// in-memory ask without announcing another boundary.
+					s.finishProcessingAtBoundary(processCtx, SessionIdle)
+					s.clearAskPending()
 				}
-				if emitEnd {
-					s.emit(events.EventSessionEnd, events.SessionEndData{
-						Reason:      "interrupted",
-						State:       string(SessionIdle),
-						Turns:       turns,
-						Interrupted: true,
-					})
+				if markerAccepted {
+					s.mu.Lock()
+					turns := s.modelResponses
+					emitEnd := !s.sessionEndEmitted
+					if emitEnd {
+						s.sessionEndEmitted = true
+					}
+					s.mu.Unlock()
+					if emitEnd {
+						s.emit(events.EventSessionEnd, events.SessionEndData{
+							Reason:      "interrupted",
+							State:       string(SessionIdle),
+							Turns:       turns,
+							Interrupted: true,
+						})
+					}
 				}
 				// A turn ended by a Stop parks the queue head instead of running
 				// it (wms7's ruling): the user stopped this session's work, so
@@ -1320,7 +1343,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				// the fence that would mark the Stop was already finalized by
 				// the completion above, which is why the completion reports it
 				// here.
-				if !closed && !stopSettledThisTurn {
+				if markerAccepted && !closed && !stopSettledThisTurn {
 					// Decide, then claim. popQueueHead is a durable commit, and
 					// whether this interrupt may drain depends only on the turn's
 					// context and error -- never on the queue -- so there is
@@ -1378,7 +1401,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				// diverging from restore's deriveRestoredState for the identical
 				// transcript and, via WireState, telling a live client nothing is
 				// waiting on them.
-				s.finishProcessingAtFailureBoundary(processCtx)
+				if interruptMarkerRejected {
+					s.finishProcessingAtRestoredFailureBoundary(processCtx)
+				} else {
+					s.finishProcessingAtFailureBoundary(processCtx)
+				}
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
@@ -1966,7 +1993,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		// Leave the processing boundary for the outer cancellation handler. It
+		// must first admit the interrupt marker, then settle Awaiting when a
+		// pending ask survives a rejected marker; settling Idle here would make
+		// finishProcessingAtFailureBoundary a no-op and diverge from restore.
 		return "", false, ctx.Err()
 	default:
 	}
@@ -2165,7 +2195,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		select {
 		case <-ctx.Done():
 			s.emit(events.EventError, errorDataFromError(ctx.Err()))
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			// Leave the processing boundary for the outer cancellation handler.
+			// A cancellation between rounds has the same marker-admission and
+			// pending-ask boundary as cancellation before the first round.
 			return "", progressed, ctx.Err()
 		default:
 		}

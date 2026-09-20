@@ -157,6 +157,23 @@ test("a steering item with steeringKind interrupted AFTER an ask_user ack resolv
   expect(liveAskQuestions(m)).toEqual([]);
 });
 
+// The salvage explanation is persisted beside a partial response, but it is
+// daemon-authored context rather than the admitted interrupt boundary. It must
+// leave an ask opened when the durable interrupt marker was not accepted.
+test("a steering item with steeringKind interrupted-salvage does NOT resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", {
+        type: "steering",
+        text: "This response was interrupted; the content above was produced before the interruption and was not delivered.",
+        steeringKind: "interrupted-salvage",
+      }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
 // A user steer reaches processOneInput as EntryUserInput (session_lifecycle.go:
 // "the steering carrier enters as queued user input... it must reach the
 // model rather than wait behind a question the user has already moved
