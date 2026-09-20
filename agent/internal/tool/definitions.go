@@ -206,7 +206,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				"isolation": map[string]any{
 					"type":        "string",
 					"enum":        []string{"worktree"},
-					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose-only manage_worktree to retire its own sub-delegates' isolation lanes.",
+					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose/unlock manage_worktree to retire or release its own sub-delegates' isolation lanes.",
 				},
 				"sandbox": map[string]any{
 					"type":        "string",
@@ -836,6 +836,9 @@ func DefManageWorktree() llm.ToolDefinition {
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
+		"unlock (release a delegate's isolation lane lock by its delegate `id` WITHOUT retiring the delegate — the worktree " +
+		"and the delegate's resumability are untouched, and the lane becomes switchable; use this to recover uncommitted work " +
+		"from a delegate you can no longer revive. Refused while the delegate has running or unfinished work). " +
 		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
 		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
 	return llm.ToolDefinition{
@@ -847,8 +850,8 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, adopt, exit, remove, prune, or dispose.",
-					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "dispose"},
+					"description": "create, list, switch, adopt, exit, remove, prune, dispose, or unlock.",
+					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "dispose", "unlock"},
 				},
 				"name": map[string]any{
 					"type":        "string",
@@ -856,7 +859,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "For dispose: the delegate id (dlg_…) whose isolation worktree lane to retire.",
+					"description": "For dispose/unlock: the delegate id (dlg_…) whose isolation worktree lane to retire (dispose) or release the lock on without retiring (unlock).",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",
@@ -884,23 +887,30 @@ func DefManageWorktree() llm.ToolDefinition {
 	}
 }
 
-// DefManageWorktreeDisposeOnly is the dispose-only variant of manage_worktree
+// DefManageWorktreeDisposeOnly is the delegate-lane variant of manage_worktree
 // (delegate-lane disposal spec §P1 "Availability"). It is served — under the
 // same tool name — to a worktree-isolated coordinator: a delegate spawned with
 // isolation:"worktree" that itself carries a delegation allowance. Such a
 // session lives inside its own lane; letting it create/switch/remove/prune
 // worktrees would let it disturb the sibling lanes its parent created (see
-// rootOnlyWorktreeTools), so the schema exposes only the dispose operation —
-// retiring its OWN sub-delegates' lanes. The registry can add or remove only
-// whole tools, not individual operations, so the handler enforces the same
-// restriction in-line (session_tools_worktree.go).
+// rootOnlyWorktreeTools), so the schema exposes only the two operations that act
+// on its OWN direct sub-delegates' lanes: dispose (retire) and unlock (release
+// the lock without retiring, issue #481). Unlock is less destructive than
+// dispose, and no other session can act on those lanes
+// (stableWorktreeSnapshotForOwner admits only direct children), so denying it
+// while allowing dispose would block recovery for the one parent class that
+// lives inside a lane. The registry can add or remove only whole tools, not
+// individual operations, so the handler enforces the same restriction in-line
+// (session_tools_worktree.go).
 func DefManageWorktreeDisposeOnly() llm.ToolDefinition {
-	desc := "Retire one of YOUR OWN delegates' isolation worktree lanes once you are done with its work: " +
-		"unlocks the lane, removes the worktree, deletes its branch, and marks the delegate disposed. " +
-		"Target it by the delegate `id` (dlg_…); `force` overrides the refusal to discard unmerged commits, " +
+	desc := "Retire or release one of YOUR OWN delegates' isolation worktree lanes. " +
+		"dispose unlocks the lane, removes the worktree, deletes its branch, and marks the delegate disposed; " +
+		"unlock (issue #481) releases the lane's lock WITHOUT retiring the delegate — its resumability and worktree " +
+		"are untouched — so you can recover uncommitted work from a delegate you can no longer revive. " +
+		"Target by the delegate `id` (dlg_…); `force` overrides the refusal to discard unmerged commits, " +
 		"`force_dirty` overrides the refusal to discard uncommitted changes. " +
-		"dispose is the ONLY worktree operation available to you: you run inside your own isolation worktree lane, " +
-		"so you cannot create, switch, list, remove, or prune worktrees (that could disturb sibling lanes)."
+		"dispose and unlock are the ONLY worktree operations available to you: you run inside your own isolation " +
+		"worktree lane, so you cannot create, switch, list, remove, or prune worktrees (that could disturb sibling lanes)."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
 		Description: desc,
@@ -910,12 +920,12 @@ func DefManageWorktreeDisposeOnly() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "Only dispose is available on this surface.",
-					"enum":        []string{"dispose"},
+					"description": "Only dispose and unlock are available on this surface.",
+					"enum":        []string{"dispose", "unlock"},
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "The delegate id (dlg_…) whose isolation worktree lane to retire.",
+					"description": "The delegate id (dlg_…) whose isolation worktree lane to retire (dispose) or release the lock on without retiring (unlock).",
 				},
 				"force": map[string]any{
 					"type":        "boolean",

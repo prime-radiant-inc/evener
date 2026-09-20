@@ -991,6 +991,10 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// idleDelegateRestoreCommit takes a ref-counted laneRestores window; release
+	// it when this test's window ends, or the delegate stays fenced from every
+	// start path for the process lifetime.
+	defer tree.endLaneRestore(d.DelegateID)
 	runtime := delegateRuntime{owner: root}
 	candidate, restored, finish, err := runtime.restoreIdleForSend(started)
 	if err != nil {

@@ -182,6 +182,23 @@ test("dispose: an already-disposed result never claims a dirty-discard even if f
   );
 });
 
+// --- unlock -----------------------------------------------------------------
+
+test("unlock: summary leads with the release and the delegate id", () => {
+  const d = toolRendererFor("manage_worktree");
+  const args = JSON.stringify({ operation: "unlock", id: "dlg_abc123" });
+  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("Released lane for dlg_abc123");
+});
+
+test("unlock: prefers the settled result's id over the argument", () => {
+  const d = toolRendererFor("manage_worktree");
+  const args = JSON.stringify({ operation: "unlock", id: "dlg_arg" });
+  const output = JSON.stringify({ status: "unlocked", id: "dlg_result" });
+  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args, output }))).toBe(
+    "Released lane for dlg_result",
+  );
+});
+
 // --- defensive fallback ------------------------------------------------
 
 test("an unrecognized operation still renders a non-crashing, tool-name-prefixed summary", () => {

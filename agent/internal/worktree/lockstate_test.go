@@ -3,7 +3,7 @@ package worktree
 import "testing"
 
 // TestDecideEveryCell enumerates every cell of the §5 lock state machine table
-// — 14 events × 4 states = 56 cells — one explicit case each, with a comment
+// — 15 events × 4 states = 60 cells — one explicit case each, with a comment
 // citing the table row (and the body-text section that governs the split of
 // the table's single "own marker" column into OwnSession/OwnDelegate). This is
 // the review artifact for Task 9: each expected action is the verbatim table
@@ -127,6 +127,14 @@ func TestDecideEveryCell(t *testing.T) {
 		{EvDisposeChanged, OwnDelegate, ActUnlock, "dispose-changed/own-dlg: unlock, keep"},
 		{EvDisposeChanged, Foreign, ActRefuse, "dispose-changed/foreign: —"},
 
+		// Row "release a delegate lane's lock (unlock, issue #481)": only the
+		// delegate's own evener:dlg: marker may be released; every other state
+		// fails safe to ActRefuse.
+		{EvUnlockDelegate, Unlocked, ActRefuse, "unlock/unlocked: no marker to release → refuse"},
+		{EvUnlockDelegate, OwnSession, ActRefuse, "unlock/own-session: not the delegate's dlg marker → refuse"},
+		{EvUnlockDelegate, OwnDelegate, ActUnlock, "unlock/own-dlg: release the delegate marker, keep the lane"},
+		{EvUnlockDelegate, Foreign, ActRefuse, "unlock/foreign: not ours to touch → refuse"},
+
 		// Row "prune candidate": unlocked → eligible (other conditions apply);
 		// any locked → skip. Owner-independent (§5 prune sweep 1).
 		{EvPruneCandidate, Unlocked, ActNone, "prune/unlocked: eligible, other conditions apply"},
@@ -135,8 +143,8 @@ func TestDecideEveryCell(t *testing.T) {
 		{EvPruneCandidate, Foreign, ActSkip, "prune/foreign: locked → skip"},
 	}
 
-	if len(cases) != 14*4 {
-		t.Fatalf("expected 56 cells (14 events × 4 states), enumerated %d", len(cases))
+	if len(cases) != 15*4 {
+		t.Fatalf("expected 60 cells (15 events × 4 states), enumerated %d", len(cases))
 	}
 
 	for _, c := range cases {
@@ -174,6 +182,7 @@ func TestDecideTotalOutOfRange(t *testing.T) {
 		{EvDelegateRevive, LockState(999)},
 		{EvDisposeUnchanged, LockState(999)},
 		{EvDisposeChanged, LockState(999)},
+		{EvUnlockDelegate, LockState(999)},
 		{EvPruneCandidate, LockState(42)},
 		{LockEvent(-7), LockState(-7)},
 	}
@@ -224,6 +233,7 @@ func TestLockEventString(t *testing.T) {
 		{EvDelegateRevive, "EvDelegateRevive"},
 		{EvDisposeUnchanged, "EvDisposeUnchanged"},
 		{EvDisposeChanged, "EvDisposeChanged"},
+		{EvUnlockDelegate, "EvUnlockDelegate"},
 		{EvPruneCandidate, "EvPruneCandidate"},
 		{LockEvent(999), "LockEvent(?)"},
 	}

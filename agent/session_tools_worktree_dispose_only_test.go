@@ -86,7 +86,7 @@ func TestWorktreeAvailability_NonIsolatedCoordinatorHasFullTool(t *testing.T) {
 		t.Fatal("non-isolated coordinator (allowance>0) must have the full manage_worktree tool")
 	}
 	enum := manageWorktreeOpEnum(t, rt.Definition)
-	for _, want := range []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"} {
+	for _, want := range []string{"create", "list", "switch", "exit", "remove", "prune", "dispose", "unlock"} {
 		if !slices.Contains(enum, want) {
 			t.Errorf("full tool op enum %v missing %q", enum, want)
 		}
@@ -101,12 +101,12 @@ func TestWorktreeAvailability_IsolatedCoordinatorHasDisposeOnlyVariant(t *testin
 		t.Fatal("isolated coordinator (allowance>0) must have the dispose-only manage_worktree surface")
 	}
 	enum := manageWorktreeOpEnum(t, rt.Definition)
-	if len(enum) != 1 || enum[0] != "dispose" {
-		t.Fatalf("dispose-only variant op enum = %v, want exactly [\"dispose\"]", enum)
+	if !slices.Equal(enum, []string{"dispose", "unlock"}) {
+		t.Fatalf("dispose-only variant op enum = %v, want [\"dispose\", \"unlock\"]", enum)
 	}
 }
 
-func TestWorktreeAvailability_IsolatedCoordinatorRefusesNonDisposeOps(t *testing.T) {
+func TestWorktreeAvailability_IsolatedCoordinatorRefusesDisallowedOps(t *testing.T) {
 	t.Parallel()
 	s := newSubagentSessionForAvailability(t, "worktree", 1)
 	rt := s.reg.Get("manage_worktree")
@@ -138,6 +138,23 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposePassesGate(t *testing.T)
 	_, err := rt.Exec(context.Background(), s.currentEnv(), map[string]any{"operation": "dispose", "id": "dlg_nonexistent"})
 	if err != nil && strings.Contains(err.Error(), "isolation worktree lane") {
 		t.Errorf("dispose must pass the surface gate; got surface refusal: %v", err)
+	}
+}
+
+// A worktree-isolated coordinator owns its direct sub-delegates' lanes and no
+// other session can act on them, so unlock — strictly less destructive than the
+// dispose it is already allowed — must pass the surface gate too (issue #481,
+// review round 2).
+func TestWorktreeAvailability_IsolatedCoordinatorUnlockPassesGate(t *testing.T) {
+	t.Parallel()
+	s := newSubagentSessionForAvailability(t, "worktree", 1)
+	rt := s.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("isolated coordinator must have the dispose-only surface")
+	}
+	_, err := rt.Exec(context.Background(), s.currentEnv(), map[string]any{"operation": "unlock", "id": "dlg_nonexistent"})
+	if err != nil && strings.Contains(err.Error(), "isolation worktree lane") {
+		t.Errorf("unlock must pass the surface gate; got surface refusal: %v", err)
 	}
 }
 
@@ -187,8 +204,8 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 		t.Fatal("restored isolated coordinator must have the dispose-only manage_worktree surface")
 	}
 	enum := manageWorktreeOpEnum(t, rt.Definition)
-	if len(enum) != 1 || enum[0] != "dispose" {
-		t.Fatalf("restored dispose-only variant op enum = %v, want exactly [\"dispose\"]", enum)
+	if !slices.Equal(enum, []string{"dispose", "unlock"}) {
+		t.Fatalf("restored dispose-only variant op enum = %v, want [\"dispose\", \"unlock\"]", enum)
 	}
 	_, err = rt.Exec(context.Background(), restored.currentEnv(), map[string]any{"operation": "create", "name": "x"})
 	if err == nil || !strings.Contains(err.Error(), "isolation worktree lane") {
@@ -197,14 +214,14 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 }
 
 // Guard the pure schema shape independently of session wiring.
-func TestDefManageWorktreeDisposeOnly_SchemaListsOnlyDispose(t *testing.T) {
+func TestDefManageWorktreeDisposeOnly_SchemaListsDisposeAndUnlock(t *testing.T) {
 	t.Parallel()
 	def := tool.DefManageWorktreeDisposeOnly()
 	if def.Name != "manage_worktree" {
 		t.Errorf("dispose-only variant name = %q, want manage_worktree (same tool name)", def.Name)
 	}
 	enum := manageWorktreeOpEnum(t, def)
-	if len(enum) != 1 || enum[0] != "dispose" {
-		t.Fatalf("dispose-only variant op enum = %v, want exactly [\"dispose\"]", enum)
+	if !slices.Equal(enum, []string{"dispose", "unlock"}) {
+		t.Fatalf("dispose-only variant op enum = %v, want [\"dispose\", \"unlock\"]", enum)
 	}
 }

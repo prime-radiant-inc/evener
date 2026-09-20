@@ -534,6 +534,12 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 	return c.openDelegateAttention(delegateID, attentionID)
 }
 
+// idleDelegateRestoreCommit commits a cold attention restore. A successful
+// return takes a ref-counted laneRestores window for delegateID; the CALLER MUST
+// pair it with endLaneRestore(delegateID) when the commit->install window ends
+// (success or failure). A missed release leaves laneRestores > 0 forever, which
+// fences the delegate from ReserveStart/ReserveAttention/reserveOwedAttentionStart
+// and blocks every later unlock.
 func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (delegateStartCommit, string, error) {
 	if c == nil || delegateID == "" {
 		return delegateStartCommit{}, "", errDelegateNotControllable
@@ -544,6 +550,16 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return delegateStartCommit{}, "", errDelegateTargetBusy
 	}
+	// An in-flight lane unlock (issue #481) fences cold attention restoration
+	// too: this path commits a start without going through ReserveStart, so it
+	// must consult the same lane-handoff fence.
+	if _, busy := c.laneHandoffs[delegateID]; busy {
+		return delegateStartCommit{}, "", errDelegateTargetBusy
+	}
+	// Register this commit->install window so beginLaneHandoff refuses while it
+	// is open: the point-in-time check above is not enough on its own. The count
+	// is ref-counted so overlapping cold restores each hold their own window.
+	c.laneRestores[delegateID]++
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {

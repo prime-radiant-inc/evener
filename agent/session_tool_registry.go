@@ -316,6 +316,7 @@ func newToolDeps(s *Session) *toolDeps {
 			listOp:        s.worktreeList,
 			pruneOp:       s.worktreePrune,
 			disposeOp:     s.worktreeDispose,
+			unlockOp:      s.worktreeUnlock,
 			disposeOnly:   s.worktreeDisposeOnlySurface,
 		},
 		now: s.sclock().Now,

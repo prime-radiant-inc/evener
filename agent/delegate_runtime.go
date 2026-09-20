@@ -760,6 +760,9 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	if err != nil {
 		return nil, nil, err
 	}
+	// idleDelegateRestoreCommit registered this commit->install window; release
+	// it when the window ends (success or failure).
+	defer s.delegateController.endLaneRestore(delegateID)
 	owner, err := s.restoreColdDelegateOwnerRuntime(parentID, gates...)
 	if err != nil {
 		return nil, nil, err
@@ -2537,6 +2540,14 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 	}
 	if !leader {
 		if existing != nil {
+			// A resident child already exists: this path still launches it, so
+			// it must re-establish the lane lock too (issue #481 review). The
+			// leader's path re-locks before restoreIdle; this early return used
+			// to skip that, letting a send start a resident child in a lane an
+			// unlock had freed.
+			if laneErr := s.reapplyIsolationLaneLockForSend(started.descriptor); laneErr != nil {
+				return nil, false, finish, laneErr
+			}
 			return existing, false, finish, nil
 		}
 		reconstructed, waitErr := pending.wait()
@@ -2545,6 +2556,15 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 	finish = func(sub *subagent, restoreErr error) {
 		defer release()
 		s.subagents.finishReconstruction(childID, pending, sub, restoreErr)
+	}
+	// Re-establish the delegate's isolation lane lock before the child is
+	// restored into it (issue #481 review): a delegate must never start work in
+	// a lane it does not hold, including after an unlock freed the lane while
+	// the delegate stayed resumable. The EvDelegateRevive core locks an unlocked
+	// lane, adopts the delegate's own marker, and refuses a session marker or a
+	// foreign lock.
+	if err := s.reapplyIsolationLaneLockForSend(started.descriptor); err != nil {
+		return nil, false, finish, err
 	}
 	sub, restored, restoreErr := runtime.restoreIdle(started)
 	return sub, restored, finish, restoreErr

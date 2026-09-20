@@ -383,7 +383,7 @@ type Session struct {
 	childCommittedSendChildren    map[string]struct{}
 	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
-	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	disposeWG                     sync.WaitGroup                       // in-flight in-turn delegate-lane ops (manage_worktree op=dispose and op=unlock); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
 	disposeRetirement             []func()                             // anonymous same-session admissions; guarded by mu, including work begun before controller attachment
 	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
 	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
@@ -739,8 +739,9 @@ type Session struct {
 	// worktreeDisposeOnly is set at session init for a worktree-isolated
 	// coordinator (delegate spawned isolation:"worktree" that itself carries a
 	// delegation allowance): the manage_worktree tool is served as the
-	// dispose-only variant and the handler refuses every op except dispose
-	// (delegate-lane disposal spec §P1 "Availability"). Write-once during init,
+	// dispose-only variant and the handler refuses every op except dispose and
+	// unlock (delegate-lane disposal spec §P1 "Availability"; unlock is issue
+	// #481). Write-once during init,
 	// before the session serves any tool call.
 	worktreeDisposeOnly bool
 

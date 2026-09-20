@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -139,6 +142,84 @@ func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane i
 		return reLockDone // already carries our own dlg marker (lock held across resume)
 	default: // ActRefuse: foreign / a plain session marker — not ours to touch
 		return reLockSkipped
+	}
+}
+
+// reapplyIsolationLaneLockForSend re-establishes the evener:dlg: lock on a
+// worktree-isolated delegate's lane before its send revives it (issue #481
+// review). The lock core is the SAME EvDelegateRevive core revival and resume
+// re-lock use: unlocked → lock, the delegate's own dlg marker → adopt, a plain
+// session marker or a foreign lock → refuse the send. restoreIdleForSend calls
+// it before the child is restored into the lane, so a delegate can never start
+// work in a lane it does not hold — including after a manage_worktree unlock
+// left the lane loose while the delegate stayed resumable.
+//
+// Non-isolated delegates are a no-op; a worktree-isolated delegate whose lane is
+// absent or is not a linked managed worktree FAILS CLOSED (issue #481 review):
+// treating an invalid lane as success would let restoreIdle create the child
+// environment at the bare path, using an unlocked ordinary directory. The lane's
+// basename is the authoritative delegate identity for its sidecar and marker (a
+// lane is named for the delegate that created it), so it is what the sidecar
+// read and the marker use. The relock is admitted on the session's env-work
+// close fence so a close cannot tear the environment down under it.
+func (s *Session) reapplyIsolationLaneLockForSend(descriptor delegatestore.Descriptor) error {
+	if descriptor.Isolation != "worktree" {
+		return nil
+	}
+	lanePath := filepath.Clean(strings.TrimSpace(descriptor.WorkingDir))
+	if lanePath == "" || lanePath == "." {
+		return errors.New("delegate isolation lane path is unset; refusing to start the delegate")
+	}
+	if !laneWorktreePresent(lanePath) {
+		return fmt.Errorf("delegate isolation lane %s is absent or not a linked managed worktree; refusing to start the delegate in it", lanePath)
+	}
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return fmt.Errorf("delegate isolation lane %s requires a local execution environment; refusing to start the delegate in it", lanePath)
+	}
+	work, admitted := s.beginEnvWork("delegate-lane-relock")
+	if !admitted {
+		return fmt.Errorf("delegate isolation lane %s: session is closing; refusing to start the delegate in it", lanePath)
+	}
+	defer s.endEnvWork(work)
+	delegateID := filepath.Base(lanePath)
+	sc, err := worktree.ReadSidecar(metaDirForLane(lanePath), delegateID)
+	if err != nil {
+		return fmt.Errorf("delegate isolation lane %s is unreadable; refusing to start the delegate in it: %w", lanePath, err)
+	}
+	originalRoot := strings.TrimSpace(sc.OriginalRoot)
+	if originalRoot == "" {
+		return fmt.Errorf("delegate isolation lane %s sidecar has no original_root; refusing to start the delegate in it", lanePath)
+	}
+	if laneMain, conflict := delegateLaneProvenanceConflict(local, lanePath, originalRoot); conflict {
+		return fmt.Errorf("delegate isolation lane %s resolves to main root %s but its sidecar records %s; refusing to start the delegate in it on a provenance mismatch", lanePath, laneMain, originalRoot)
+	}
+	controlEnv, err := s.delegateDisposeControlEnv(originalRoot)
+	if err != nil {
+		return fmt.Errorf("delegate isolation lane %s control environment: %w", lanePath, err)
+	}
+	defer disposeUnadoptedScratch(controlEnv)
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+
+	locked, reason, lsErr := lockStateOf(run, lanePath)
+	if lsErr != nil {
+		return fmt.Errorf("delegate isolation lane %s lock state could not be verified; refusing to start the delegate in it: %w", lanePath, lsErr)
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, delegateID)
+	}
+	switch worktree.Decide(worktree.EvDelegateRevive, st) {
+	case worktree.ActLock:
+		marker := worktree.FormatDelegateMarker(delegateID, s.id)
+		if _, err := run("worktree", "lock", "--reason", marker, lanePath); err != nil {
+			return fmt.Errorf("delegate isolation lane %s could not be re-locked; refusing to start the delegate in it: %w", lanePath, err)
+		}
+		return nil
+	case worktree.ActAdopt:
+		return nil // already carries this delegate's own dlg marker
+	default: // ActRefuse: a session marker or a foreign lock is not ours to touch
+		return fmt.Errorf("delegate isolation lane %s is locked by another owner (%s); refusing to start the delegate in it", lanePath, reason)
 	}
 }
 

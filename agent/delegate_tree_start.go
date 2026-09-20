@@ -209,6 +209,16 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if attentionID == "" || aggregate == nil {
 		return nil, errDelegateTargetBusy
 	}
+	// An in-flight lane unlock (issue #481) fences attention starts exactly as
+	// it fences ReserveStart: a delegate must not start work in a lane whose
+	// lock is being released, on ANY start path. A cold restore's commit->install
+	// window (laneRestores) fences them too.
+	if _, busy := c.laneHandoffs[delegateID]; busy {
+		return nil, errDelegateTargetBusy
+	}
+	if c.laneRestores[delegateID] > 0 {
+		return nil, errDelegateTargetBusy
+	}
 	for _, record := range c.reservations {
 		if record.delegateID != delegateID {
 			continue
@@ -310,6 +320,14 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing || delegateID == "" || attentionID == "" || generation == 0 || c.stop != nil || c.reclamationCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
+	// An in-flight lane unlock fences this cold-start admission too (issue #481
+	// review): every path that can start a delegate must consult the fence.
+	if _, busy := c.laneHandoffs[delegateID]; busy {
+		return nil, errDelegateTargetBusy
+	}
+	if c.laneRestores[delegateID] > 0 {
 		return nil, errDelegateTargetBusy
 	}
 	aggregate := c.durable[delegateID]
@@ -597,6 +615,58 @@ func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, l
 	return plans, cancel, delegateCommittedStartFailureStopWon, errDelegateTargetBusy
 }
 
+// beginLaneHandoff fences the delegate id against a start for the duration of a
+// manage_worktree unlock (issue #481). It returns false when a start is already
+// in flight for the delegate (the reservation exists), in which case the unlock
+// must refuse rather than race it. A true return MUST be paired with
+// endLaneHandoff.
+func (c *delegateTreeController) beginLaneHandoff(delegateID string) bool {
+	if c == nil || delegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, busy := c.laneHandoffs[delegateID]; busy {
+		return false
+	}
+	if c.laneRestores[delegateID] > 0 {
+		return false
+	}
+	for _, existing := range c.reservations {
+		if existing.delegateID == delegateID {
+			return false
+		}
+	}
+	c.laneHandoffs[delegateID] = struct{}{}
+	return true
+}
+
+// endLaneHandoff reverses beginLaneHandoff.
+func (c *delegateTreeController) endLaneHandoff(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.laneHandoffs, delegateID)
+	c.mu.Unlock()
+}
+
+// endLaneRestore clears a cold-restore in-flight marker set by a successful
+// idleDelegateRestoreCommit. It MUST be paired with every such commit.
+func (c *delegateTreeController) endLaneRestore(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.laneRestores[delegateID] > 0 {
+		c.laneRestores[delegateID]--
+		if c.laneRestores[delegateID] == 0 {
+			delete(c.laneRestores, delegateID)
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
@@ -618,6 +688,17 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	}
 	aggregate := c.durable[delegateID]
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
+	// An in-flight lane unlock (issue #481) is a hard start barrier: the lock
+	// release must not race a start that would run the delegate in a lane whose
+	// lock is being freed. Keyed on the delegate id, so it covers a cold
+	// delegate (no resident subagent to carry a dispose gate) too. A cold
+	// restore's commit->install window fences this path as well.
+	if _, busy := c.laneHandoffs[delegateID]; busy {
+		return nil, errDelegateTargetBusy
+	}
+	if c.laneRestores[delegateID] > 0 {
 		return nil, errDelegateTargetBusy
 	}
 	for _, existing := range c.reservations {

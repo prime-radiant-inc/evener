@@ -24,17 +24,19 @@ up in `git status` in the main checkout, need no `.gitignore` entries, and survi
 
 ## The `manage_worktree` tool
 
-One tool, seven operations, selected by `operation`:
+One tool, nine operations, selected by `operation`:
 
 | Operation | What it does | Key arguments |
 | --- | --- | --- |
 | `create` | Creates a new worktree on a new branch and enters it — subsequent shell/file/grep calls operate inside it. | `name` (required — doubles as the branch name and the worktree's directory name), `base_ref` (optional; defaults to the current branch tip) |
 | `switch` | Enters an existing worktree without creating one. | `name` (a worktree this tool manages) or `path` (any worktree git already knows about, including hand-made ones) |
+| `adopt` | Takes over an unmanaged worktree already under the managed root, so it can be switched to by name and is subject to `remove`/`prune` like any managed worktree. | `path` (required — the unmanaged worktree's path, as reported in `list`'s unmanaged section) |
 | `exit` | Leaves the current worktree and returns to where the session was before, without touching the worktree itself. | none |
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
 | `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
 | `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | none |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
+| `unlock` | Releases one delegate isolation lane's lock by its delegate id **without** retiring the delegate — its resumability and the worktree are untouched, and the lane becomes switchable. Use it to recover uncommitted work from a delegate you can no longer revive. Refused while the delegate has running or outstanding work, when a watch targets it, or when the lane's lock is not that delegate's own marker. | `id` (required — the `dlg_…` delegate id) |
 
 Because entering or leaving a worktree changes where every later tool call runs,
 `create`/`switch`/`exit`/`remove` are ordered against other tool calls in the same
@@ -67,8 +69,10 @@ What this means day to day:
   the session closes cleanly.
 - `force` never overrides a lock. Locks and dirty-tree safety are different
   protections: `force` skips the "are there uncommitted changes here" check on
-  `remove`; unlocking someone else's worktree is a deliberate act (`git worktree
-  unlock`), never a tool flag.
+  `remove`. A lock is released only by the operation that owns it: a session's
+  own lock by `exit`/`switch`-away/close, and a delegate lane's `evener:dlg:`
+  lock by `dispose` or by `unlock` — a `force` flag never overrides one, and
+  `unlock` releases only a direct delegate lane's own marker.
 - If a session or delegate dies without a clean shutdown — a crash, a kill — its lock
   is left behind. This is intentional fail-safe behavior: a stale lock just means
   nobody has confirmed the work is abandoned yet. The lock names its former owner, so
@@ -148,10 +152,11 @@ read-only git commands via its shell tool, but it can't create, switch, or remov
 worktrees.
 
 A delegate that is itself a coordinator — spawned with a delegation allowance so it
-can fan out its *own* isolated sub-delegates — gets a **dispose-only** `manage_worktree`:
-the single `dispose` operation, nothing else. That lets it retire its sub-delegates'
+can fan out its *own* isolated sub-delegates — gets a **dispose/unlock** `manage_worktree`:
+only `dispose` and `unlock`, nothing else. That lets it retire its sub-delegates'
 lanes as their work merges (the same automatic disposal a top-level session does at
-close, but reachable mid-life), while it still can't create, switch, or remove
+close, but reachable mid-life), or release an unreachable sub-delegate's lane lock
+without retiring it, while it still can't create, switch, or remove
 worktrees — including its own lane, which its parent owns and disposes.
 
 Every job result from an isolated delegate reports the lane's path, its branch, how
