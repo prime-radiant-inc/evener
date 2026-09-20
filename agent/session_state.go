@@ -313,12 +313,15 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	// another append, and hold it through state publication so this boundary
 	// sees only recorded or adopted turns.
 	var restoredHistory []schema.Turn
+	var restoredRepairInsertions []int
+	retained := 0
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
 		_, entries, _, err := readTranscript(path)
 		if err == nil {
-			restoredHistory = ResumeHistory(entries)
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			retained = retainedFrom(entries)
 		}
 	}
 	release := func(transitioned bool, turnMS int64) {
@@ -332,6 +335,18 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 
 	s.mu.Lock()
 	divergence := s.fork.divergence
+	if restoredHistory != nil {
+		// The transcript-derived history starts at its last compaction marker,
+		// and orphan repair may splice synthetic results before the fork
+		// boundary. Map the immutable full-transcript divergence into those
+		// resumed-history coordinates before consulting journal provenance.
+		divergence -= retained
+		for _, idx := range restoredRepairInsertions {
+			if idx <= divergence-1 {
+				divergence++
+			}
+		}
+	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
 		// Without a readable transcript there is no confirmed replacement for
