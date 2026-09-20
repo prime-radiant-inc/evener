@@ -1807,6 +1807,67 @@ func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 	}
 }
 
+// AddMarketplace has no refusal for an already-registered name, so a second
+// call with the same name and a different source re-sources it in place. The
+// swap then displaces the clone the marketplaces file still records, and that
+// clone is the only copy of what a failed save leaves behind: it has to stay
+// aside until the save lands, and go back when it does not. Deleting it at the
+// swap would leave the registered marketplace pointing at the new, then removed,
+// clone - a marketplace whose install location no longer exists.
+func TestAddMarketplace_SaveFailureRestoresTheOldClone(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "acme", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("first AddMarketplace: %v", err)
+	}
+	before := readStoreFile(t, m.marketplacesFile())
+
+	origWrite := marketplaceAtomicWriteFile
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return errors.New("boom") }
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+
+	if _, err := m.AddMarketplace(ctx, "acme", Source{Kind: SourceURL, URL: repoB}); err == nil {
+		t.Fatal("expected the save to fail")
+	}
+	marketplaceAtomicWriteFile = origWrite
+
+	// The failed save never overwrote the file, so the marketplace is still
+	// registered against its old clone, and that clone must still be there.
+	if after := readStoreFile(t, m.marketplacesFile()); after != before {
+		t.Fatalf("known_marketplaces.json changed after a failed save:\n%s", after)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["acme"]
+	if !ok || ref.Source.URL != repoA {
+		t.Fatalf("mk[acme] = %+v, %v; want the recorded source", ref, ok)
+	}
+	if _, err := os.Stat(filepath.Join(ref.InstallLocation, "plugins", "widget")); err != nil {
+		t.Fatalf("the registered marketplace's clone is gone: stat(%s) = %v", ref.InstallLocation, err)
+	}
+	if _, err := os.Stat(filepath.Join(ref.InstallLocation, "plugins", "gadget")); !os.IsNotExist(err) {
+		t.Fatalf("the failed re-source's clone outlived the failed save: %v", err)
+	}
+	for _, leftover := range []string{".old", ".staging"} {
+		if _, err := os.Stat(m.marketplaceDir(leftover)); !os.IsNotExist(err) {
+			t.Fatalf("the failed save left %s behind: %v", leftover, err)
+		}
+	}
+	// The restored clone is the recorded source's, so a browse serves the old
+	// catalog without a refresh having to reclone it.
+	cat, err := m.Browse(ctx, "acme")
+	if err != nil || len(cat.Plugins) != 1 || cat.Plugins[0].Name != "widget" {
+		t.Fatalf("Browse acme = %+v, %v; want the recorded source's catalog", cat, err)
+	}
+}
+
 // A rename that also re-sources swaps the staged clone into the directory the
 // rename has just moved, so its unwind has both halves to put back: the old
 // clone the swap set aside goes back under the new name, and the rename undo
