@@ -197,9 +197,12 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
 // instead of a global listOutbox count (issue #1723): the retry's
 // post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
 // still-blocked record - the retry's last storage touch before handleRetry's
-// own reads) arms the barrier, and the second TARGET-scoped listOutbox read
-// CREATED after that arm fires it, so the concurrent settle commits inside the
-// retry window, ahead of handleRetry's own reads. What the test pins is that a
+// own reads) arms the barrier, and the first TARGET-scoped listOutbox read
+// CREATED after that arm fires it - the refresh retryBlockedPendingTurn's own
+// mutateThenRefresh awaits, the retry window's only read before handleRetry's
+// decision read since #1722 removed the redundant second refresh - so the
+// concurrent settle commits inside the retry window, ahead of handleRetry's own
+// reads. What the test pins is that a
 // settle landing anywhere in that window is the benign no-op the flow owes -
 // no "still cannot be checked" error for a row the retry had already made moot.
 // It does not and cannot pin the settle BETWEEN handleRetry's refresh and its
@@ -262,17 +265,67 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
 
   override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
     // Counted at entry, before the rows are read: the settle commits ahead of
-    // handleRetry's refresh rows, so the refresh publishes the reopened state
+    // the retry's refresh rows, so that refresh publishes the reopened state
     // and the decision read that follows it sees that too.
     if (this.#onSettle && this.#armed && targetRef !== undefined) {
       this.#listReadsSinceArm += 1;
-      if (this.#listReadsSinceArm === 2) {
+      if (this.#listReadsSinceArm === 1) {
         const fn = this.#onSettle;
         this.#onSettle = undefined;
         await fn?.();
       }
     }
     return await super.listOutbox(targetRef);
+  }
+}
+
+// RetryPersistenceReadCounter counts the retry flow's own TARGET-scoped
+// persistence reads (issue #1722). readMutationPersistence(ref) is the only
+// caller of a target-scoped listRecovery read (stores/threads.ts), and both a
+// projection refresh and handleRetry's decision read go through it; the retry's
+// own machinery touches only outbox rows. The window opens at the retry's
+// post-reconciliation lookup of the still blocked record - the same boundary
+// SettleAfterRetryLookup arms on above - so refreshes the click's side effects
+// start (the thread-changed subscription, the commit feed) stay out of it, and
+// what remains is the click's own awaited tail: the refresh
+// retryBlockedPendingTurn's mutateThenRefresh awaits, then the decision read.
+class RetryPersistenceReadCounter extends MutationOutboxIndexedDB {
+  #blockedLookups = 0;
+  #armed = false;
+  #reads: string[] = [];
+
+  // The refs read after the arm, in creation order: counted at entry, before
+  // the rows are read, the same convention SettleAfterRetryLookup uses above.
+  readRefs(): string[] {
+    return this.#reads;
+  }
+
+  #noteLookup(record: MutationOutboxRecord | undefined): void {
+    if (record?.state !== "blockedUnknown") return;
+    // The click-time capture read takes the first slot and the final lookup
+    // after reconciliation the second, exactly as SettleAfterRetryLookup counts
+    // them above.
+    this.#blockedLookups += 1;
+    if (this.#blockedLookups === 2) this.#armed = true;
+  }
+
+  override async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord | undefined> {
+    const record = await super.getOutbox(clientMutationId);
+    this.#noteLookup(record);
+    return record;
+  }
+
+  override async getOutboxWithStopEpoch(
+    clientMutationId: string,
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+    const capture = await super.getOutboxWithStopEpoch(clientMutationId);
+    this.#noteLookup(capture.record);
+    return capture;
+  }
+
+  override async listRecovery(targetRef?: string): Promise<MutationRecoveryRecord[]> {
+    if (this.#armed && targetRef !== undefined) this.#reads.push(targetRef);
+    return await super.listRecovery(targetRef);
   }
 }
 
@@ -613,6 +666,39 @@ describe("durable recovery rows", () => {
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).queryAllByRole("alert")).toEqual([]);
     expect(getToasts()).toEqual([]);
+  });
+
+  // Issue #1722: handleRetry awaited refreshPendingTurnsProjection(sessionRef)
+  // even though retryBlockedPendingTurn's own mutateThenRefresh had already
+  // awaited that same refresh before its promise resolved, so every Retry paid a
+  // second, unread IndexedDB round trip. The decision read that follows it uses
+  // readMutationPersistence directly, so the dropped refresh fed nothing.
+  test("a retry that stays blocked refreshes the pending-turns projection once", async () => {
+    const ref = "ref_a";
+    const storage = new RetryPersistenceReadCounter();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    await hydrate(fake, ref);
+    await seedBlockedUnknown("uncertain input");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    // Keep the record blocked through the retry's own reconciliation, the
+    // fixture the genuinely-blocked case above uses: the retry then reports the
+    // row still cannot be checked and handleRetry reaches its decision read -
+    // the path the redundant refresh lived on.
+    fake.on("thread/read", () =>
+      readResponse(ref, {
+        evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
+      }),
+    );
+    const retry = screen.getByRole("button", { name: "Retry" });
+    await userEvent.setup().click(retry);
+    await flushPendingTurnsProjectionForTests();
+    // Two target-scoped reads: the refresh retryBlockedPendingTurn's own
+    // mutateThenRefresh awaits, then handleRetry's decision read. A third is the
+    // redundant second refresh #1722 removed - it re-read the same durable rows
+    // and fed neither the projection nor the decision.
+    expect(storage.readRefs()).toEqual(["ref_a", "ref_a"]);
   });
 
   test("a genuinely blocked Retry reports one inline error without a duplicate toast", async ({ onTestFinished }) => {
