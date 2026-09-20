@@ -329,9 +329,13 @@ test("a fenced outcome from the replaced client cannot leave a removal guard", a
   second.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   second.on("evener/plugin/list", () => ({ plugins: [] }));
   act(() => connectionStore.getState().connect(second));
-  rejectRemoval?.(cloneLitterError(null));
   await waitFor(() => expect(second.calls.some((call) => call.method === "evener/marketplace/list")).toBe(true));
+  const secondListCallsBeforeOutcome = second.calls.filter((call) => call.method === "evener/marketplace/list").length;
+  rejectRemoval?.(cloneLitterError(null));
   await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
+  expect(second.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(
+    secondListCallsBeforeOutcome,
+  );
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 

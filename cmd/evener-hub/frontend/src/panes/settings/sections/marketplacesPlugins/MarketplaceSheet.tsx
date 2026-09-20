@@ -26,6 +26,7 @@ import { errorText } from "@evener/appwire-client";
 import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
+import { connectionStore } from "../../../../stores/connection";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -284,6 +285,10 @@ export function MarketplaceSheet({
     } catch (err) {
       const outcome = marketplaceRemovalOutcome(err);
       if (outcome !== undefined) {
+        // A late result from a replaced hub no longer describes this sheet's
+        // catalog. Leave the current connection's confirmation and list
+        // untouched; its own reconciliation will settle them.
+        if (connectionStore.getState().client !== removalClient) return;
         // The registry removal already landed. Close the completed confirm and
         // keep this entry from issuing the same removal again while an
         // applied list is reconciled through the normal fetch. An accepted
