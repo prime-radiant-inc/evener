@@ -9563,6 +9563,59 @@ test("a background note save does not dispatch an unrelated pending mutation", a
   }
 });
 
+// #1716: the background path fences its own dispatch, but the authoritative
+// read it drives (handleReady -> refreshTrackedThread) still reconciled the
+// WHOLE target: restoreProvenAbsent reopened every blockedUnknown row for the
+// ref that the fresh read did not name, so saving a note in the background
+// returned an unrelated blocked chat mutation to submitting, where the
+// outbox's next lifecycle scan would dispatch it. A background retry may
+// reopen only the record it carries.
+test("a background note save does not reopen an unrelated blocked record for the same target", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the initial hydration's own reconciliation so the only reopen left
+    // to observe belongs to the note retry below.
+    await threadsStore.getState().refreshThread("ref_a");
+    // An unrelated mutation for the same target, left delivery-uncertain by a
+    // lost response.
+    const unrelated = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", input: [{ type: "text", text: "unrelated" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "unrelated" }] },
+    });
+    await storage.markAttempted(unrelated.clientMutationId);
+    await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
+    // The blocked note the background save retries.
+    const note = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markAttempted(note.clientMutationId);
+    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+
+    expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
+
+    // The reconciliation ran and reopened the note it was asked to retry...
+    expect((await storage.getOutbox(note.clientMutationId))?.state).toBe("submitting");
+    // ...but the unrelated blocked row for the same target is untouched.
+    expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("blockedUnknown");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 // RoboRev finding on the reduced branch: refreshThread's beforePublish fence is
 // checked before publication, but the dispatch it schedules at its tail was
 // unconditional. reconcileIdentities is held open here so the Stop lands after
