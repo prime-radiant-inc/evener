@@ -379,6 +379,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	} else {
 		history = expandHistory(historyTurns, scope)
 	}
+	history = s.packRequestObservations(history)
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
