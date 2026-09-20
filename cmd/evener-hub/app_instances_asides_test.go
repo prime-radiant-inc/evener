@@ -3896,3 +3896,118 @@ func TestInstances_WriteRenameJournalStepsAPastARepeatedStamp(t *testing.T) {
 		}
 	}
 }
+
+// TestRestoreUncommittedOAuthAsidesRewritesTheProviderFieldWhenItFinishesARename:
+// the bytes of a record a rename left under the old name are moved by recovery,
+// and a record identifies the instance it belongs to. Recovery must rewrite that
+// field the way the live rename does, or the renamed instance resolves against a
+// name its own credential does not claim.
+func TestRestoreUncommittedOAuthAsidesRewritesTheProviderFieldWhenItFinishesARename(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	journal := renameJournal(t, f, "personal", "work", "1757000000000000000")
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	rec, lerr := authopenai.LoadAuth(f.stateDir, "personal")
+	if lerr != nil {
+		t.Fatalf("the record was not moved to the new name: %v", lerr)
+	}
+	if rec.Provider != "personal" {
+		t.Fatalf("provider = %q, want %q: the record still identifies the instance it came from", rec.Provider, "personal")
+	}
+	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the journal survives, want it spent once the rename finished")
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesLeavesANonRegularRecordWhereItIs: only a
+// record is a file the hub reads. A directory (or any non-regular path) at the
+// old record name was not written as one, and moving it into an aside or a
+// canonical name would take it where the copy rules skip directories - so it is
+// left where it is and reported.
+func TestRestoreUncommittedOAuthAsidesLeavesANonRegularRecordWhereItIs(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldRecord := authopenai.AuthFilePath(f.stateDir, "work")
+	if err := os.Mkdir(oldRecord, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", oldRecord, err)
+	}
+	const content = "bytes inside the directory\n"
+	if err := os.WriteFile(filepath.Join(oldRecord, "inside"), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(inside): %v", err)
+	}
+	journal := renameJournal(t, f, "personal", "work", "1757000000000000000")
+
+	_, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the non-regular path reported", err)
+	}
+	if info, statErr := os.Lstat(oldRecord); statErr != nil || !info.IsDir() {
+		t.Fatalf("the path was moved or replaced (info %v, err %v), want it left where it is", info, statErr)
+	}
+	if got, rerr := os.ReadFile(filepath.Join(oldRecord, "inside")); rerr != nil || string(got) != content {
+		t.Fatalf("the directory's contents = %q (%v), want them untouched", got, rerr)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "personal")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("something was filed under the new name (Lstat = %v), want the move refused", statErr)
+	}
+	if _, statErr := os.Lstat(journal); statErr != nil {
+		t.Fatalf("the journal was spent (%v), want it kept for the pass that can move the record", statErr)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesKeepsAManifestClassifiedCopyTheConfigCarries:
+// a manifest means "the removal reached its commit point" - but only a removal
+// that actually stood. A rollback reinstates its copies and drops the manifest;
+// if that drop fails, the next startup finds a live manifest beside a config that
+// still carries the name, and sweeping the copy would destroy the only record of
+// an instance that is still configured. The config is what decides.
+func TestRestoreUncommittedOAuthAsidesKeepsAManifestClassifiedCopyTheConfigCarries(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const content = "the reinstated record\n"
+	copyPath := filepath.Join(dir, "work.json"+oauthAsideMarker+"1757000000000000000")
+	if err := os.WriteFile(copyPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", copyPath, err)
+	}
+	commitManifest(t, f, "work", "1757000000000000001")
+
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	var found string
+	for _, name := range authDirEntries(t, f) {
+		if inst, _, _, aside := oauthAsideInstance(name); aside && inst == "work" {
+			found = name
+		}
+	}
+	if found == "" {
+		t.Fatal("the copy was swept although the config still carries its name: the only record of a configured instance is gone")
+	}
+	got, rerr := os.ReadFile(filepath.Join(dir, found))
+	if rerr != nil || string(got) != content {
+		t.Fatalf("the surviving copy = %q (%v), want %q", got, rerr, content)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record path holds bytes (Lstat = %v), want nothing restored", statErr)
+	}
+}

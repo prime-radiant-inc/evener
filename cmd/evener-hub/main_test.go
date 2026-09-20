@@ -830,3 +830,74 @@ func TestRunMainShutsDownAppRPCWithoutTracing(t *testing.T) {
 		t.Fatalf("second Shutdown: %v", err)
 	}
 }
+
+// TestRunMainMovesARenamedKeyInTheLiveCredentialsStore: the recovery must move a
+// renamed stored key in the LIVE store - the one the hub's services hold, handed
+// to them by runMain - because a second LoadStore would cache its own map: the
+// move would land on disk while the live map kept the key under the old name, and
+// the next save through the live store would serialize that stale map back,
+// silently reverting the recovery. This drives the real startup path and asserts
+// on the store runMain itself loaded.
+func TestRunMainMovesARenamedKeyInTheLiveCredentialsStore(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	providersPath, none := cmdutil.ProvidersConfigPath()
+	if none || providersPath == "" {
+		t.Fatal("fixture: the providers config path must be the one newTraceMainTestDeps set")
+	}
+	credsPath := cmdutil.CredentialsPath()
+	if credsPath == "" {
+		t.Fatal("fixture: the credentials path must be set")
+	}
+	// The state a crash inside a rename leaves: providers.toml names the NEW
+	// instance, the key is still under the old one, and the journal is the only
+	// thing that says so.
+	if err := os.MkdirAll(filepath.Dir(providersPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(providersPath), err)
+	}
+	if err := os.WriteFile(providersPath, []byte("[providers.personal]\nbase = \"openai-codex\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	seeded, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credsPath, err)
+	}
+	if err := seeded.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	stateRoot := cmdutil.DefaultStateRoot()
+	authDir := filepath.Dir(authopenai.AuthFilePath(stateRoot, "instance"))
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	journal := filepath.Join(authDir, "personal.json.journal-1757000000000000000")
+	if err := os.WriteFile(journal, []byte("work\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", journal, err)
+	}
+
+	// The store runMain loads is the one the services hold and the one the
+	// recovery must be handed.
+	var live *credentials.Store
+	deps.loadCredentials = func(path string) (*credentials.Store, error) {
+		store, lerr := credentials.LoadStore(path)
+		if lerr == nil {
+			live = store
+		}
+		return store, lerr
+	}
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if live == nil {
+		t.Fatal("runMain never loaded the credentials store, so this test pinned nothing")
+	}
+	if v, _ := live.Get("personal"); v != "sk-work" {
+		t.Fatalf("the live store holds personal = %q, want the key the recovery moved: a second store would leave this map stale", v)
+	}
+	if v, _ := live.Get("work"); v != "" {
+		t.Fatalf("the live store still holds work = %q, want the key moved out of the old name", v)
+	}
+	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the journal survives at %s, want it spent once the rename finished", journal)
+	}
+}

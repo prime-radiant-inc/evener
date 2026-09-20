@@ -1392,7 +1392,14 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 			// restores even without a readable config - chosen collision-safely
 			// and landed without replacing anything (freeAsideName, which ranks it
 			// after whatever the new name already holds, then renameNoReplace).
+			// Only a regular file is a record this may move: a directory (or a
+			// socket, or a device) at that path was not written as one, and moving
+			// it into an aside would take it where the copy rules skip directories.
 			recordPath := authopenai.AuthFilePath(c.auth.stateDir, oldName)
+			if info, statErr := os.Lstat(recordPath); statErr == nil && !info.Mode().IsRegular() {
+				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and %s is not a regular file (%v), so it was left where it is", err, recordPath, info.Mode()))
+				break
+			}
 			dst, ok := freeAsideName(filepath.Dir(recordPath), newName, false, 0)
 			switch {
 			case !ok:
@@ -3058,12 +3065,18 @@ func finishRenameAt(stateDir, oldName, newName string) []string {
 	dir := filepath.Dir(authopenai.AuthFilePath(stateDir, "instance"))
 	oldRecord := authopenai.AuthFilePath(stateDir, oldName)
 	newRecord := authopenai.AuthFilePath(stateDir, newName)
-	switch _, statErr := os.Lstat(oldRecord); {
+	switch info, statErr := os.Lstat(oldRecord); {
 	case errors.Is(statErr, os.ErrNotExist):
 		// Nothing at the old path: the carry either never promoted or the record
 		// was already saved under the new name.
 	case statErr != nil:
 		problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: check its record at %s (%v)", oldName, newName, oldRecord, statErr))
+	case !info.Mode().IsRegular():
+		// Only a record is a file the hub reads. Anything else at that path was
+		// not written as one, and moving it into an aside or a canonical name
+		// would take it where the copy rules skip directories and strand what it
+		// holds.
+		problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: %s is not a regular file (%v), so it was left where it is", oldName, newName, oldRecord, info.Mode()))
 	default:
 		dst := newRecord
 		if _, takenErr := os.Lstat(newRecord); takenErr == nil {
@@ -3081,6 +3094,27 @@ func finishRenameAt(stateDir, oldName, newName string) []string {
 		}
 		if rerr := renameNoReplace(oldRecord, dst); rerr != nil {
 			problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: move its record from %s to %s (%v)", oldName, newName, oldRecord, dst, rerr))
+			break
+		}
+		if dst != newRecord {
+			// Filed as an aside, not as the record: the copy rules read it from
+			// there and the provider field is rewritten when recovery restores it.
+			break
+		}
+		// The bytes now sit under the renamed instance's own name, but the record
+		// still identifies the instance it came from. The live rename rewrites
+		// that field through the store's atomic writer (moveCredentials), and
+		// recovery has to do the same: a record whose provider names another
+		// instance is one the registry resolves against the wrong name.
+		// A record the hub cannot read has no provider field to rewrite, and its
+		// bytes are exactly what recovery was asked to preserve: they stay where
+		// the move put them, and this pass reports nothing - refusing here would
+		// block every later recovery over a file only a re-sign-in can fix.
+		if rec, lerr := authopenai.LoadAuth(stateDir, newName); lerr == nil {
+			rec.Provider = newName
+			if serr := authopenai.SaveAuth(stateDir, newName, rec); serr != nil {
+				problems = append(problems, fmt.Sprintf("finish the rename of %q to %q: rewrite the record's provider field (%v)", oldName, newName, serr))
+			}
 		}
 	}
 	return problems
@@ -3693,6 +3727,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string, store *
 				manifestFailed[a.inst] = true
 				protected[filepath.Base(target)] = true
 				problems = append(problems, fmt.Sprintf("return the copy %s of %q, which the removal's commit manifest classifies as committed, to the committed shape %s for the sweep: the committed name was taken, so the copy stayed in flight and %s was left untouched (%v)", source, a.inst, target, target, rerr))
+				continue
+			}
+			if configCarriesName(manifestLayer, a.inst) {
+				// The config still carries the name, so the instance is still
+				// configured and this copy belongs to a removal that did NOT stand
+				// (a rollback reinstated it but could not drop the manifest).
+				// Sweeping it would destroy the only record of an instance the
+				// config still names: it is left where the committed rules leave a
+				// carried name's copy, whatever the manifest says.
 				continue
 			}
 			committed = append(committed, committedCopy{filepath.Base(target), a.inst, a.configBacked})
