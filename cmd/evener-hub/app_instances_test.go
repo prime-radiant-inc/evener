@@ -5179,9 +5179,12 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	if _, persisted := errors.AsType[removeAppliedError](err); !persisted {
 		t.Fatalf("Remove = %v (%T), want a removeAppliedError so the removal is still broadcast", err, err)
 	}
-	left := authDirEntries(t, f)
+	left := parkedNames(t, f, "openai-codex")
 	if len(left) != 1 {
-		t.Fatalf("the auth directory holds %v, want the one copy the removal set aside", left)
+		t.Fatalf("the auth directory holds the copies %v, want the one copy the removal set aside", left)
+	}
+	if records := intentNames(t, f); len(records) != 1 {
+		t.Fatalf("the removal's records = %v, want the one that says the removal stood", records)
 	}
 	if !strings.Contains(err.Error(), left[0]) {
 		t.Fatalf("Remove = %v, want it to name the copy it left as %s", err, left[0])
@@ -5206,8 +5209,11 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
 		t.Fatalf("Remove(groq): %v", err)
 	}
-	if left := authDirEntries(t, f); len(left) != 1 {
-		t.Fatalf("the auth directory holds %v, want the copy another name's removal must leave alone", left)
+	if left := parkedNames(t, f, "openai-codex"); len(left) != 1 {
+		t.Fatalf("openai-codex's copies = %v, want the copy another name's removal must leave alone", left)
+	}
+	if left := parkedNames(t, f, "groq"); len(left) != 0 {
+		t.Fatalf("groq's copies = %v, want the removal's own copy reclaimed and no other", left)
 	}
 
 	// Removing the name again is what reclaims it, which is what the reported
@@ -5378,9 +5384,12 @@ func TestInstances_RemoveReportsACopyItCannotReclaim(t *testing.T) {
 	if _, persisted := errors.AsType[removeAppliedError](err); !persisted {
 		t.Fatalf("Remove = %v (%T), want a removeAppliedError so the removal is announced", err, err)
 	}
-	left := authDirEntries(t, f)
-	if len(left) != 1 || !strings.HasPrefix(left[0], "groq.json"+oauthCommittedMarker) {
-		t.Fatalf("the auth directory holds %v, want the one committed copy the removal could not delete", left)
+	left := parkedNames(t, f, "groq")
+	if len(left) != 1 {
+		t.Fatalf("the auth directory holds the copies %v, want the one parked copy the removal could not delete", left)
+	}
+	if records := intentNames(t, f); len(records) != 1 {
+		t.Fatalf("the removal's records = %v, want the one that says the removal stood", records)
 	}
 	if !strings.Contains(err.Error(), left[0]) {
 		t.Fatalf("Remove = %v, want it to name the copy it left as %s", err, left[0])
@@ -5517,11 +5526,16 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	// What the removal's window leaves: the record set aside, and the config
-	// write the removal never reached.
+	// What the removal's window leaves: its record written, the record set aside,
+	// and the config write the removal never reached.
 	aside := path + oauthAsideMarker + "1757000000000000000"
 	if err := os.Rename(path, aside); err != nil {
 		t.Fatalf("Rename: %v", err)
+	}
+	i := removalIntent("work", true)
+	intent := filepath.Join(filepath.Dir(path), oauthIntentName("work", 1757000000000000001))
+	if err := os.WriteFile(intent, i.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", intent, err)
 	}
 
 	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath, f.store); err != nil {
@@ -5540,15 +5554,13 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 }
 
 // TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy:
-// a CONFIG-BACKED in-flight copy whose name providers.toml no longer carries is
-// a removal that reached its config write - the config is the durable evidence -
-// so startup must not resurrect it. It is returned to the committed shape and
-// the sweep in the same pass deletes it, so it never stays in flight for a later
-// pass to restore, and its record path is left free. A copy filed beside a
-// record the instance already has - the user signed in again after the removal
-// that set it aside - stays where it is: the live record is the one the instance
-// has now. A state root with no auth directory at all is nothing set aside, not
-// a failure.
+// a CONFIG-BACKED removal whose name providers.toml no longer carries reached
+// its config write - the config is the durable evidence - so startup must not
+// resurrect it: the sweep in the same pass deletes its copy and spends its
+// record, leaving the record path free. A copy filed beside a record the
+// instance already has - the user signed in again after the removal that set it
+// aside - stays where it is: the live record is the one the instance has now. A
+// state root with no auth directory at all is nothing set aside, not a failure.
 func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -5559,10 +5571,10 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 		t.Fatalf("restoreUncommittedOAuthAsides with nothing set aside: %v", err)
 	}
 
-	// A CONFIG-BACKED in-flight copy of a name the config does not carry: the
-	// removal reached its config write and must be resolved forward, not restored.
-	stale := authopenai.AuthFilePath(f.stateDir, "gone") + oauthConfigAsideMarker + "1757000000000000000"
-	staleCommitted := authopenai.AuthFilePath(f.stateDir, "gone") + oauthConfigCommittedMarker + "1757000000000000000"
+	// A CONFIG-BACKED copy of a name the config does not carry, with the landed
+	// record that says the removal reached its config write: it must be resolved
+	// forward (swept), not restored.
+	stale := authopenai.AuthFilePath(f.stateDir, "gone") + oauthAsideMarker + "1757000000000000000"
 	// A copy of a name that has its record back: the user signed in after the
 	// removal that set this one aside.
 	live := authopenai.AuthFilePath(f.stateDir, "work") + oauthAsideMarker + "1757000000000000000"
@@ -5573,6 +5585,11 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", path, err)
 		}
+	}
+	i := removalIntent("gone", true)
+	i.phase = oauthPhaseLanded
+	if err := os.WriteFile(filepath.Join(filepath.Dir(stale), oauthIntentName("gone", 1757000000000000000)), i.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(intent): %v", err)
 	}
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
@@ -5593,8 +5610,8 @@ func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesA
 	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the config-backed copy %s stayed in flight (Lstat = %v), so a later pass could restore it", stale, err)
 	}
-	if _, err := os.Lstat(staleCommitted); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the config-backed copy was not collected as %s (Lstat = %v)", staleCommitted, err)
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(stale), oauthIntentName("gone", 1757000000000000000))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the record of the removal that stood survives (Lstat = %v), want it spent with its copy", err)
 	}
 	if _, err := os.Lstat(authopenai.AuthFilePath(f.stateDir, "gone")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the removal that reached its config write was resurrected at its record path (Lstat = %v)", err)

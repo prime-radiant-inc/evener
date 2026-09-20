@@ -148,7 +148,7 @@ func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *te
 	}
 	done := make(chan aside, 1)
 	go func() {
-		asidePath, err := f.ctl.setAsideOAuthFile(name, false)
+		asidePath, err := f.ctl.setAsideOAuthFile(name)
 		done <- aside{asidePath, err}
 	}()
 	select {
@@ -190,7 +190,7 @@ func TestInstances_SetAsideOAuthFileRefusesWhenTheDirectoryCannotBeListed(t *tes
 		t.Skip("this process can list a 0311 directory (running as root?); the premise needs one it cannot")
 	}
 
-	aside, err := f.ctl.setAsideOAuthFile("openai-codex", false)
+	aside, err := f.ctl.setAsideOAuthFile("openai-codex")
 	if err == nil || !strings.Contains(err.Error(), "to order its OAuth copies") {
 		t.Fatalf("setAsideOAuthFile = (%q, %v), want the refusal naming the directory that could not be listed", aside, err)
 	}
@@ -217,7 +217,7 @@ func TestFreeAsideNameRefusesWhenTheDirectoryCannotBeListed(t *testing.T) {
 		t.Skip("this process can list a 0311 directory (running as root?); the premise needs one it cannot")
 	}
 
-	got, ok := freeAsideName(dir, "openai-codex", false, 7)
+	got, ok := freeAsideName(dir, "openai-codex", 7)
 	if ok {
 		t.Fatalf("freeAsideName = (%q, true), want a refusal when the directory cannot be listed", got)
 	}

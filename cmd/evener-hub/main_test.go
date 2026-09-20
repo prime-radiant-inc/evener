@@ -467,11 +467,12 @@ func TestRunMainPutsBackARecordAFailedRemovalSetAside(t *testing.T) {
 
 // TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList: a crash inside
 // a removal of a UI-credentialed (implicit Codex) instance leaves its record
-// under an in-flight aside name with no providers.toml entry to name it, so the
-// config test alone cannot make it recoverable. Startup puts the record back -
-// and must then reload, because the registry's instance list is computed at load
-// and the first load ran before the record returned. This drives runMain end to
-// end so the call site itself is what the assertions cover.
+// parked under a name with no providers.toml entry to name it, with only the
+// removal's own record - which says the removal never reached its commit point -
+// to classify it. Startup puts the record back - and must then reload, because
+// the registry's instance list is computed at load and the first load ran before
+// the record returned. This drives runMain end to end so the call site itself is
+// what the assertions cover.
 func TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList(t *testing.T) {
 	_, cfg, deps := newTraceMainTestDeps(t)
 	providersPath, none := cmdutil.ProvidersConfigPath()
@@ -499,6 +500,14 @@ func TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList(t *testing.T)
 	aside := record + oauthAsideMarker + "1757000000000000000"
 	if err := os.Rename(record, aside); err != nil {
 		t.Fatalf("Rename: %v", err)
+	}
+	// The removal's own record, at the phase a crash before its commit point
+	// leaves: a credential-only instance has no providers.toml entry, so this
+	// record is the whole of what tells recovery the copy is wanted.
+	intent := filepath.Join(filepath.Dir(record), oauthIntentName("openai-codex", 1757000000000000000))
+	i := removalIntent("openai-codex", false)
+	if err := os.WriteFile(intent, i.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", intent, err)
 	}
 
 	var stderr bytes.Buffer
@@ -849,8 +858,8 @@ func TestRunMainMovesARenamedKeyInTheLiveCredentialsStore(t *testing.T) {
 		t.Fatal("fixture: the credentials path must be set")
 	}
 	// The state a crash inside a rename leaves: providers.toml names the NEW
-	// instance, the key is still under the old one, and the journal is the only
-	// thing that says so.
+	// instance, the key is still under the old one, and the rename's own record
+	// is the only thing that says so.
 	if err := os.MkdirAll(filepath.Dir(providersPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(providersPath), err)
 	}
@@ -869,9 +878,11 @@ func TestRunMainMovesARenamedKeyInTheLiveCredentialsStore(t *testing.T) {
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	journal := filepath.Join(authDir, "personal.json.journal-1757000000000000000")
-	if err := os.WriteFile(journal, []byte("work\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", journal, err)
+	record := filepath.Join(authDir, oauthIntentName("work", 1757000000000000000))
+	ri := renameIntent("work", "personal")
+	ri.phase = oauthPhaseLanded
+	if err := os.WriteFile(record, ri.encode(), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", record, err)
 	}
 
 	// The store runMain loads is the one the services hold and the one the
@@ -897,7 +908,7 @@ func TestRunMainMovesARenamedKeyInTheLiveCredentialsStore(t *testing.T) {
 	if v, _ := live.Get("work"); v != "" {
 		t.Fatalf("the live store still holds work = %q, want the key moved out of the old name", v)
 	}
-	if _, statErr := os.Lstat(journal); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("the journal survives at %s, want it spent once the rename finished", journal)
+	if _, statErr := os.Lstat(record); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the rename record survives at %s, want it spent once the rename finished", record)
 	}
 }
