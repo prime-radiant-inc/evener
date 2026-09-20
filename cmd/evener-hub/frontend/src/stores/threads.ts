@@ -1875,6 +1875,21 @@ function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string,
   pending.routing = pendingHydrationRouting(ref, model);
 }
 
+function preserveLiveActiveTurn(snapshot: ThreadModel, live: ThreadModel | undefined): ThreadModel {
+  const activeTurnId = snapshot.activeTurnId;
+  if (
+    activeTurnId === undefined ||
+    live?.threadId !== snapshot.threadId ||
+    threadInstanceID(live) !== threadInstanceID(snapshot) ||
+    live?.activeTurnId !== activeTurnId ||
+    snapshot.turns.some((turn) => turn.id === activeTurnId)
+  )
+    return snapshot;
+  const liveTurn = live.turns.find((turn) => turn.id === activeTurnId);
+  if (!liveTurn) return snapshot;
+  return { ...snapshot, turns: [...snapshot.turns, liveTurn] };
+}
+
 // Buffering is decided by IDENTITY alone, the same rule applyToMap follows for
 // live delivery: where a frame lands inside a model is the reducer's call, not
 // this buffer's. turn/completed used to additionally need the routing's active
@@ -1994,7 +2009,11 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     return null;
   }
 
-  const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
+  const live = threadsStore.getState().threads.get(ref);
+  const { model: hydrated, appliedAt } = replayHydrationNotifications(
+    preserveLiveActiveTurn(model, live),
+    pending.notifications,
+  );
 
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
@@ -2178,7 +2197,8 @@ function publishWatchedHydration(
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch) return null;
 
-  const replayed = replayHydrationNotifications(model, pending.notifications);
+  const live = threadsStore.getState().watchedThreads.get(ref);
+  const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   pendingWatchedHydrations.delete(ref);
   storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);
