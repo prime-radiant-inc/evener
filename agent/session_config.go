@@ -429,6 +429,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// beforeRestoredFailureBoundaryDoorRelease observes the restored failure
+	// boundary after state publication and before attentionMu is released.
+	// Tests use it to prove that a concurrent transcript writer cannot pass the
+	// publication door between those operations. Nil in production.
+	beforeRestoredFailureBoundaryDoorRelease func()
+
 	// beforeEnvironmentEventPublish observes an environment append at the
 	// moment it is about to publish its live event, so a test can state where
 	// that publication sits relative to the transcript ordering boundary.

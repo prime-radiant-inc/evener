@@ -80,3 +80,33 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 		t.Fatalf("restored state = %q, want %q", got, SessionIdle)
 	}
 }
+
+// TestRestoredFailureBoundaryPublishesBeforeDoorRelease pins the ordering that
+// keeps a concurrent compaction from landing between transcript restoration and
+// the live state transition. The hook runs after both state and askPending have
+// been published; attentionMu must still exclude a competing transcript writer.
+func TestRestoredFailureBoundaryPublishesBeforeDoorRelease(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	defer sess.Close()
+
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+
+	checked := false
+	sess.cfg.testOnly.beforeRestoredFailureBoundaryDoorRelease = func() {
+		checked = true
+		if got := sess.State(); got != SessionIdle {
+			t.Fatalf("published state = %q, want %q before attentionMu release", got, SessionIdle)
+		}
+		if sess.attentionMu.TryLock() {
+			sess.attentionMu.Unlock()
+			t.Fatal("attentionMu was available before restored state publication door release")
+		}
+	}
+
+	sess.finishProcessingAtRestoredFailureBoundary(context.Background())
+	if !checked {
+		t.Fatal("restored failure boundary release hook did not run")
+	}
+}

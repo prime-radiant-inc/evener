@@ -260,15 +260,26 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 }
 
 func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
-	transitioned := false
-	var turnMS int64
 	s.mu.Lock()
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	s.mu.Unlock()
+	s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+}
+
+// transitionProcessingAtBoundaryLocked publishes a processing boundary while
+// the caller holds s.mu. The restored transcript boundary nests this under
+// attentionMu so the state assignment cannot race a new durable transcript
+// append between restoration and publication.
+func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (transitioned bool, turnMS int64) {
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
 		turnMS = s.accumulateWorkLocked()
 		transitioned = true
 	}
-	s.mu.Unlock()
+	return transitioned, turnMS
+}
+
+func (s *Session) finishProcessingAtBoundaryEvents(ctx context.Context, transitioned bool, turnMS int64) {
 	if transitioned {
 		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
@@ -299,16 +310,24 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
 	// recordTurn retains the live pair before an ordinary transcript write
 	// reports a clean rollback. Read the transcript while attentionMu excludes
-	// another append, so this boundary sees only recorded or adopted turns.
+	// another append, and hold it through state publication so this boundary
+	// sees only recorded or adopted turns.
 	var restoredHistory []schema.Turn
 	path := s.TranscriptPath()
+	s.attentionMu.Lock()
 	if path != "" {
-		s.attentionMu.Lock()
 		_, entries, _, err := readTranscript(path)
-		s.attentionMu.Unlock()
 		if err == nil {
 			restoredHistory = ResumeHistory(entries)
 		}
+	}
+	release := func(transitioned bool, turnMS int64) {
+		s.mu.Unlock()
+		if hook := s.cfg.testOnly.beforeRestoredFailureBoundaryDoorRelease; hook != nil {
+			hook()
+		}
+		s.attentionMu.Unlock()
+		s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
 	}
 
 	s.mu.Lock()
@@ -321,15 +340,15 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		if len(s.askPending) > 0 {
 			state = SessionAwaiting
 		}
-		s.mu.Unlock()
-		s.finishProcessingAtBoundary(ctx, state)
+		transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+		release(transitioned, turnMS)
 		return
 	}
 	state := deriveRestoredState(restoredHistory, divergence, origins)
 	pending, _ := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	s.askPending = pending
-	s.mu.Unlock()
-	s.finishProcessingAtBoundary(ctx, state)
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	release(transitioned, turnMS)
 }
 
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
