@@ -23,23 +23,27 @@ const MARKETPLACE_REMOVED_LITTER =
 /** What the browser shows when a marketplace removal rejects but the hub says
  * the removal already stood (appwire/errors.go: reconcile, never retry): the
  * answer is never the generic write-failed copy, whose implied retry targets a
- * marketplace that is already gone. Only the clone-litter kinds leave
- * anything to warn about; a removal whose list read failed shows nothing. */
+ * marketplace that is already gone. undefined is an ordinary failure; null
+ * is a removal whose list read failed (show nothing); the litter copy is a
+ * removal whose clone cleanup failed. */
 export function appliedRemovalNotice(
   error: unknown,
-): { notice: string | null } | undefined {
+): string | null | undefined {
   const outcome = marketplaceRemovalOutcome(error);
   if (!outcome) return undefined;
-  return { notice: outcome.kind === "removed" ? null : MARKETPLACE_REMOVED_LITTER };
+  return outcome.kind === "removed" ? null : MARKETPLACE_REMOVED_LITTER;
 }
 
-/** Whether the list still needs a re-read after a removal rejection the hub
- * says already stood: the store publishes the clone-litter applied list
- * itself, so a list that no longer carries the removed name needs nothing,
- * while a stale list still carrying it - or no list at all - must refresh. */
-export function shouldRefetchAfterRemoval(
-  marketplaces: readonly MarketplaceEntry[] | null,
+/** Whether the browser should re-read the list after a removal rejection the
+ * hub says already stood. Reads the store's CURRENT list - never a render
+ * snapshot - because the store publishes the clone-litter applied list
+ * itself during the rejection: a list that no longer carries the removed
+ * name is already reconciled and needs nothing, while a stale list still
+ * carrying it - or no list at all - must refresh. */
+export function refetchAfterRemoval(
+  store: { getState(): { marketplaces: readonly MarketplaceEntry[] | null } },
   name: string,
 ): boolean {
+  const { marketplaces } = store.getState();
   return marketplaces === null || marketplaces.some((item) => item.name === name);
 }
