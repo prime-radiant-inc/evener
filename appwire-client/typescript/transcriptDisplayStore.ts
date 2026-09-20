@@ -140,6 +140,20 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     return true;
   }
 
+  // The first authoritative GET publishes both layouts and its confirmation
+  // together. Subscribers therefore cannot observe loaded state while the
+  // fence still accepts a restarted revision or before the read is confirmed.
+  function applyHubDefaults(defaults: TranscriptDisplayDefaults): void {
+    const hub = { ...getState().hub };
+    for (const layout of LAYOUTS) {
+      const previous = hub[layout];
+      if (fence.awaitingFirstPayload || previous === undefined || defaults[layout].revision > previous.revision)
+        hub[layout] = defaults[layout];
+    }
+    if (fence.awaitingFirstPayload) fence.firstPayloadApplied();
+    setState({ hub, loaded: true, hubLoading: false });
+  }
+
   const { beginReadyGeneration, endReadyGeneration } = createSettingsHubGeneration({
     fence,
     wireNotifications: (generation) => {
@@ -221,12 +235,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (!stillMine()) return;
       const defaults = fromWireDefaults(result);
       if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
-      applyHubDefault("desktop", defaults.desktop);
-      if (!stillMine()) return;
-      applyHubDefault("mobile", defaults.mobile);
-      if (!stillMine()) return;
-      fence.firstPayloadApplied();
-      setState({ loaded: true, hubLoading: false });
+      applyHubDefaults(defaults);
       if (!stillMine()) return;
       if (missedChangeNotification) {
         missedChangeNotification = false;

@@ -320,20 +320,26 @@ describe("lifecycle fencing", () => {
         store.beginReadyGeneration();
       },
     ],
-  ] as const)("a generation %s during the desktop publication fences the remaining read", async (_name, lifecycle) => {
-    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const store = createTranscriptDisplayStore({ client });
-    store.setSupport("supported");
-    store.beginReadyGeneration();
-    store.subscribe((state, previous) => {
-      if (state.hub.desktop !== previous.hub.desktop) lifecycle(store);
-    });
+  ] as const)(
+    "a generation %s during the authoritative publication leaves the read retired",
+    async (_name, lifecycle) => {
+      const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+      const store = createTranscriptDisplayStore({ client });
+      store.setSupport("supported");
+      store.beginReadyGeneration();
+      store.subscribe((state, previous) => {
+        if (state.hub.desktop !== previous.hub.desktop) lifecycle(store);
+      });
 
-    await store.getState().refreshHubDefaults();
+      await store.getState().refreshHubDefaults();
 
-    expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
-    expect(store.getState().hub.mobile).toBeUndefined();
-  });
+      expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
+      expect(store.getState().hub).toEqual({
+        desktop: hubDefault(3, desktopConfig),
+        mobile: hubDefault(2, mobileConfig),
+      });
+    },
+  );
 
   test("a relayed lower revision during the loaded publication cannot roll back the first read", async () => {
     const client = serving(hubDefault(2, desktopConfig), hubDefault(2, mobileConfig));
