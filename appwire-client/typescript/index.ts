@@ -78,6 +78,16 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+export type {
+  DiscardedDraftFields,
+  DraftDiscardableFields,
+  PersistedDraftFields,
+} from "./checkpointedDraftEditor";
+export {
+  assertDraftDiscardable,
+  discardCheckpointedDraft,
+  persistCheckpointedDraft,
+} from "./checkpointedDraftEditor";
 // chunkViewBackingForTests is deliberately absent here; the white-box test hook
 // is published through the non-shipped testing/reducerHooks.ts instead.
 export { pendingTextJoined } from "./chunkview";
