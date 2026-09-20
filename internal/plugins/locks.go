@@ -24,6 +24,12 @@ var (
 	lockSleep = time.Sleep
 )
 
+// errLockContention marks the store lock still held when the wait times out.
+// It carries the actionable, path-free reason - retry shortly - while the lock
+// file's path stays in the surrounding error's text, so a scrubbing caller
+// (EditMarketplace's editFailed) can keep the reason and drop the path.
+var errLockContention = errors.New("another evener plugin operation is in progress")
+
 // lockAcquirer is acquireLock's signature, which the per-area test seams
 // (installAcquireLock and its siblings) stand in for.
 type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
@@ -82,7 +88,7 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
-		return nil, err
+		return nil, m.migrationFailedErr(err)
 	}
 	return release, nil
 }
@@ -198,7 +204,7 @@ func flockUntil(ctx context.Context, f lockFile, lockPath string, timeout time.D
 		}
 		if lockNow().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("another evener plugin operation is in progress (locked: %s)", lockPath)
+			return nil, fmt.Errorf("%w (locked: %s)", errLockContention, lockPath)
 		}
 		lockSleep(backoff)
 		backoff *= 2

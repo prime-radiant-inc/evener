@@ -157,6 +157,7 @@ export {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -485,9 +486,12 @@ export {
 } from "./transcriptDisplayConfig";
 export type {
   HubDefaultsByLayout,
+  TranscriptDisplayChange,
   TranscriptDisplayClient,
   TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
   TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
   TranscriptDisplayStoreState,
   TranscriptDisplaySupport,
 } from "./transcriptDisplayStore";

@@ -101,7 +101,7 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	if removed, err := hubPluginGC(ctx, gcMgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
 	} else if len(removed) > 0 {
-		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))
+		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded or orphaned dir(s)\n", len(removed))
 	}
 }
 

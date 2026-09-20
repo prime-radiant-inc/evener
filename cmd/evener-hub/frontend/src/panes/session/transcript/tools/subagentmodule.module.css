@@ -11,13 +11,11 @@
   color: var(--ink-mid);
 }
 
-.lifecycle[data-kind="running"],
-.stats[data-kind="running"] .statusWord {
+.statusWord[data-kind="running"] {
   color: var(--alive-ink);
 }
 
-.lifecycle[data-kind="failed"],
-.stats[data-kind="failed"] .statusWord {
+.statusWord[data-kind="failed"] {
   color: var(--danger-ink);
 }
 
@@ -79,8 +77,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.lifecycle[data-attention="true"] > span,
-.stats[data-attention="true"] .statusWord > span {
+.statusWord[data-attention="true"] > span {
   color: var(--attention-ink);
   font-weight: var(--font-weight-medium);
 }

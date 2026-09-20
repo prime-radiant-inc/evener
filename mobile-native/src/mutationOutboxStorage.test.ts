@@ -202,6 +202,70 @@ test("enqueueIntent rejects a duplicate clientMutationId and rolls back its sequ
 	});
 });
 
+// #1957: the uniqueness invariant is cross-store, not table-local. The outbox
+// INSERT above rejects a collision within the outbox, but a record that has
+// moved on to optimistic or recovery still owns its clientMutationId - a later
+// enqueue that generates the same id must reject too, or the next settlement
+// (settleReceipt/settleApplied keyed on the id) would treat the two active
+// records as one mutation and retire the older one.
+test("enqueueIntent rejects a clientMutationId already held by the optimistic store and rolls back its sequence allocation", async () => {
+	const colliding = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-shared",
+		now: () => 1234,
+	});
+	const accepted = await colliding.enqueueIntent({
+		...intent("accepted elsewhere"),
+		optimisticDisplay: { input: [{ type: "text", text: "accepted elsewhere" }] },
+	});
+	await expect(colliding.settleReceipt(accepted.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", "mutation-shared")).toBeDefined();
+
+	await expect(colliding.enqueueIntent(intent("collides with the accepted record", "local:b"))).rejects.toThrow();
+
+	// The older accepted record survives untouched, the colliding enqueue left
+	// nothing behind, and the sequence it allocated rolled back with it.
+	expect(rawRow("mutation_optimistic", "mutation-shared")).toBeDefined();
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:b")).toHaveLength(0);
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+});
+
+test("enqueueIntent rejects a clientMutationId already held by the recovery store and rolls back its sequence allocation", async () => {
+	const colliding = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-shared",
+		now: () => 1234,
+	});
+	const refused = await colliding.enqueueIntent(intent("refused elsewhere"));
+	await colliding.transferToRecovery(refused.clientMutationId, "rejected", "turn is not active");
+	expect(rawRow("mutation_recovery", "mutation-shared")).toBeDefined();
+
+	await expect(colliding.enqueueIntent(intent("collides with the recovery record", "local:b"))).rejects.toThrow();
+
+	expect(rawRow("mutation_recovery", "mutation-shared")).toMatchObject({ recovery_kind: "rejected" });
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:b")).toHaveLength(0);
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+});
+
+test("enqueueInterruptAndCancel rejects a clientMutationId already active elsewhere and rolls back the whole Stop write", async () => {
+	let nextId = "mutation-waiting";
+	const store = new MutationOutboxSQLite(port, { createMutationId: () => nextId, now: () => 1234 });
+	const waiting = await store.enqueueIntent(intent("still waiting"));
+	nextId = "mutation-shared";
+	const refused = await store.enqueueIntent(intent("refused elsewhere", "local:elsewhere"));
+	await store.transferToRecovery(refused.clientMutationId, "rejected");
+
+	// The Stop's interrupt would collide with the recovery record's id, so the
+	// whole transaction - the cancel scan, the stop-epoch bump and the sequence
+	// allocation - must roll back rather than half-apply.
+	await expect(store.enqueueInterruptAndCancel(interruptIntent(TARGET))).rejects.toThrow();
+
+	expect(rawRow("mutation_outbox", waiting.clientMutationId)).toMatchObject({ state: "submitting" });
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE method = 'turn/interrupt'").all()).toHaveLength(0);
+	expect(database.prepare("SELECT stop_epoch, last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+		stop_epoch: 0,
+		last_sequence: 1,
+	});
+});
+
 test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomSource, never a bare Web Crypto global", async () => {
 	const originalCrypto = globalThis.crypto;
 	// Simulate a host with no Web Crypto global at all - the case React Native

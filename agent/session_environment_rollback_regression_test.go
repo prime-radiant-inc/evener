@@ -25,12 +25,14 @@ type environmentSyncFailureFS struct {
 	afero.Fs
 	mu                         sync.Mutex
 	failure                    error
+	syncsBeforeFailure         int
 	rollbackFailure            error
 	seekFailure                error
 	writeFailure               error
 	writesBeforeFailure        int
 	transferBeforeWriteFailure int
 	onFailure                  func()
+	onWriteFailure             func()
 }
 
 type environmentSyncFailureFile struct {
@@ -48,6 +50,11 @@ func (fs *environmentSyncFailureFS) OpenFile(name string, flag int, mode os.File
 
 func (file *environmentSyncFailureFile) Sync() error {
 	file.fs.mu.Lock()
+	if file.fs.syncsBeforeFailure > 0 {
+		file.fs.syncsBeforeFailure--
+		file.fs.mu.Unlock()
+		return file.File.Sync()
+	}
 	failure := file.fs.failure
 	file.fs.failure = nil
 	onFailure := file.fs.onFailure
@@ -88,6 +95,7 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 		file.fs.writeFailure = nil
 	}
 	transfer := min(file.fs.transferBeforeWriteFailure, len(p))
+	hook := file.fs.onWriteFailure
 	file.fs.mu.Unlock()
 	if failure == nil {
 		return file.File.Write(p)
@@ -95,6 +103,9 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 	n, err := file.File.Write(p[:transfer])
 	if err != nil {
 		return n, err
+	}
+	if hook != nil {
+		hook()
 	}
 	return n, failure
 }

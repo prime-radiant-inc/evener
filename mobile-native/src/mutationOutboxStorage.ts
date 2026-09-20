@@ -215,6 +215,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// enqueue cannot reuse a value read before another allocation.
 			const intentSequence = this.allocateSequence(intent.targetRef);
 			const clientMutationId = this.#createMutationId();
+			this.assertMutationIdAvailable(clientMutationId);
 			const record: MutationOutboxRecord<A> = {
 				...intent,
 				// The dispatcher sends this payload verbatim as the RPC params, and
@@ -263,6 +264,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			const intentSequence = this.allocateSequence(intent.targetRef);
 			const clientMutationId = this.#createMutationId();
+			this.assertMutationIdAvailable(clientMutationId);
 			const record: MutationOutboxRecord<A> = {
 				...intent,
 				payload: { ...intent.payload, clientMutationId },
@@ -517,6 +519,24 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// fallback under adversarial conditions) means something is wrong with
 	// the id, not that this record should overwrite whatever collided with
 	// it - the same rejection the oracle's `add` gives a duplicate key.
+	//
+	// The uniqueness invariant is cross-store, not table-local (the
+	// appwire-client MutationOutboxStorage port's enqueue contract): a
+	// generated id must be absent from all three active stores, because the
+	// INSERT below only fences the outbox. A record that has already moved to
+	// optimistic or recovery still owns its id, and a second active record
+	// holding it would let a later settlement keyed on the id retire the older
+	// one. Checked before any insert, inside the enclosing savepoint, so a
+	// collision rolls the sequence allocation back instead of half-applying;
+	// the id is rejected, never silently regenerated.
+	protected assertMutationIdAvailable(clientMutationId: string): void {
+		for (const table of Object.values(TABLES)) {
+			if (this.get(table, clientMutationId)) {
+				throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
+			}
+		}
+	}
+
 	protected insertNew(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
 		this.db.runSync(insertSQL(table), ...this.insertValues(record));
 	}

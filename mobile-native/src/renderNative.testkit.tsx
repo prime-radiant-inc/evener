@@ -57,9 +57,32 @@ export function nativeModuleMock() {
 			]),
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 		);
+	const FlatList = (props: {
+		data?: { name: string }[];
+		renderItem?: (info: { item: { name: string } }) => ReactNode;
+		ListHeaderComponent?: ReactNode;
+		ListEmptyComponent?: ReactNode;
+	}) =>
+		createElement(
+			"FlatList",
+			null,
+			props.ListHeaderComponent ?? null,
+			...(props.data ?? []).map((item) =>
+				createElement("Item", { key: item.name }, props.renderItem?.({ item }) ?? null),
+			),
+			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
+		);
+
+	// KeyboardAvoidingView only shifts layout; the test tree renders its
+	// children unchanged.
+	const KeyboardAvoidingView = (props: { children?: ReactNode }) =>
+		createElement("KeyboardAvoidingView", null, props.children);
+
 	return {
 		ActivityIndicator: "ActivityIndicator",
 		Alert: { alert: recordAlert },
+		FlatList,
+		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
 		Pressable: "Pressable",

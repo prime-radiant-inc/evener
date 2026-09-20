@@ -110,6 +110,18 @@ export function isInstanceRemoveApplied(err: unknown): boolean {
 // binding test (errors.test.ts) reads the Go constant.
 export const ErrorEndpointConflict = "endpointConflict";
 
+// ErrorMarketplaceRemoveApplied is the hub's discriminant for a marketplace
+// removal that APPLIED - the unregister and its clone cleanup both completed
+// - but whose response could not carry the updated list, because the fresh
+// read that builds it failed (appwire.ErrorMarketplaceRemoveApplied,
+// appwire/errors.go). The marker alone means the removal stands: a retry
+// finds ErrMarketplaceNotFound, so consumers report neutrally and reconcile
+// through their normal fetch path, never a clone-litter warning and never a
+// retry. The binding test (errors.test.ts) reads the Go constant, so a
+// hub-side rename breaks there instead of silently leaving the standing
+// removal read as a failed one.
+export const ErrorMarketplaceRemoveApplied = "marketplaceRemoveApplied";
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

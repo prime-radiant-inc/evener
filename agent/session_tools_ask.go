@@ -352,7 +352,8 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 // reads as an ordinary answering steer and wrongly resolves the boundary.
 //
 //   - TurnUserInput: the user spoke — resolves.
-//   - TurnSteering carrying SteeringKindInterrupted, or a steer whose
+//   - TurnSteering carrying the admitted interrupt marker
+//     (SteeringKindInterrupted), or a steer whose
 //     provenance (steeringOriginForTurn(turn, origins)) steeringAnswersAsk
 //     reports as answering the user: the runtime already cleared askPending
 //     on this turn's behalf before it ever ran (session_lifecycle.go: the
@@ -363,7 +364,9 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 //     provenance-less inherited fork prefix — by the write-path text shape
 //     isHumanNoteSteer falls back to) is user-sourced but does not answer
 //     the question, so steeringAnswersAsk excludes it: does not resolve.
-//     Any other TurnSteering (a daemon-authored nudge, a
+//     The interrupted salvage explanation (SteeringKindInterruptedSalvage) is
+//     a daemon-authored explanation rather than an admitted boundary, like
+//     any other non-resolving TurnSteering. Any other TurnSteering (a
 //     reminder) carries neither marker: does not resolve, the scan continues
 //     past it — a trailing steering turn must not resolve a pending ask by
 //     looking like the user moved last (spec §6).

@@ -2044,6 +2044,23 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
 }
 
+// tombstoneLastPairPersistedLocked replaces the most recently logged pair with
+// an empty marker turn. The caller has just learned that pair's write recorded
+// nothing, and the pair log feeds publishFoldTransaction's post-marker
+// rewrite: a canceled round's unrecorded results riding that rewrite would
+// become durable state a restart derives from. The replacement is a tombstone
+// rather than a removal because a fold may hold a positional snapshot of this
+// log taken under s.mu while the write was still in flight: removing the
+// entry would shift every later pair into the dropped position, and a
+// boundary and vanish from the resumed history. The tombstone holds the
+// hold s.mu inside the same attentionMu hold that logged the pair, so the
+// last entry is that pair's own.
+func (s *Session) tombstoneLastPairPersistedLocked() {
+	if n := len(s.persistedAppendLog); n > 0 {
+		s.persistedAppendLog[n-1] = schema.Turn{}
+	}
+}
+
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
@@ -2090,6 +2107,15 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
+	if err != nil {
+		// The write recorded nothing (AppendDurable's clean failure rolls the
+		// entry back), so the pair just logged must not ride the fold rewrite
+		// tail back in after the markers as durable state the live side never
+		// settled. The live turn stays for the caller's own failure handling.
+		s.mu.Lock()
+		s.tombstoneLastPairPersistedLocked()
+		s.mu.Unlock()
+	}
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
