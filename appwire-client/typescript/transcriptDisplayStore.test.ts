@@ -363,12 +363,14 @@ describe("lifecycle fencing", () => {
     const store = createTranscriptDisplayStore({ client });
     store.setSupport("supported");
     store.beginReadyGeneration();
+    let reentrantRefresh: Promise<void> | undefined;
     store.subscribe((state, previous) => {
-      if (!previous.loaded && state.loaded && reads === 1) void store.getState().refreshHubDefaults();
+      if (!previous.loaded && state.loaded && reads === 1) reentrantRefresh = store.getState().refreshHubDefaults();
     });
 
     await store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(reads).toBe(2));
+    if (reentrantRefresh === undefined) throw new Error("loaded publication did not start the reentrant refresh");
+    await reentrantRefresh;
 
     expect(store.getState().hub).toEqual({
       desktop: hubDefault(2, desktopConfig),
