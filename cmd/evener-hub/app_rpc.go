@@ -685,7 +685,30 @@ func registerThreadHandlers(
 				liveItemCandidatesEmpty = len(candidates.Candidates.Candidates) == 0
 			}
 		}
-		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
+
+		// A past session (a daemon that does not own the ref answers with an
+		// empty live thread) gets its turns from the windowed past item page,
+		// so that page runs BEFORE the merge and the merge never asks for the
+		// full past-turn projection. The old order computed the O(transcript)
+		// full projection first and then replaced its turns with this window,
+		// making every click on a long session pay for a projection it
+		// discarded in the same request.
+		var pastPage *appwire.ThreadReadResponse
+		if params.IncludeTurns && liveItemCandidatesEmpty {
+			past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
+			if pastErr != nil {
+				read.finish(false)
+				return appwire.ThreadReadResponse{}, pastErr
+			}
+			if ok {
+				pastPage = &past
+			}
+		}
+		// The merge still supplies past turns when the item page could not (a
+		// live source with candidates but no turns, or no past entry at all),
+		// preserving the old includePastTurns decision exactly.
+		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
+		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
 		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err != nil {
@@ -694,19 +717,12 @@ func registerThreadHandlers(
 		}
 		if params.IncludeTurns {
 			usedPastItemPage := false
-			if liveItemCandidatesEmpty && len(resp.Thread.Turns) > 0 {
-				past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
-				if pastErr != nil {
-					read.finish(false)
-					return appwire.ThreadReadResponse{}, pastErr
-				}
-				if ok {
-					resp.Thread.Turns = past.Thread.Turns
-					resp.OlderCursor = past.OlderCursor
-					resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-					annotateThreadProjects([]appwire.Thread{resp.Thread})
-					usedPastItemPage = true
-				}
+			if pastPage != nil {
+				resp.Thread.Turns = pastPage.Thread.Turns
+				resp.OlderCursor = pastPage.OlderCursor
+				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+				annotateThreadProjects([]appwire.Thread{resp.Thread})
+				usedPastItemPage = true
 			}
 			if !usedPastItemPage {
 				candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)

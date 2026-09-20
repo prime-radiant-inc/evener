@@ -263,7 +263,13 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
+// mergePastThreadForRead merges a saved session's metadata (and, when
+// includePastTurns asks for it, its full turns projection) into a live read's
+// thread. The thread/read handler owns the includePastTurns decision because
+// only it knows whether the windowed past item page will supply the turns
+// instead — passing false there is what keeps a past session's click off the
+// O(transcript) full-turn projection (see registerThreadHandlers).
+func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread, includePastTurns bool) (appwire.Thread, error) {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live, nil
 	}
@@ -284,7 +290,6 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	// A live window is authoritative. Read saved turns only as the compatibility
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
-	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
 	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
@@ -334,7 +339,7 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Diagnostics == nil {
 		live.Evener.Diagnostics = past.Evener.Diagnostics
 	}
-	if params.IncludeTurns && len(live.Turns) == 0 {
+	if includePastTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
 	return live, nil
@@ -1069,7 +1074,11 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
+// pastEntryTurns projects a saved session's whole transcript into full wire
+// turns. A package var, like discoverPastThreadSkillCatalog above, so tests can
+// observe (and pin the absence of) the O(transcript) projection on read paths
+// that must not pay it.
+var pastEntryTurns = func(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
