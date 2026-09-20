@@ -439,6 +439,25 @@ describe("reconnect", () => {
 });
 
 describe("list ordering", () => {
+  test("an accepted newer list retires a catalog omitted by an older applied failure", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+    settlements[1]?.resolve({ marketplaces: [] });
+    await newer;
+
+    expect(store.getState().marketplaces).toEqual([]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
     const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
