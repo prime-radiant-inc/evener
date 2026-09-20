@@ -297,8 +297,37 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 // the pending-set rule above; this path is only for an interrupt marker that
 // never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
+	// recordTurn retains the live pair before an ordinary transcript write
+	// reports a clean rollback. Read the transcript while attentionMu excludes
+	// another append, so this boundary sees only recorded or adopted turns.
+	var restoredHistory []schema.Turn
+	path := s.TranscriptPath()
+	if path != "" {
+		s.attentionMu.Lock()
+		_, entries, _, err := readTranscript(path)
+		s.attentionMu.Unlock()
+		if err == nil {
+			restoredHistory = ResumeHistory(entries)
+		}
+	}
+
 	s.mu.Lock()
-	state := deriveRestoredState(s.history, s.fork.divergence, s.clientMutations.steeringOrigins())
+	divergence := s.fork.divergence
+	origins := s.clientMutations.steeringOrigins()
+	if restoredHistory == nil {
+		// Without a readable transcript there is no confirmed replacement for
+		// the live history. Preserve the existing pending-aware failure rule.
+		state := SessionIdle
+		if len(s.askPending) > 0 {
+			state = SessionAwaiting
+		}
+		s.mu.Unlock()
+		s.finishProcessingAtBoundary(ctx, state)
+		return
+	}
+	state := deriveRestoredState(restoredHistory, divergence, origins)
+	pending, _ := deriveRestoredAskPending(restoredHistory, divergence, origins)
+	s.askPending = pending
 	s.mu.Unlock()
 	s.finishProcessingAtBoundary(ctx, state)
 }
