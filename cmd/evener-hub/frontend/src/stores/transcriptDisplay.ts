@@ -1,17 +1,15 @@
-import type { AnyNotification, AppwireClientLike } from "@evener/appwire-client";
+import type { AppwireClientLike } from "@evener/appwire-client";
 import {
-  configFingerprint,
+  createTranscriptDisplayStore,
   decodeLocalConfig,
   encodeLocalConfig,
-  fromWireConfig,
-  fromWireDefault,
-  fromWireDefaults,
   type HubTranscriptDisplayDefault,
   normalizeConfig,
+  type TranscriptDisplayStoreState as PackageStoreState,
   resolveEffectiveConfig,
-  shippedDefault,
   type TranscriptDisplayConfigV1,
-  toWireConfig,
+  type TranscriptDisplayStore,
+  transcriptDisplaySupport,
   type ViewportClass,
   WireError,
 } from "@evener/appwire-client";
@@ -39,6 +37,7 @@ const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
 type ConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
 type HubByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
+type PackageClient = Pick<AppwireClientLike, "request" | "onNotification">;
 
 export interface TranscriptDisplayChange {
   layout: ViewportClass;
@@ -85,131 +84,196 @@ function initialState(): Omit<
 let initialized = false;
 let stopViewportSubscription: (() => void) | null = null;
 let wiredClient: AppwireClientLike | null = null;
-let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
-let clientEpoch = 0;
-let activeReadyClient: AppwireClientLike | null = null;
-let activeReadyEpoch = -1;
-let refreshSerial = 0;
-let patchSerial = 0;
-const patchTokens = new Map<ViewportClass, number>();
+// The package's transcript display store riding the wired client. One per
+// client identity: a client swap disposes it and builds a fresh one, so the
+// replaced client's notifications and late reads/writes can never land in the
+// new client's state. It owns the whole hub read/write lifecycle - the ready
+// generation, the GET/PATCH wire protocol, revision fencing, conflict and
+// post-apply decoding, and payload retirement - which this adapter mirrors
+// into the web's one public Zustand store below.
+let packageStore: TranscriptDisplayStore | null = null;
+let unsubscribeMirror: (() => void) | null = null;
 
-class InvalidPatchResponseError extends Error {}
+// The web's PATCH reply contract is stricter than the package's decoder: the
+// web-owned decoder it replaces treated a reply with any unexpected key as
+// malformed, and its unchanged suite pins that (a hub adding fields to the
+// reply must not commit). The package's decoder deliberately tolerates extra
+// keys so future hub fields keep decoding, so the adapter enforces the web's
+// exact-shape rule at the client seam it hands the package - rejecting the
+// reply before the package can accept it. The thrown message is the same one
+// the old decoder used, so the package's own generic-error handling and the
+// adapter's preview restore below treat it exactly like the package's own
+// malformed-decode rejections.
+const MALFORMED_PATCH_MESSAGE = "Hub returned malformed transcript display PATCH response";
+
+function isExactPatchReply(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 3 &&
+    Object.hasOwn(record, "layout") &&
+    Object.hasOwn(record, "revision") &&
+    Object.hasOwn(record, "config")
+  );
+}
+
+function strictPatchReplyClient(client: AppwireClientLike): PackageClient {
+  const request: AppwireClientLike["request"] = async (method, params, opts) => {
+    const result = await client.request(method, params, opts);
+    if (method === "evener/settings/transcriptDisplay/patch" && !isExactPatchReply(result)) {
+      throw new Error(MALFORMED_PATCH_MESSAGE);
+    }
+    return result;
+  };
+  return {
+    request,
+    onNotification: (callback) => client.onNotification(callback),
+  };
+}
 
 function isLayout(value: unknown): value is ViewportClass {
   return value === "desktop" || value === "mobile";
 }
 
+function isRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function currentSupport(): "unknown" | "supported" | "unsupported" {
-  const features = connectionStore.getState().features;
-  if (features === undefined) return "unknown";
-  return features.transcriptDisplaySettings === true ? "supported" : "unsupported";
+  return transcriptDisplaySupport(connectionStore.getState().features);
 }
 
-function currentClient(): AppwireClientLike | null {
-  return connectionStore.getState().client;
+// Mirrors one package state publication into the web store. The framework-
+// free store publishes its full state on every write, but object fields keep
+// their identity across publications that do not touch them, so a reference
+// comparison identifies exactly the fields this publication changed - which
+// is also what lets an adapter-restored draft (see patchHubDefault) survive
+// later package publications that never mention drafts.
+function mirrorPackageState(next: PackageStoreState, previous: PackageStoreState): void {
+  if (next.hub !== previous.hub) {
+    for (const layout of ["desktop", "mobile"] as const) {
+      if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, next.hub[layout]);
+    }
+  }
+  if (next.hubSupport !== previous.hubSupport) transcriptDisplayStore.setState({ hubSupport: next.hubSupport });
+  if (next.hubLoading !== previous.hubLoading) transcriptDisplayStore.setState({ hubLoading: next.hubLoading });
+  if (next.hubError !== previous.hubError) transcriptDisplayStore.setState({ hubError: next.hubError });
+  if (next.hubErrors !== previous.hubErrors) transcriptDisplayStore.setState({ hubErrors: next.hubErrors });
+  if (next.drafts !== previous.drafts) transcriptDisplayStore.setState({ drafts: next.drafts });
 }
 
-function isCurrentReady(client: AppwireClientLike, epoch: number): boolean {
-  return (
-    wiredClient === client &&
-    activeReadyClient === client &&
-    activeReadyEpoch === epoch &&
-    clientEpoch === epoch &&
-    connectionStore.getState().client === client &&
-    client.state === "ready"
-  );
+// A hub default the package just accepted, landing in the web store through
+// the same transition routing the web's own writes use (capture/restore/
+// announce, masked per layout). The package already decided acceptance - its
+// generation fencing, within-generation monotonicity and first-payload
+// restarts - so the mirror applies what it accepted, one layout at a time to
+// preserve the web's per-layout transition publications.
+function applyMirroredHubDefault(layout: ViewportClass, value: HubTranscriptDisplayDefault | undefined): void {
+  const state = transcriptDisplayStore.getState();
+  if (state.hub[layout] === value) return;
+  const hub: HubByLayout = { ...state.hub };
+  if (value === undefined) delete hub[layout];
+  else hub[layout] = value;
+  publishEffectiveTransition(state, { ...state, hub }, () => transcriptDisplayStore.setState({ hub }), layout);
 }
 
-function invalidateReadyGeneration(): void {
-  activeReadyClient = null;
-  activeReadyEpoch = -1;
-  clientEpoch += 1;
-  unwireNotification?.();
-  unwireNotification = null;
+// The web-side fallback for a hub change the package could not take: with no
+// wired client (or no live ready generation) there is no package hub to fence
+// with, and the web's own contract - pinned by its unchanged suite - still
+// applies any well-formed change whose revision beats the one it holds.
+function applyWebHubDefault(layout: ViewportClass, value: HubTranscriptDisplayDefault): void {
+  const state = transcriptDisplayStore.getState();
+  const previous = state.hub[layout];
+  if (previous !== undefined && value.revision <= previous.revision) return;
+  const hub: HubByLayout = { ...state.hub, [layout]: value };
+  publishEffectiveTransition(state, { ...state, hub }, () => transcriptDisplayStore.setState({ hub }), layout);
 }
 
-function beginReadyGeneration(client: AppwireClientLike): number {
-  activeReadyClient = client;
-  activeReadyEpoch = ++clientEpoch;
-  const epoch = activeReadyEpoch;
-  unwireNotification?.();
-  unwireNotification = client.onNotification((notification) => {
-    if (!isCurrentReady(client, epoch)) return;
-    onNotification(notification);
-  });
-  return epoch;
+function applyWebHubChange(change: TranscriptDisplayChange): void {
+  if (!isLayout(change.layout) || !isRevision(change.revision)) return;
+  try {
+    const config = normalizeConfig(change.config);
+    applyWebHubDefault(change.layout, { revision: change.revision, config });
+  } catch {
+    // A malformed notification cannot be a confirmed hub record.
+  }
 }
 
 function setSupportFromConnection(): void {
   const support = currentSupport();
-  const state = transcriptDisplayStore.getState();
-  if (support === "supported") {
-    if (state.hubSupport !== support) transcriptDisplayStore.setState({ hubSupport: support });
+  const store = packageStore;
+  if (store !== null) {
+    store.setSupport(support);
     return;
   }
+  // No wired client means no package store: the web store keeps the support
+  // field itself, exactly as it did before the package lifecycle existed.
+  const state = transcriptDisplayStore.getState();
   if (state.hubSupport !== support || state.hubLoading || state.hubError !== null)
     transcriptDisplayStore.setState({ hubSupport: support, hubLoading: false, hubError: null });
 }
 
-function applyHubDefault(layout: ViewportClass, value: HubTranscriptDisplayDefault): void {
-  const state = transcriptDisplayStore.getState();
-  const previous = state.hub[layout];
-  if (previous !== undefined && value.revision <= previous.revision) return;
-  const hub = { ...state.hub, [layout]: value };
-  publishEffectiveTransition(state, { ...state, hub }, () => transcriptDisplayStore.setState({ hub }), layout);
+// Ends the current package store without touching the web's mirrored fields;
+// used when a replacement client is about to build a fresh one.
+function disposePackageStore(): void {
+  const store = packageStore;
+  packageStore = null;
+  unsubscribeMirror?.();
+  unsubscribeMirror = null;
+  store?.dispose();
 }
 
-function onNotification(notification: AnyNotification): void {
-  if (notification.method !== "evener/settings/transcriptDisplay/changed") return;
-  const params = notification.params;
-  if (!isLayout(params.layout) || !Number.isSafeInteger(params.revision) || params.revision < 0) return;
-  const config = fromWireConfig(params.config);
-  if (config === undefined) return;
-  applyHubDefault(params.layout, { revision: params.revision, config });
+// The ready callback (and the already-ready path at wire time): the package
+// generation owns notification registration and payload retirement. The
+// initial refresh is issued BEFORE setSupport because the two never double a
+// GET this way round - refreshFor is a no-op while the package's own support
+// field is not yet "supported", while setSupport auto-refreshes only when a
+// live generation already exists, so whichever of the two sees support first
+// performs the generation's one read.
+function beginPackageGeneration(client: AppwireClientLike): void {
+  const store = packageStore;
+  if (store === null || client !== wiredClient) return;
+  store.beginReadyGeneration();
+  void store.getState().refreshHubDefaults();
+  setSupportFromConnection();
 }
 
-async function refreshFor(client: AppwireClientLike, epoch: number): Promise<void> {
-  if (!isCurrentReady(client, epoch) || currentSupport() !== "supported") return;
-  const serial = ++refreshSerial;
-  transcriptDisplayStore.setState({ hubLoading: true, hubError: null });
-  try {
-    const result = await client.request("evener/settings/transcriptDisplay/get", {});
-    if (!isCurrentReady(client, epoch) || serial !== refreshSerial || currentSupport() !== "supported") return;
-    const defaults = fromWireDefaults(result);
-    if (defaults === undefined) throw new Error("Hub returned malformed transcript display defaults");
-    applyHubDefault("desktop", defaults.desktop);
-    applyHubDefault("mobile", defaults.mobile);
-  } catch (error) {
-    if (isCurrentReady(client, epoch) && serial === refreshSerial) {
-      transcriptDisplayStore.setState({ hubError: error instanceof Error ? error.message : String(error) });
-    }
-  } finally {
-    if (isCurrentReady(client, epoch) && serial === refreshSerial)
-      transcriptDisplayStore.setState({ hubLoading: false });
-  }
+// A null client detaches the package hub entirely: detachHub publishes the
+// retirement while the mirror is still subscribed (so the cleared fields land
+// through the normal path), then the store is disposed so its notifications
+// and in-flight work can never land, and the web mirrors initial hub fields.
+function detachPackageStore(): void {
+  const store = packageStore;
+  packageStore = null;
+  unwireReady?.();
+  unwireReady = null;
+  wiredClient = null;
+  store?.detachHub();
+  unsubscribeMirror?.();
+  unsubscribeMirror = null;
+  store?.dispose();
+  transcriptDisplayStore.setState({ hub: {}, drafts: {}, hubLoading: false, hubError: null, hubErrors: {} });
 }
 
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
-  invalidateReadyGeneration();
+  // A new client identity gets a fresh package store: the old one's fence is
+  // disposed, fencing its notifications and every read and write in flight.
+  disposePackageStore();
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
+  packageStore = createTranscriptDisplayStore({ client: strictPatchReplyClient(client) });
+  unsubscribeMirror = packageStore.subscribe(mirrorPackageState);
   unwireReady = client.onReady(
     readyGenerationCallback(
       client,
       () => wiredClient,
-      () => {
-        const epoch = beginReadyGeneration(client);
-        void refreshFor(client, epoch);
-      },
+      () => beginPackageGeneration(client),
     ),
   );
-  if (client.state === "ready") {
-    const epoch = beginReadyGeneration(client);
-    void refreshFor(client, epoch);
-  }
+  if (client.state === "ready") beginPackageGeneration(client);
 }
 
 function onConnectionChange(
@@ -223,23 +287,31 @@ function onConnectionChange(
     previous.state === "ready" &&
     state.state !== "ready"
   ) {
-    invalidateReadyGeneration();
+    // Ready loss ends the generation. Confirmed defaults stay presented and
+    // late reads/writes fence, exactly as the package's retirement specifies.
+    packageStore?.endReadyGeneration();
   }
   if (state.client === null && wiredClient !== null) {
-    invalidateReadyGeneration();
-    unwireReady?.();
-    unwireReady = null;
-    wiredClient = null;
+    detachPackageStore();
   }
   setSupportFromConnection();
-  if (
-    state.client === wiredClient &&
-    state.features?.transcriptDisplaySettings === true &&
-    previous.features?.transcriptDisplaySettings !== true &&
-    state.client?.state === "ready"
-  ) {
-    if (activeReadyClient === state.client) void refreshFor(state.client, activeReadyEpoch);
-  }
+}
+
+function restoreMalformedPreview(
+  store: TranscriptDisplayStore,
+  layout: ViewportClass,
+  preview: TranscriptDisplayConfigV1 | undefined,
+  error: unknown,
+): void {
+  if (preview === undefined) return;
+  if (error instanceof WireError || !(error instanceof Error)) return;
+  if (error.message !== MALFORMED_PATCH_MESSAGE) return;
+  // A newer write owns the layout's preview now; restoring over it would
+  // resurrect a write the package already superseded.
+  if (store.getState().drafts[layout] !== undefined) return;
+  transcriptDisplayStore.setState({
+    drafts: { ...transcriptDisplayStore.getState().drafts, [layout]: preview },
+  });
 }
 
 export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = createStore<TranscriptDisplayStoreState>(
@@ -290,172 +362,47 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       });
     },
     applyHubChange: (change) => {
-      if (!isLayout(change.layout) || !Number.isSafeInteger(change.revision) || change.revision < 0) return;
-      try {
-        const config = normalizeConfig(change.config);
-        applyHubDefault(change.layout, { revision: change.revision, config });
-      } catch {
-        // A malformed notification cannot be a confirmed hub record.
+      if (!isLayout(change.layout) || !isRevision(change.revision)) return;
+      const store = packageStore;
+      if (store !== null) {
+        const before = store.getState().hub[change.layout];
+        store.getState().applyHubChange(change);
+        // The package took the change exactly when its value for the layout
+        // changed; the mirror already landed it, transition included.
+        if (store.getState().hub[change.layout] !== before) return;
       }
+      // No live package hub (no client, or the package fenced the change):
+      // the web contract still applies well-formed monotonic changes.
+      applyWebHubChange(change);
     },
     refreshHubDefaults: async () => {
-      const client = currentClient();
-      if (client === null || client !== wiredClient || activeReadyClient !== client) return;
-      await refreshFor(client, activeReadyEpoch);
+      // Harmless when no client is wired, matching the no-client behavior.
+      const store = packageStore;
+      if (store === null) return;
+      await store.getState().refreshHubDefaults();
     },
     patchHubDefault: async (layout, input): Promise<HubTranscriptDisplayDefault> => {
-      const state = transcriptDisplayStore.getState();
-      const client = currentClient();
-      const generation = client === activeReadyClient ? activeReadyEpoch : -1;
-      if (
-        state.hubSupport !== "supported" ||
-        currentSupport() !== "supported" ||
-        client === null ||
-        client !== wiredClient ||
-        generation < 0 ||
-        client.state !== "ready"
-      ) {
+      const store = packageStore;
+      if (store === null) {
         const error = "Hub transcript display settings are unavailable.";
         transcriptDisplayStore.setState({
           hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: error },
         });
         throw new Error(error);
       }
-      const config = normalizeConfig(input);
-      const confirmed = state.hub[layout] ?? shippedDefault(layout);
-      const token = ++patchSerial;
-      patchTokens.set(layout, token);
-      transcriptDisplayStore.setState({
-        drafts: { ...state.drafts, [layout]: config },
-        hubErrors: { ...state.hubErrors, [layout]: undefined },
-      });
+      const write = store.getState().patchHubDefault(layout, input);
+      // The package published this write's optimistic preview synchronously
+      // above; capture it before awaiting so a malformed reply can restore it.
+      const preview = store.getState().drafts[layout];
       try {
-        const result = await client.request("evener/settings/transcriptDisplay/patch", {
-          layout,
-          expectedRevision: confirmed.revision,
-          config: toWireConfig(config),
-        });
-        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
-          return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
-        }
-        const resultRecord =
-          typeof result === "object" && result !== null && !Array.isArray(result)
-            ? (result as unknown as Record<string, unknown>)
-            : {};
-        const current = transcriptDisplayStore.getState().hub[layout] ?? confirmed;
-        const canonicalConfig = fromWireConfig(resultRecord.config);
-        const revision = resultRecord.revision;
-        const responseLayout = resultRecord.layout;
-        const exactResponse =
-          Object.keys(resultRecord).length === 3 &&
-          Object.hasOwn(resultRecord, "layout") &&
-          Object.hasOwn(resultRecord, "revision") &&
-          Object.hasOwn(resultRecord, "config");
-        const requestedFingerprint = configFingerprint(config);
-        const canonicalFingerprint = canonicalConfig === undefined ? undefined : configFingerprint(canonicalConfig);
-        const confirmedFingerprint = configFingerprint(confirmed.config);
-        const revisionIsValid =
-          typeof revision === "number" &&
-          Number.isSafeInteger(revision) &&
-          revision >= current.revision &&
-          (revision === confirmed.revision || revision === confirmed.revision + 1);
-        const canonicalSemanticsValid =
-          canonicalConfig !== undefined &&
-          canonicalFingerprint === requestedFingerprint &&
-          (revision === confirmed.revision
-            ? requestedFingerprint === confirmedFingerprint
-            : revision === confirmed.revision + 1);
-        if (
-          !exactResponse ||
-          responseLayout !== layout ||
-          canonicalConfig === undefined ||
-          !revisionIsValid ||
-          !canonicalSemanticsValid
-        )
-          throw new InvalidPatchResponseError("Hub returned malformed transcript display PATCH response");
-        const canonical = { revision: revision as number, config: canonicalConfig };
-        applyHubDefault(layout, canonical);
-        const drafts = { ...transcriptDisplayStore.getState().drafts };
-        delete drafts[layout];
-        transcriptDisplayStore.setState({
-          drafts,
-          hubError: null,
-          hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
-        });
-        return canonical;
+        return await write;
       } catch (error) {
-        const applied = postApplyDefault(error, layout);
-        if (applied !== undefined) {
-          if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
-            return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
-          }
-          // The patch APPLIED before a follow-up durable step failed: the hub
-          // already published applied and will broadcast it to every other
-          // client. Reconcile from it the same way the success path above
-          // does, rather than treating this write as rejected.
-          applyHubDefault(layout, applied);
-          const drafts = { ...transcriptDisplayStore.getState().drafts };
-          delete drafts[layout];
-          transcriptDisplayStore.setState({
-            drafts,
-            hubError: null,
-            hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
-          });
-          return applied;
-        }
-        const canonical = conflictCurrent(error, layout);
-        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
-          if (canonical !== undefined) applyHubDefault(layout, canonical);
-          return transcriptDisplayStore.getState().hub[layout] ?? canonical ?? confirmed;
-        }
-        if (canonical !== undefined) applyHubDefault(layout, canonical);
-        if (error instanceof InvalidPatchResponseError) {
-          const message = error.message;
-          transcriptDisplayStore.setState({
-            hubError: message,
-            hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: message },
-          });
-          throw error;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        const drafts = { ...transcriptDisplayStore.getState().drafts };
-        delete drafts[layout];
-        transcriptDisplayStore.setState({
-          drafts,
-          hubError: message,
-          hubErrors: {
-            ...transcriptDisplayStore.getState().hubErrors,
-            [layout]: message,
-          },
-        });
+        restoreMalformedPreview(store, layout, preview, error);
         throw error;
       }
     },
   }),
 );
-
-function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32013 || typeof error.data !== "object" || error.data === null)
-    return undefined;
-  const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "conflict" || data.layout !== layout) return undefined;
-  return fromWireDefault(data.current);
-}
-
-// postApplyDefault extracts the applied canonical value from a
-// transcriptDisplayPostApply error (evener/errors.go's
-// ErrorTranscriptDisplayPostApply, hubcore.TranscriptDisplayPostApplyError):
-// the patch already landed on the hub before a follow-up durable step
-// failed, so the caller must reconcile from it instead of treating the
-// write as rejected - the same shape as conflictCurrent above, keyed off a
-// different error code and evenerErrorInfo.
-function postApplyDefault(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32603 || typeof error.data !== "object" || error.data === null)
-    return undefined;
-  const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "transcriptDisplayPostApply" || data.layout !== layout) return undefined;
-  return fromWireDefault(data.applied);
-}
 
 connectionStore.subscribe(onConnectionChange);
 const initialClient = connectionStore.getState().client;
@@ -513,14 +460,7 @@ export function initTranscriptDisplay(): void {
 export function resetTranscriptDisplayStoreForTests(): void {
   browserSync.detach();
   initialized = false;
-  invalidateReadyGeneration();
-  unwireReady?.();
-  unwireReady = null;
-  activeReadyClient = null;
-  activeReadyEpoch = -1;
-  wiredClient = null;
-  refreshSerial += 1;
-  patchTokens.clear();
+  detachPackageStore();
   transcriptDisplayStore.setState({ ...initialState() });
   setSupportFromConnection();
 }
