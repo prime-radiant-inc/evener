@@ -1,0 +1,57 @@
+# research/criteria.toml — selection criteria for the SoL-Pi first loop pass.
+#
+# Per the design spec this file is committed and fixed BEFORE any experiment
+# runs; the pass report records the git hash at freeze time. Editing it after
+# a pass starts invalidates that pass.
+#
+# Binding text (spec, "Selection core"):
+#   - Capability gate: the candidate's task success rate on the dev set must
+#     not fall more than a declared tolerance (default 10 percentage points)
+#     below the base pair, and the candidate branch must pass the full repo
+#     gates as a binary floor.
+#   - Efficiency gate: at least one declared metric must improve by its
+#     threshold; efficiency is computed over environments where both arms
+#     succeeded, pooled, and capability is checked first.
+#   - Retention: among candidates passing both gates, only nondominated
+#     (Pareto) results under the declared metrics are retained.
+#   - Honesty at small N: a candidate landing near an edge gets more
+#     repetitions before a verdict, not a lucky pass.
+
+[capability]
+# Checked FIRST. Per-task judge pass rate on the paired waves; tolerance in
+# percentage points. A task pair enters the efficiency pool only when BOTH
+# arms scored above zero (both succeeded).
+pass_rate_tolerance_pp = 10.0
+
+# Binary floor: the candidate branch must be green on the full repo gates.
+repo_gates = ["make lint", "make vet", "make test"]
+
+[efficiency]
+# At least ONE declared metric must clear its threshold, pooled over
+# both-succeeded pairs. Thresholds sit below the oracle-projected effects
+# (observation-pack 7.79-20.08% input on measured corpora; adjacency up to
+# 16.78% on reporting tasks) and above expected small-N noise.
+input_tokens_fraction = 0.03
+output_tokens_fraction = 0.03
+api_request_count_fraction = 0.03
+# Normalized variant for pairs whose request counts diverge (a candidate that
+# runs 3x the requests is not 3x more efficient): pooled mean input tokens
+# per recorded request over the same both-succeeded pairs. Declared up front.
+input_tokens_per_request_fraction = 0.03
+
+# Estimated cost, from llm/pricing.go EstimateCost over the same pooled pairs.
+# Computed only when the provider registry carries Cost data for BOTH arms'
+# models; flat-rate lunaroute models may have none, in which case this metric
+# is reported as unavailable and the verdict rests on the metrics above.
+estimated_cost_fraction = 0.03
+
+[retention]
+pareto = true
+
+[honesty]
+# A candidate within this band of any efficiency threshold, or within 10
+# points of the capability tolerance in the harm direction, gets additional
+# paired repetitions before a verdict rather than a lucky pass. Measured
+# baseline-vs-baseline variance on these tasks: up to 40 percentage points
+# between identical deepseek runs, so single pairs never decide an edge.
+edge_repetitions = 3
