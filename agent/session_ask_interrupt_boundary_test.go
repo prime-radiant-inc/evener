@@ -224,7 +224,14 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 	proceed := make(chan struct{})
 	var proceedOnce sync.Once
 	closeProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	t.Cleanup(closeProceed)
+	writeFailed := make(chan struct{})
+	resumeWrite := make(chan struct{})
+	var resumeOnce sync.Once
+	resumeTheWrite := func() { resumeOnce.Do(func() { close(resumeWrite) }) }
+	// resultsDone and compactDone stay nil until their worker goroutines
+	// launch, so the teardown below skips the wait for a worker that was
+	// never started.
+	var resultsDone, compactDone chan struct{}
 	var summaryCalls atomic.Int32
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -241,6 +248,22 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	// Ordered teardown, registered after the Close defer so LIFO runs it
+	// first: the canceled-results goroutine parks holding attentionMu, and
+	// sess.Close cannot take that lock until resumeWrite is closed. A
+	// t.Cleanup release would run only after the defers -- on any t.Fatal
+	// taken while the write is parked, the deferred Close would wait forever
+	// and the 30-second guard could never fire.
+	defer func() {
+		closeProceed()
+		resumeTheWrite()
+		if resultsDone != nil {
+			<-resultsDone
+		}
+		if compactDone != nil {
+			<-compactDone
+		}
+	}()
 	seedNumberedSessionHistory(t, sess, 12)
 
 	userTurn := schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))
@@ -254,11 +277,6 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 	// The canceled results record parks inside its failed write -- s.mu
 	// released, attentionMu held -- which is exactly where a fold's snapshot
 	// can observe the logged pair mid-write.
-	writeFailed := make(chan struct{})
-	resumeWrite := make(chan struct{})
-	var resumeOnce sync.Once
-	resumeTheWrite := func() { resumeOnce.Do(func() { close(resumeWrite) }) }
-	t.Cleanup(resumeTheWrite)
 	toolResultsFailure := errors.New("tool results record rejected")
 	fs := attachEnvironmentFailureFS(t, sess)
 	fs.mu.Lock()
@@ -268,7 +286,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		<-resumeWrite
 	}
 	fs.mu.Unlock()
-	resultsDone := make(chan struct{})
+	resultsDone = make(chan struct{})
 	askAck := tool.ExecResult{ToolName: "ask_user", CallID: "ask1", Output: "posted", FullOutput: "posted"}
 	go func() {
 		defer close(resultsDone)
@@ -284,7 +302,9 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 	// mid-write results pairs, so this snapshot's rewrite boundary is that
 	// results pair's position.
 	compactErr := make(chan error, 1)
+	compactDone = make(chan struct{})
 	go func() {
+		defer close(compactDone)
 		compactErr <- sess.Compact(parentCtx)
 	}()
 	select {
