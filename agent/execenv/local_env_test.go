@@ -209,10 +209,26 @@ func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
 
 // --- always-on session scratch vars ---------------------------------------
 
+// sandboxSessionScratchPrefixForTest mirrors sandbox.sessionScratchPrefix. It is
+// duplicated deliberately: the session temp container execenv creates must carry
+// exactly the prefix the sandbox package's crashed-scratch sweep gates on, and
+// that cross-package coupling is what the assertion below pins. There is no
+// exported accessor, and adding one just for this test would widen the sandbox
+// API for no production caller.
+const sandboxSessionScratchPrefixForTest = "evener-sandbox-"
+
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/developing-evener/environment.md
 // documents EVENER_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
 // session's spawned commands must see EVENER_SCRATCH_DIR and TMPDIR too, not
 // only a sandboxed one.
+//
+// The two are no longer the same directory. EVENER_SCRATCH_DIR stays the private
+// 0700 session scratch — the file tools' writable root — while TMPDIR names a
+// world-usable session temp container in a host temp, because an unsandboxed
+// command can spawn a child that becomes another uid and no such child can write
+// a 0700 directory (#495). The amended decision record
+// (docs/superpowers/specs/2026-07-15-session-scratch-and-orchestration-posture-design.md,
+// "Environment") states the rule; this test pins its observable shape.
 func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(home, "project")
@@ -220,23 +236,125 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(env.Cleanup)
 	got := envToMap(env.commandEnvironment(nil))
 	scratch, ok := got["EVENER_SCRATCH_DIR"]
 	if !ok || strings.TrimSpace(scratch) == "" {
 		t.Fatalf("EVENER_SCRATCH_DIR missing from an unsandboxed command env: %v", got)
 	}
-	if got["TMPDIR"] != scratch {
-		t.Fatalf("TMPDIR = %q, want it to match EVENER_SCRATCH_DIR %q", got["TMPDIR"], scratch)
-	}
 	info, err := os.Stat(scratch)
 	if err != nil || !info.IsDir() {
 		t.Fatalf("EVENER_SCRATCH_DIR %q must exist and be a directory: %v", scratch, err)
 	}
-	// Provisioned once per env: a second spawn reuses the same directory rather
-	// than allocating a fresh one per command.
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("EVENER_SCRATCH_DIR %q mode = %04o, want the private 0700 scratch", scratch, perm)
+	}
+
+	// TMPDIR must NOT name the private scratch: the descendant this export exists
+	// for — one that becomes another uid — could not write it.
+	tmpDir := got["TMPDIR"]
+	if strings.TrimSpace(tmpDir) == "" {
+		t.Fatalf("TMPDIR missing from an unsandboxed command env: %v", got)
+	}
+	if tmpDir == scratch {
+		t.Fatalf("TMPDIR = %q names the private scratch, which a privilege-dropping child cannot write (#495)", tmpDir)
+	}
+	tmpInfo, err := os.Stat(tmpDir)
+	if err != nil || !tmpInfo.IsDir() {
+		t.Fatalf("TMPDIR %q must exist and be a directory: %v", tmpDir, err)
+	}
+	if perm := tmpInfo.Mode().Perm(); perm != 0o777 {
+		t.Fatalf("TMPDIR %q mode = %04o, want 0777 so an arbitrary uid can create temp files there", tmpDir, perm)
+	}
+	if tmpInfo.Mode()&os.ModeSticky == 0 {
+		t.Fatalf("TMPDIR %q mode = %v, want the sticky bit set so no uid may remove another's entry", tmpDir, tmpInfo.Mode())
+	}
+	container := filepath.Dir(tmpDir)
+	if !strings.HasPrefix(filepath.Base(container), sandboxSessionScratchPrefixForTest) {
+		t.Fatalf("temp container %q must carry the sessionScratchPrefix (%q) or the crashed-scratch sweep reaps it by nothing",
+			container, sandboxSessionScratchPrefixForTest)
+	}
+	containerInfo, err := os.Stat(container)
+	if err != nil {
+		t.Fatalf("temp container %q must exist: %v", container, err)
+	}
+	if perm := containerInfo.Mode().Perm(); perm != 0o711 {
+		t.Fatalf("temp container %q mode = %04o, want 0711 (reachable by others, not writable by them)", container, perm)
+	}
+	baseInfo, err := os.Stat(filepath.Dir(container))
+	if err != nil || !baseInfo.IsDir() {
+		t.Fatalf("temp container base %q must exist: %v", filepath.Dir(container), err)
+	}
+	if baseInfo.Mode().Perm()&0o002 == 0 || baseInfo.Mode()&os.ModeSticky == 0 {
+		t.Fatalf("temp container base %q mode = %v, want a world-writable sticky host temp", filepath.Dir(container), baseInfo.Mode())
+	}
+
+	// Provisioned once per env: a second spawn reuses the same directories rather
+	// than allocating fresh ones per command.
 	got2 := envToMap(env.commandEnvironment(nil))
 	if got2["EVENER_SCRATCH_DIR"] != scratch {
 		t.Fatalf("second commandEnvironment call allocated a different scratch dir: %q vs %q", got2["EVENER_SCRATCH_DIR"], scratch)
+	}
+	if got2["TMPDIR"] != tmpDir {
+		t.Fatalf("second commandEnvironment call allocated a different temp container: %q vs %q", got2["TMPDIR"], tmpDir)
+	}
+}
+
+// TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose: the temp
+// container is host temp, not handoff data, so a session's close REMOVES it —
+// unlike the private scratch, which is retained for the human handoff. Removal is
+// best-effort by construction (a foreign nested subtree may refuse to unlink), but
+// nothing of ours is left behind in the ordinary case.
+func TestCommandEnvironment_UnsandboxedTmpContainerReclaimedAtClose(t *testing.T) {
+	worktree := t.TempDir()
+	env := NewLocalExecutionEnvironment(worktree)
+	tmpDir := envToMap(env.commandEnvironment(nil))["TMPDIR"]
+	if tmpDir == "" {
+		t.Fatal("an unconfined unsandboxed env must export a TMPDIR container")
+	}
+	container := filepath.Dir(tmpDir)
+	if _, err := os.Stat(container); err != nil {
+		t.Fatalf("temp container %q must exist before close: %v", container, err)
+	}
+
+	env.Cleanup()
+
+	if _, err := os.Stat(container); !os.IsNotExist(err) {
+		t.Fatalf("Cleanup must reclaim the session temp container %q: %v", container, err)
+	}
+	if scratch := env.SessionScratchDir(); scratch == "" {
+		t.Fatal("Cleanup must RETAIN the private scratch for the handoff, not remove it with the temp container")
+	}
+}
+
+// TestCommandEnvironment_TmpContainerFailureLeavesTmpDirInherited: a container
+// that cannot be provisioned must leave TMPDIR alone — inherited from the process
+// env, which is the fail-closed direction — and never fall back to the private
+// scratch, which is exactly the value #495 removes. The failure is sticky so a
+// broken host temp is not re-probed on every spawn.
+func TestCommandEnvironment_TmpContainerFailureLeavesTmpDirInherited(t *testing.T) {
+	fail := errors.New("no world-usable host temp")
+	prev := newSessionTmp
+	newSessionTmp = func() (*sandbox.SessionTmp, error) { return nil, fail }
+	t.Cleanup(func() { newSessionTmp = prev })
+
+	worktree := t.TempDir()
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(env.Cleanup)
+	got := envToMap(env.commandEnvironment(nil))
+	scratch := got["EVENER_SCRATCH_DIR"]
+	if scratch == "" {
+		t.Fatal("EVENER_SCRATCH_DIR must still be exported when the temp container cannot be provisioned")
+	}
+	if got["TMPDIR"] == scratch {
+		t.Fatalf("TMPDIR = %q must not fall back to the private scratch when the container fails", got["TMPDIR"])
+	}
+
+	calls := 0
+	newSessionTmp = func() (*sandbox.SessionTmp, error) { calls++; return nil, fail }
+	env.commandEnvironment(nil)
+	if calls != 0 {
+		t.Fatalf("a failed container provisioning must be sticky, got %d further attempts", calls)
 	}
 }
 
