@@ -2437,7 +2437,6 @@ func exampleForField(field string, fieldSchema map[string]any) (string, bool) {
 // object) makes the whole example invalid: the caller omits it rather than
 // coach a retry that would still fail (issue #622 review).
 func exampleObjectSatisfiable(schema map[string]any) bool {
-	props := schemaProps(schema)
 	req := requiredNames(schema)
 	// The generated object carries exactly the required keys, so an object-level
 	// constant, value set, or applicator this renderer does not evaluate could
@@ -2464,27 +2463,22 @@ func exampleObjectSatisfiable(schema map[string]any) bool {
 		return false
 	}
 	for _, name := range req {
-		child := props[name]
-		if child == nil {
-			// Declared by required but absent from properties: the value is
-			// governed by any matching patternProperties schema and by a
-			// schema-valued additionalProperties, so the placeholder
-			// exampleObject renders for it must satisfy those (issue #622
-			// review). propertyMapForbidsRequired already cleared the
-			// boolean-false cases.
-			if gap := applicablePropertySchema(schema, name); gap != nil && !examplePlaceholderSatisfies(gap) {
-				return false
-			}
+		if propertyForbidden(schema, name) {
+			return false
+		}
+		// The value rendered for a required child is governed by its declared
+		// schema conjoined with every matching patternProperties schema (which
+		// apply to declared names too), not the declared schema alone.
+		eff := exampleEffectivePropertySchema(schema, name)
+		if eff == nil {
 			continue
 		}
-		if b, ok := child.(bool); ok {
-			if !b {
-				return false
-			}
+		if _, ok := exampleValueSetMember(eff); ok {
+			// The renderer emits an enum/const member that exampleValueSatisfies
+			// has already checked against the effective schema's constraints.
 			continue
 		}
-		m := schemaChildMap(child)
-		if m == nil || !examplePlaceholderSatisfies(m) {
+		if !examplePlaceholderSatisfies(eff) {
 			return false
 		}
 	}
@@ -3061,7 +3055,7 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	// constraints and the example's shape agree that it is valid.
 	showExample := !hasUnmodeledConstraint(params, keyword) &&
 		!examplePropertyConstrained(params) && rootAcceptsObject(params) &&
-		exampleObjectValid(params)
+		exampleObjectCombinatorValid(params)
 	if keyword == "oneOf" {
 		// A oneOf needs the example to match exactly one branch; a `not` arm of
 		// a root oneOf keeps its template when that holds, so the shape does not
@@ -3805,7 +3799,35 @@ func exampleForParams(params map[string]any) string {
 // when it is not declared. It validates the RENDERED text precisely, unlike the
 // conservative exampleObjectSatisfiable guard (issue #622 review).
 func exampleObjectValid(schema map[string]any) bool {
+	if !exampleRootConstraintsValid(schema) {
+		return false
+	}
 	return exampleObjectValidDepth(schema, 0)
+}
+
+// exampleObjectCombinatorValid is exampleObjectValid without the root-applicator
+// rejection, for callers that have already proven the rendered object satisfies
+// the root combinator (oneOfConstraintMessage's oneOf/not example gates).
+func exampleObjectCombinatorValid(schema map[string]any) bool {
+	return exampleObjectValidDepth(schema, 0)
+}
+
+// exampleRootConstraintsValid rejects a schema whose own top-level constraints
+// are applicators or value sets this renderer cannot evaluate for the rendered
+// object: oneOf/anyOf/allOf/not, conditionals, dependencies, property maps, and
+// a root enum/const. Emitting an example under such a schema cannot be proven
+// valid, so the caller omits it (fail closed, issue #622 review).
+func exampleRootConstraintsValid(schema map[string]any) bool {
+	for _, key := range []string{
+		"oneOf", "anyOf", "allOf", "not", "if", "then", "else",
+		"dependentSchemas", "dependentRequired", "dependencies",
+		"propertyNames", "unevaluatedProperties", "enum", "const",
+	} {
+		if schema[key] != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // exampleObjectValidDepth validates the placeholders exampleObject renders for
@@ -4122,11 +4144,48 @@ func exampleValueSetMember(m map[string]any) (any, bool) {
 // modelable constraints a property schema carries alongside its enum/const set:
 // declared type, string length bounds, a string pattern, and numeric bounds.
 func exampleMemberSatisfies(m map[string]any, v any) bool {
+	return exampleValueSatisfies(m, v)
+}
+
+// exampleValueSatisfies reports whether a concrete value v satisfies the
+// modelable constraints of schema m: type, enum/const, string length/pattern,
+// numeric bounds/multipleOf, array items/counts/uniqueness, and object
+// required/count/property constraints. An applicator this renderer cannot
+// evaluate makes the value unprovable, so it returns false (fail closed).
+func exampleValueSatisfies(m map[string]any, v any) bool {
+	if m == nil {
+		return true
+	}
+	for _, key := range []string{
+		"not", "if", "then", "else", "oneOf", "anyOf", "allOf",
+		"dependentSchemas", "dependentRequired", "dependencies",
+		"propertyNames", "unevaluatedProperties",
+	} {
+		if m[key] != nil {
+			return false
+		}
+	}
+	if c, ok := m["const"]; ok && formatEnumValue(c) != formatEnumValue(v) {
+		return false
+	}
+	if list := valueList(m["enum"]); list != nil {
+		found := false
+		for _, e := range list {
+			if formatEnumValue(e) == formatEnumValue(v) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	if declared, present := m["type"]; present && !valueMatchesTypes(v, typeNames(declared)) {
 		return false
 	}
-	if s, ok := v.(string); ok {
-		n := utf8.RuneCountInString(s)
+	switch val := v.(type) {
+	case string:
+		n := utf8.RuneCountInString(val)
 		if lim, ok := schemaInt(m["minLength"]); ok && n < lim {
 			return false
 		}
@@ -4134,7 +4193,55 @@ func exampleMemberSatisfies(m map[string]any, v any) bool {
 			return false
 		}
 		if pat, ok := m["pattern"].(string); ok {
-			if matched, err := regexp.MatchString(pat, s); err != nil || !matched {
+			if matched, err := regexp.MatchString(pat, val); err != nil || !matched {
+				return false
+			}
+		}
+	case []any:
+		if lim, ok := schemaInt(m["minItems"]); ok && len(val) < lim {
+			return false
+		}
+		if lim, ok := schemaInt(m["maxItems"]); ok && len(val) > lim {
+			return false
+		}
+		if unique, ok := m["uniqueItems"].(bool); ok && unique {
+			seen := make(map[string]struct{}, len(val))
+			for _, e := range val {
+				k := formatEnumValue(e)
+				if _, dup := seen[k]; dup {
+					return false
+				}
+				seen[k] = struct{}{}
+			}
+		}
+		if items := schemaChildMap(m["items"]); items != nil {
+			for _, e := range val {
+				if !exampleValueSatisfies(items, e) {
+					return false
+				}
+			}
+		}
+	case map[string]any:
+		if lim, ok := schemaInt(m["minProperties"]); ok && len(val) < lim {
+			return false
+		}
+		if lim, ok := schemaInt(m["maxProperties"]); ok && len(val) > lim {
+			return false
+		}
+		for _, r := range asStringSlice(m["required"]) {
+			if _, present := val[r]; !present {
+				return false
+			}
+		}
+		for k, vv := range val {
+			eff := exampleEffectivePropertySchema(m, k)
+			if eff == nil {
+				if additionalPropsFalse(m) {
+					return false
+				}
+				continue
+			}
+			if !exampleValueSatisfies(eff, vv) {
 				return false
 			}
 		}
@@ -4151,6 +4258,12 @@ func exampleMemberSatisfies(m map[string]any, v any) bool {
 		}
 		if lim, ok := schemaFloat(m["exclusiveMaximum"]); ok && f >= lim {
 			return false
+		}
+		if lim, ok := schemaFloat(m["multipleOf"]); ok && lim != 0 {
+			q := f / lim
+			if q != math.Trunc(q) {
+				return false
+			}
 		}
 	}
 	return true

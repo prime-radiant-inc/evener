@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"maps"
 	"strings"
 	"testing"
 )
@@ -1625,5 +1626,65 @@ func TestExplainSchemaError_TypedOneOfArmsRenderBranchProse(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": map[string]any{}}, "a", "/properties/a/oneOf/0/required")
 	if !strings.Contains(msg, "oneOf constraint") || !strings.Contains(msg, "Branch 0 requires") {
 		t.Fatalf("typed oneOf arms not rendered as branch prose: %q", msg)
+	}
+}
+
+// exampleForParams must not emit an example under a root applicator/value set it
+// cannot evaluate (issue #622 review).
+func TestExampleForParams_RejectsUnmodeledRootConstraints(t *testing.T) {
+	base := map[string]any{
+		"type": "object", "required": []string{"a"},
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	for name, extra := range map[string]map[string]any{
+		"oneOf": {"oneOf": []any{map[string]any{"required": []string{"a"}}, map[string]any{"required": []string{"b"}}}},
+		"allOf": {"allOf": []any{map[string]any{"required": []string{"a"}}}},
+		"not":   {"not": map[string]any{"required": []string{"a"}}},
+		"const": {"const": map[string]any{"a": "x"}},
+		"enum":  {"enum": []any{map[string]any{"a": "x"}}},
+	} {
+		schema := map[string]any{}
+		maps.Copy(schema, base)
+		maps.Copy(schema, extra)
+		if got := exampleForParams(schema); got != "" {
+			t.Fatalf("root %s: example emitted for unmodeled root constraint: %q", name, got)
+		}
+	}
+}
+
+// A container-valued enum must select the member that satisfies the container
+// constraints, not the first-listed one (issue #622 review).
+func TestExampleForParams_ContainerEnumSelectsValidMember(t *testing.T) {
+	schema := map[string]any{
+		"type": "object", "required": []string{"p"},
+		"properties": map[string]any{
+			"p": map[string]any{"type": "array", "enum": []any{[]any{}, []any{"x"}}, "minItems": 1},
+		},
+	}
+	got := exampleForParams(schema)
+	if !strings.Contains(got, `"x"`) || strings.Contains(got, `"p": []`) {
+		t.Fatalf("container enum must pick the member satisfying minItems: %q", got)
+	}
+}
+
+// A required child is governed by matching patternProperties as well as its
+// declared schema, so an example it would violate is omitted (issue #622
+// review).
+func TestExplainSchemaError_RequiredExampleHonorsPatternProperties(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string"},
+			"output": map[string]any{
+				"type": "object", "required": []string{"x"},
+				"properties":        map[string]any{"x": map[string]any{"type": "string"}},
+				"patternProperties": map[string]any{"^x$": map[string]any{"minLength": 10}},
+			},
+		},
+		"required": []string{"task"},
+	}
+	msg := ExplainSchemaError("probe_tool", params, map[string]any{"task": "t", "output": map[string]any{}}, "output", "required")
+	if strings.Contains(msg, `"x": "..."`) {
+		t.Fatalf("required example violated patternProperties: %q", msg)
 	}
 }
