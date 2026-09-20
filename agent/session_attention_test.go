@@ -224,6 +224,85 @@ func TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend(t *test
 	}
 }
 
+// TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible pins the
+// ordering invariant behind the memo's consumed-through offset: the offset
+// must never claim bytes the fold did not read. The compute seam folds the
+// file as it stands and then lands an entry after the fold's EOF, before the
+// reader's size check — if that check stats the file after the fold, the
+// memo swallows the entry and serves the turn-less fold as an
+// unchanged-transcript hit indefinitely; statting before the fold makes the
+// next read see growth and refold.
+func TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible(t *testing.T) {
+	const (
+		sessionID   = "child-memo-fold-race"
+		attentionID = "delegate:delivery-fold-race"
+		racingID    = "delegate:delivery-fold-race-late"
+	)
+	stateDir := t.TempDir()
+	path := transcriptPath(stateDir, sessionID)
+	now := time.Unix(1700000000, 0).UTC()
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("raced attention"))
+	steering.AttentionID = attentionID
+	if err := writer.AppendDurable(steering); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The compute seam folds the file as it stands, then an entry lands after
+	// the fold's EOF but before the reader's size check.
+	compute := readExistingDelegateAttentionFoldCompute
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
+		fold, err := compute(path, sessionID)
+		if err != nil {
+			return delegateAttentionFold{}, err
+		}
+		appender, _, err := transcript.OpenWriterForSession(path, sessionID)
+		if err != nil {
+			return delegateAttentionFold{}, err
+		}
+		racing := schema.NewTurn(schema.TurnSteering, llm.User("attention that landed during the read"))
+		racing.AttentionID = racingID
+		if err := appender.AppendDurable(racing); err != nil {
+			return delegateAttentionFold{}, err
+		}
+		if err := appender.Close(); err != nil {
+			return delegateAttentionFold{}, err
+		}
+		return fold, nil
+	}
+	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
+
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("racing read: %v", err)
+	}
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) {
+		t.Fatalf("racing read pending = %v, want [%s]: the seam folds the pre-append bytes", got, attentionID)
+	}
+	// The race window is closed: whatever the next read does, it must not
+	// re-run the seam.
+	readExistingDelegateAttentionFoldCompute = compute
+
+	// The next read must see the entry that landed during the first fold: a
+	// memo that claimed the appended bytes without reading them would serve
+	// the turn-less fold as an unchanged-transcript hit indefinitely.
+	after, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("post-race read: %v", err)
+	}
+	if got := after.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID, racingID}) {
+		t.Fatalf("post-race pending = %v, want [%s %s]: the entry that raced the fold was swallowed by the memo", got, attentionID, racingID)
+	}
+}
+
 func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 	t.Run("stop wins before acceptance", func(t *testing.T) {
 		const (

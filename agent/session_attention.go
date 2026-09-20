@@ -130,23 +130,27 @@ var delegateAttentionFoldCache = foldcache.New[delegateAttentionFoldMemo](delega
 // can change what earlier entries meant — so every call refolds from byte
 // zero and fromOffset/prior go unused; the cache still pays for itself by
 // skipping the read entirely while a transcript is unchanged, which is the
-// hot case in the per-click status sweeps. toOffset is the file size statted
-// after the fold: the fold consumed every complete line, and the only bytes
-// it can leave unconsumed are a torn trailing line, which either completes
-// (growing the file, so the next read refolds) or is rolled back by the
-// writer (shrinking it, which foldcache treats as a rewrite and refolds from
-// zero) — either way the stat size is the honest consumed-through bound. The
-// ctx an Extend call runs with is detached from every caller by
-// foldcache.Get, so there is no cancellation to check mid-read.
+// hot case in the per-click status sweeps. The ctx an Extend call runs with
+// is detached from every caller by foldcache.Get, so there is no
+// cancellation to check mid-read.
 func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[delegateAttentionFoldMemo] {
 	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, error) {
-		fold, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
-		if err != nil {
-			return delegateAttentionFoldMemo{}, 0, err
-		}
+		// toOffset is the size statted BEFORE the fold, never after. The fold
+		// reads to EOF, so it consumes at least this many bytes, and an
+		// append landing mid-read leaves the file larger than toOffset, so
+		// the next read sees growth and refolds — a wasted compute, never a
+		// stale one. Statting after the fold instead would let an append
+		// that landed after the fold's EOF ride into toOffset unread, and
+		// foldcache would then serve that turn-less fold as an
+		// unchanged-transcript hit indefinitely
+		// (TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible).
 		info, err := os.Stat(path)
 		if err != nil {
 			return delegateAttentionFoldMemo{}, 0, fmt.Errorf("stat delegate attention transcript: %w", err)
+		}
+		fold, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		if err != nil {
+			return delegateAttentionFoldMemo{}, 0, err
 		}
 		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, info.Size(), nil
 	}
