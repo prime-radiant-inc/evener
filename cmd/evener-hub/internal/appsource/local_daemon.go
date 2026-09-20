@@ -372,6 +372,21 @@ func (s *LocalDaemonSource) RetireDaemonAtEntry(ctx context.Context, entry rende
 	return out, err
 }
 
+// SetDaemonIdleTimeoutAtEntry forwards an idle-deadline change to an exact
+// daemon endpoint within the source's recovery cancellation scope. The hub has
+// already resolved this entry from its roster; the params — including the
+// rendered ownership identity — pass through verbatim, as do the daemon's
+// answer and errors.
+func (s *LocalDaemonSource) SetDaemonIdleTimeoutAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+	var out appwire.DaemonIdleTimeoutSetResponse
+	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.DaemonIdleTimeoutSet(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {

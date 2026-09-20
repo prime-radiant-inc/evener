@@ -160,7 +160,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
+	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {

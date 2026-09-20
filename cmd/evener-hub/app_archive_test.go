@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,10 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
@@ -138,6 +143,192 @@ func dispatchArchiveSet(t *testing.T, web *WebServer, params appwire.ArchivePara
 		t.Fatalf("response type = %T, want appwire.ArchiveResponse", result)
 	}
 	return response, nil
+}
+
+// idleTimeoutRecordingDaemon runs one fixture daemon that records every
+// evener/daemon/idle-timeout/set request it receives, answering with the
+// resident lifecycle.
+func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool) *[]appwire.DaemonIdleTimeoutSetParams {
+	t.Helper()
+	var got []appwire.DaemonIdleTimeoutSetParams
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		got = append(got, params)
+		if fail {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("fixture refuses the deadline change")
+		}
+		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: *residentLifecycleForTest()}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	return &got
+}
+
+// archiveTestHub builds a hub over one resident roster entry and returns the
+// server pair plus the archive store, mirroring the daemon-action fixtures.
+func archiveTestHub(t *testing.T, entry rendezvous.Entry, prober forceStopProberFunc) (*httptest.Server, *WebServer, *hubcore.ArchiveStore) {
+	t.Helper()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		RunDir:            runDir,
+		Roster:            roster,
+		Archive:           archive,
+		HubStateRoot:      t.TempDir(),
+		Past:              hubcore.NewPastIndex(""),
+		DaemonIdleTimeout: 5 * time.Minute,
+	})
+	t.Cleanup(hub.Close)
+	return hub, web, archive
+}
+
+func assertSessionArchived(t *testing.T, archive *hubcore.ArchiveStore, sessionID string, archived bool) {
+	t.Helper()
+	decisions, err := archive.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decisions[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] != archived {
+		t.Fatalf("session %s archive decision = %v, want archived=%v", sessionID, decisions, archived)
+	}
+}
+
+// TestArchiveSetRetargetsResidentDaemonIdleDeadline proves an explicit session
+// archive decision reaches the session's resident daemon: archiving shortens
+// its automatic idle-retirement deadline to the archived-session constant and
+// unarchiving restores the Hub's configured timeout. The forwarded identity is
+// the exact ownership fingerprint, so a replacement daemon refuses it.
+func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
+	entry := residentEntryForTest(t, 4501)
+	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
+	if len(*got) != 1 {
+		t.Fatalf("resident daemon received %d idle-timeout sets, want 1", len(*got))
+	}
+	if set := (*got)[0]; set.TimeoutMillis != 60000 {
+		t.Fatalf("archive TimeoutMillis = %d, want 60000", set.TimeoutMillis)
+	} else if set.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
+		t.Fatalf("forwarded identity generation = %q, want the exact ownership fingerprint", set.Identity.Generation)
+	}
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: false,
+	}); err != nil {
+		t.Fatalf("unarchive session: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, false)
+	if len(*got) != 2 {
+		t.Fatalf("resident daemon received %d idle-timeout sets after unarchive, want 2", len(*got))
+	}
+	if set := (*got)[1]; set.TimeoutMillis != (5 * time.Minute).Milliseconds() {
+		t.Fatalf("unarchive TimeoutMillis = %d, want the configured 300000", set.TimeoutMillis)
+	}
+}
+
+// TestArchiveSetWithoutResidentDaemonPersistsDecision proves the nudge is
+// best-effort: a session with no resident daemon archives fine, because the
+// common archived session has nothing running to retarget.
+func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Archive:           archive,
+		HubStateRoot:      t.TempDir(),
+		Past:              hubcore.NewPastIndex(""),
+		DaemonIdleTimeout: time.Hour,
+	})
+	t.Cleanup(hub.Close)
+	sessionID := hubtest.SessionID(t)
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: sessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive session with no resident daemon: %v", err)
+	}
+	assertSessionArchived(t, archive, sessionID, true)
+}
+
+// TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon proves the nudge never
+// reaches a peer that cannot speak the current protocol: an older daemon keeps
+// its configured deadline and the archive decision still persists.
+func TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon(t *testing.T) {
+	entry := residentEntryForTest(t, 4502)
+	entry.Protocol = "evener-appwire-v3"
+	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
+	if len(*got) != 0 {
+		t.Fatalf("older-protocol daemon received %d idle-timeout sets, want 0", len(*got))
+	}
+}
+
+// TestArchiveSetProjectDecisionNeverTouchesDaemons proves a project archive
+// decision, which covers many sessions, never retargets a resident daemon:
+// shortening is the session decision's behavior alone.
+func TestArchiveSetProjectDecisionNeverTouchesDaemons(t *testing.T) {
+	entry := residentEntryForTest(t, 4503)
+	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+	project, err := identifier.ResolveProject(entry.WorkingDir)
+	if err != nil {
+		t.Fatalf("resolve project: %v", err)
+	}
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetProject, ID: project.ID, WorkingDir: entry.WorkingDir, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive project: %v", err)
+	}
+	decisions, err := archive.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
+		t.Fatalf("project archive decision not persisted: %v", decisions)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("project archive retargeted a daemon %d times, want 0", len(*got))
+	}
+}
+
+// TestArchiveSetPersistsWhenIdleTimeoutNudgeFails proves the daemon nudge is
+// subordinate to the decision: a daemon that refuses (or a peer lost mid-race)
+// never fails the archive response or the persisted decision.
+func TestArchiveSetPersistsWhenIdleTimeoutNudgeFails(t *testing.T) {
+	entry := residentEntryForTest(t, 4504)
+	idleTimeoutRecordingDaemon(t, &entry, true)
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive session over a refusing daemon: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
 }
 
 // A remote project's working directory does not exist on the controller, so the
