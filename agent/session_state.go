@@ -290,6 +290,19 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 	s.finishProcessingAtBoundary(ctx, state)
 }
 
+// finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
+// was rejected by the same transcript-tail rule restore uses. Marker rejection
+// can follow an admitted reply, which clears askPending before a completed
+// tool-results turn leaves the durable session awaiting. Generic failures keep
+// the pending-set rule above; this path is only for an interrupt marker that
+// never became a boundary record.
+func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
+	s.mu.Lock()
+	state := deriveRestoredState(s.history, s.fork.divergence, s.clientMutations.steeringOrigins())
+	s.mu.Unlock()
+	s.finishProcessingAtBoundary(ctx, state)
+}
+
 // accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
 // returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
 // (no turn was timed) contributes nothing.
