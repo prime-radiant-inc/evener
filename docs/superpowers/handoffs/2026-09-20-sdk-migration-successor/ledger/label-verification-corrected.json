@@ -1,0 +1,581 @@
+{
+  "verified_open_managed_prs": [
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        }
+      ],
+      "number": 2041,
+      "title": "refactor(web): extract transcript display local persistence"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        }
+      ],
+      "number": 2035,
+      "title": "appwire: expose history merge coverage and overlap"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 2005,
+      "title": "agent: persist interrupt boundaries before resolving pending asks"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1983,
+      "title": "Recover native marketplace removal guards after accepted updates"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1981,
+      "title": "Add durable native mutation runtime with hub-scoped dispatch"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1978,
+      "title": "Retain marketplace outcomes across native browser remounts"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKlg",
+          "name": "tui",
+          "description": "Terminal UI work",
+          "color": "d4c5f9"
+        }
+      ],
+      "number": 1976,
+      "title": "Preserve marketplace outcomes while ordering TUI reconciliation"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1973,
+      "title": "Expose accepted marketplace snapshot publication"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1972,
+      "title": "Surface applied marketplace removals in native"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKlg",
+          "name": "tui",
+          "description": "Terminal UI work",
+          "color": "d4c5f9"
+        }
+      ],
+      "number": 1966,
+      "title": "Handle applied marketplace removals in the TUI"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1960,
+      "title": "Preserve applied marketplace removals across web reconciliation"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1955,
+      "title": "mobile: recheck live connection ownership before deferred mutations"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1954,
+      "title": "sdk: fence reconciliation of applied marketplace removals"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1952,
+      "title": "mobile: retain loaded screens behind reconnect banners"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dK9A",
+          "name": "docs",
+          "description": "SDK migration documentation and handoff work",
+          "color": "0075ca"
+        }
+      ],
+      "number": 1934,
+      "title": "docs(handoff): mobile landing + SDK migration queue state, 2026-09-18"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1922,
+      "title": "feat(mobile): retained screens recover on reconnect (D28 D2a)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJNw",
+          "name": "web",
+          "description": "Browser frontend and web consumer work",
+          "color": "5319e7"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        }
+      ],
+      "number": 1920,
+      "title": "feat(mobile): session usage totals from the package store (D18 B3)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        }
+      ],
+      "number": 1919,
+      "title": "fix(mobile): the conversation keeps its turns and wire cursor coherent across paging and rehydrate"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dKZg",
+          "name": "server",
+          "description": "Go server and hub work",
+          "color": "b60205"
+        }
+      ],
+      "number": 1897,
+      "title": "plugins: close the store-path class (migration recovery, join paths)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        }
+      ],
+      "number": 1845,
+      "title": "D6 piece 10: transcriptDisplayStore hub defaults + direct write"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJ7Q",
+          "name": "sdk",
+          "description": "Shared AppWire SDK package work",
+          "color": "0366d6"
+        }
+      ],
+      "number": 1844,
+      "title": "D6 piece 9: checkpointed draft editor primitives (discard/persist)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1740,
+      "title": "refactor(native): rows read from the model, older pages stay attached (D23c-2b, piece D)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1738,
+      "title": "fix(native): a collision-resistant, memoized identity for a question set"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1737,
+      "title": "refactor(native): rows are a projection of the model (D23c-2b, piece C)"
+    },
+    {
+      "labels": [
+        {
+          "id": "LA_kwDORMusps8AAAAC21dI9Q",
+          "name": "sdk-refactor",
+          "description": "AppWire SDK migration and shared package work",
+          "color": "1d76db"
+        },
+        {
+          "id": "LA_kwDORMusps8AAAAC21dJpg",
+          "name": "native",
+          "description": "Mobile and native client work",
+          "color": "0e8a16"
+        }
+      ],
+      "number": 1580,
+      "title": "refactor(native): rows are a projection of the model (D23c-2b)"
+    }
+  ],
+  "missing_sdk_refactor": []
+}

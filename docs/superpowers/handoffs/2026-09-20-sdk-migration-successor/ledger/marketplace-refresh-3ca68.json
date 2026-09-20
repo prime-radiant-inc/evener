@@ -1,0 +1,22 @@
+{
+  "main": "3ca68fad7ab4dec468ab2d51d1f33bcca2009b3e",
+  "server": {
+    "head": "2989ba6916e04b1fa3eeebe2714b7dc4a33522c5",
+    "owned_files": 10,
+    "full_own_patch_sha256": "182dee360092e773c3f16c44e9161380c8c57cdff095a28b5cd44d18c84bd765",
+    "byte_identical": true
+  },
+  "sdk": {
+    "head": "64db435f21928a000006c420b1b9b103d1ba0c30",
+    "owned_files": 4,
+    "full_own_patch_sha256": "45d75049486f12acc8a7adf5868cb74fed4f9b6a981e89d1817b5888ffcc3ae4",
+    "byte_identical": true
+  },
+  "web": {
+    "head": "a55194188d99f6cfc7a0522eeffc6883c5fa2e1e",
+    "owned_files": 6,
+    "full_own_patch_sha256": "7bace42e7bcd5a728fe3ea17b01b3a9982b552b0ae185ec636c500566fd45477",
+    "byte_identical": true,
+    "upstream_note": "Old comparison included two native outbox files matching main617b; new base includes their main3ca read-path evolution. Neither belongs to the web patch."
+  }
+}

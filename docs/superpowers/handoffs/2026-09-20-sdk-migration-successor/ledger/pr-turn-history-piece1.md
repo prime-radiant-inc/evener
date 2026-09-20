@@ -1,0 +1,5 @@
+Pagination now coalesces every transitively overlapping turn fragment before merging an older page with retained turns. A chain of fragments that joins two previously separate groups no longer leaves duplicate items behind. Fresh fields retain precedence, source membership and order survive the coalescing, and fresh-only overlapping fragments keep the existing merge behavior.
+
+This is the first of three package slices replacing the package portion of #1919. It is integrated through the existing `mergeOlderItemPage` path; retained turn placement and coverage/public helper exports follow separately, then the mobile cursor consumer. The original full implementation is preserved on `codex/history-merge-round-five-backup`.
+
+Validation: 223 reducer tests and 17 watch-row tests passed, along with frontend/native typechecks, Biome, package import lint, package build, and diff checks. Independent spec/quality/simplify review accepted exact head `a35f181df4fc9008b98bb2e8b9e26db2c5f4231a`; local RoboRev branch review 2582 passed. Regression coverage includes a transitive fragment chain with exact item ordering and fresh-only overlaps alongside an unrelated older page.

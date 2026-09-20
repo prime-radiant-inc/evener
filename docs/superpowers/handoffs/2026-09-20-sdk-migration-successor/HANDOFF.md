@@ -4,7 +4,7 @@
 
 **The migration is not complete. Finish web before native.** Jesse requested this handoff and preservation of all work; implementation was checkpointed rather than merged merely to simplify the handoff. This document supersedes status claims in older ledger snapshots. Read `pr-snapshot.json` for the timestamped GitHub state, `branch-manifest.json` for exact preserved commits, and refresh GitHub before acting.
 
-The starting brief was PR #1934, branch `claude/handoff-2026-09-18`, at `docs/superpowers/handoffs/2026-09-18-mobile-landing-sdk-migration/HANDOFF.md`. Its ledger, lane briefs, nine rulings, and original requirement history remain in the repository. This new directory contains a full copy of the successor coordinator ledger under `ledger/`. Old absolute `.superpowers/sdd/2026-09-12-mobile-landing-queue-cont/…` references resolve beneath that copy; a few workers accidentally wrote a second `L/` directory, also preserved.
+The starting brief was PR #1934, branch `claude/handoff-2026-09-18`, at `docs/superpowers/handoffs/2026-09-18-mobile-landing-sdk-migration/HANDOFF.md`. Its ledger, lane briefs, nine rulings, and original requirement history are included in this handoff branch at that original path (PR #1934 had not landed on main). This new directory contains a full copy of the successor coordinator ledger under `ledger/`. Old absolute `.superpowers/sdd/2026-09-12-mobile-landing-queue-cont/…` references resolve beneath that copy; a few workers accidentally wrote a second `L/` directory, also preserved.
 
 ### Objective and operating decisions
 

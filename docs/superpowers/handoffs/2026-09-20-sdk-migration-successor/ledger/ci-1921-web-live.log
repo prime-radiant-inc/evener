@@ -1,0 +1,312 @@
+﻿2026-09-19T01:23:01.4761494Z Current runner version: '2.337.0'
+2026-09-19T01:23:01.4786304Z ##[group]Runner Image Provisioner
+2026-09-19T01:23:01.4787153Z Hosted Compute Agent
+2026-09-19T01:23:01.4787856Z Version: 20260828.587
+2026-09-19T01:23:01.4788515Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-09-19T01:23:01.4789261Z Build Date: 2026-08-28T16:44:25Z
+2026-09-19T01:23:01.4790340Z Worker ID: {290d9d83-da5b-4c5f-b13c-60924965d94f}
+2026-09-19T01:23:01.4791125Z Azure Region: northcentralus
+2026-09-19T01:23:01.4791813Z ##[endgroup]
+2026-09-19T01:23:01.4793223Z ##[group]Operating System
+2026-09-19T01:23:01.4793870Z Ubuntu
+2026-09-19T01:23:01.4794506Z 24.04.5
+2026-09-19T01:23:01.4795041Z LTS
+2026-09-19T01:23:01.4795611Z ##[endgroup]
+2026-09-19T01:23:01.4796198Z ##[group]Runner Image
+2026-09-19T01:23:01.4796874Z Image: ubuntu-24.04
+2026-09-19T01:23:01.4797558Z Version: 20260907.300.1
+2026-09-19T01:23:01.4798794Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260907.300/images/ubuntu/Ubuntu2404-Readme.md
+2026-09-19T01:23:01.4800601Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260907.300
+2026-09-19T01:23:01.4801613Z ##[endgroup]
+2026-09-19T01:23:01.4802816Z ##[group]GITHUB_TOKEN Permissions
+2026-09-19T01:23:01.4804660Z Contents: read
+2026-09-19T01:23:01.4805379Z Metadata: read
+2026-09-19T01:23:01.4805997Z ##[endgroup]
+2026-09-19T01:23:01.4808122Z Secret source: Actions
+2026-09-19T01:23:01.4809083Z Cache mode: write
+2026-09-19T01:23:01.4810221Z Prepare workflow directory
+2026-09-19T01:23:01.5145491Z Prepare all required actions
+2026-09-19T01:23:01.5192794Z Getting action download info
+2026-09-19T01:23:01.7708938Z Download action repository 'actions/checkout@v7' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-09-19T01:23:01.8612669Z Download action repository 'actions/setup-node@v7' (SHA:820762786026740c76f36085b0efc47a31fe5020)
+2026-09-19T01:23:01.9425740Z Download action repository 'actions/upload-artifact@v7.0.1' (SHA:043fb46d1a93c77aae656e7c1c64a875d1fc6a0a)
+2026-09-19T01:23:02.1288301Z Complete job name: web
+2026-09-19T01:23:02.2104359Z ##[group]Run actions/checkout@v7
+2026-09-19T01:23:02.2105530Z with:
+2026-09-19T01:23:02.2106319Z   repository: prime-radiant-inc/evener
+2026-09-19T01:23:02.2113405Z   token: ***
+2026-09-19T01:23:02.2114138Z   ssh-strict: true
+2026-09-19T01:23:02.2114796Z   ssh-user: git
+2026-09-19T01:23:02.2115251Z   persist-credentials: true
+2026-09-19T01:23:02.2115756Z   clean: true
+2026-09-19T01:23:02.2116215Z   sparse-checkout-cone-mode: true
+2026-09-19T01:23:02.2116761Z   fetch-depth: 1
+2026-09-19T01:23:02.2117214Z   fetch-tags: false
+2026-09-19T01:23:02.2117669Z   show-progress: true
+2026-09-19T01:23:02.2118131Z   lfs: false
+2026-09-19T01:23:02.2118613Z   submodules: false
+2026-09-19T01:23:02.2119296Z   set-safe-directory: true
+2026-09-19T01:23:02.2120264Z   allow-unsafe-pr-checkout: false
+2026-09-19T01:23:02.2121584Z ##[endgroup]
+2026-09-19T01:23:02.3116595Z Syncing repository: prime-radiant-inc/evener
+2026-09-19T01:23:02.3118528Z ##[group]Getting Git version info
+2026-09-19T01:23:02.3119442Z Working directory is '/home/runner/work/evener/evener'
+2026-09-19T01:23:02.3120901Z [command]/usr/bin/git version
+2026-09-19T01:23:02.3160156Z git version 2.55.0
+2026-09-19T01:23:02.3178662Z ##[endgroup]
+2026-09-19T01:23:02.3188237Z Temporarily overriding HOME='/home/runner/work/_temp/eb4e14f0-003d-47ea-b792-e5e23e3fe027' before making global git config changes
+2026-09-19T01:23:02.3190414Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-19T01:23:02.3193562Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/evener/evener
+2026-09-19T01:23:02.3232723Z Deleting the contents of '/home/runner/work/evener/evener'
+2026-09-19T01:23:02.3236164Z ##[group]Determining repository object format
+2026-09-19T01:23:02.3237648Z ##[endgroup]
+2026-09-19T01:23:02.3238412Z ##[group]Initializing the repository
+2026-09-19T01:23:02.3242085Z [command]/usr/bin/git init /home/runner/work/evener/evener
+2026-09-19T01:23:02.3318484Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-19T01:23:02.3320289Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-19T01:23:02.3321748Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-19T01:23:02.3322507Z hint: call:
+2026-09-19T01:23:02.3322922Z hint:
+2026-09-19T01:23:02.3323451Z hint: 	git config --global init.defaultBranch <name>
+2026-09-19T01:23:02.3324079Z hint:
+2026-09-19T01:23:02.3324924Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-19T01:23:02.3326200Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-19T01:23:02.3326959Z hint:
+2026-09-19T01:23:02.3327387Z hint: 	git branch -m <name>
+2026-09-19T01:23:02.3327869Z hint:
+2026-09-19T01:23:02.3328495Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-19T01:23:02.3329842Z Initialized empty Git repository in /home/runner/work/evener/evener/.git/
+2026-09-19T01:23:02.3331965Z [command]/usr/bin/git remote add origin https://github.com/prime-radiant-inc/evener
+2026-09-19T01:23:02.3370348Z ##[endgroup]
+2026-09-19T01:23:02.3371144Z ##[group]Disabling automatic garbage collection
+2026-09-19T01:23:02.3373569Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-19T01:23:02.3402529Z ##[endgroup]
+2026-09-19T01:23:02.3403347Z ##[group]Setting up auth
+2026-09-19T01:23:02.3403882Z Removing SSH command configuration
+2026-09-19T01:23:02.3408533Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-19T01:23:02.3440289Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-19T01:23:02.3767078Z Removing HTTP extra header
+2026-09-19T01:23:02.3771775Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-19T01:23:02.3802460Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-19T01:23:02.4026669Z Removing includeIf entries pointing to credentials config files
+2026-09-19T01:23:02.4032568Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-19T01:23:02.4063392Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-19T01:23:02.4295899Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-19T01:23:02.4332964Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/evener/evener/.git.path /home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:23:02.4363230Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:23:02.4396781Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:23:02.4429374Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:23:02.4458768Z ##[endgroup]
+2026-09-19T01:23:02.4460171Z ##[group]Fetching the repository
+2026-09-19T01:23:02.4466458Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +b171b503cf426403b0086838a7800f71fc15ba8b:refs/remotes/pull/1921/merge
+2026-09-19T01:23:05.4513464Z From https://github.com/prime-radiant-inc/evener
+2026-09-19T01:23:05.4515883Z  * [new ref]         b171b503cf426403b0086838a7800f71fc15ba8b -> pull/1921/merge
+2026-09-19T01:23:05.4520789Z ##[endgroup]
+2026-09-19T01:23:05.4521970Z ##[group]Determining the checkout info
+2026-09-19T01:23:05.4525517Z ##[endgroup]
+2026-09-19T01:23:05.4526426Z [command]/usr/bin/git sparse-checkout disable
+2026-09-19T01:23:05.4588781Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-19T01:23:05.4621577Z ##[group]Checking out the ref
+2026-09-19T01:23:05.4625103Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/1921/merge
+2026-09-19T01:23:06.2967963Z Note: switching to 'refs/remotes/pull/1921/merge'.
+2026-09-19T01:23:06.2968589Z 
+2026-09-19T01:23:06.2969003Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-09-19T01:23:06.2970161Z changes and commit them, and you can discard any commits you make in this
+2026-09-19T01:23:06.2971089Z state without impacting any branches by switching back to a branch.
+2026-09-19T01:23:06.2971640Z 
+2026-09-19T01:23:06.2972113Z If you want to create a new branch to retain commits you create, you may
+2026-09-19T01:23:06.2972963Z do so (now or later) by using -c with the switch command. Example:
+2026-09-19T01:23:06.2973313Z 
+2026-09-19T01:23:06.2973483Z   git switch -c <new-branch-name>
+2026-09-19T01:23:06.2973725Z 
+2026-09-19T01:23:06.2973924Z Or undo this operation with:
+2026-09-19T01:23:06.2974136Z 
+2026-09-19T01:23:06.2974286Z   git switch -
+2026-09-19T01:23:06.2974536Z 
+2026-09-19T01:23:06.2974890Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-09-19T01:23:06.2975269Z 
+2026-09-19T01:23:06.2975677Z HEAD is now at b171b50 Merge d10c70c4c400e63d3db427db56f4df7acbf526db into e7630003ea3d93b392384a90e6347ff4d2da73c5
+2026-09-19T01:23:06.3390094Z ##[endgroup]
+2026-09-19T01:23:06.3434576Z [command]/usr/bin/git log -1 --format=%H
+2026-09-19T01:23:06.3460477Z b171b503cf426403b0086838a7800f71fc15ba8b
+2026-09-19T01:23:06.3814906Z ##[group]Run actions/setup-node@v7
+2026-09-19T01:23:06.3815317Z with:
+2026-09-19T01:23:06.3815612Z   node-version: 22
+2026-09-19T01:23:06.3815910Z   cache: npm
+2026-09-19T01:23:06.3816322Z   cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+2026-09-19T01:23:06.3816818Z   check-latest: false
+2026-09-19T01:23:06.3819978Z   token: ***
+2026-09-19T01:23:06.3820310Z   package-manager-cache: true
+2026-09-19T01:23:06.3820657Z ##[endgroup]
+2026-09-19T01:23:06.5102739Z Found in cache @ /opt/hostedtoolcache/node/22.23.2/x64
+2026-09-19T01:23:06.5103566Z ##[group]Environment details
+2026-09-19T01:23:06.8411002Z node: v22.23.2
+2026-09-19T01:23:06.8411440Z npm: 10.9.8
+2026-09-19T01:23:06.8411681Z yarn: 1.22.22
+2026-09-19T01:23:06.8430900Z ##[endgroup]
+2026-09-19T01:23:06.8431459Z [command]/opt/hostedtoolcache/node/22.23.2/x64/bin/npm config get cache
+2026-09-19T01:23:06.9453682Z /home/runner/.npm
+2026-09-19T01:23:07.0550036Z Cache hit for: node-cache-Linux-x64-npm-27aa06c9731f5533c831a8ae0cc3eb4761c4b31313e68aba69bddb65bbd5a9ce
+2026-09-19T01:23:07.7819205Z Received 66100874 of 66100874 (100.0%), 100.2 MBs/sec
+2026-09-19T01:23:07.7888741Z Cache Size: ~63 MB (66100874 B)
+2026-09-19T01:23:07.7945885Z [command]/usr/bin/tar -xf /home/runner/work/_temp/a530f089-a2c4-4718-8447-8d7a90f14b07/cache.tzst -P -C /home/runner/work/evener/evener --use-compress-program unzstd
+2026-09-19T01:23:07.9118811Z Cache restored successfully
+2026-09-19T01:23:07.9160399Z Cache restored from key: node-cache-Linux-x64-npm-27aa06c9731f5533c831a8ae0cc3eb4761c4b31313e68aba69bddb65bbd5a9ce
+2026-09-19T01:23:07.9326215Z ##[group]Run make test-web && make build-web && make test-web-browser
+2026-09-19T01:23:07.9326839Z [36;1mmake test-web && make build-web && make test-web-browser[0m
+2026-09-19T01:23:07.9376491Z shell: /usr/bin/bash -e {0}
+2026-09-19T01:23:07.9376812Z ##[endgroup]
+2026-09-19T01:23:10.6104315Z 
+2026-09-19T01:23:10.6110884Z added 156 packages, and audited 157 packages in 3s
+2026-09-19T01:23:10.6111253Z 
+2026-09-19T01:23:10.6111549Z 34 packages are looking for funding
+2026-09-19T01:23:10.6112214Z   run `npm fund` for details
+2026-09-19T01:23:10.6114524Z 
+2026-09-19T01:23:10.6114708Z found 0 vulnerabilities
+2026-09-19T01:35:48.4874055Z PASS  web-typecheck
+2026-09-19T01:35:48.4888694Z PASS  web-test
+2026-09-19T01:35:48.4906473Z PASS  web-lint
+2026-09-19T01:35:48.6338192Z cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
+2026-09-19T01:35:48.7370121Z 
+2026-09-19T01:35:48.7371024Z > evener-hub-frontend@1.0.0 build
+2026-09-19T01:35:48.7371802Z > node scripts/clean-dist.mjs && tsc --noEmit --incremental false && vite build
+2026-09-19T01:35:48.7372209Z 
+2026-09-19T01:36:10.5445175Z [36mvite v8.1.5 [32mbuilding client environment for production...[36m[39m
+2026-09-19T01:36:10.5537969Z [2K
+2026-09-19T01:36:11.2065089Z transforming...✓ 709 modules transformed.
+2026-09-19T01:36:11.3232659Z rendering chunks...
+2026-09-19T01:36:11.4404682Z computing gzip size...
+2026-09-19T01:36:11.4550592Z dist/index.html                                                          4.45 kB │ gzip:  1.41 kB
+2026-09-19T01:36:11.4553214Z dist/webassets/source-serif-4-vietnamese-wght-normal-D-yuW59g.woff2     13.44 kB
+2026-09-19T01:36:11.4554563Z dist/webassets/source-serif-4-vietnamese-wght-italic-C3q834ic.woff2     13.93 kB
+2026-09-19T01:36:11.4555864Z dist/webassets/source-serif-4-cyrillic-ext-wght-normal-cHuGMAiY.woff2   18.06 kB
+2026-09-19T01:36:11.4557115Z dist/webassets/source-serif-4-cyrillic-ext-wght-italic-BXuSHrjR.woff2   18.33 kB
+2026-09-19T01:36:11.4558415Z dist/webassets/source-serif-4-greek-wght-normal-ece1310W.woff2          20.22 kB
+2026-09-19T01:36:11.4559830Z dist/webassets/source-serif-4-greek-wght-italic-F2ziEGcb.woff2          20.53 kB
+2026-09-19T01:36:11.4561120Z dist/webassets/source-serif-4-cyrillic-wght-italic-RLIThRd4.woff2       35.04 kB
+2026-09-19T01:36:11.4562291Z dist/webassets/source-serif-4-cyrillic-wght-normal-DwHjdM4S.woff2       36.46 kB
+2026-09-19T01:36:11.4563453Z dist/webassets/jetbrains-mono-latin-wght-normal-B9CIFXIH.woff2          40.40 kB
+2026-09-19T01:36:11.4564635Z dist/webassets/source-serif-4-latin-ext-wght-normal-CxNHBx-q.woff2      42.04 kB
+2026-09-19T01:36:11.4565818Z dist/webassets/source-serif-4-latin-ext-wght-italic-CpkvI5hy.woff2      44.26 kB
+2026-09-19T01:36:11.4566926Z dist/webassets/inter-latin-wght-normal-Dx4kXJAl.woff2                   48.25 kB
+2026-09-19T01:36:11.4568045Z dist/webassets/source-serif-4-latin-wght-normal-D9elroTD.woff2          50.82 kB
+2026-09-19T01:36:11.4569197Z dist/webassets/source-serif-4-latin-wght-italic-D2yaqPoE.woff2          51.51 kB
+2026-09-19T01:36:11.4570860Z dist/webassets/Transcript-8Wsb3tW8.css                                   0.42 kB │ gzip:  0.24 kB
+2026-09-19T01:36:11.4572167Z dist/webassets/useTranscript-CUwl8CUr.css                                0.53 kB │ gzip:  0.30 kB
+2026-09-19T01:36:11.4573432Z dist/webassets/RailHost-xY6ZIGgM.css                                     0.57 kB │ gzip:  0.31 kB
+2026-09-19T01:36:11.4574785Z dist/webassets/DocPane-kEScI8mB.css                                      0.67 kB │ gzip:  0.35 kB
+2026-09-19T01:36:11.4576123Z dist/webassets/WelcomeContent-DFkf5fjm.css                               1.14 kB │ gzip:  0.45 kB
+2026-09-19T01:36:11.4577524Z dist/webassets/TranscriptDetailEditor-BJkTLkqc.css                       1.57 kB │ gzip:  0.53 kB
+2026-09-19T01:36:11.4579021Z dist/webassets/statusFormat-DftVY0Vh.css                                 1.77 kB │ gzip:  0.71 kB
+2026-09-19T01:36:11.4581253Z dist/webassets/ConnectProviderDialog-DhYOP3NZ.css                        1.84 kB │ gzip:  0.60 kB
+2026-09-19T01:36:11.4582685Z dist/webassets/RailResizeHandle-SSdLATuN.css                             2.86 kB │ gzip:  0.96 kB
+2026-09-19T01:36:11.4584084Z dist/webassets/CredentialsSection-DvwJI6Bb.css                           4.89 kB │ gzip:  1.19 kB
+2026-09-19T01:36:11.4585514Z dist/webassets/SlashCompletionMenu-Da4FkxzS.css                          5.05 kB │ gzip:  1.58 kB
+2026-09-19T01:36:11.4586909Z dist/webassets/sessionPanels-DfvdcdEI.css                                5.32 kB │ gzip:  1.37 kB
+2026-09-19T01:36:11.4588525Z dist/webassets/Spawn-CkysvwNy.css                                       10.49 kB │ gzip:  2.32 kB
+2026-09-19T01:36:11.4589945Z dist/webassets/TasksPanel-MNnnFtsP.css                                  10.95 kB │ gzip:  2.40 kB
+2026-09-19T01:36:11.4591215Z dist/webassets/index-BOsvt035.css                                       17.91 kB │ gzip:  4.39 kB
+2026-09-19T01:36:11.4592466Z dist/webassets/Settings-DslXb-d8.css                                    22.02 kB │ gzip:  3.59 kB
+2026-09-19T01:36:11.4593707Z dist/webassets/Session-iWhIU5gv.css                                     26.34 kB │ gzip:  4.91 kB
+2026-09-19T01:36:11.4595041Z dist/webassets/TranscriptBody-BzDbkW6F.css                              34.34 kB │ gzip:  6.03 kB
+2026-09-19T01:36:11.4596368Z dist/webassets/widgets-zRj_yI8o.css                                     56.20 kB │ gzip:  9.24 kB
+2026-09-19T01:36:11.4597638Z dist/webassets/DockHost-C1y5e4oZ.css                                   104.41 kB │ gzip:  8.77 kB
+2026-09-19T01:36:11.4598989Z dist/webassets/hostRouting-DcPoXsgz.js                                   0.22 kB │ gzip:  0.16 kB
+2026-09-19T01:36:11.4600537Z dist/webassets/railController-CFejbfSz.js                                0.22 kB │ gzip:  0.14 kB
+2026-09-19T01:36:11.4601849Z dist/webassets/docFile-B_tEwbWk.js                                       0.24 kB │ gzip:  0.18 kB
+2026-09-19T01:36:11.4603199Z dist/webassets/threadTitle-7VHQWqsx.js                                   0.26 kB │ gzip:  0.20 kB
+2026-09-19T01:36:11.4604534Z dist/webassets/openInNewTab-Cbysp3Kx.js                                  0.42 kB │ gzip:  0.28 kB
+2026-09-19T01:36:11.4605822Z dist/webassets/catalogClient-Csp_DWgv.js                                 0.49 kB │ gzip:  0.31 kB
+2026-09-19T01:36:11.4607035Z dist/webassets/liveness-BYgIK9Jd.js                                      0.53 kB │ gzip:  0.32 kB
+2026-09-19T01:36:11.4608252Z dist/webassets/Welcome-DPXgfw4f.js                                       0.70 kB │ gzip:  0.45 kB
+2026-09-19T01:36:11.4609522Z dist/webassets/useIsMobile-Dwz42Z3_.js                                   0.78 kB │ gzip:  0.40 kB
+2026-09-19T01:36:11.4611129Z dist/webassets/quoteInsert-DGb7pofu.js                                   0.93 kB │ gzip:  0.36 kB
+2026-09-19T01:36:11.4612505Z dist/webassets/browserDocPort-BUs9j-bv.js                                1.11 kB │ gzip:  0.64 kB
+2026-09-19T01:36:11.4613850Z dist/webassets/preload-helper-Czpn1I53.js                                1.19 kB │ gzip:  0.67 kB
+2026-09-19T01:36:11.4615169Z dist/webassets/sections-BNpaxe-g.js                                      1.20 kB │ gzip:  0.43 kB
+2026-09-19T01:36:11.4616512Z dist/webassets/shutdownConvergence-CpQQdgEC.js                           1.26 kB │ gzip:  0.65 kB
+2026-09-19T01:36:11.4617902Z dist/webassets/useProviderSetup-DOXbxFgp.js                              1.28 kB │ gzip:  0.68 kB
+2026-09-19T01:36:11.4619269Z dist/webassets/SessionPanelPane-Dj1a7QjX.js                              1.51 kB │ gzip:  0.77 kB
+2026-09-19T01:36:11.4620877Z dist/webassets/sessionPlacement-CCKJojLb.js                              1.55 kB │ gzip:  0.76 kB
+2026-09-19T01:36:11.4622234Z dist/webassets/openTranscript-pwCqiYFu.js                                1.59 kB │ gzip:  0.76 kB
+2026-09-19T01:36:11.4623631Z dist/webassets/routing-CvJGpmCR.js                                       1.61 kB │ gzip:  0.66 kB
+2026-09-19T01:36:11.4624960Z dist/webassets/useTranscript-BrztXZMc.js                                 1.73 kB │ gzip:  0.84 kB
+2026-09-19T01:36:11.4626589Z dist/webassets/topNotes-BWusuu5r.js                                      1.77 kB │ gzip:  0.72 kB
+2026-09-19T01:36:11.4627982Z dist/webassets/WelcomeContent-xUlUjqIg.js                                1.79 kB │ gzip:  0.81 kB
+2026-09-19T01:36:11.4629349Z dist/webassets/paneActions-fD3ltNUD.js                                   1.82 kB │ gzip:  0.90 kB
+2026-09-19T01:36:11.4631083Z dist/webassets/RailResizeHandle-kwTZBjIe.js                              2.01 kB │ gzip:  0.97 kB
+2026-09-19T01:36:11.4632481Z dist/webassets/clientContext-U5EmeSj8.js                                 2.25 kB │ gzip:  1.12 kB
+2026-09-19T01:36:11.4634320Z dist/webassets/ConnectProviderDialogBoundary-CKA6iDD8.js                 2.34 kB │ gzip:  1.11 kB
+2026-09-19T01:36:11.4635859Z dist/webassets/DocPane-CQHHje7Q.js                                       2.81 kB │ gzip:  1.19 kB
+2026-09-19T01:36:11.4637356Z dist/webassets/chunkRetry-Yq1y02Pf.js                                    2.99 kB │ gzip:  1.16 kB
+2026-09-19T01:36:11.4638959Z dist/webassets/mutationClientIdentity-BNvdeBVw.js                        3.00 kB │ gzip:  1.27 kB
+2026-09-19T01:36:11.4640621Z dist/webassets/prefs-DxWwkDKb.js                                         4.32 kB │ gzip:  1.63 kB
+2026-09-19T01:36:11.4641996Z dist/webassets/TranscriptDetailEditor-C2_tGSPM.js                        4.32 kB │ gzip:  1.41 kB
+2026-09-19T01:36:11.4643487Z dist/webassets/Transcript-DvgEKTq5.js                                    5.01 kB │ gzip:  2.12 kB
+2026-09-19T01:36:11.4644948Z dist/webassets/installKeybindings-DCYz3Gy2.js                            5.85 kB │ gzip:  2.65 kB
+2026-09-19T01:36:11.4646404Z dist/webassets/react-C1VktWof.js                                         8.03 kB │ gzip:  3.10 kB
+2026-09-19T01:36:11.4647792Z dist/webassets/extensions-QbFBKQw2.js                                    8.61 kB │ gzip:  2.86 kB
+2026-09-19T01:36:11.4649262Z dist/webassets/transcriptDisplay-BS7MGtFX.js                            10.59 kB │ gzip:  3.80 kB
+2026-09-19T01:36:11.4650980Z dist/webassets/credentials-CEtTDMGf.js                                  11.82 kB │ gzip:  4.23 kB
+2026-09-19T01:36:11.4652421Z dist/webassets/commands-CS35prMv.js                                     11.94 kB │ gzip:  4.37 kB
+2026-09-19T01:36:11.4653857Z dist/webassets/SlashCompletionMenu-KYqaU2yb.js                          14.17 kB │ gzip:  5.55 kB
+2026-09-19T01:36:11.4655290Z dist/webassets/esm-qZZUZIJs.js                                          16.13 kB │ gzip:  5.98 kB
+2026-09-19T01:36:11.4656700Z dist/webassets/statusFormat-DmHmPz0B.js                                 16.64 kB │ gzip:  5.70 kB
+2026-09-19T01:36:11.4658211Z dist/webassets/ConnectProviderDialog-ZaDxSEMr.js                        22.21 kB │ gzip:  6.84 kB
+2026-09-19T01:36:11.4659986Z dist/webassets/sessionPanels-2Z9Rz4mu.js                                31.30 kB │ gzip:  9.92 kB
+2026-09-19T01:36:11.4661435Z dist/webassets/RailHost-DAaTQCi8.js                                     32.25 kB │ gzip: 10.17 kB
+2026-09-19T01:36:11.4662900Z dist/webassets/CredentialsSection-Cbx_dKZK.js                           34.04 kB │ gzip:  9.95 kB
+2026-09-19T01:36:11.4664382Z dist/webassets/TasksPanel-DyzHHBeJ.js                                   41.25 kB │ gzip: 11.71 kB
+2026-09-19T01:36:11.4665774Z dist/webassets/selectors-BmQmleAT.js                                    46.55 kB │ gzip: 13.54 kB
+2026-09-19T01:36:11.4667142Z dist/webassets/Spawn-COunw2lD.js                                        59.63 kB │ gzip: 18.45 kB
+2026-09-19T01:36:11.4668477Z dist/webassets/threads-BZj-LtLe.js                                      81.69 kB │ gzip: 24.28 kB
+2026-09-19T01:36:11.4670087Z dist/webassets/Settings-DtFt0yIX.js                                    113.02 kB │ gzip: 32.10 kB
+2026-09-19T01:36:11.4671535Z dist/webassets/TranscriptBody-OVpwyWzG.js                              162.40 kB │ gzip: 47.81 kB
+2026-09-19T01:36:11.4672855Z dist/webassets/index-Dk97tPgA.js                                       243.06 kB │ gzip: 76.97 kB
+2026-09-19T01:36:11.4674419Z dist/webassets/widgets-DbpibqjG.js                                     287.59 kB │ gzip: 89.49 kB
+2026-09-19T01:36:11.4675778Z dist/webassets/Session-Cu0toBgC.js                                     312.67 kB │ gzip: 98.19 kB
+2026-09-19T01:36:11.4677095Z dist/webassets/DockHost-oCqHbS5W.js                                    347.27 kB │ gzip: 78.77 kB
+2026-09-19T01:36:11.4677651Z 
+2026-09-19T01:36:11.4678024Z [32m✓ built in 911ms[39m
+2026-09-19T01:36:28.0000422Z PASS  web-layoutguard
+2026-09-19T01:37:39.4196789Z PASS  web-overflowguard
+2026-09-19T01:37:43.4291570Z PASS  web-shellguard
+2026-09-19T01:38:02.6427722Z PASS  web-spawnguard
+2026-09-19T01:38:07.2724835Z PASS  web-transcriptscrollguard
+2026-09-19T01:39:12.1744441Z PASS  web-retirementguard
+2026-09-19T01:40:17.2061394Z PASS  web-skillguard
+2026-09-19T01:40:17.2261487Z Post job cleanup.
+2026-09-19T01:40:17.3369567Z Cache hit occurred on the primary key node-cache-Linux-x64-npm-27aa06c9731f5533c831a8ae0cc3eb4761c4b31313e68aba69bddb65bbd5a9ce, not saving cache.
+2026-09-19T01:40:17.3526763Z Post job cleanup.
+2026-09-19T01:40:17.4400697Z [command]/usr/bin/git version
+2026-09-19T01:40:17.4450155Z git version 2.55.0
+2026-09-19T01:40:17.4484949Z Temporarily overriding HOME='/home/runner/work/_temp/928c313d-0d79-4f34-a745-85120ace533a' before making global git config changes
+2026-09-19T01:40:17.4486520Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-19T01:40:17.4488169Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/evener/evener
+2026-09-19T01:40:17.4522454Z Removing SSH command configuration
+2026-09-19T01:40:17.4526490Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-19T01:40:17.4562359Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-19T01:40:17.4829411Z Removing HTTP extra header
+2026-09-19T01:40:17.4834881Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-19T01:40:17.4869373Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-19T01:40:17.5126070Z Removing includeIf entries pointing to credentials config files
+2026-09-19T01:40:17.5133962Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-19T01:40:17.5159955Z includeif.gitdir:/home/runner/work/evener/evener/.git.path
+2026-09-19T01:40:17.5160730Z includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path
+2026-09-19T01:40:17.5161222Z includeif.gitdir:/github/workspace/.git.path
+2026-09-19T01:40:17.5161668Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-19T01:40:17.5169449Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/evener/evener/.git.path
+2026-09-19T01:40:17.5192426Z /home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:40:17.5203327Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/evener/evener/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-e4eaab75\-0d6b\-48ca\-9b3a\-3f885906f03d\.config
+2026-09-19T01:40:17.5238309Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path
+2026-09-19T01:40:17.5261155Z /home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:40:17.5270096Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-e4eaab75\-0d6b\-48ca\-9b3a\-3f885906f03d\.config
+2026-09-19T01:40:17.5308609Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-19T01:40:17.5330626Z /github/runner_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:40:17.5337306Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-e4eaab75\-0d6b\-48ca\-9b3a\-3f885906f03d\.config
+2026-09-19T01:40:17.5369408Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-19T01:40:17.5392268Z /github/runner_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config
+2026-09-19T01:40:17.5400910Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-e4eaab75\-0d6b\-48ca\-9b3a\-3f885906f03d\.config
+2026-09-19T01:40:17.5435070Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-19T01:40:17.5678051Z Removing credentials config '/home/runner/work/_temp/git-credentials-e4eaab75-0d6b-48ca-9b3a-3f885906f03d.config'
+2026-09-19T01:40:17.5838254Z Cleaning up orphan processes

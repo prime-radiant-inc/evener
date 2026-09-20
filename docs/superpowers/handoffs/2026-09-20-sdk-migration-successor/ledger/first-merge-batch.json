@@ -1,0 +1,14 @@
+[
+  {
+    "pr": 1921,
+    "head": "d10c70c4c400e63d3db427db56f4df7acbf526db",
+    "merge_commit_sha": "8d05a32cf620c54d66c17333bf816baf09ca13c4",
+    "merged_at": "2026-09-19T01:53:03Z"
+  },
+  {
+    "pr": 1931,
+    "head": "08fa72ce4582b1a304d4d4ae53fe979c6fc65e0c",
+    "merge_commit_sha": "9cb596336f6b33fa61606f950b99dbf3829a9222",
+    "merged_at": "2026-09-19T01:53:10Z"
+  }
+]

@@ -1,0 +1,3 @@
+The raw DeepSeek review of #1940 at afbf897deb43931066fb8841d5a8463464c77d97 identified a Low observability gap in cmd/evener-hub/app_plugins.go: when removal has applied but clone cleanup fails, a subsequent list failure is discarded as AppliedUnavailable without a server-side diagnostic.
+
+Log the secondary reconciliation failure through the established server-side diagnostic path while preserving the typed clone-litter outcome and path-scrubbed wire error. Add a focused behavioral test for the diagnostic and unchanged wire result. Keep this separate from the marketplace removal and client-fencing PRs. JSON-RPC round-trip coverage is independently tracked in #1944.

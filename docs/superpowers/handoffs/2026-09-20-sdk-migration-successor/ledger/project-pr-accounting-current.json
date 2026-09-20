@@ -1,0 +1,175 @@
+{
+  "snapshot": "2026-09-19T22:45:37Z",
+  "repository_open": 50,
+  "handoff_open": 27,
+  "carried": [
+    1922,
+    1940,
+    1952,
+    1954,
+    1955,
+    1960,
+    1966,
+    1972,
+    1973,
+    1976,
+    1978,
+    1981,
+    1983,
+    2005
+  ],
+  "parked_or_dependent": [
+    1480,
+    1737,
+    1738,
+    1740,
+    1841,
+    1844,
+    1845,
+    1897,
+    1919,
+    1920,
+    1947
+  ],
+  "reference": [
+    1580,
+    1934
+  ],
+  "prs": [
+    {
+      "number": 1922,
+      "title": "feat(mobile): retained screens recover on reconnect (D28 D2a)",
+      "head": "193b2e96ab347d06bc98775ee6d1999baabe86cb"
+    },
+    {
+      "number": 1940,
+      "title": "fix(plugins): distinguish applied marketplace removal from cleanup failure",
+      "head": "96a2cc059ca5fca306a7ce59f2e1c7601d203bb4"
+    },
+    {
+      "number": 1952,
+      "title": "mobile: retain loaded screens behind reconnect banners",
+      "head": "709a65ca68ca5ffa18485775f6781e0060384af3"
+    },
+    {
+      "number": 1954,
+      "title": "sdk: fence reconciliation of applied marketplace removals",
+      "head": "64db435f21928a000006c420b1b9b103d1ba0c30"
+    },
+    {
+      "number": 1955,
+      "title": "mobile: recheck live connection ownership before deferred mutations",
+      "head": "1fa8535795f1efd224c7e37ccc7501c6b089cb25"
+    },
+    {
+      "number": 1960,
+      "title": "Preserve applied marketplace removals across web reconciliation",
+      "head": "07b00b456b06224111cf0b9e17eb1f2444396913"
+    },
+    {
+      "number": 1966,
+      "title": "Handle applied marketplace removals in the TUI",
+      "head": "4b22d0a84c6a4b07b868d529a21cb48688510375"
+    },
+    {
+      "number": 1972,
+      "title": "Surface applied marketplace removals in native",
+      "head": "6a525baf70ac2479a5c3db828737e2ba35e6c096"
+    },
+    {
+      "number": 1973,
+      "title": "Expose accepted marketplace snapshot publication",
+      "head": "37fb037a9f1dcaccfef105dd32d1a2b6fd592ffe"
+    },
+    {
+      "number": 1976,
+      "title": "Preserve marketplace outcomes while ordering TUI reconciliation",
+      "head": "2c45c69f2154a80f79fb55654c07e3bafb2deb3b"
+    },
+    {
+      "number": 1978,
+      "title": "Retain marketplace outcomes across native browser remounts",
+      "head": "f50f58e2a08e1d13d68e8bcb1d8203f2329777fb"
+    },
+    {
+      "number": 1981,
+      "title": "Add durable native mutation runtime with hub-scoped dispatch",
+      "head": "c8828ce2d855cea89a2e90e4929d0fe614495081"
+    },
+    {
+      "number": 1983,
+      "title": "Recover native marketplace removal guards after accepted updates",
+      "head": "de951b7a044a1c796b678e0abe1ed71291ac5ef1"
+    },
+    {
+      "number": 2005,
+      "title": "agent: persist interrupt boundaries before resolving pending asks",
+      "head": "755f6a1ecd36657a0eb36a87b6e548e8c2beaa8b"
+    },
+    {
+      "number": 1480,
+      "title": "transcript,agent: the fold names its retained entries by Seq (piece A2 of the #1100 split, closes #1200)",
+      "head": "cfc633b5bb8e5c741ae6445326ba0b3b7c09a1ae"
+    },
+    {
+      "number": 1737,
+      "title": "refactor(native): rows are a projection of the model (D23c-2b, piece C)",
+      "head": "d4f256200de2ddce2f6d6d9d4679a136e3e34a0b"
+    },
+    {
+      "number": 1738,
+      "title": "fix(native): a collision-resistant, memoized identity for a question set",
+      "head": "ffb4cbae17a030601da3b5034fbf8787e6f37f4a"
+    },
+    {
+      "number": 1740,
+      "title": "refactor(native): rows read from the model, older pages stay attached (D23c-2b, piece D)",
+      "head": "55c6eab8b6fe04b09f5d692869651440019b7fbd"
+    },
+    {
+      "number": 1841,
+      "title": "refactor(sdk): share settings generation lifecycle",
+      "head": "e8521d4db057821d3e51c83ab0c6c304b4140e8e"
+    },
+    {
+      "number": 1844,
+      "title": "D6 piece 9: checkpointed draft editor primitives (discard/persist)",
+      "head": "a50ac1a955481ff0f7d97011919f88b7f8cfafff"
+    },
+    {
+      "number": 1845,
+      "title": "D6 piece 10: transcriptDisplayStore hub defaults + direct write",
+      "head": "737b7cebd995baf0402d7a2f82569b4c219281a8"
+    },
+    {
+      "number": 1897,
+      "title": "plugins: close the store-path class (migration recovery, join paths)",
+      "head": "d3c099449e1d13aeaaf9c18b45d07aa9abee4ee8"
+    },
+    {
+      "number": 1919,
+      "title": "fix(mobile): the conversation keeps its turns and wire cursor coherent across paging and rehydrate",
+      "head": "6c02716808680c14f3dcedb0c33ea60bc6fbd8e9"
+    },
+    {
+      "number": 1920,
+      "title": "feat(mobile): session usage totals from the package store (D18 B3)",
+      "head": "d40bf549bf3273d4154dae3eb668da692cc089b2"
+    },
+    {
+      "number": 1947,
+      "title": "fix(agent): preserve an unchanged retirement timer deadline",
+      "head": "6704b4835b0029921eae0bfb85d3ebfd3b3cfe17"
+    },
+    {
+      "number": 1580,
+      "title": "refactor(native): rows are a projection of the model (D23c-2b)",
+      "head": "53bb2b6ca510bc2b2eb2ae492bd2f3ae198f95f1"
+    },
+    {
+      "number": 1934,
+      "title": "docs(handoff): mobile landing + SDK migration queue state, 2026-09-18",
+      "head": "5f14e4d6465baf8b15e8509e3895eedce11e13b2"
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+diff --git a/agent/session_ask_test.go b/agent/session_ask_test.go
+index 19d53e72f..40e40ddf8 100644
+--- a/agent/session_ask_test.go
++++ b/agent/session_ask_test.go
+@@ -4310,6 +4310,75 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
+ 	}
+ }
+ 
++// TestAskUser_HumanNoteCommunicateWithPendingNotificationMatchesRestore covers
++// the communication boundary where a human-note carrier acknowledges the note
++// with communicate while a job notification is already queued. The carrier
++// does not answer the existing ask, so the live boundary must remain awaiting
++// even though deliverIfCommunicated returns before the notification drain.
++func TestAskUser_HumanNoteCommunicateWithPendingNotificationMatchesRestore(t *testing.T) {
++	t.Parallel()
++	dir := t.TempDir()
++	ask := askUserCall("ask1", askUserArgsValid())
++	comm := communicateCall("c1", "noted")
++	c := llm.NewClient()
++	c.Register(&fakeAdapter{
++		name: "openai",
++		steps: []func(req llm.Request) llm.Response{
++			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
++			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
++		},
++	})
++	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
++	if err != nil {
++		t.Fatalf("NewSession: %v", err)
++	}
++
++	// TRIPWIRE: scripted in-process adapter and queued notification are
++	// deterministic; this only fires on a genuine lifecycle deadlock.
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
++		t.Fatalf("ProcessInput: %v", err)
++	}
++	if got := sess.askPendingCount(); got != 1 {
++		t.Fatalf("pre-note pending count = %d, want 1 (test setup broken)", got)
++	}
++	sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
++	if _, err := sess.SetHumanNote("note-communicate-notification", "watch the ingest path"); err != nil {
++		t.Fatalf("SetHumanNote: %v", err)
++	}
++	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
++		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
++	}
++	if got := sess.askPendingCount(); got != 1 {
++		t.Fatalf("live askPendingCount after carrier communicate = %d, want 1", got)
++	}
++	if got := sess.peekNotifications(); got != 1 {
++		t.Fatalf("live pending notifications after carrier communicate = %d, want 1", got)
++	}
++	if got := sess.State(); got != SessionAwaiting {
++		t.Fatalf("live state after carrier communicate = %q, want %q", got, SessionAwaiting)
++	}
++	if got := sess.WireState(); got != string(SessionAwaiting) {
++		t.Fatalf("live wire state after carrier communicate = %q, want %q", got, SessionAwaiting)
++	}
++
++	meta := sess.Meta()
++	sess.Close()
++
++	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
++	if err != nil {
++		t.Fatalf("RestoreSessionFromMeta: %v", err)
++	}
++	defer restored.Close()
++	if got := restored.askPendingCount(); got != 1 {
++		t.Fatalf("restored askPendingCount = %d, want 1", got)
++	}
++	if got := restored.State(); got != SessionAwaiting {
++		t.Fatalf("restored state after carrier communicate = %q, want %q", got, SessionAwaiting)
++	}
++}
++
+ // TestAskUser_LiveStateAfterObserverYieldMatchesRestore drives a stable watch
+ // through the real job-manager event rail. The observer handoff arrives after
+ // a non-terminal tool round while ask1 remains pending; the live boundary must
+diff --git a/agent/session_tool_round.go b/agent/session_tool_round.go
+index b4ae4e3ca..ef48eeaf0 100644
+--- a/agent/session_tool_round.go
++++ b/agent/session_tool_round.go
+@@ -505,16 +505,16 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
+ // both (spec §5.1: communicate composes with an ask, never collides) — and if
+ // so transitions the session to the right boundary state and returns
+ // done=true with the reply to hand back to the caller. askedThisRound is the
+-// caller's per-round delta (askPendingCount grew during this round); it takes
+-// priority in choosing the boundary state (SessionAwaiting over SessionIdle)
+-// and — critically — bypasses Stop hooks entirely: pending questions are a
+-// stronger stop than a hook's veto, since a Blocked result would force the
+-// model to answer its own questions and a persistent one would exhaust the
+-// round cap and strand the session idle instead of awaiting. Stop hooks are
+-// still consulted for a communicate-only boundary, exactly as before. It
+-// returns done=false when nothing was delivered and no ask was posted, or a
+-// Stop hook blocked a communicate-only completion, meaning the turn should
+-// continue to the next round.
++// caller's per-round delta (askPendingCount grew during this round); either
++// that delta or an already-pending question chooses SessionAwaiting over
++// SessionIdle and — critically — bypasses Stop hooks entirely. A pending
++// question is a stronger stop than a hook's veto, since a Blocked result would
++// force the model to answer its own questions and a persistent one would
++// exhaust the round cap and strand the session idle instead of awaiting. Stop
++// hooks are still consulted for a communicate-only boundary with no pending
++// question, exactly as before. It returns done=false when nothing was
++// delivered and no ask was posted, or a Stop hook blocked a communicate-only
++// completion, meaning the turn should continue to the next round.
+ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
+ 	s.mu.Lock()
+ 	delivered := s.comm.called
+@@ -524,7 +524,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
+ 		return false, "", nil
+ 	}
+ 	boundaryState := SessionIdle
+-	if askedThisRound {
++	if askedThisRound || s.askPendingCount() > 0 {
+ 		boundaryState = SessionAwaiting
+ 	} else if s.hookRunner != nil {
+ 		// Stop hooks (communicate-only boundary; not consulted at an ask

@@ -1,0 +1,7 @@
+Restoration derives pending questions from the same steering and failure boundaries as the live session. Human-note rounds preserve unanswered questions, resolving user steering clears them, and forked history uses the correct session provenance instead of a child journal with reused mutation IDs.
+
+This is the transcript/restore slice replacing #1906. Its live-boundary successor is #1962; carrier-defer work remains separate in #1907. The original implementation is preserved as `codex/ask-boundary-original-8c-backup`.
+
+The raw panel's same-round reminder finding was refuted by the complete restore scan: after a non-resolving reminder, the outer scan still reaches the resolving user entry before any older ask round. Production can append a reminder after user steering, but that ordering does not resurrect the old ask. The optional combined-fixture coverage belongs in #1946. Merge still requires exact-head CI and settled panel qualification for the stack.
+
+Validation: focused ask/oracle tests and race tests; normal/tagged/Windows vet; tagged compile gate; toolchain formatting and lint passed. Independent spec/quality/simplify review and local RoboRev2570 passed the original head. Refresh to `50f6d6bf8393b0460f5d1335bc3ba5646862b9af` preserved the full own patch byte-for-byte (SHA-256 `35c110eabf6c3fa517d20545be4b7fd74d2f6bf3ea13a2364f0688df9d8a3a8a`). Fresh CI remains required. Scope is 384 non-test lines; the existing text-evidence Low remains tracked in #1946.

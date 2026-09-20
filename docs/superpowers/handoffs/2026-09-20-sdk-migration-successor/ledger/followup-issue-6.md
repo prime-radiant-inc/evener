@@ -1,0 +1,5 @@
+The #1906 review identified a Low difference between live and restored steering classification: live classification passes empty text evidence, while restore can recognize the human-note prefix for a kindless, provenance-less existing journal record. Current SetHumanNote writes explicit provenance, so this is not evidence of a new-write mismatch.
+
+After #1906/#1907 or their replacements land, add a meaningful live/restore oracle for the existing journal shape in session_notes_provenance_test.go, then make the smallest correction if the mismatch is reachable. Preserve the no-askPending-fallback ruling and the existing counter-clearing contract. Do not introduce a new compatibility layer or broaden which inputs answer a pending question.
+
+The accepted simplify notes also identify repeated scans/helpers/test fixtures around this same boundary; measure and consolidate remaining duplication only after the active correctness fixes settle. Keep this separate from their must-fix terminal-state work.

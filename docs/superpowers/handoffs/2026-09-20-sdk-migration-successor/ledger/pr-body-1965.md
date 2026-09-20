@@ -1,0 +1,5 @@
+The native outbox adapter now reloads absent optimistic display as undefined and omits attempt evidence from accepted optimistic records. Behavioral conformance tests cover persisted intent fields, identity, attachments, accepted-record promotion, and target-scoped authoritative restoration.
+
+This is a partial follow-up for #1927/#1929, not completion of either issue. Explicit null display still shares the absent-display encoding; current native consumers treat them equivalently, and the remaining fidelity Low is tracked separately in #1927. The runtime and authoritative-recovery work are separate #1981/#1980.
+
+Validation: 29 SQLite tests, native typecheck, package-import lint, and diff checks pass. Independent/local review2585 accepted the owned patch. The completed remote members at the previous head contain only the explicit-null Low; the remaining member is still pending. Merge-only refresh to main `d25d5afaa` produced `fe99f20cf` with the complete binary patch byte-identical (SHA-256 `4414f9bb4872597c03ff73da23554592402e2dcf6e75227513028106a663a8b1`). New head CI and complete substantive raw member review remain required.

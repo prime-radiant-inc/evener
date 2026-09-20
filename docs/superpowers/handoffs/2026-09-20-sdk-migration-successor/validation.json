@@ -1,0 +1,23 @@
+{
+  "captured_utc": "2026-09-20T04:55:04.701601+00:00",
+  "secret_scan": {
+    "command": "gitleaks dir docs/superpowers/handoffs/2026-09-20-sdk-migration-successor --redact",
+    "result": "PASS: no leaks found",
+    "bytes_scanned": 16808523
+  },
+  "remote_snapshot_verification": {
+    "count": 129,
+    "result": "all exact SHAs matched ls-remote"
+  },
+  "implementation_agents": "all completed; no further implementation dispatched",
+  "patch_integration_review": {
+    "job": 2709,
+    "result": "FAIL: High test type errors; Medium missing applied-error layout validation",
+    "disposition": "WIP preserved, not fixed or merge-qualified"
+  },
+  "handoff_brief_review": {
+    "job": 2710,
+    "result": "High: supporting files not yet committed; Medium: original handoff/script absent from main",
+    "resolution": "Second handoff commit includes complete successor packet AND original September18 handoff, including rawreviews.sh. Final tracked-tree verification recorded separately."
+  }
+}

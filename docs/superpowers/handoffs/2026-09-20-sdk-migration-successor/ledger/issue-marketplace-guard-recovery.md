@@ -1,0 +1,9 @@
+A typed marketplace removal can complete with clone cleanup still needed and no applied list. If its reconciliation read fails, then another client removes/re-adds the same marketplace name, a later successful notification/reconnect list containing that name leaves the current host's name-only Remove guard permanently set.
+
+Confirmed at web PR #1960 head a55194188d99f6cfc7a0522eeffc6883c5fa2e1e with normal server request ordering. No out-of-order RPC response is needed. The cleanup warning remains truthful even when the SDK rejects/holds an older list snapshot; do not suppress that business outcome.
+
+Expose a small successful marketplace snapshot publication signal from the shared SDK, advanced only inside revision-controlled accepted successful writers (ordinary mutation, applied failure payload, successful list read). It must not advance on a failed read, request completion, reset, or fenced/held payload; a held successful payload advances only if it later publishes. Preserve monotonic identity across reset.
+
+Web and native consumers should associate the removal guard with its reconciliation attempt and release it after a later accepted successful snapshot, whether the marketplace name is absent or present. Keep the cleanup warning. Promise resolution and loading/error flags are not sufficient because fetchMarketplaces resolves on failure and fenced/held results too. Do not inject state through setState or bypass existing revision/catalog fences.
+
+Implementation is split into a small SDK publication-signal prerequisite and dependent host guard-lifetime fixes. Test cross-client same-name re-add after failed reconciliation, successful and failed publication, held/fenced responses, client replacement, and ordinary retries. Related lifetime coverage: #1959; shared applied-snapshot fence: #1954.

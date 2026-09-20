@@ -1,0 +1,10 @@
+Pagination now coalesces every transitively overlapping turn fragment before merging an older page with retained turns. A chain of fragments that joins two previously separate groups no longer leaves duplicate items behind. Fresh fields retain precedence, source membership and order survive the coalescing, and fresh-only overlapping fragments keep the existing merge behavior.
+
+This is the first of three package slices replacing the package portion of #1919. It is integrated through the existing `mergeOlderItemPage` path; retained turn placement and coverage/public helper exports follow separately, then the mobile cursor consumer. The original full implementation is preserved on `codex/history-merge-round-five-backup`.
+
+Validation: 223 reducer tests and 17 watch-row tests passed, along with frontend/native typechecks, Biome, package import lint, package build, and diff checks. Independent spec/quality/simplify review accepted exact head `a35f181df4fc9008b98bb2e8b9e26db2c5f4231a`; local RoboRev branch review 2582 passed. Regression coverage includes a transitive fragment chain with exact item ordering and fresh-only overlaps alongside an unrelated older page.
+
+
+Current qualification update: refreshed onto main 6cf3f0263887914e87dbc70d558979ecea143abb at head 75e8c7cabba2dfd3c906f89a76c16a94d32f3152. Complete owned reducer/test patch is byte-identical to the independently reviewed a35f181df4fc9008b98bb2e8b9e26db2c5f4231a (SHA-256 5902218fb76061f5c3ec59a25892201c512dc967694446abef9a012a4b9608dc). Scoped qualification passed. Current-head CI/raw panel must settle.
+
+Placement successor is #1968; public coverage/export and mobile consumer remain separate successors. Remote Luna's mixed keyed/keyless alias collision was independently reproduced and retained as an accepted Low in #1967; canonical items survive, and no current end-to-end producer occurrence was demonstrated. The follow-up must prevent ambiguous aliases joining conflicting supplied keys while preserving ordinary keyless updates.

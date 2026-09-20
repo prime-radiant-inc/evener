@@ -1,0 +1,7 @@
+When marketplace removal succeeds but clone cleanup fails, the SDK now consumes a usable applied snapshot through the original mutation revision and generation, then rethrows the original typed outcome so cleanup failure remains visible. List, loading, error, and browse-cache state settle together. An older failed request cannot overwrite a newer success, while a newer retracted failure can release an older applied snapshot.
+
+Stacked on #1940. This is the client-state replacement for the remainder of #1890. AppliedUnavailable, null, and malformed list payloads do not become authoritative empty lists. Presentation/retry handling in web, native, and TUI remains a separate required consumer follow-up; this stack stays held until that behavior is concrete. #1897 remains the separate server migration successor.
+
+Own scope: 78 changed non-test lines across the revision helper and marketplace store. Validation: 153 extension tests with deterministic race/reset/malformed-data cases and failing-first evidence, frontend/native typechecks, package qualification, Biome/lint, and package-import checks pass. Independent review/simplification found no must-fix issues. Local RoboRev2556 passed at b9884a92ab03208a3c9ac64aba6044758ebcc1a7, which includes main 9cb596336f6b33fa61606f950b99dbf3829a9222.
+
+Lows: member validation #1953 and JSON-RPC round-trip coverage #1944. Secondary server read-failure logging is #1951. Current-head CI/raw panel remain required before merge.

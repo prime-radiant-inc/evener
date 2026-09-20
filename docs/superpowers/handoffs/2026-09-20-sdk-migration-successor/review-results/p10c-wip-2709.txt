@@ -1,0 +1,23 @@
+Reviewing branch "codex/transcript-patch-integration": 1 commits since e2b62bb85b0bfc1090f753356c9f8b322da607c7
+Enqueued job 2709 for e2b62bb85b0bfc109 (agent: codex)
+Waiting for review to complete... done!
+
+Review (by codex)
+------------------------------------------------------------
+## Review Findings
+
+- **Severity**: High
+- **Location**: `appwire-client/typescript/transcriptDisplayStore.test.ts:547,561`
+- **Problem**: The new test fails typechecking: `TranscriptDisplayConfigV1` has no `level` property, and `publications[0]` is possibly undefined under the frontend’s `noUncheckedIndexedAccess`. The nonexistent property also makes the partial-publication check ineffective at runtime.
+- **Fix**: Narrow `config.content.kind` before checking `config.content.level`, and explicitly guard the first publication before accessing its fields.
+
+---
+
+- **Severity**: Medium
+- **Location**: `appwire-client/typescript/transcriptDisplayStore.ts:426`
+- **Problem**: Post-apply errors bypass layout validation. A payload naming `"desktop"` during a mobile PATCH is accepted into `hub.mobile`, clears the preview, and reports success. The wire contract includes `layout`, and the existing frontend implementation validates it.
+- **Fix**: Require the error payload’s layout to match the requested layout before accepting `applied`. Include layout in the success fixtures and add mismatched-layout coverage.
+
+## Summary
+
+The change adds transcript-display PATCH support with optimistic previews, lifecycle fencing, and error reconciliation.

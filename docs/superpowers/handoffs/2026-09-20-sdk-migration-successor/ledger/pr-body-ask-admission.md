@@ -1,0 +1,5 @@
+A reply that fails admission must not erase the question it was intended to answer. Pending asks now clear only after the resolving user turn is durable. MaxTurns refusal, environment persistence failure, and poisoned transcript append preserve both the pending questions and the awaiting state restored from disk. Already-durable inputs and the existing answering-carrier behavior remain supported.
+
+Stacked on #1958 and #1962 at parent `794679226`; this slice owns 38 changed production lines and 120 test additions. The carrier work in #1907 remains separate. The stack requires settled current-head CI and complete remote raw reviews before landing.
+
+Validation: deterministic regressions exercise all three admission failures and compare live/restored awaiting state and pending counts. Focused normal/race/tagged tests, normal/tagged/Windows vet, agent lint, formatting, and diff checks passed. Independent spec/correctness/simplify review and local RoboRev2607 found no actionable findings at exact head `23c958389`.

@@ -1,0 +1,7 @@
+When a keyless live fragment shares an item id with two historical fragments whose supplied transcript keys differ, history coalescing can combine distinct turns. Conflicting supplied keys must remain separate while unambiguous keyless updates continue to match.
+
+Measured at PR #1961 head a35f181df4fc9008b98bb2e8b9e26db2c5f4231a: older A contains shared-id/key-a with usage 10; older B contains shared-id/key-b with usage 20; fresh U contains keyless shared-id. A matches U and B matches U, although A does not match B. The parent keeps two turns; the candidate combines both keyed items into one turn and retains only usage 20. Canonical items survive; this is a Low follow-up because it requires an ambiguous mixed-key alias collision and no current end-to-end producer occurrence has been demonstrated.
+
+Prevent an ambiguous keyless alias from bridging conflicting keyed identities. Preserve unambiguous keyless updates, genuine canonical transitive overlaps, fresh precedence, and existing conflicting-key isolation. Add a behavioral mixed-key regression through the public pagination reducer.
+
+Evidence: remote Luna panel for #1961 plus independent exact-head probe of itemIdentityMatches/coalesceTurnHistory. Existing reducer tests separately cover keyless updates and conflicting supplied keys. This issue tracks the accepted Low separately from the qualified coalescing and placement PRs; do not broaden those patches to absorb it.

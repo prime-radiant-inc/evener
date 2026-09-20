@@ -1,0 +1,40 @@
+diff --git a/agent/events/payloads_test.go b/agent/events/payloads_test.go
+index 534427961..e412b6a27 100644
+--- a/agent/events/payloads_test.go
++++ b/agent/events/payloads_test.go
+@@ -276,6 +276,7 @@ func TestToolCallEndDataMarshalsOutputRef(t *testing.T) {
+ func TestSteeringKindConstants(t *testing.T) {
+ 	want := map[string]string{
+ 		"interrupted":        SteeringKindInterrupted,
++		"interrupted-salvage": SteeringKindInterruptedSalvage,
+ 		"agent-message":      SteeringKindAgentMessage,
+ 		"hook-context":       SteeringKindHookContext,
+ 		"precompact-hook":    SteeringKindPrecompactHook,
+diff --git a/agent/session_events.go b/agent/session_events.go
+index 3c8f511c1..be310c3db 100644
+--- a/agent/session_events.go
++++ b/agent/session_events.go
+@@ -689,7 +689,7 @@ func (s *Session) settleInterruptedRound() {
+ 	if !s.persistAndEmitSalvage(salvaged, model, provider) {
+ 		return
+ 	}
+-	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterrupted)
++	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterruptedSalvage)
+ }
+ 
+ // persistSalvagedTurn records the round's best partial as a normal assistant
+diff --git a/agent/settlement_salvage_test.go b/agent/settlement_salvage_test.go
+index e221f4020..31f4dede2 100644
+--- a/agent/settlement_salvage_test.go
++++ b/agent/settlement_salvage_test.go
+@@ -429,8 +429,8 @@ func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
+ 	if steering.Message.Text() != wantInterruptSteering {
+ 		t.Errorf("interrupt steering = %q, want %q", steering.Message.Text(), wantInterruptSteering)
+ 	}
+-	if steering.SteeringKind != events.SteeringKindInterrupted {
+-		t.Errorf("interrupt steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindInterrupted)
++	if steering.SteeringKind != events.SteeringKindInterruptedSalvage {
++		t.Errorf("interrupt steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindInterruptedSalvage)
+ 	}
+ 	if strings.Contains(steering.Message.Text(), "provider") {
+ 		t.Errorf("interrupt steering = %q makes a provider-failure claim the user's interrupt does not support", steering.Message.Text())

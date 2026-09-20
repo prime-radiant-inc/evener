@@ -1,0 +1,3939 @@
+diff --git a/agent/execenv/gitignore.go b/agent/execenv/gitignore.go
+index 9c666efdd..dab3aa4e3 100644
+--- a/agent/execenv/gitignore.go
++++ b/agent/execenv/gitignore.go
+@@ -1,7 +1,6 @@
+ package execenv
+ 
+ import (
+-	"bytes"
+ 	"context"
+ 	"errors"
+ 	"io"
+@@ -226,396 +225,41 @@ func ignoreScopeForPatterns(patterns []string) []ignoreScope {
+ 	return scopes
+ }
+ 
+-// readIgnoreFile reads one .gitignore under the call's budgets. It stops one
+-// byte past the per-file cap rather than reading the whole file, so an
++// readIgnoreFile reads one .gitignore under the call's byte budgets. It stops
++// one byte past the per-file cap rather than reading the whole file, so an
+ // enormous rules file is refused without first being materialized, and it
+-// charges what the file costs the call against the call-wide ignore budget:
+-// its path entry, each compiled rule and the source that rule was written as,
+-// and the source it read. Every successfully read file is charged, rule-free
+-// ones included, so the budget bounds the aggregate source a call reads and not
+-// only the matchers it retains.
++// charges what it keeps against the call-wide retention budget because the
++// compiled matcher lives as long as the call does.
+ //
+-// It answers three ways: a refusal, which the caller propagates; nil lines
+-// with no error, which the caller skips; and the rule lines otherwise, ready to
+-// compile. The second return value reports whether the file was actually read:
+-// true for a file that was read even if it compiles no rule, false for one that
+-// is missing or unreadable. A caller caches only the paths it actually read, so
+-// a failed read is neither remembered nor charged, and one that compiles no
+-// rule is remembered and charged like any other file, though it contributes no
+-// matcher because its matcher would match nothing.
+-func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget) ([]string, bool, error) {
++// It answers three ways: a refusal, which the caller propagates; nil data
++// with no error for a file that is missing or unreadable, which the caller
++// skips as it always has; and the bytes otherwise.
++func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget) ([]byte, error) {
+ 	f, err := fsys.Open(path)
+ 	if err != nil {
+ 		// A cancelled open is not an unreadable .gitignore: swallowing it
+ 		// here would let the discovery walk keep traversing after
+ 		// cancellation and report whatever partial rule set it assembled.
+ 		if cerr := ctx.Err(); cerr != nil {
+-			return nil, false, cerr
++			return nil, cerr
+ 		}
+-		return nil, false, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
++		return nil, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
+ 	}
+ 	defer func() { _ = f.Close() }()
+ 	data, err := io.ReadAll(io.LimitReader(f, int64(maxGlobIgnoreFileBytes)+1))
+ 	if err != nil {
+ 		if cerr := ctx.Err(); cerr != nil {
+-			return nil, false, cerr
++			return nil, cerr
+ 		}
+-		return nil, false, nil //nolint:nilerr // best-effort: skip an unreadable .gitignore
++		return nil, nil //nolint:nilerr // best-effort: skip an unreadable .gitignore
+ 	}
+ 	if berr := budget.tooManyRuleBytes(path, len(data)); berr != nil {
+-		return nil, false, berr
++		return nil, berr
+ 	}
+-	// Count and charge from the raw bytes before any line is materialized: a
+-	// split allocates a string header per line, so a near-cap file of newlines
+-	// would allocate tens of megabytes before a refusal that could have been
+-	// made from the bytes alone. Only the lines that will actually compile are
+-	// collected afterwards, and only for a file that stayed within budget, so a
+-	// blank- or comment-heavy file never has those lines materialized.
+-	cost := compiledIgnoreRules(data)
+-	cost.path = len(path)
+-	cost.source = len(data)
+-	if berr := budget.retainIgnoreFile(cost); berr != nil {
+-		return nil, false, berr
+-	}
+-	if cost.rules == 0 {
+-		return nil, true, nil
+-	}
+-	return ignoreRuleLines(data), true, nil
+-}
+-
+-// ignoreRuleLines collects the lines of a .gitignore that
+-// go-gitignore.CompileIgnoreLines will compile, leaving out the blank and
+-// comment lines it would drop anyway. It runs only after the budget has been
+-// charged, so a file that is refused, or that compiles no rule, never has its
+-// lines materialized. It is a variable so a test can observe that directly.
+-var ignoreRuleLines = func(data []byte) []string {
+-	var lines []string
+-	eachIgnoreLine(data, func(line []byte) {
+-		lines = append(lines, string(line))
+-	})
+-	return lines
+-}
+-
+-// compiledIgnoreRules counts, from a .gitignore's raw bytes, the lines
+-// go-gitignore.CompileIgnoreLines tries to turn into a matcher and reports what
+-// those lines expand into: their source, the source and stars inside a counted
+-// repetition, their glob stars, and their Unicode property escapes. Each of
+-// those compiles to far more instructions than the source that wrote it — a
+-// repetition because `regexp` expands it, a star because the library rewrites
+-// each one to a group, a property escape because it carries a whole rune table
+-// — so the charge is driven by the constructs the line actually holds rather
+-// than by its length. Counting happens before any line is materialized.
+-//
+-// The count is an upper bound, not an exact match, on the matchers the library
+-// retains: a line whose generated regexp fails to compile (an unterminated
+-// character class, say) is still counted here but yields no pattern there.
+-// Over-counting is the safe direction — it can refuse a call early but never
+-// under-charge one — and it can never turn a zero-rule file into a retained
+-// matcher, since such a file has no such line at all. The alternative,
+-// exact-matching the library, would mean reaching into its unexported pattern
+-// list from production code.
+-func compiledIgnoreRules(data []byte) ignoreFileCost {
+-	var c ignoreFileCost
+-	eachIgnoreLine(data, func(line []byte) {
+-		c.rules++
+-		expansion := classifyIgnoreLine(line)
+-		c.expansionUnits = satAdd(c.expansionUnits, expansion.units)
+-	})
+-	return c
+-}
+-
+-// ignoreLineExpansion is what one rule line compiles into, in units of one
+-// compiled instruction. It is computed by a single forward parse so that a
+-// nested quantifier multiplies the units inside its element and no byte is ever
+-// re-scanned.
+-type ignoreLineExpansion struct {
+-	units int64 // compiled instruction units the line expands into
+-}
+-
+-// globStarUnits is the instruction cost of one glob star. go-gitignore rewrites
+-// each `*` to a capture, a character class and a split before compiling, which
+-// measured about five instructions.
+-const globStarUnits = 5
+-
+-// globUnicodeUnits is the instruction-unit charge for one Unicode property
+-// escape. The recorded cost is globIgnoreUnicodeClassBytes for the property's
+-// rune table, expressed in units so that it rides the same atom and is
+-// multiplied by any counted or nested repetition around it, exactly as the
+-// compiled table is.
+-const globUnicodeUnits = (globIgnoreUnicodeClassBytes + globIgnoreUnitBytes - 1) / globIgnoreUnitBytes
+-
+-// classifyIgnoreLine parses line once, left to right, and reports the compiled
+-// instruction units it expands into. An escaped byte is literal, so `\*` is not
+-// a star and `\{` is not a quantifier; so is anything inside a character class,
+-// so `[*]` is not a star, and `\p`/`\P` is a Unicode property.
+-//
+-// This estimate is best-effort, not a proof of the budget it feeds. It accounts
+-// for every expansion vector found so far — a literal, a glob star, a counted
+-// repetition and its nesting, an optional branch, a capturing group, and a
+-// Unicode property escape, including inside a character class and under a
+-// repetition — and it cannot bound a construct whose compiled size it misses.
+-// The charge is produced by a second parser that has to agree byte-for-byte
+-// with go-gitignore's rewrite plus Go's regexp/syntax, and there is no fixed
+-// point short of reimplementing that parser, so a later construct can still slip
+-// past. The follow-up is to charge the real compiled program size instead; see
+-// issue #1971.
+-//
+-// A quantifier multiplies the units of the element it follows, and because a
+-// group's units are accumulated before the group's own quantifier is seen, a
+-// nested quantifier multiplies everything inside it: `(a{900}){900}` records
+-// 810,000 units from one source byte. A malformed line — an unmatched `)` or a
+-// group left open at the end — is treated as literal bytes, and nothing scans
+-// backwards, so the parse is linear in the line length.
+-func classifyIgnoreLine(line []byte) ignoreLineExpansion {
+-	var e ignoreLineExpansion
+-	type frame struct{ units int64 }
+-	stack := []frame{{}}
+-	flush := func(units int64) {
+-		top := len(stack) - 1
+-		stack[top].units = satAdd(stack[top].units, units)
+-	}
+-	// pending holds the units of the atom just completed, waiting for a
+-	// quantifier; -1 means no atom is waiting.
+-	pending := int64(-1)
+-	finish := func() {
+-		if pending >= 0 {
+-			flush(pending)
+-			pending = -1
+-		}
+-	}
+-	for i := 0; i < len(line); i++ {
+-		switch line[i] {
+-		case '\\':
+-			finish()
+-			units := int64(1)
+-			if i+1 < len(line) {
+-				if line[i+1] == 'p' || line[i+1] == 'P' {
+-					units += globUnicodeUnits
+-					// A property escape is `\pL` or `\p{Greek}`, one atom whose
+-					// quantifier must attach to the whole escape rather than to
+-					// the letter after `\p`.
+-					i = ignorePropertyEnd(line, i)
+-				} else {
+-					i++ // the escaped byte is literal
+-				}
+-			}
+-			pending = units
+-		case '[':
+-			finish()
+-			end, _ := ignoreClassEnd(line, i)
+-			pending = int64(end-i+1) + int64(countUnicodeClasses(line[i:end+1]))*globUnicodeUnits
+-			i = end
+-		case '(':
+-			finish()
+-			// A capturing group compiles to its own instruction, and a
+-			// quantifier after the group repeats that instruction too, so the
+-			// capture is the frame's starting cost. Go emits a bracket pair per
+-			// capture, so it is charged as two units.
+-			stack = append(stack, frame{units: 2})
+-		case ')':
+-			finish()
+-			if len(stack) > 1 {
+-				top := stack[len(stack)-1]
+-				stack = stack[:len(stack)-1]
+-				pending = top.units
+-			} else {
+-				pending = 1 // unmatched, so a literal byte
+-			}
+-		case '*':
+-			finish()
+-			pending = globStarUnits
+-		case '{':
+-			if factor, end, ok := countedRepetitionFactor(line, i); ok && pending >= 0 {
+-				pending = satMul(pending, factor)
+-				i = end
+-				continue
+-			}
+-			finish()
+-			pending = 1 // literal brace byte
+-		default:
+-			finish()
+-			pending = 1
+-		}
+-	}
+-	finish()
+-	// A group left open at the end still holds units that compile.
+-	for len(stack) > 1 {
+-		top := stack[len(stack)-1]
+-		stack = stack[:len(stack)-1]
+-		dest := len(stack) - 1
+-		stack[dest].units = satAdd(stack[dest].units, top.units)
+-	}
+-	e.units = stack[0].units
+-	return e
+-}
+-
+-// ignoreClassEnd returns the index of the `]` that closes the character class
+-// opening at line[i], or the last index of the line when it never closes, and
+-// whether it closed. An escaped byte inside the class cannot close it, and a
+-// `]` in the first position (or right after a `^`) is literal, as `regexp`
+-// treats it: the class `[])]` holds `]` and `)` and closes at the last `]`.
+-func ignoreClassEnd(line []byte, i int) (end int, closed bool) {
+-	j := i + 1
+-	if j < len(line) && line[j] == '^' {
+-		j++
+-	}
+-	if j < len(line) && line[j] == ']' {
+-		j++ // the first `]` is a member of the class
+-	}
+-	for ; j < len(line); j++ {
+-		switch line[j] {
+-		case '\\':
+-			j++
+-		case ']':
+-			return j, true
+-		}
+-	}
+-	return len(line) - 1, false
+-}
+-
+-// ignorePropertyEnd returns the index of the last byte of the `\p`/`\P` escape
+-// that starts at line[i], so a quantifier after it attaches to the whole escape.
+-// The name is either one letter (`\pL`) or a braced name (`\p{Greek}`).
+-func ignorePropertyEnd(line []byte, i int) int {
+-	j := i + 2 // past `\` and `p`/`P`
+-	if j < len(line) && line[j] == '{' {
+-		for k := j + 1; k < len(line); k++ {
+-			if line[k] == '}' {
+-				return k
+-			}
+-		}
+-		return len(line) - 1
+-	}
+-	if j < len(line) {
+-		return j
+-	}
+-	return i + 1
+-}
+-
+-// countUnicodeClasses counts the `\p`/`\P` property escapes inside a character
+-// class. A class holding one carries the same rune table as the bare escape, so
+-// it costs the same.
+-func countUnicodeClasses(class []byte) int {
+-	n := 0
+-	for k := 0; k < len(class); k++ {
+-		if class[k] != '\\' {
+-			continue
+-		}
+-		if k+1 < len(class) && (class[k+1] == 'p' || class[k+1] == 'P') {
+-			n++
+-		}
+-		k++
+-	}
+-	return n
+-}
+-
+-// countedRepetitionFactor reports the multiplicative factor of a quantifier
+-// opening at line[i], the index of its closing `}`, and whether it is a
+-// quantifier at all. `regexp` compiles `{n}` to n copies, `{n,m}` to m copies
+-// plus m-n optional copies, and `{n,}` to n copies plus a star, so the factor is
+-// max + (max-min); a brace with no valid bounds — `{cache}`, `{js,map}`, `foo{`
+-// — and one that expands to nothing, `{0}` or `{0,0}`, is a literal instead.
+-// A bound with a leading zero, like `{01}` or `{00,1000}`, is literal too, as
+-// `regexp` treats it: the only valid zero is a bare `0`.
+-func countedRepetitionFactor(line []byte, i int) (factor int64, end int, ok bool) {
+-	j := i + 1
+-	start := j
+-	for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+-		j++
+-	}
+-	if j == start {
+-		return 0, 0, false
+-	}
+-	if !validRepetitionBound(line[start:j]) {
+-		return 0, 0, false
+-	}
+-	lo := repetitionBound(line[start:j])
+-	hiBound := lo
+-	if j < len(line) && line[j] == ',' {
+-		j++
+-		hiStart := j
+-		for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+-			j++
+-		}
+-		if j == hiStart {
+-			// `regexp` treats `{n,` as a quantifier only when the terminator is
+-			// present; otherwise the `{` is literal. Checking here also stops
+-			// the classifier from consuming whatever byte follows the comma.
+-			if j >= len(line) || line[j] != '}' {
+-				return 0, 0, false
+-			}
+-			// `{n,}` compiles to n copies followed by a star loop of constant
+-			// size, not to n plus 1000 more copies: that is `{n,m}`'s behavior.
+-			// Charging the loop as a constant keeps a valid `{1,}` rule from
+-			// exhausting the budget.
+-			return int64(lo) + globStarUnits, j, true
+-		}
+-		if !validRepetitionBound(line[hiStart:j]) {
+-			return 0, 0, false
+-		}
+-		hiBound = repetitionBound(line[hiStart:j])
+-	}
+-	if j >= len(line) || line[j] != '}' {
+-		return 0, 0, false
+-	}
+-	if hiBound == 0 {
+-		return 0, 0, false
+-	}
+-	if hiBound < lo {
+-		hiBound = lo
+-	}
+-	return int64(hiBound) + int64(hiBound-lo), j, true
+-}
+-
+-// validRepetitionBound reports whether digits are a repetition bound `regexp`
+-// accepts: the sole digit `0`, or a decimal with no leading zero. `{00}`,
+-// `{01}` and `{00,1000}` are not repetitions to it, so they stay literal.
+-func validRepetitionBound(digits []byte) bool {
+-	if len(digits) == 0 {
+-		return false
+-	}
+-	return len(digits) == 1 || digits[0] != '0'
+-}
+-
+-// repetitionBound parses a decimal repetition bound. A malformed or overlong
+-// bound saturates high, which is the conservative direction: it is charged as
+-// an expansion rather than dismissed as a literal.
+-func repetitionBound(digits []byte) int {
+-	n := 0
+-	for _, d := range digits {
+-		n = n*10 + int(d-'0')
+-		if n > 1<<20 {
+-			return 1 << 20
+-		}
+-	}
+-	return n
+-}
+-
+-// eachIgnoreLine calls visit for every line of a .gitignore that
+-// go-gitignore.CompileIgnoreLines will try to compile, passing the line with
+-// its trailing carriage return removed. A line is skipped when it is a comment
+-// in column zero or, after trimming spaces from both ends, is empty, which
+-// mirrors the library's getPatternFromLine exactly; an indented comment is not
+-// skipped, because the library does not treat it as one. Walking the bytes
+-// rather than splitting is what lets a caller count or collect only the lines
+-// that compile, without materializing the rest.
+-func eachIgnoreLine(data []byte, visit func(line []byte)) {
+-	for len(data) > 0 {
+-		var line []byte
+-		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+-			line, data = data[:i], data[i+1:]
+-		} else {
+-			line, data = data, nil
+-		}
+-		line = bytes.TrimRight(line, "\r")
+-		if len(line) > 0 && line[0] == '#' {
+-			continue
+-		}
+-		if len(bytes.Trim(line, " ")) == 0 {
+-			continue
+-		}
+-		visit(line)
++	if berr := budget.retainRuleBytes(len(data)); berr != nil {
++		return nil, berr
+ 	}
++	return data, nil
+ }
+ 
+ // loadIgnoreSet collects every .gitignore rule that can affect a path under
+@@ -656,13 +300,9 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
+ 	set := &ignoreSet{}
+ 	scopes := narrowIgnoreScopes(scope)
+ 
+-	// loadedRules keys every .gitignore this call has read, so no scope reads
+-	// one twice: a second read would charge the file's path and source again,
+-	// and a file that contributed rules would compile and retain a second
+-	// matcher. Each remembered path is charged globIgnoreFileOverheadBytes, so
+-	// the map itself is bounded by the budget rather than growing with the
+-	// tree. A path that could not be read is not remembered — it is neither
+-	// cached nor charged, and re-trying it costs one failed open.
++	// loadedRules keys every .gitignore this call has already taken, so
++	// partially overlapping scopes cannot read one twice: a duplicate would
++	// compile a second matcher, retain it, and charge its bytes again.
+ 	loadedRules := make(map[string]bool)
+ 	for _, sc := range scopes {
+ 		dirs := ignoreAncestors(sc.prefix)
+@@ -693,6 +333,7 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
+ 			if loadedRules[p] {
+ 				continue
+ 			}
++			loadedRules[p] = true
+ 			// Masking is per path, so an unmasked directory can still hold a
+ 			// masked .gitignore, and the base itself is never masked while a
+ 			// .gitignore directly inside it can be. secureDirFS enforces
+@@ -707,20 +348,14 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
+ 			if cerr := ctx.Err(); cerr != nil {
+ 				return set, cerr
+ 			}
+-			lines, read, berr := readIgnoreFile(ctx, fsys, p, budget)
++			data, berr := readIgnoreFile(ctx, fsys, p, budget)
+ 			if berr != nil {
+ 				return set, berr
+ 			}
+-			// Only a path that was actually read is remembered: a missing or
+-			// unreadable file keeps nothing, so it is neither cached nor
+-			// charged, and a later scope merely tries it again cheaply.
+-			if read {
+-				loadedRules[p] = true
+-			}
+-			if lines == nil {
++			if data == nil {
+ 				continue
+ 			}
+-			matcher := gitignore.CompileIgnoreLines(lines...)
++			matcher := gitignore.CompileIgnoreLines(strings.Split(string(data), "\n")...)
+ 			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
+ 		}
+ 	}
+@@ -815,19 +450,17 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
+ 			if loadedRules[p] {
+ 				return nil
+ 			}
+-			lines, read, berr := readIgnoreFile(ctx, fsys, p, budget)
++			loadedRules[p] = true
++			data, berr := readIgnoreFile(ctx, fsys, p, budget)
+ 			if berr != nil {
+ 				budgetErr = berr
+ 				return berr
+ 			}
+-			if read {
+-				loadedRules[p] = true
+-			}
+-			if lines == nil {
++			if data == nil {
+ 				return nil
+ 			}
+ 			dir := path.Dir(p)
+-			matcher := gitignore.CompileIgnoreLines(lines...)
++			matcher := gitignore.CompileIgnoreLines(strings.Split(string(data), "\n")...)
+ 			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
+ 			return nil
+ 		})
+diff --git a/agent/execenv/glob_budget_test.go b/agent/execenv/glob_budget_test.go
+index aa5e06244..05fcff57e 100644
+--- a/agent/execenv/glob_budget_test.go
++++ b/agent/execenv/glob_budget_test.go
+@@ -14,7 +14,6 @@ import (
+ 	"testing/fstest"
+ 	"time"
+ 
+-	gitignore "github.com/sabhiram/go-gitignore"
+ 	"primeradiant.com/evener/agent/sandbox"
+ )
+ 
+@@ -1696,163 +1695,18 @@ func TestLoadIgnoreSetRefusesAnOversizedRulesFile(t *testing.T) {
+ 	}
+ }
+ 
+-// TestLoadIgnoreSetRefusesTooManyRetainedRules is the reproduction of #1018.
+-// The aggregate budget used to charge each .gitignore's SOURCE bytes, but
+-// go-gitignore compiles one regexp per rule line and a compiled regexp costs
+-// far more than the line that produced it, so a call could read a few hundred
+-// bytes of source and still retain far more matcher memory than the budget
+-// allowed. Every file here is tiny — its whole source is a small fraction of
+-// one compiled rule — so the fixture's combined source stays far under the
+-// budget while the matchers it compiles to blow straight past it. A budget
+-// that still charged source bytes lets this call through entirely.
++// TestLoadIgnoreSetRefusesTooManyRetainedRules pins the aggregate bound the
++// per-file one cannot: every compiled matcher is held for the whole call, so
++// a tree carrying a rules file in each of very many directories retains
++// unbounded memory while no single file is anywhere near the per-file cap.
+ //
+-// The assertion is on what was retained rather than on the returned set, since
+-// a refusal that arrived only after every file had been compiled would already
+-// be holding what the bound is meant to keep out.
++// The assertion is on what was retained rather than on the returned set,
++// since a refusal that arrived only after every file had been compiled would
++// already be holding what the bound is meant to keep out.
+ func TestLoadIgnoreSetRefusesTooManyRetainedRules(t *testing.T) {
+ 	const dirs = 40
+-	const rulesPerFile = 8
+-	// Room for two of these files once each pays for its rules and its source,
+-	// and not a third.
+-	const total = 24 * globIgnoreRuleBytes
+-
+-	root := t.TempDir()
+-	var sourceBytes int
+-	for i := range dirs {
+-		dir := filepath.Join(root, fmt.Sprintf("d%02d", i))
+-		if err := os.MkdirAll(dir, 0o755); err != nil {
+-			t.Fatal(err)
+-		}
+-		rules := make([]string, rulesPerFile)
+-		for r := range rules {
+-			rules[r] = fmt.Sprintf("r%d.log", r)
+-		}
+-		data := []byte(strings.Join(rules, "\n") + "\n")
+-		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), data, 0o644); err != nil {
+-			t.Fatal(err)
+-		}
+-		sourceBytes += len(data)
+-	}
+-	if sourceBytes >= total {
+-		t.Fatalf("fixture source totals %d bytes, want far under the %d-byte budget: this test has to fail only because the budget charges compiled rules rather than source bytes", sourceBytes, total)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d directories each carrying %d rules in a few dozen source bytes (combined source %d, far under the %d-byte budget) = %v, want a *globBudgetError: charging source bytes missed the %d compiled matchers entirely", dirs, rulesPerFile, sourceBytes, total, err, dirs*rulesPerFile)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if want := total + rulesPerFile*globIgnoreRuleBytes + sourceBytes/dirs; budget.ruleBytes > want {
+-		t.Fatalf("retained %d bytes before refusing, want no more than %d (the budget plus the one file that crossed it, rules and source together): every rules file was compiled before anything refused", budget.ruleBytes, want)
+-	}
+-	if len(set.dirs) != 2 {
+-		t.Fatalf("retained matchers for %d of %d directories, want exactly 2: the budget fits two files' rules and source and refuses the third", len(set.dirs), dirs)
+-	}
+-}
+-
+-// TestLoadIgnoreSetChargesALongRulesSource is the second half of #1018's fix.
+-// A rule's matcher grows with the expression it was parsed from, not only with
+-// the count of rules, so a single line near the per-file cap compiles to a
+-// regexp far larger than the flat per-rule charge records. This one file holds
+-// about 256 KiB of source in a single rule — nowhere near the per-file cap —
+-// yet its matcher is far larger than a budget of a few dozen KiB. Charging only
+-// globIgnoreRuleBytes would let it through with the budget barely touched,
+-// which is the same undercount this issue exists to remove, just moved from
+-// short rules to long ones.
+-func TestLoadIgnoreSetChargesALongRulesSource(t *testing.T) {
+-	const lineBytes = 256 * 1024
+-	const total = 64 * 1024
+-
+-	root := t.TempDir()
+-	long := strings.Repeat("a", lineBytes)
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(long+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	_, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over one %d-byte rule line against a retention budget of %d = %v, want a *globBudgetError: the flat per-rule charge cannot see a matcher that big", lineBytes, total, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if budget.ruleBytes < lineBytes {
+-		t.Fatalf("ruleBytes = %d after refusing a %d-byte rule, want at least its source: the charge ignored the expression the matcher was built from", budget.ruleBytes, lineBytes)
+-	}
+-}
+-
+-// TestLoadIgnoreSetDoesNotRetainZeroRuleMatchers pins both halves of how a
+-// .gitignore that compiles no rule is handled. It contributes no matcher: such
+-// a matcher would match nothing, so retaining it changes no answer while
+-// pinning an ignoreDir and a compiled matcher per rules file — up to the
+-// listing budget's million for a tree with an empty .gitignore in every
+-// directory. But reading it is still work the call spends and still source it
+-// reads, so it is charged for its bytes even though nothing is kept; dropping
+-// that charge would let a tree of large comment-only files read without bound
+-// and defeat the aggregate limit.
+-//
+-// The returned set is unchanged whether or not the matcher is kept, since a
+-// matcher with no patterns never excludes anything.
+-func TestLoadIgnoreSetDoesNotRetainZeroRuleMatchers(t *testing.T) {
+-	const dirs = 30
+-
+-	root := t.TempDir()
+-	var sourceBytes int
+-	var pathBytes int
+-	for i := range dirs {
+-		rel := fmt.Sprintf("d%02d", i)
+-		dir := filepath.Join(root, rel)
+-		if err := os.MkdirAll(dir, 0o755); err != nil {
+-			t.Fatal(err)
+-		}
+-		// Alternate a truly empty file with one holding only a comment and a
+-		// blank line: both compile no rule.
+-		content := ""
+-		if i%2 == 0 {
+-			content = "# nothing here\n\n"
+-		}
+-		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(content), 0o644); err != nil {
+-			t.Fatal(err)
+-		}
+-		sourceBytes += len(content)
+-		pathBytes += len(rel + "/.gitignore")
+-	}
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over %d zero-rule .gitignore files: %v", dirs, err)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained matchers for %d of %d zero-rule .gitignore files, want 0: each matches nothing, so keeping it only pins memory the budget cannot charge", len(set.dirs), dirs)
+-	}
+-	if want := dirs*globIgnoreFileOverheadBytes + pathBytes + sourceBytes; budget.ruleBytes != want {
+-		t.Fatalf("ruleBytes = %d after reading %d rule-free files totalling %d source bytes and %d path bytes, want %d: each file pays its path charge and the source it read", budget.ruleBytes, dirs, sourceBytes, pathBytes, want)
+-	}
+-}
+-
+-// TestLoadIgnoreSetChargesRuleFreeFilesAgainstTheReadBudget pins the aggregate
+-// bound on source read. Rule-free files keep no matcher, but the call still
+-// reads them, so their bytes have to count: otherwise a tree of large
+-// comment-only .gitignore files is read in full with ruleBytes at zero, and the
+-// call is bounded only by the listing budget. Every file here is under the
+-// per-file cap and compiles no rule, so only the call-wide charge can refuse
+-// the call.
+-func TestLoadIgnoreSetChargesRuleFreeFilesAgainstTheReadBudget(t *testing.T) {
+-	const dirs = 20
+-	const perFile = 8 * 1024
+-	const total = 32 * 1024 // room for four files, not twenty
++	const perFile = 64
++	const total = 512
+ 
+ 	root := t.TempDir()
+ 	for i := range dirs {
+@@ -1860,9 +1714,7 @@ func TestLoadIgnoreSetChargesRuleFreeFilesAgainstTheReadBudget(t *testing.T) {
+ 		if err := os.MkdirAll(dir, 0o755); err != nil {
+ 			t.Fatal(err)
+ 		}
+-		// One comment line only: nothing compiles into a rule.
+-		content := "# " + strings.Repeat("x", perFile-3) + "\n"
+-		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(content), 0o644); err != nil {
++		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), bytes.Repeat([]byte("b\n"), perFile/2), 0o644); err != nil {
+ 			t.Fatal(err)
+ 		}
+ 	}
+@@ -1873,775 +1725,16 @@ func TestLoadIgnoreSetChargesRuleFreeFilesAgainstTheReadBudget(t *testing.T) {
+ 	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+ 	budgetErr, refused := errors.AsType[*globBudgetError](err)
+ 	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d rule-free files of %d bytes each against a read budget of %d = %v, want a *globBudgetError: the source a rule-free file is read from has to count", dirs, perFile, total, err)
++		t.Fatalf("loadIgnoreSet over %d directories each carrying a %d-byte .gitignore, against a retention budget of %d = %v, want a *globBudgetError", dirs, perFile, total, err)
+ 	}
+ 	if budgetErr.kind != budgetRulesTotal {
+ 		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+ 	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers for rule-free files, want 0", len(set.dirs))
++	if budget.ruleBytes > total+perFile {
++		t.Fatalf("retained %d bytes before refusing, want no more than the budget of %d plus the one file that crossed it: every rules file was compiled before anything refused", budget.ruleBytes, total)
+ 	}
+-	if budget.ruleBytes <= total {
+-		t.Fatalf("ruleBytes = %d, want more than the budget of %d once it refused", budget.ruleBytes, total)
+-	}
+-}
+-
+-// TestLoadIgnoreSetReadsZeroRulePathsOnceAcrossScopes pins that a rule-free
+-// .gitignore is read once for the whole call, not once per scope. It is
+-// remembered in the call's dedupe map like any other file — charged its path
+-// overhead and the source it read — so overlapping scopes neither re-read it
+-// nor re-charge it, and a large comment-only rules file cannot exhaust the
+-// aggregate budget through accumulated reads. It still contributes no matcher,
+-// since a matcher with no patterns matches nothing.
+-func TestLoadIgnoreSetReadsZeroRulePathsOnceAcrossScopes(t *testing.T) {
+-	fsys := &openCountingFS{FS: fstest.MapFS{
+-		".gitignore":   &fstest.MapFile{Data: []byte("# no rules here\n")},
+-		"a/.gitignore": &fstest.MapFile{Data: []byte("x.log\n")},
+-		"a/keep.txt":   &fstest.MapFile{Data: []byte("x")},
+-		"b/keep.txt":   &fstest.MapFile{Data: []byte("x")},
+-		"c/keep.txt":   &fstest.MapFile{Data: []byte("x")},
+-	}, opens: map[string]int{}}
+-
+-	// No scope covers another, so all four survive narrowing and each one
+-	// reaches the base rules file through its own ancestor read.
+-	scope := []ignoreScope{
+-		{prefix: ".", depth: 0, walk: true},
+-		{prefix: "a", depth: 0, walk: true},
+-		{prefix: "b", depth: 0, walk: true},
+-		{prefix: "c", depth: 0, walk: true},
+-	}
+-	budget := newGlobBudget("glob")
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, scope)
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over four overlapping scopes: %v", err)
+-	}
+-	if got := fsys.opens[".gitignore"]; got != 1 {
+-		t.Fatalf("the rule-free base .gitignore was opened %d times across four scopes, want 1: it must be remembered in the dedupe map so no scope re-reads or re-charges it", got)
+-	}
+-	if got := fsys.opens["a/.gitignore"]; got != 1 {
+-		t.Fatalf(".gitignore contributing a rule was opened %d times, want 1", got)
+-	}
+-	wantBytes := (globIgnoreFileOverheadBytes + len(".gitignore") + len("# no rules here\n")) +
+-		(globIgnoreFileOverheadBytes + len("a/.gitignore") + globIgnoreRuleBytes + len("x.log")*globIgnoreUnitBytes + len("x.log\n"))
+-	if budget.ruleBytes != wantBytes {
+-		t.Fatalf("ruleBytes = %d, want %d: each file is charged once for its path, its rules and their source, and the source it read", budget.ruleBytes, wantBytes)
+-	}
+-	for _, d := range set.dirs {
+-		if d.rel == "." {
+-			t.Fatalf("retained a matcher for the rule-free base .gitignore")
+-		}
+-	}
+-}
+-
+-// openCountingFS counts how many times Open was called for each name, so a test
+-// can tell a path the call remembered (opened once) from one it left out of its
+-// dedupe map (opened again by a later scope).
+-type openCountingFS struct {
+-	fs.FS
+-	opens map[string]int
+-}
+-
+-func (o *openCountingFS) Open(name string) (fs.File, error) {
+-	o.opens[name]++
+-	return o.FS.Open(name)
+-}
+-
+-// TestLoadIgnoreSetMaterializesLinesOnlyAfterTheBudget pins that a file's rule
+-// lines are collected only once the aggregate budget has accepted the file.
+-// Materializing a line per line allocates far more memory than the source
+-// itself, so a file that compiles no rule must never have its lines built, and
+-// one that would be refused must be refused first. The collection is observed
+-// through a seam, so the assertion is on the behavior rather than on ambient
+-// heap allocation.
+-func TestLoadIgnoreSetMaterializesLinesOnlyAfterTheBudget(t *testing.T) {
+-	orig := ignoreRuleLines
+-	t.Cleanup(func() { ignoreRuleLines = orig })
+-	var collections int
+-	ignoreRuleLines = func(data []byte) []string {
+-		collections++
+-		return orig(data)
+-	}
+-
+-	const fileBytes = 1 << 20 // exactly the per-file cap
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), bytes.Repeat([]byte("\n"), fileBytes), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over a %d-byte newline-heavy .gitignore: %v", fileBytes, err)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers for a file that compiles no rule, want 0", len(set.dirs))
+-	}
+-	if collections != 0 {
+-		t.Fatalf("collected lines from a %d-byte rule-free .gitignore %d times, want 0: nothing should be materialized for it", fileBytes, collections)
+-	}
+-	if want := globIgnoreFileOverheadBytes + len(".gitignore") + fileBytes; budget.ruleBytes != want {
+-		t.Fatalf("ruleBytes = %d, want %d (path charge plus source read)", budget.ruleBytes, want)
+-	}
+-
+-	// A file that would be refused is refused before its lines are collected.
+-	root2 := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root2, ".gitignore"), []byte("a\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, 1)
+-	budget2 := newGlobBudget("glob")
+-	fsys2 := boundedDirFS{FS: os.DirFS(root2), budget: budget2, ctx: t.Context()}
+-	if _, err := loadIgnoreSet(t.Context(), fsys2, nil, budget2, wholeBaseIgnoreScope()); err == nil {
+-		t.Fatalf("loadIgnoreSet over a rule file against a 1-byte budget = nil error, want a refusal")
+-	}
+-	if collections != 0 {
+-		t.Fatalf("collected lines from a refused file %d times, want 0", collections)
+-	}
+-
+-	// A blank-heavy file with one rule materializes only that rule's line.
+-	stubMaxGlobIgnoreTotalBytes(t, 1<<20)
+-	root3 := t.TempDir()
+-	blankHeavy := "# note\n\n" + strings.Repeat("\n", 4096) + "x.log\n" + strings.Repeat("\n", 4096)
+-	if err := os.WriteFile(filepath.Join(root3, ".gitignore"), []byte(blankHeavy), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	budget3 := newGlobBudget("glob")
+-	fsys3 := boundedDirFS{FS: os.DirFS(root3), budget: budget3, ctx: t.Context()}
+-	set3, err := loadIgnoreSet(t.Context(), fsys3, nil, budget3, wholeBaseIgnoreScope())
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over a blank-heavy .gitignore with one rule: %v", err)
+-	}
+-	if collections != 1 {
+-		t.Fatalf("collected lines %d times, want 1", collections)
+-	}
+-	if len(set3.dirs) != 1 {
+-		t.Fatalf("retained %d matchers for one rule, want 1", len(set3.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetDoesNotCacheUnreadablePaths pins that a path discovery could
+-// not read is not remembered. Remembering it would grow the call's dedupe map
+-// for a file that contributed nothing, and the map is meant to be bounded by
+-// the charge each remembered path carries. A missing rules file is instead
+-// retried by a later scope, which costs one failed open and no charge.
+-func TestLoadIgnoreSetDoesNotCacheUnreadablePaths(t *testing.T) {
+-	fsys := &openCountingFS{FS: fstest.MapFS{
+-		"a/keep.txt": &fstest.MapFile{Data: []byte("x")},
+-		"b/keep.txt": &fstest.MapFile{Data: []byte("x")},
+-	}, opens: map[string]int{}}
+-	scope := []ignoreScope{
+-		{prefix: ".", depth: 0, walk: true},
+-		{prefix: "a", depth: 0, walk: true},
+-		{prefix: "b", depth: 0, walk: true},
+-	}
+-	budget := newGlobBudget("glob")
+-	if _, err := loadIgnoreSet(t.Context(), fsys, nil, budget, scope); err != nil {
+-		t.Fatalf("loadIgnoreSet with no rules files present: %v", err)
+-	}
+-	if got := fsys.opens[".gitignore"]; got != 2 {
+-		t.Fatalf("the missing base .gitignore was opened %d times across two scopes, want 2: an unread path must not be remembered in the dedupe map", got)
+-	}
+-	if budget.ruleBytes != 0 {
+-		t.Fatalf("ruleBytes = %d after only failed reads, want 0: nothing was read or retained", budget.ruleBytes)
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesLongRulesWhoseSourceFitsTheBudget is the regression
+-// for a long rule's compiled size. Charging a rule only per source byte records
+-// a near-cap literal rule as ~256 KiB while its compiled regexp holds tens of
+-// megabytes — measured at ~47 bytes per source byte for a 1 MiB literal — so
+-// several files whose combined source fits the budget can retain far more
+-// matcher memory than it allows. The per-rune rule charge makes the budget
+-// refuse them.
+-func TestLoadIgnoreSetRefusesLongRulesWhoseSourceFitsTheBudget(t *testing.T) {
+-	const dirs = 3
+-	const lineBytes = 256 * 1024
+-	const total = 2 << 20 // above the 768 KiB of source, below the compiled matchers
+-
+-	root := t.TempDir()
+-	for i := range dirs {
+-		dir := filepath.Join(root, fmt.Sprintf("d%02d", i))
+-		if err := os.MkdirAll(dir, 0o755); err != nil {
+-			t.Fatal(err)
+-		}
+-		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(strings.Repeat("a", lineBytes)+"\n"), 0o644); err != nil {
+-			t.Fatal(err)
+-		}
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d files of one %d-byte literal rule each (combined source %d, under the %d-byte budget) = %v, want a *globBudgetError: the compiled matchers are far larger than their source", dirs, lineBytes, dirs*(lineBytes+1), total, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0: the first file's compiled matcher already crosses the budget", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesRepetitionRulesWhoseSourceFitsTheBudget is the
+-// regression for counted repetition. Go's regexp expands `{n}` into n copies of
+-// the repeated element, so a few kilobytes of `. {999}` lines compile into tens
+-// of megabytes — measured at ~43.5 MB for this 6 KB line — while the source
+-// charge alone records under a megabyte. The repeat-source charge makes the
+-// budget refuse it.
+-func TestLoadIgnoreSetRefusesRepetitionRulesWhoseSourceFitsTheBudget(t *testing.T) {
+-	const total = 1 << 20
+-
+-	// `. {999}` repeated, the shape measured retaining ~7248 bytes per source
+-	// byte: its source fits the budget, its compiled program does not.
+-	line := strings.Repeat(".{999}", 1000)
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a %d-byte repetition rule (source under the %d-byte budget, compiled program far over) = %v, want a *globBudgetError", len(line), total, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesUnterminatedUnboundedRepetition pins that `{n,`
+-// without its closing `}` is literal, as `regexp` treats it. Reading it as a
+-// quantifier both under-charges the repetition and swallows the byte after the
+-// comma — here the `(` that opens a group, whose 1000-byte body then compiles
+-// into a million instructions while the charge stays small.
+-func TestLoadIgnoreSetRefusesUnterminatedUnboundedRepetition(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := "a{1,(" + strings.Repeat("b", 1000) + "){1000}"
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over an unterminated `{n,` quantifier before a repeated group = %v, want a *globBudgetError", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetChargesUnboundedRepetitionAsALoop pins the other direction
+-// from the bypass findings: a valid `{n,}` must not be refused. Go compiles
+-// `x{n,}` to n copies followed by a star loop of constant size, not to n plus a
+-// thousand more copies, so many small `a{1,}` rules are cheap. Charging the
+-// unbounded tail as 1000 copies made a handful of such rules exceed the default
+-// budget and fail an ordinary glob.
+-func TestLoadIgnoreSetChargesUnboundedRepetitionAsALoop(t *testing.T) {
+-	const rules = 5000
+-	const total = 32 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, "keep.txt"), []byte("x"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{1,}\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over %d valid `a{1,}` rules = %v, want no error: an unbounded repetition compiles to a constant loop", rules, err)
+-	}
+-	if len(set.dirs) != 1 {
+-		t.Fatalf("retained %d matchers for one rules file, want 1", len(set.dirs))
+-	}
+-
+-	matches, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.txt", root, false)
+-	if err != nil {
+-		t.Fatalf("Glob over a base with %d valid `a{1,}` rules = %v, want no error", rules, err)
+-	}
+-	if len(matches) != 1 || !strings.HasSuffix(matches[0], "keep.txt") {
+-		t.Fatalf("Glob with valid unbounded repetitions = %v, want just keep.txt", matches)
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesZeroMinimumRepetition pins a quantifier whose low
+-// bound is zero but whose high bound is not. Go's regexp expands `x{0,m}` into
+-// m optional copies, so `a{0,1000}` compiles to a large program — measured
+-// 96 KB from 9 source bytes — while a classifier that only looks at the first
+-// bound digit records it as a literal and charges almost nothing.
+-func TestLoadIgnoreSetRefusesZeroMinimumRepetition(t *testing.T) {
+-	const rules = 100
+-	const total = 1 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{0,1000}\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d `a{0,1000}` rules (each 9 source bytes compiling to ~96 KB) against a %d-byte budget = %v, want a *globBudgetError", rules, total, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesNestedQuantifiers pins that nested counted
+-// repetitions multiply. `(a{900}){900}` records 810,000 units from one source
+-// byte, so a single rule crosses the default budget; an additive or
+-// union-of-spans charge records under a kilobyte.
+-func TestLoadIgnoreSetRefusesNestedQuantifiers(t *testing.T) {
+-	const total = 32 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("(a{900}){900}\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a nested `(a{900}){900}` rule = %v, want a *globBudgetError: nested quantifiers multiply", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesRepeatedGroupWithLiteralParen pins that the repeated
+-// element's span is found by the same forward parse that tracks escapes and
+-// character classes, so a literal parenthesis inside `[...]` cannot be mistaken
+-// for the group's start. The group body here is 1000 bytes and the quantifier
+-// multiplies it by 1000.
+-func TestLoadIgnoreSetRefusesRepeatedGroupWithLiteralParen(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := "(" + strings.Repeat("a", 1000) + "[(]){1000}"
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a repeated group containing a literal parenthesis in a character class = %v, want a *globBudgetError", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesOptionalBranchRepetition pins that a bounded
+-// repetition is charged for its optional branches too: `a{0,1000}` compiles to
+-// 1000 copies plus 1000 optional copies, so at the default budget a few hundred
+-// such rules are refused rather than passing on a charge that counts only the
+-// maximum.
+-func TestLoadIgnoreSetRefusesOptionalBranchRepetition(t *testing.T) {
+-	const rules = 300
+-	const total = 32 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("a{0,1000}\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	_, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d `a{0,1000}` rules at the default budget = %v, want a *globBudgetError", rules, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesMalformedQuantifierLine pins that a line full of
+-// unmatched `)` and quantifiers is parsed linearly and refused, rather than
+-// making the classifier scan backwards once per quantifier before the budget
+-// can act.
+-func TestLoadIgnoreSetRefusesMalformedQuantifierLine(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := strings.Repeat("){1000}", 40000)
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a %d-byte malformed quantifier line = %v, want a *globBudgetError", len(line), err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesClassStartingWithLiteralBracket pins that a `]` in the
+-// first position of a character class is a member, not the terminator, as
+-// `regexp` treats it. Reading it as the terminator ends the class early and
+-// misidentifies the group's close, so a repeated group's real body is charged as
+-// literal text.
+-func TestLoadIgnoreSetRefusesClassStartingWithLiteralBracket(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := "(" + strings.Repeat("a", 1000) + "[])]){1000}"
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a repeated group whose class starts with a literal `]` = %v, want a *globBudgetError", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesRepeatedCapturingGroups pins that a capturing group's
+-// own instruction is charged and is repeated with its contents. A rule of 600
+-// nested capturing groups around one byte, then `{1000}`, compiles to roughly
+-// 600,000 group instructions plus the copied body, so it must be refused; a
+-// charge that counts only the body records about a kilobyte.
+-func TestLoadIgnoreSetRefusesRepeatedCapturingGroups(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := strings.Repeat("(", 600) + "a" + strings.Repeat(")", 600) + "{1000}"
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over 600 nested capturing groups repeated 1000 times = %v, want a *globBudgetError: capture instructions repeat too", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesRepeatedUnicodeProperties pins that a Unicode
+-// property's rune table is multiplied by a repetition around it, exactly as the
+-// compiled table is. `\pL{1000}` keeps 1000 copies of the table, so a handful of
+-// such rules exceed the default budget; charging the table once lets four rules
+-// retain ~40 MB while accounting under 200 KB.
+-func TestLoadIgnoreSetRefusesRepeatedUnicodeProperties(t *testing.T) {
+-	const rules = 4
+-	const total = 32 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`\pL{1000}`+"\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d `\\pL{1000}` rules = %v, want a *globBudgetError: a repeated property keeps one table per copy", rules, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesBracketedUnicodeProperties pins that a property escape
+-// inside a character class is charged like a bare one. `[\pL]` retains the same
+-// rune table as `\pL`, so a rules file full of them must not pass the budget on
+-// the class's few source bytes alone.
+-func TestLoadIgnoreSetRefusesBracketedUnicodeProperties(t *testing.T) {
+-	const rules = 10000
+-	const total = 32 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`[\pL]`+"\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d bracketed `\\pL` rules at the default budget = %v, want a *globBudgetError: a class holding a property carries its rune table", rules, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesQuantifierDenseLine pins that a line built from very
+-// many quantifiers is refused. The classifier is a single forward parse whose
+-// scans each consume the region they read, so it is linear in the line length;
+-// what bounds this line is its multiplicative budget charge, not a work guard.
+-// The test keeps that linear behavior honest: a change that re-scans would make
+-// it slow rather than wrong.
+-func TestLoadIgnoreSetRefusesQuantifierDenseLine(t *testing.T) {
+-	const total = 1 << 20
+-
+-	line := strings.Repeat("a{2}*", 20000) // ~200,000 spans and stars without the cap
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a %d-byte quantifier-dense line = %v, want a *globBudgetError", len(line), err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetKeepsBraceRulesUsable pins that a brace which is not a
+-// counted repetition is charged as ordinary source. go-gitignore passes braces
+-// straight to `regexp`, so `*.{js,map}` and `{cache}` compile into small
+-// literal-brace matchers; billing every `{` at the repeat rate would refuse an
+-// ordinary rules file that retains almost nothing.
+-func TestLoadIgnoreSetKeepsBraceRulesUsable(t *testing.T) {
+-	const rules = 100
+-	const total = 1 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat("*.{js,map}\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	if err != nil {
+-		t.Fatalf("loadIgnoreSet over %d literal-brace rules against a %d-byte budget = %v, want no error: a brace that is not a counted repetition compiles to a small matcher", rules, total, err)
+-	}
+-	if len(set.dirs) != 1 {
+-		t.Fatalf("retained %d matchers for one rules file, want 1", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesStarDenseRules pins the star charge. Before
+-// compiling, go-gitignore rewrites every `*` into a capture, a character class
+-// and a split, so a star-dense rule retains several instructions per star — a
+-// 400 KiB line of `*/` measured ~74.5 MB, far past the 32 MiB ceiling — while
+-// the per-source-byte charge alone records ~32 MB and lets it through.
+-func TestLoadIgnoreSetRefusesStarDenseRules(t *testing.T) {
+-	const total = 32 << 20
+-
+-	line := strings.Repeat("*/", 200<<10) // 400 KiB carrying 200,000 stars
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a %d-byte star-dense rule = %v, want a *globBudgetError: go-gitignore expands each star to several instructions", len(line), err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesUnicodePropertyRules pins the Unicode-property
+-// charge. A `\pL` escape is three source bytes but compiles to a rune-class
+-// instruction carrying the property's whole range table — measured ~10 KB each
+-// — so a rules file dense in property escapes retains far more than its source
+-// while the per-source-byte charge records almost nothing.
+-func TestLoadIgnoreSetRefusesUnicodePropertyRules(t *testing.T) {
+-	const rules = 100
+-	const total = 1 << 20
+-
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Repeat(`\pL`+"\n", rules)), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over %d `\\pL` rules (300 source bytes, ~1 MB of rune tables) against a %d-byte budget = %v, want a *globBudgetError", rules, total, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetRefusesStarsInsideRepetition pins the repeat-star charge. A
+-// star compiles to about five instructions, and an enclosing `{n}` multiplies
+-// all of them, so a line like `(**...){1000}` retains far more than the plain
+-// star charge records.
+-func TestLoadIgnoreSetRefusesStarsInsideRepetition(t *testing.T) {
+-	// The line retains ~17.8 MB, so a 16 MiB budget is exceeded while the plain
+-	// star-and-source charge records only ~7 MB and lets it through.
+-	const total = 16 << 20
+-
+-	line := "(" + strings.Repeat("*", 100) + "){1000}" // 100 stars, expanded 1000x
+-	root := t.TempDir()
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(line+"\n"), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("loadIgnoreSet over a %d-byte line of stars inside a repetition = %v, want a *globBudgetError", len(line), err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if len(set.dirs) != 0 {
+-		t.Fatalf("retained %d matchers before refusing, want 0", len(set.dirs))
+-	}
+-}
+-
+-// TestLoadIgnoreSetDoesNotOverchargeLiteralStars pins that a star the library
+-// does not expand — an escaped `\*` or one inside a character class — is not
+-// billed as a glob star, so a rules file full of literal stars is not refused
+-// for matcher memory it never allocates.
+-func TestLoadIgnoreSetDoesNotOverchargeLiteralStars(t *testing.T) {
+-	const rules = 100
+-	const total = 250000
+-
+-	root := t.TempDir()
+-	content := strings.Repeat("\\*\n", rules) + "[*]\n"
+-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(content), 0o644); err != nil {
+-		t.Fatal(err)
+-	}
+-	stubMaxGlobIgnoreTotalBytes(t, total)
+-
+-	budget := newGlobBudget("glob")
+-	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+-	if _, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope()); err != nil {
+-		t.Fatalf("loadIgnoreSet over %d escaped literal stars against a %d-byte budget = %v, want no error: literal stars are not expanded globs", rules, total, err)
+-	}
+-}
+-
+-// TestRetainIgnoreFileSaturatesInsteadOfWrapping pins that a large expansion
+-// term is refused rather than wrapping the accumulator to a small number that
+-// slips under the budget.
+-func TestRetainIgnoreFileSaturatesInsteadOfWrapping(t *testing.T) {
+-	stubMaxGlobIgnoreTotalBytes(t, 1<<20)
+-	// A unit count large enough that its charge alone overflows int on a 32-bit
+-	// build; the value is sized from the architecture so this compiles and
+-	// exercises saturation on both.
+-	huge := int64(^uint(0)>>1)/globIgnoreUnitBytes + 1
+-	budget := newGlobBudget("glob")
+-	err := budget.retainIgnoreFile(ignoreFileCost{expansionUnits: huge})
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("retaining an enormous repetition source = %v, want a *globBudgetError", err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-	if budget.ruleBytes <= 0 {
+-		t.Fatalf("ruleBytes = %d after saturation, want a positive saturated value rather than a wrap to a small number", budget.ruleBytes)
+-	}
+-	if budget.ruleBytes <= maxGlobIgnoreTotalBytes {
+-		t.Fatalf("ruleBytes = %d after an overflowing charge, want it above the budget of %d", budget.ruleBytes, maxGlobIgnoreTotalBytes)
++	if len(set.dirs) >= dirs {
++		t.Fatalf("retained matchers for all %d directories, want fewer: the walk kept compiling past the budget", dirs)
+ 	}
+ }
+ 
+@@ -2844,128 +1937,28 @@ func TestLoadIgnoreSetReadsEachRulesFileOnce(t *testing.T) {
+ 	}
+ }
+ 
+-// TestRetainIgnoreFileChargesEachCost pins what one .gitignore read is billed
+-// for: a fixed charge plus the path's length for the dedupe map entry, a fixed
+-// charge per compiled rule, a per-source-byte charge for the rules' compiled
+-// programs, a much larger per-source-byte charge for source inside a counted
+-// repetition, and the source it read. A file that compiles no rule is still
+-// charged for its path and source and nothing per rule, since the per-rule
+-// charges track the matchers the file contributes.
+-func TestRetainIgnoreFileChargesEachCost(t *testing.T) {
+-	const total = 64 * 1024
++// TestRetainRuleBytesChargesPerFileOverhead pins that an empty .gitignore is
++// not free. Charging source bytes alone lets a tree carrying an empty rules
++// file in every directory retain an entry and a compiled matcher apiece while
++// the byte budget stays untouched, so the budget stops bounding how many
++// files are retained at all.
++func TestRetainRuleBytesChargesPerFileOverhead(t *testing.T) {
++	const total = 4 * 512
+ 	stubMaxGlobIgnoreTotalBytes(t, total)
+ 
+ 	budget := newGlobBudget("glob")
+-	const units = 5
+-	const source = 32
+-	const path = 12
+-	want := globIgnoreFileOverheadBytes + path + globIgnoreRuleBytes + units*globIgnoreUnitBytes + source
+-	if err := budget.retainIgnoreFile(ignoreFileCost{path: path, rules: 1, expansionUnits: units, source: source}); err != nil {
+-		t.Fatalf("retaining one rule of %d units in a %d-byte file against a budget of %d = %v, want nil", units, source, total, err)
++	var accepted int
++	for range 100 {
++		if err := budget.retainRuleBytes(0); err != nil {
++			break
++		}
++		accepted++
+ 	}
+-	if budget.ruleBytes != want {
+-		t.Fatalf("ruleBytes = %d after one rule, want %d", budget.ruleBytes, want)
++	if accepted >= 100 {
++		t.Fatalf("retained %d empty rules files against a budget of %d bytes with no refusal; an empty file must still cost its entry and matcher", accepted, total)
+ 	}
+-
+-	ruleFree := newGlobBudget("glob")
+-	if err := ruleFree.retainIgnoreFile(ignoreFileCost{path: path, source: source}); err != nil {
+-		t.Fatalf("retaining a rule-free file of %d source bytes = %v, want nil", source, err)
+-	}
+-	if wantFree := globIgnoreFileOverheadBytes + path + source; ruleFree.ruleBytes != wantFree {
+-		t.Fatalf("ruleBytes = %d for a rule-free file, want %d (path and source, no rule charge)", ruleFree.ruleBytes, wantFree)
+-	}
+-
+-	// A rule that expands into many units crosses a budget its source alone
+-	// would fit.
+-	repeated := newGlobBudget("glob")
+-	const expanded = 4096
+-	const smallTotal = globIgnoreFileOverheadBytes + expanded*globIgnoreUnitBytes
+-	stubMaxGlobIgnoreTotalBytes(t, smallTotal)
+-	err := repeated.retainIgnoreFile(ignoreFileCost{rules: 1, expansionUnits: expanded, source: 1})
+-	budgetErr, refused := errors.AsType[*globBudgetError](err)
+-	if !refused {
+-		t.Fatalf("retaining one rule expanding into %d units against a budget of %d = %v, want a *globBudgetError: the expanded units must be charged", expanded, smallTotal, err)
+-	}
+-	if budgetErr.kind != budgetRulesTotal {
+-		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+-	}
+-}
+-
+-// TestCompiledIgnoreRulesMatchesGoGitignoreSkips pins the rule count and rule
+-// source bytes the budget charges for a .gitignore's bytes, and that source
+-// inside a counted repetition is reported separately so it is charged at the
+-// repeat rate. go-gitignore drops a line only when it is a comment in column
+-// zero or, after trimming spaces from both ends, is empty; every other line it
+-// tries to compile. The count is an UPPER BOUND on the retained patterns, not
+-// an exact match: a line whose generated regexp fails to compile (an
+-// unterminated character class, say) is counted but yields no pattern.
+-// Over-counting is the safe direction — it can refuse a call early but never
+-// under-charge one.
+-//
+-// The trailing check ties the bound to observable behavior rather than the
+-// library's internals: an ordinary rule excludes its path, while an
+-// uncompilable line still counts as the upper bound and excludes nothing.
+-func TestCompiledIgnoreRulesMatchesGoGitignoreSkips(t *testing.T) {
+-	for _, tc := range []struct {
+-		name      string
+-		lines     []string
+-		wantRules int
+-		wantUnits int64
+-	}{
+-		{"ordinary rules", []string{"a", "b"}, 2, 2},
+-		{"blank lines", []string{"", "a", ""}, 1, 1},
+-		{"space-only line", []string{"   ", "a"}, 1, 1},
+-		{"comment in column zero", []string{"# note", "a"}, 1, 1},
+-		{"indented comment still compiles", []string{"   # note"}, 1, 9},
+-		{"negated rule", []string{"!keep", "a"}, 2, 6},
+-		{"bare carriage return line", []string{"  \r", "a"}, 1, 1},
+-		{"uncompilable pattern", []string{"["}, 1, 1},
+-		{"counted repetition multiplies", []string{"a{1000}", "b"}, 2, 1001},
+-		{"literal brace", []string{"{cache}", "foo{", "*.{js,map}"}, 3, 25},
+-		{"globs count stars", []string{"*/tmp", "*"}, 2, 14},
+-		{"escaped star and class star are literal", []string{`\*`, "[*]"}, 2, 4},
+-		{"stars in repetition scale", []string{"(**){1000}"}, 1, 12000},
+-		{"unicode property", []string{`\pL`, `\P{Greek}`}, 2, 822},
+-		{"bracketed unicode property", []string{`[\pL]`}, 1, 415},
+-		{"unicode property inside repetition multiplies", []string{`\pL{1000}`}, 1, 411000},
+-		{"capturing group costs a bra-ket pair", []string{"(a)"}, 1, 3},
+-		{"zero-minimum repetition expands", []string{"a{0,1000}"}, 1, 2000},
+-		{"unbounded repetition is a loop", []string{"a{1,}"}, 1, 6},
+-		{"unbounded-from-zero repetition is a loop", []string{"a{0,}"}, 1, 5},
+-		{"unterminated unbounded is literal", []string{"a{1,("}, 1, 6},
+-		{"leading-zero bound is literal", []string{"a{01}"}, 1, 5},
+-		{"leading-zero pair bound is literal", []string{"a{00,1000}"}, 1, 10},
+-		{"zero repetition does not expand", []string{"a{0}", "a{0,0}"}, 2, 10},
+-		{"only the repeated element is multiplied", []string{"abcdefghij{2}"}, 1, 11},
+-		{"nested quantifiers multiply", []string{"(a{2}){2}"}, 1, 8},
+-		{"deeply nested quantifiers multiply", []string{"(a{900}){900}"}, 1, 811800},
+-	} {
+-		t.Run(tc.name, func(t *testing.T) {
+-			cost := compiledIgnoreRules([]byte(strings.Join(tc.lines, "\n")))
+-			if cost.rules != tc.wantRules {
+-				t.Fatalf("compiledIgnoreRules(%q) rules = %d, want %d", tc.lines, cost.rules, tc.wantRules)
+-			}
+-			if cost.expansionUnits != tc.wantUnits {
+-				t.Fatalf("compiledIgnoreRules(%q) expansionUnits = %d, want %d", tc.lines, cost.expansionUnits, tc.wantUnits)
+-			}
+-		})
+-	}
+-
+-	lib := gitignore.CompileIgnoreLines(strings.Split("[\na\n", "\n")...)
+-	if !lib.MatchesPath("a") {
+-		t.Fatalf("go-gitignore did not exclude a path the ordinary rule beside an uncompilable line names; the counter's model of a rule line is wrong")
+-	}
+-	if lib.MatchesPath("keep") {
+-		t.Fatalf("go-gitignore excluded a path no compiled line names")
+-	}
+-	// A leading-zero bound is literal to `regexp`, which is why the classifier
+-	// charges `{01}` as source rather than as one copy.
+-	literal := gitignore.CompileIgnoreLines("a{01}")
+-	if !literal.MatchesPath("a{01}") {
+-		t.Fatalf("go-gitignore does not treat a{01} as literal text; the classifier's leading-zero handling is wrong")
+-	}
+-	if literal.MatchesPath("a") {
+-		t.Fatalf("go-gitignore treated a{01} as a repetition of a")
++	if budget.ruleBytes == 0 {
++		t.Fatalf("ruleBytes = 0 after retaining %d empty files, want the per-file overhead charged", accepted)
+ 	}
+ }
+ 
+diff --git a/agent/execenv/search_patterns.go b/agent/execenv/search_patterns.go
+index 7249f708e..b3680b5bd 100644
+--- a/agent/execenv/search_patterns.go
++++ b/agent/execenv/search_patterns.go
+@@ -114,60 +114,30 @@ var maxGlobLiveEntries = 500_000
+ // ever refuses a pathological one.
+ var maxGlobIgnoreFileBytes = 1 << 20
+ 
+-// maxGlobIgnoreTotalBytes is the aggregate bound on what one call may spend on
+-// .gitignore discovery: the compiled matcher memory it retains and the source
+-// it reads, across every rules file in the call. go-gitignore builds one regexp
+-// per rule line, so a file is charged a fixed globIgnoreRuleBytes per rule plus
+-// globIgnoreUnitBytes for each compiled instruction its rules expand into. That
+-// unit count comes from parsing the rules — a literal byte is one unit, a glob
+-// star about five, and a counted repetition multiplies the units of its element
+-// — so the charge follows the matcher `regexp` will build rather than the
+-// source's length. Each file also pays globIgnoreFileOverheadBytes plus the
+-// length of its path, and globIgnoreUnicodeClassBytes per Unicode property
+-// escape, whose rune table dwarfs its source.
+-//
+-// Source is charged whether or not a matcher is kept, so a file that compiles
+-// no rule still counts toward the bound on how much a call reads.
++// maxGlobIgnoreTotalBytes bounds the .gitignore SOURCE one call may take in
++// across every rules file it reads, plus a fixed charge per file. It is a
++// bound on how much a call reads and how many files it keeps, not on the
++// memory those files occupy once compiled: go-gitignore builds a regexp per
++// rule line, at a cost far larger than the line it came from, so retained
++// memory can exceed this figure by orders of magnitude. Bounding that would
++// mean charging per compiled rule rather than per byte, which is a separate
++// change from this one.
+ //
+ // The number follows the entry caps: one listing at maxGlobDirEntries costs
+ // roughly 21 MB of directory entries and the live ceiling allows about 52 MB,
+-// so 32 MiB sits between them.
+-//
+-// This bound is best-effort. It is charged from an estimate of each rule's
+-// compiled size (classifyIgnoreLine), so a construct whose compiled program is
+-// larger than the estimate can still pass; charging the real program size is
+-// issue #1971.
++// so 32 MiB sits between them, and a repository carrying a .gitignore in every
++// one of several thousand directories reads single-digit megabytes of source.
+ var maxGlobIgnoreTotalBytes = 32 << 20
+ 
+-// globIgnoreRuleBytes is the accounting charge for one compiled ignore rule,
+-// before its source. go-gitignore converts every rule line into its own
+-// regexp.Regexp, and a matcher built from a short line occupies on the order of
+-// 2 KiB — far more than the tens of bytes the line occupies in the file — so
+-// this is what one ordinary rule costs.
+-const globIgnoreRuleBytes = 2048
+-
+-// globIgnoreUnitBytes is the charge for one compiled instruction a rule
+-// expands into. A syntax instruction is about 40 bytes and a rule retains a few
+-// bytes of other state per unit, so a compiled program costs tens of bytes per
+-// unit: measured against go-gitignore, a literal rule retained 46.5 bytes per
+-// unit at 1 MiB, 48.5 at 256 KiB, 50.7 at 16 KiB and 76.1 at 1 KiB, and a star
+-// retained about 380 bytes for its five units. 80 is above every measured
+-// value.
+-const globIgnoreUnitBytes = 80
+-
+-// globIgnoreUnicodeClassBytes is the charge for one Unicode property escape
+-// such as `\pL` or `\p{Greek}`. go-gitignore passes it through and Go compiles
+-// it to a rune-class instruction carrying the property's whole range table;
+-// measured, each `\pL` retained about 10 KB from its 3 source bytes. 32768 is
+-// above every property's table.
+-const globIgnoreUnicodeClassBytes = 32768
+-
+-// globIgnoreFileOverheadBytes is the fixed charge for retaining one
+-// .gitignore's entry in the call's dedupe map; the path itself is charged at
+-// one byte per byte on top of it, since that map holds the path string. Together
+-// they bound the NUMBER of files a call reads rather than letting the map grow
+-// with the tree.
+-const globIgnoreFileOverheadBytes = 512
++// globIgnoreFileOverheadBytes is the fixed charge for keeping one rules file
++// at all, so that a .gitignore with nothing in it is not free. It is what
++// makes maxGlobIgnoreTotalBytes bound the NUMBER of retained files — about
++// 65,000 of them at 512 apiece — rather than only their combined source, so a
++// tree carrying an empty .gitignore in every directory cannot retain one per
++// directory up to the directory-listing limit with the byte budget untouched.
++// It is an accounting figure for that purpose and not a measurement of what a
++// retained file occupies; see maxGlobIgnoreTotalBytes.
++var globIgnoreFileOverheadBytes = 512
+ 
+ // maxGlobMatches bounds how many matches one glob call may accumulate.
+ var maxGlobMatches = 10_000
+@@ -216,10 +186,9 @@ type GlobBudget struct {
+ 	// across b.live, recorded on every call rather than only the one that
+ 	// trips, so a test can see how far a walk actually got.
+ 	peakLiveEntries int
+-	// ruleBytes is what .gitignore discovery has cost this call: a per-file
+-	// charge for each path it dedupes, a per-rule plus per-rune charge for each
+-	// compiled matcher, and the source read for every file. It is cumulative
+-	// because the matchers and dedupe entries live as long as the call does.
++	// ruleBytes is how many bytes of .gitignore source this call has
++	// retained; the compiled matchers scale with it and live as long as the
++	// call does, so it is cumulative rather than per traversal.
+ 	ruleBytes int
+ 	// truncatedAtCap is the match cap in force when truncated was set, so a
+ 	// caller reading it later is told the bound that actually tripped rather
+@@ -338,63 +307,18 @@ func (b *GlobBudget) tooManyRuleBytes(path string, read int) error {
+ 	return &globBudgetError{count: read, dir: path, budget: maxGlobIgnoreFileBytes, cycleSafe: true, op: b.op, kind: budgetRulesFile}
+ }
+ 
+-// ignoreFileCost is what one .gitignore read costs the call: the path retained
+-// in the dedupe map, the rules it contributes, the compiled instruction units
+-// those rules expand into, the Unicode property escapes whose rune tables
+-// dwarf their source, and every source byte read.
+-type ignoreFileCost struct {
+-	path           int   // bytes of the path retained in the dedupe map
+-	rules          int   // compiled rule lines
+-	expansionUnits int64 // compiled instruction units those rules expand into
+-	source         int   // every source byte read
+-}
+-
+-// retainIgnoreFile charges one .gitignore read against the call's ignore budget
+-// and refuses once the total crosses maxGlobIgnoreTotalBytes. It bills
+-// globIgnoreFileOverheadBytes plus the path's length for retaining the file in
+-// the dedupe map, globIgnoreRuleBytes per compiled rule, the rule's source at
+-// globIgnoreUnitBytes for each compiled instruction the rules expand into,
+-// globIgnoreUnicodeClassBytes per Unicode property escape, whose rune table far
+-// exceeds its source, and one byte per source byte read. A file that compiles
+-// no rule passes zero rules and zero units and is charged for its path and the
+-// source it read, so the bound covers every file the call reads, not only the
+-// matchers it keeps. The sum is computed in int64 and saturated so no term can
+-// wrap int on a 32-bit build and shrink the charge. It is cumulative across
+-// every traversal of the call, because the matchers and the dedupe entries are
+-// never released before the call ends.
+-func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
+-	total := satAdd(int64(globIgnoreFileOverheadBytes), int64(c.path)+int64(c.source))
+-	total = satAdd(total, satMul(int64(c.rules), globIgnoreRuleBytes))
+-	total = satAdd(total, satMul(c.expansionUnits, globIgnoreUnitBytes))
+-	total = satAdd(int64(b.ruleBytes), total)
+-	b.ruleBytes = int(total)
+-	if total <= int64(maxGlobIgnoreTotalBytes) {
++// retainRuleBytes charges one retained rules file against what this call may
++// hold in compiled matchers: its n bytes of source plus the fixed overhead of
++// the entry and matcher built from them, so a file with no rules in it still
++// costs something. It refuses once the total crosses
++// maxGlobIgnoreTotalBytes. It is cumulative across every traversal of the
++// call, because the matchers are never released before the call ends.
++func (b *GlobBudget) retainRuleBytes(n int) error {
++	b.ruleBytes += n + globIgnoreFileOverheadBytes
++	if b.ruleBytes <= maxGlobIgnoreTotalBytes {
+ 		return nil
+ 	}
+-	return &globBudgetError{count: int(total), budget: maxGlobIgnoreTotalBytes, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
+-}
+-
+-// satAdd and satMul keep the ignore-cost arithmetic from wrapping. Every term
+-// saturates at the largest value `int` can hold, so a pathological .gitignore
+-// cannot overflow the accumulator into a small number that slips under the
+-// budget on any supported build.
+-func satAdd(a, b int64) int64 {
+-	const maxInt = int64(^uint(0) >> 1)
+-	if a > maxInt-b {
+-		return maxInt
+-	}
+-	return a + b
+-}
+-
+-func satMul(a, b int64) int64 {
+-	const maxInt = int64(^uint(0) >> 1)
+-	if a <= 0 || b <= 0 {
+-		return 0
+-	}
+-	if a > maxInt/b {
+-		return maxInt
+-	}
+-	return a * b
++	return &globBudgetError{count: b.ruleBytes, budget: maxGlobIgnoreTotalBytes, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
+ }
+ 
+ // globBudgetKind tells apart the three things a globBudgetError can report:
+@@ -475,7 +399,7 @@ func (e *globBudgetError) Error() string {
+ 		return fmt.Sprintf("%s walk read %d bytes of %s, past the per-file budget of %d for one .gitignore: that rules file is too large to load, so point the base at a directory that does not carry it", e.op, e.count, e.where(), e.budget)
+ 	}
+ 	if e.kind == budgetRulesTotal {
+-		return fmt.Sprintf("%s walk spent %d bytes on .gitignore source and compiled matchers across the call, past the budget of %d: %s", e.op, e.count, e.budget, e.advice())
++		return fmt.Sprintf("%s walk retained %d bytes of .gitignore rules across the call, past the budget of %d: %s", e.op, e.count, e.budget, e.advice())
+ 	}
+ 	if e.kind == budgetLiveEntries {
+ 		return fmt.Sprintf("%s walk is holding %d directory entries live across the listings it has open, past the call-wide budget of %d: %s", e.op, e.count, e.budget, e.advice())
+diff --git a/agent/session_ask_test.go b/agent/session_ask_test.go
+index 4149648c3..19d53e72f 100644
+--- a/agent/session_ask_test.go
++++ b/agent/session_ask_test.go
+@@ -4310,86 +4310,6 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
+ 	}
+ }
+ 
+-// TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore
+-// covers the clean communication boundary after a human-note carrier. The
+-// carrier does not answer ask1, and the notification arrives while its model
+-// turn is completing. deliverIfCommunicated returns before the later
+-// notification boundary, so the final clean settle must keep the live state
+-// aligned with restore instead of letting autonomy mask the pending ask.
+-func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(t *testing.T) {
+-	t.Parallel()
+-	dir := t.TempDir()
+-	ask := askUserCall("ask1", askUserArgsValid())
+-	var sess *Session
+-	c := llm.NewClient()
+-	adapter := &fakeAdapter{
+-		name: "openai",
+-		steps: []func(req llm.Request) llm.Response{
+-			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+-			func(req llm.Request) llm.Response {
+-				sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
+-				return communicateResponse(true, "note recorded")
+-			},
+-		},
+-	}
+-	c.Register(adapter)
+-	var err error
+-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+-	if err != nil {
+-		t.Fatalf("NewSession: %v", err)
+-	}
+-
+-	// TRIPWIRE: scripted provider and in-memory notification are deterministic;
+-	// this only fires on a genuine lifecycle deadlock.
+-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+-	defer cancel()
+-	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+-		t.Fatalf("ProcessInput: %v", err)
+-	}
+-	if got := sess.askPendingCount(); got != 1 {
+-		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+-	}
+-	if _, err := sess.SetHumanNote("note-communicate-notification", "watch the ingest path"); err != nil {
+-		t.Fatalf("SetHumanNote: %v", err)
+-	}
+-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+-		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier communication turn", ran, err)
+-	}
+-	if got := len(adapter.Requests()); got != 2 {
+-		t.Fatalf("provider requests = %d, want 2 (the pending notification must not start an autonomous turn)", got)
+-	}
+-	if got := sess.askPendingCount(); got != 1 {
+-		t.Fatalf("live askPendingCount = %d, want 1 (the human note does not answer ask1)", got)
+-	}
+-	if got := sess.peekNotifications(); got != 1 {
+-		t.Fatalf("live pending notifications = %d, want 1 (the notification must remain queued)", got)
+-	}
+-	if got := sess.State(); got != SessionAwaiting {
+-		t.Fatalf("live state after carrier communication = %q, want %q", got, SessionAwaiting)
+-	}
+-	if got := sess.WireState(); got != string(SessionAwaiting) {
+-		t.Fatalf("live wire state after carrier communication = %q, want %q", got, SessionAwaiting)
+-	}
+-
+-	meta := sess.Meta()
+-	sess.Close()
+-
+-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+-	if err != nil {
+-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+-	}
+-	defer restored.Close()
+-	if got := restored.askPendingCount(); got != 1 {
+-		t.Fatalf("restored askPendingCount = %d, want 1", got)
+-	}
+-	if got := restored.State(); got != SessionAwaiting {
+-		t.Fatalf("restored state = %q, want %q", got, SessionAwaiting)
+-	}
+-	if got := restored.WireState(); got != string(SessionAwaiting) {
+-		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
+-	}
+-}
+-
+ // TestAskUser_LiveStateAfterObserverYieldMatchesRestore drives a stable watch
+ // through the real job-manager event rail. The observer handoff arrives after
+ // a non-terminal tool round while ask1 remains pending; the live boundary must
+diff --git a/agent/session_state.go b/agent/session_state.go
+index c5cd2fc53..e33e2e15b 100644
+--- a/agent/session_state.go
++++ b/agent/session_state.go
+@@ -413,11 +413,8 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+ 	// Runnable user steering is queued input for this purpose: a carrier that
+ 	// returned its steer undelivered leaves it for the next wake, and a
+ 	// session that will move on its own is not waiting on the user.
+-	target := SessionAwaiting
+-	if s.askPendingCount() == 0 {
+-		target = settleTerminalState(hadOutput, goalKicked,
+-			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+-	}
++	target := settleTerminalState(hadOutput, goalKicked,
++		s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+ 	if target != SessionAwaiting {
+ 		return
+ 	}
+diff --git a/appwire-client/typescript/index.ts b/appwire-client/typescript/index.ts
+index 6a73f4242..55c82359c 100644
+--- a/appwire-client/typescript/index.ts
++++ b/appwire-client/typescript/index.ts
+@@ -223,7 +223,6 @@ export type {
+ } from "./keybindingsStore";
+ export {
+   createKeybindingsStore,
+-  decodeKeybindingDraftFields,
+   discardStoredKeybindingDraft,
+   fromWireOverrides,
+   isReadableKeybindingDraft,
+diff --git a/appwire-client/typescript/keybindingsStore.test.ts b/appwire-client/typescript/keybindingsStore.test.ts
+index 7b0b6269a..326ddb74a 100644
+--- a/appwire-client/typescript/keybindingsStore.test.ts
++++ b/appwire-client/typescript/keybindingsStore.test.ts
+@@ -6,7 +6,6 @@ import { serializeChord } from "./keybindingChord";
+ import type { KeybindingsRegistry } from "./keybindingRegistry";
+ import {
+   createKeybindingsStore,
+-  decodeKeybindingDraftFields,
+   discardStoredKeybindingDraft,
+   fromWireOverrides,
+   isReadableKeybindingDraft,
+@@ -241,14 +240,6 @@ describe("without a registry", () => {
+ });
+ 
+ describe("the checkpointed draft editor", () => {
+-  test("decodeKeybindingDraftFields matches restoreDraft for valid and invalid records", () => {
+-    expect(decodeKeybindingDraftFields({ id: "d1", baseRevision: 3, rules, writeUncertain: true })).toEqual({
+-      draft: { version: 1, revision: 3, rules },
+-      writeUncertain: true,
+-    });
+-    expect(decodeKeybindingDraftFields("{not json")).toEqual({ draft: null, writeUncertain: false });
+-  });
+-
+   test("persists the intent before the PATCH leaves, clears it on the ack and applies the canonical payload", async () => {
+     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+     const client = clientServing(3);
+diff --git a/appwire-client/typescript/keybindingsStore.ts b/appwire-client/typescript/keybindingsStore.ts
+index cfb2b5916..c850be8dc 100644
+--- a/appwire-client/typescript/keybindingsStore.ts
++++ b/appwire-client/typescript/keybindingsStore.ts
+@@ -412,34 +412,6 @@ export function discardStoredKeybindingDraft(
+   return discardStoredDraft(storage, isReadable);
+ }
+ 
+-/** The draft fields a checkpoint (or its absence) describes. Keeping this
+- * mapping beside restoreDraft gives an offline caller the same projection as
+- * the live store without requiring a confirmed hub revision. */
+-function draftFieldsFrom(checkpoint: KeybindingDraftCheckpoint | null): {
+-  draft: KeybindingsOverrides | null;
+-  writeUncertain: boolean;
+-} {
+-  return {
+-    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null,
+-    writeUncertain: checkpoint?.writeUncertain ?? false,
+-  };
+-}
+-
+-/** Decodes a stored value into the draft fields restoreDraft publishes. A
+- * store-free caller uses this after classifying a readable replacement; an
+- * invalid value is treated as no draft because classification already owns
+- * the unreadable-record signal. */
+-export function decodeKeybindingDraftFields(value: unknown): {
+-  draft: KeybindingsOverrides | null;
+-  writeUncertain: boolean;
+-} {
+-  try {
+-    return draftFieldsFrom(draftCheckpoint(value));
+-  } catch {
+-    return { draft: null, writeUncertain: false };
+-  }
+-}
+-
+ /** Extracts a payload the hub attached to a rejection under `key` when the
+  * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
+  * `current` (the server's state after a lost revision race) and the
+@@ -711,10 +683,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
+   function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
+     try {
+       const checkpoint = drafts.load();
+-      const { draft, writeUncertain } = draftFieldsFrom(checkpoint);
++      const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
+       return {
+         draft,
+-        writeUncertain,
++        writeUncertain: checkpoint?.writeUncertain ?? false,
+         storageUnavailable: false,
+         draftUnreadable: false,
+         draftError: null,
+diff --git a/mobile-native/src/NativePreferencesProvider.test.tsx b/mobile-native/src/NativePreferencesProvider.test.tsx
+deleted file mode 100644
+index 6cfff319e..000000000
+--- a/mobile-native/src/NativePreferencesProvider.test.tsx
++++ /dev/null
+@@ -1,849 +0,0 @@
+-import { createElement } from "react";
+-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+-import type {
+-	AnyNotification,
+-	AppwireClient,
+-	InitializeResponse,
+-} from "@evener/appwire-client";
+-import {
+-	NativePreferencesProvider,
+-	useNativePreferences,
+-} from "./NativePreferencesProvider";
+-
+-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+-	true;
+-
+-const harness = vi.hoisted(() => {
+-	const values = new Map<string, string>();
+-	const storage = {
+-		throwOnGet: false,
+-		getItemSync(key: string) {
+-			if (storage.throwOnGet) throw new Error("storage unavailable");
+-			return values.get(key) ?? null;
+-		},
+-		setItemSync(key: string, value: string) {
+-			values.set(key, value);
+-		},
+-		removeItemSync(key: string) {
+-			values.delete(key);
+-		},
+-	};
+-	return {
+-		connection: null as unknown as {
+-			activeProfile: { id: string } | null;
+-			client: AppwireClient | null;
+-			state: string;
+-		},
+-		storage,
+-		values,
+-	};
+-});
+-
+-vi.mock("expo-crypto", () => ({ randomUUID: () => "provider-test-id" }));
+-vi.mock("expo-sqlite/kv-store", () => ({ Storage: harness.storage }));
+-vi.mock("./ConnectionProvider", () => ({
+-	useConnection: () => harness.connection,
+-}));
+-
+-const initialize: InitializeResponse = {
+-	features: { keybindingsSettings: true, transcriptDisplaySettings: false },
+-} as InitializeResponse;
+-
+-function clientFixture({ deferred = false, failed = false, keybindingsError = false } = {}) {
+-	let shouldFailKeybindings = keybindingsError;
+-	const readyListeners = new Set<(value: InitializeResponse) => void>();
+-	const notifications = new Set<(value: AnyNotification) => void>();
+-	let resolveConnected!: () => void;
+-	const connected = new Promise<void>((resolve) => {
+-		resolveConnected = resolve;
+-	});
+-	let resolveConnect!: (value: InitializeResponse) => void;
+-	const connectResult = deferred
+-		? new Promise<InitializeResponse>((resolve) => {
+-				resolveConnect = resolve;
+-			})
+-		: Promise.resolve(initialize);
+-	const requests: string[] = [];
+-	const client = {
+-		connect: async () => {
+-			if (failed) {
+-				throw new Error("handshake failed");
+-			}
+-			if (!deferred) {
+-				for (const listener of readyListeners) listener(initialize);
+-				resolveConnected();
+-			} else {
+-				await connectResult;
+-			}
+-			return initialize;
+-		},
+-		onReady: (listener: (value: InitializeResponse) => void) => {
+-			readyListeners.add(listener);
+-			return () => readyListeners.delete(listener);
+-		},
+-		onNotification: (listener: (value: AnyNotification) => void) => {
+-			notifications.add(listener);
+-			return () => notifications.delete(listener);
+-		},
+-		request: async (method: string) => {
+-			requests.push(method);
+-			if (method === "evener/settings/keybindings/get") {
+-				if (shouldFailKeybindings) throw new Error("hub request failed");
+-				return { version: 1, revision: 1, rules: [] };
+-			}
+-			throw new Error(`Unexpected request: ${method}`);
+-		},
+-	} as unknown as AppwireClient;
+-	return {
+-		client,
+-		connected,
+-		requests,
+-		setKeybindingsError: (value: boolean) => {
+-			shouldFailKeybindings = value;
+-		},
+-		resolveConnect: (value = initialize) => {
+-			for (const listener of readyListeners) listener(value);
+-			resolveConnect(value);
+-			resolveConnected();
+-		},
+-	};
+-}
+-
+-function draftKey(hubId: string): string {
+-	return `evener.native.keybinding-draft.${hubId}`;
+-}
+-
+-function writeDraft(hubId: string, value: unknown): void {
+-	harness.values.set(draftKey(hubId), JSON.stringify(value));
+-}
+-
+-function mountProvider() {
+-	let current!: ReturnType<typeof useNativePreferences>;
+-	function Probe() {
+-		current = useNativePreferences();
+-		return null;
+-	}
+-	const app = () =>
+-		createElement(NativePreferencesProvider, null, createElement(Probe));
+-	let tree!: ReactTestRenderer;
+-	act(() => {
+-		tree = create(app());
+-	});
+-	return {
+-		get current() {
+-			return current;
+-		},
+-		rerender() {
+-			act(() => tree.update(app()));
+-		},
+-		unmount() {
+-			act(() => tree.unmount());
+-		},
+-	};
+-}
+-
+-async function settleConnection(connection: ReturnType<typeof clientFixture>) {
+-	await act(async () => {
+-		await connection.connected;
+-	});
+-}
+-
+-beforeEach(() => {
+-	harness.values.clear();
+-	harness.storage.throwOnGet = false;
+-	harness.connection = {
+-		activeProfile: null,
+-		client: null,
+-		state: "closed",
+-	};
+-});
+-
+-afterEach(() => {
+-	harness.storage.throwOnGet = false;
+-});
+-
+-describe("NativePreferencesProvider offline draft plumbing", () => {
+-	it("probes an unreadable record and clears it through the store-free discard", () => {
+-		writeDraft("hub-a", "{not json");
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: null,
+-			state: "closed",
+-		};
+-		const mounted = mountProvider();
+-
+-		expect(mounted.current.offlineDraftUnreadable).toBe(true);
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("removed");
+-		expect(harness.values.has(draftKey("hub-a"))).toBe(false);
+-		expect(mounted.current.offlineDraftUnreadable).toBe(false);
+-		mounted.unmount();
+-	});
+-
+-	it("treats a stored JSON null as unreadable and clears it offline", () => {
+-		writeDraft("hub-null", null);
+-		harness.connection = {
+-			activeProfile: { id: "hub-null" },
+-			client: null,
+-			state: "closed",
+-		};
+-		const mounted = mountProvider();
+-
+-		expect(mounted.current.offlineDraftUnreadable).toBe(true);
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("removed");
+-		expect(harness.values.has(draftKey("hub-null"))).toBe(false);
+-		expect(mounted.current.offlineDraftUnreadable).toBe(false);
+-		mounted.unmount();
+-	});
+-
+-	it("preserves a readable replacement instead of nudging a matching live model", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-1",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const connection = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(connection);
+-
+-		expect(mounted.current.model?.getSnapshot().keybindings.draft).not.toBeNull();
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("refused");
+-		expect(harness.values.has(draftKey("hub-a"))).toBe(true);
+-		expect(mounted.current.model?.getSnapshot().keybindings.draft).not.toBeNull();
+-		mounted.unmount();
+-	});
+-
+-	it("reclassifies a live unreadable model when a readable replacement is found", async () => {
+-		writeDraft("hub-a", "{not json");
+-		const connection = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(connection);
+-
+-		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
+-			draft: null,
+-			storageUnavailable: true,
+-		});
+-		writeDraft("hub-a", {
+-			id: "replacement",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("refused");
+-		expect(harness.values.has(draftKey("hub-a"))).toBe(true);
+-		expect(mounted.current.model?.getSnapshot().keybindings).toMatchObject({
+-			draft: { revision: 2, rules: [] },
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("reconciles a readable replacement into the retained snapshot while the same-hub client waits", async () => {
+-		writeDraft("hub-a", "{not json");
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+-		expect(confirmed).toEqual({ version: 1, revision: 1, rules: [] });
+-
+-		writeDraft("hub-a", {
+-			id: "replacement",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: true,
+-		});
+-		const replacement = clientFixture({ deferred: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-
+-		expect(mounted.current.model).toBeNull();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: { revision: 2, rules: [] },
+-			writeUncertain: true,
+-			conflict: true,
+-			error: null,
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("reconciles known draft outcomes for a same-client disconnected connection", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-1",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const connection = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(connection);
+-		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+-		expect(mounted.current.snapshot?.keybindings.draft).toMatchObject({
+-			revision: 1,
+-			rules: [],
+-		});
+-
+-		writeDraft("hub-a", "{not json");
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: null,
+-			draftUnreadable: true,
+-			draftError:
+-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+-			storageUnavailable: true,
+-			writeUncertain: false,
+-		});
+-
+-		writeDraft("hub-a", {
+-			id: "draft-2",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "reconnecting",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: { revision: 2, rules: [] },
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-		});
+-
+-		harness.values.delete(draftKey("hub-a"));
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: null,
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-			writeUncertain: false,
+-		});
+-
+-		writeDraft("hub-a", {
+-			id: "live-only",
+-			baseRevision: 3,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: connection.client,
+-			state: "ready",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: null,
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("tracks retained unreadable classification across storage failures and recovery", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-1",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-
+-		writeDraft("hub-a", "{not json");
+-		const unreadable = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: unreadable.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			draftUnreadable: true,
+-			draftError:
+-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+-			storageUnavailable: true,
+-			writeUncertain: false,
+-		});
+-
+-		harness.storage.throwOnGet = true;
+-		const failedProbe = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: failedProbe.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			draftUnreadable: true,
+-			draftError:
+-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+-			storageUnavailable: true,
+-		});
+-
+-		harness.storage.throwOnGet = false;
+-		writeDraft("hub-a", {
+-			id: "replacement",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const readable = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: readable.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: { revision: 2, rules: [] },
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-		});
+-
+-		harness.values.delete(draftKey("hub-a"));
+-		const absent = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: absent.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-			writeUncertain: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("clears the retained unreadable projection after a failed same-hub replacement removes the record", async () => {
+-		writeDraft("hub-a", "{not json");
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+-		expect(mounted.current.snapshot?.keybindings.storageUnavailable).toBe(true);
+-
+-		const replacement = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-
+-		expect(outcome).toBe("removed");
+-		expect(mounted.current.model).toBeNull();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft: null,
+-			writeUncertain: false,
+-			conflict: false,
+-			error: null,
+-			draftUnreadable: false,
+-			draftError: null,
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("preserves an unrelated hub error across a failed probe and readable or absent recovery", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-1",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const first = clientFixture({ keybindingsError: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: { revision: 1, rules: [] },
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: false,
+-		});
+-
+-		const replacement = clientFixture({ failed: true });
+-		harness.storage.throwOnGet = true;
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: { revision: 1, rules: [] },
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: true,
+-		});
+-
+-		harness.storage.throwOnGet = false;
+-		writeDraft("hub-a", {
+-			id: "replacement",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "ready",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: { revision: 2, rules: [] },
+-			conflict: false,
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: false,
+-		});
+-
+-		harness.values.delete(draftKey("hub-a"));
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			conflict: false,
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("preserves the hub source after unreadable discard and absent replacement", async () => {
+-		writeDraft("hub-a", "{not json");
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draftError: expect.any(String),
+-			hubError: null,
+-			loadError: null,
+-		});
+-
+-		let outcome: unknown;
+-		await act(async () => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-			await Promise.resolve();
+-		});
+-		expect(outcome).toBe("removed");
+-		first.setKeybindingsError(true);
+-		await act(async () => {
+-			await mounted.current.model?.refresh();
+-		});
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			draftError: null,
+-			hubError: "hub request failed",
+-			loadError: null,
+-			error: "The hub request could not be confirmed.",
+-		});
+-
+-		const replacement = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.model).toBeNull();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: null,
+-			draftError: null,
+-			hubError: "hub request failed",
+-			loadError: null,
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("clears an initial genuine storage failure when a replacement read succeeds", async () => {
+-		harness.storage.throwOnGet = true;
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draftError: expect.any(String),
+-			hubError: null,
+-			loadError: null,
+-			storageUnavailable: true,
+-		});
+-
+-		harness.storage.throwOnGet = false;
+-		const replacement = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draftError: null,
+-			hubError: null,
+-			loadError: null,
+-			error: null,
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("clears a draft source while preserving a simultaneous hub source", async () => {
+-		writeDraft("hub-a", "{not json");
+-		const first = clientFixture({ keybindingsError: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		await act(async () => {
+-			await mounted.current.model?.refresh();
+-		});
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draftError: expect.any(String),
+-			hubError: "hub request failed",
+-			loadError: null,
+-			error: expect.any(String),
+-		});
+-
+-		harness.storage.throwOnGet = false;
+-		writeDraft("hub-a", {
+-			id: "replacement",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const replacement = clientFixture({ failed: true });
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			draft: { revision: 2, rules: [] },
+-			draftError: null,
+-			hubError: "hub request failed",
+-			loadError: null,
+-			error: "The hub request could not be confirmed.",
+-			storageUnavailable: false,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("marks only the retained draft projection unavailable when replacement storage throws", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-1",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		const confirmed = mounted.current.snapshot?.keybindings.confirmed;
+-		const draft = mounted.current.snapshot?.keybindings.draft;
+-
+-		const replacement = clientFixture({ failed: true });
+-		harness.storage.throwOnGet = true;
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: replacement.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-
+-		expect(mounted.current.model).toBeNull();
+-		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+-			confirmed,
+-			draft,
+-			storageUnavailable: true,
+-		});
+-		mounted.unmount();
+-	});
+-
+-	it("reports storage failure from the probe and discard", () => {
+-		harness.storage.throwOnGet = true;
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: null,
+-			state: "closed",
+-		};
+-		const mounted = mountProvider();
+-
+-		expect(mounted.current.offlineStorageUnavailable).toBe(true);
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("storageUnavailable");
+-		expect(mounted.current.offlineStorageUnavailable).toBe(true);
+-		mounted.unmount();
+-	});
+-
+-	it("resets the probed hub classification when selection clears and does not nudge an old model", async () => {
+-		writeDraft("hub-a", {
+-			id: "draft-a",
+-			baseRevision: 1,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const first = clientFixture();
+-		harness.connection = {
+-			activeProfile: { id: "hub-a" },
+-			client: first.client,
+-			state: "ready",
+-		};
+-		const mounted = mountProvider();
+-		await settleConnection(first);
+-		const oldModel = mounted.current.model;
+-		expect(mounted.current.model?.getSnapshot().keybindings.draft).not.toBeNull();
+-
+-		writeDraft("hub-b", {
+-			id: "draft-b",
+-			baseRevision: 2,
+-			rules: [],
+-			writeUncertain: false,
+-		});
+-		const second = clientFixture({ deferred: true });
+-		harness.storage.throwOnGet = true;
+-		harness.connection = {
+-			activeProfile: { id: "hub-b" },
+-			client: second.client,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.offlineDraftUnreadable).toBe(false);
+-		expect(mounted.current.offlineStorageUnavailable).toBe(true);
+-
+-		harness.storage.throwOnGet = false;
+-		let outcome: unknown;
+-		act(() => {
+-			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+-		});
+-		expect(outcome).toBe("refused");
+-		expect(harness.values.has(draftKey("hub-b"))).toBe(true);
+-		expect(oldModel?.getSnapshot().keybindings.draft).not.toBeNull();
+-
+-		harness.connection = {
+-			activeProfile: null,
+-			client: null,
+-			state: "closed",
+-		};
+-		mounted.rerender();
+-		expect(mounted.current.offlineDraftUnreadable).toBe(false);
+-		expect(mounted.current.offlineStorageUnavailable).toBe(false);
+-		expect(oldModel?.getSnapshot().keybindings.draft).not.toBeNull();
+-		mounted.unmount();
+-	});
+-});
+diff --git a/mobile-native/src/NativePreferencesProvider.tsx b/mobile-native/src/NativePreferencesProvider.tsx
+index dace041a5..1ce0a7abd 100644
+--- a/mobile-native/src/NativePreferencesProvider.tsx
++++ b/mobile-native/src/NativePreferencesProvider.tsx
+@@ -5,34 +5,19 @@ import {
+ 	type ReactNode,
+ 	useContext,
+ 	useEffect,
+-	useRef,
+ 	useState,
+ } from "react";
+-import {
+-	decodeKeybindingDraftFields,
+-	discardStoredKeybindingDraft,
+-	isReadableKeybindingDraft,
+-} from "@evener/appwire-client";
+-import type {
+-	AppwireClient,
+-	DiscardStoredDraftResult,
+-	TranscriptDisplayConfigV1,
+-} from "@evener/appwire-client";
++import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+ import { bindNativePreferences } from "./bindNativePreferences";
+ import { useConnection } from "./ConnectionProvider";
+ import {
+-	draftUnreadableAfterDiscard,
+ 	nativeKeybindingDrafts,
+ 	nativeTranscriptDrafts,
+-	rawStringDraftBackend,
+-	readDraftOutcome,
+-	readDraftOutcomeWithValue,
+ } from "./nativePreferenceDrafts";
+ import type {
+ 	NativePreferences,
+ 	NativePreferencesSnapshot,
+ } from "./nativePreferences";
+-import { keybindingsErrorMessage } from "./nativePreferences";
+ 
+ interface Preferences {
+ 	hubId: string | null;
+@@ -40,116 +25,41 @@ interface Preferences {
+ 	snapshot: NativePreferencesSnapshot | null;
+ 	config: TranscriptDisplayConfigV1 | null;
+ 	connected: boolean;
+-	/** A locally stored keybindings draft is present but unreadable, checked
+-	 * independently of `snapshot` (which stays null until a ready client
+-	 * publishes a model - see bindNativePreferences). A cold offline start
+-	 * never reaches that point, so this is what lets the "Discard unreadable
+-	 * draft" action render before any hub has answered. Superseded by
+-	 * `snapshot.keybindings.draftUnreadable` the moment a model publishes. */
+-	offlineDraftUnreadable: boolean;
+-	/** The offline draft probe or the store-free discard's own re-read hit a
+-	 * genuine port failure (Storage.getItemSync threw) rather than an
+-	 * unreadable record - the same distinction restoreDraft draws on a live
+-	 * store. Nothing about `offlineDraftUnreadable` is known when this is
+-	 * true; it is left at whatever it last was rather than guessed at. */
+-	offlineStorageUnavailable: boolean;
+-	/** Clears an unreadable keybindings draft record with no live model
+-	 * required - the store-free path discardStoredKeybindingDraft documents
+-	 * for a host with no connection to build one from (offline, or the
+-	 * connection dropped after the record was shown). Returns the discard's
+-	 * outcome (see DiscardStoredDraftResult); "storageUnavailable" when the
+-	 * port itself failed (distinct from a genuine outcome, and distinct from
+-	 * `null`'s "there was no hub to discard for" - a caller that conflated
+-	 * the two could not tell a failed discard from an action that never
+-	 * ran); null when there is no hub to discard for. */
+-	discardUnreadableKeybindingsDraft(): DiscardStoredDraftResult | "storageUnavailable" | null;
+ }
+ const Context = createContext<Preferences | null>(null);
+-// The production draft backend: rawStringDraftBackend over the real
+-// Storage, the SAME function tests exercise over a Map-backed fake (see
+-// nativePreferenceDrafts.test.ts's rawBytesBackend) - one implementation,
+-// not a parallel reimplementation of the parse/compare logic.
+-const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
+-
+-type DraftReadWithValue = ReturnType<typeof readDraftOutcomeWithValue>;
+-
+-const DRAFT_RESTORE_FAILED_MESSAGE =
+-	"Could not restore the saved shortcut draft. Check current shortcuts to retry.";
+-
+-function reconcileRetainedDraftProjection(
+-	snapshot: NativePreferencesSnapshot,
+-	result: DraftReadWithValue,
+-): NativePreferencesSnapshot {
+-	const keybindings = snapshot.keybindings;
+-	let draft = keybindings.draft;
+-	let writeUncertain = keybindings.writeUncertain;
+-	let storageUnavailable = keybindings.storageUnavailable;
+-	let draftUnreadable = keybindings.draftUnreadable;
+-	let conflict = keybindings.conflict;
+-	let draftError = keybindings.draftError;
+-	switch (result.outcome) {
+-		case "storageUnavailable":
+-			storageUnavailable = true;
+-			break;
+-		case "absent":
+-			draft = null;
+-			writeUncertain = false;
+-			storageUnavailable = false;
+-			draftUnreadable = false;
+-			conflict = false;
+-			draftError = null;
+-			break;
+-		case "unreadable":
+-			draft = null;
+-			writeUncertain = false;
+-			storageUnavailable = true;
+-			draftUnreadable = true;
+-			conflict = false;
+-			draftError = DRAFT_RESTORE_FAILED_MESSAGE;
+-			break;
+-		case "readable": {
+-			const fields = decodeKeybindingDraftFields(result.value);
+-			draft = fields.draft;
+-			writeUncertain = fields.writeUncertain;
+-			storageUnavailable = false;
+-			draftUnreadable = false;
+-			conflict =
+-				draft !== null &&
+-				keybindings.confirmed !== null &&
+-				draft.revision !== keybindings.confirmed.revision;
+-			draftError = null;
+-			break;
+-		}
+-	}
+-	const error = keybindingsErrorMessage(
+-		draftError,
+-		keybindings.hubError,
+-		keybindings.loadError,
+-	);
+-	if (
+-		keybindings.draft === draft &&
+-		keybindings.writeUncertain === writeUncertain &&
+-		keybindings.storageUnavailable === storageUnavailable &&
+-		keybindings.draftUnreadable === draftUnreadable &&
+-		keybindings.conflict === conflict &&
+-		keybindings.draftError === draftError &&
+-		keybindings.error === error
+-	)
+-		return snapshot;
+-	return {
+-		...snapshot,
+-		keybindings: {
+-			...keybindings,
+-			draft,
+-			writeUncertain,
+-			storageUnavailable,
+-			draftUnreadable,
+-			conflict,
+-			draftError,
+-			error,
+-		},
+-	};
++/** Synchronous compare cannot interleave with a newer model's checkpoint,
++ * so deleteIf and replaceIf below share it as their one atomic check. */
++function matches(key: string, value: unknown): boolean {
++	return Storage.getItemSync(key) === JSON.stringify(value);
+ }
++const backend = {
++	createId: () => Crypto.randomUUID(),
++	get(key: string): unknown {
++		const value = Storage.getItemSync(key);
++		return value === null ? null : JSON.parse(value);
++	},
++	set(key: string, value: unknown) {
++		Storage.setItemSync(key, JSON.stringify(value));
++	},
++	insertIfAbsent(key: string, value: unknown): boolean {
++		if (Storage.getItemSync(key) !== null) return false;
++		Storage.setItemSync(key, JSON.stringify(value));
++		return true;
++	},
++	delete(key: string) {
++		Storage.removeItemSync(key);
++	},
++	deleteIf(key: string, value: unknown): boolean {
++		if (!matches(key, value)) return false;
++		Storage.removeItemSync(key);
++		return true;
++	},
++	replaceIf(key: string, expected: unknown, next: unknown): boolean {
++		if (!matches(key, expected)) return false;
++		Storage.setItemSync(key, JSON.stringify(next));
++		return true;
++	},
++};
+ 
+ export function NativePreferencesProvider({
+ 	children,
+@@ -165,145 +75,6 @@ export function NativePreferencesProvider({
+ 		snapshot: NativePreferencesSnapshot;
+ 		config: TranscriptDisplayConfigV1 | null;
+ 	} | null>(null);
+-	const [offlineDraftUnreadable, setOfflineDraftUnreadable] = useState(false);
+-	const [offlineStorageUnavailable, setOfflineStorageUnavailable] = useState(false);
+-	// The hub the two flags above were last probed for - a genuine port
+-	// failure on a NEW hub says nothing about whether THIS hub's record is
+-	// unreadable, and even less about a PREVIOUS hub's; without this, a
+-	// failed probe right after switching hubs would keep showing the old
+-	// hub's classification under the new hub's name.
+-	const probedHubId = useRef<string | null>(null);
+-	useEffect(() => {
+-		// Runs independently of connection state (see the field's own comment
+-		// on Preferences.offlineDraftUnreadable): a cold offline start never
+-		// fires bindNativePreferences' `ready` callback, so this is the only
+-		// place the local record gets inspected before a model exists. Also
+-		// re-runs on a connectivity change (`state`), not only a hub switch: a
+-		// record that becomes corrupt while offline with no model would
+-		// otherwise never surface the recovery action until `hubId` itself
+-		// changed.
+-		if (!hubId) {
+-			probedHubId.current = null;
+-			setOfflineDraftUnreadable(false);
+-			setOfflineStorageUnavailable(false);
+-			return;
+-		}
+-		const outcome = readDraftOutcome(nativeKeybindingDrafts(hubId, backend), isReadableKeybindingDraft);
+-		if (outcome === "storageUnavailable") {
+-			// A genuine port failure, not a record this build cannot decode -
+-			// nothing about draftUnreadable is known, so it is left alone
+-			// rather than guessed at, the same posture restoreDraft takes - but
+-			// only for a re-probe of the SAME hub (state flapping); a failure on
+-			// a NEWLY selected hub has no earlier classification of ITS OWN to
+-			// preserve.
+-			setOfflineStorageUnavailable(true);
+-			if (probedHubId.current !== hubId) {
+-				setOfflineDraftUnreadable(false);
+-			}
+-			probedHubId.current = hubId;
+-			return;
+-		}
+-		probedHubId.current = hubId;
+-		setOfflineStorageUnavailable(false);
+-		setOfflineDraftUnreadable(outcome === "unreadable");
+-	}, [hubId, state]);
+-	const reconcileRetainedDraft = (
+-		expectedClient: AppwireClient | undefined,
+-		result: DraftReadWithValue,
+-	) => {
+-		if (!hubId) return;
+-		setBound((previous) => {
+-			if (
+-				!previous ||
+-				previous.hubId !== hubId ||
+-				previous.client !== expectedClient ||
+-				(previous.client === client && state === "ready")
+-			)
+-				return previous;
+-			const snapshot = reconcileRetainedDraftProjection(previous.snapshot, result);
+-			return snapshot === previous.snapshot ? previous : { ...previous, snapshot };
+-		});
+-	};
+-	useEffect(() => {
+-		if (!hubId || !bound || (bound.client === client && state === "ready")) return;
+-		const expectedClient = bound.client;
+-		const result = readDraftOutcomeWithValue(
+-			nativeKeybindingDrafts(hubId, backend),
+-			isReadableKeybindingDraft,
+-		);
+-		reconcileRetainedDraft(expectedClient, result);
+-	}, [hubId, client, state, bound?.client]);
+-	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | "storageUnavailable" | null => {
+-		if (!hubId) return null;
+-		const storage = nativeKeybindingDrafts(hubId, backend);
+-		const expectedClient = bound?.client;
+-		// discardStoredKeybindingDraft degrades a genuine port failure (not a
+-		// record this build cannot decode) to "storageUnavailable" itself -
+-		// see its own docs - so no outer catch is needed here.
+-		const outcome = discardStoredKeybindingDraft(storage, isReadableKeybindingDraft);
+-		if (outcome === "storageUnavailable") {
+-			// Distinct from `null` ("no hub to discard for"): the port was
+-			// reached and reachable enough to attempt the discard, but failed.
+-			// Returning the same `null` either way would make a failed discard
+-			// indistinguishable from an action that never ran.
+-			setOfflineStorageUnavailable(true);
+-			reconcileRetainedDraft(expectedClient, { outcome, value: undefined });
+-			return "storageUnavailable";
+-		}
+-		// A second, independent re-read (see draftUnreadableAfterDiscard): the
+-		// CURRENT record, not the one discardStoredDraft last saw, is what
+-		// decides whether the notice still belongs up.
+-		const currentResult = readDraftOutcomeWithValue(storage, isReadableKeybindingDraft);
+-		const { outcome: current } = currentResult;
+-		if (current === "storageUnavailable") {
+-			setOfflineStorageUnavailable(true);
+-			reconcileRetainedDraft(expectedClient, currentResult);
+-			// The follow-up read cannot say what is there now - preserve the
+-			// notice only if the discard itself was refused (something is still
+-			// there this build could not remove); a "removed"/"absent" outcome
+-			// already cleared or confirmed nothing was there, so a SUBSEQUENT
+-			// read failure must not resurrect the notice.
+-			setOfflineDraftUnreadable(outcome === "refused");
+-			return outcome;
+-		}
+-		setOfflineStorageUnavailable(false);
+-		reconcileRetainedDraft(expectedClient, currentResult);
+-		// Kept in sync regardless of whether `bound` exists: the cold-offline
+-		// signal below (offlineDraftUnreadable) is what the screen falls back
+-		// to before any model has published a snapshot, and a discard can
+-		// happen in exactly that state.
+-		setOfflineDraftUnreadable(draftUnreadableAfterDiscard(current));
+-		// A readable current record is a replacement the store-free CAS refused;
+-		// nudging a model that already restored it would discard its own readable
+-		// classification. A model still reporting storageUnavailable is the
+-		// unreadable-record case (or a genuine storage failure, which its own
+-		// discard gate safely refuses), so let the store reclassify through its
+-		// existing recovery seam.
+-		const liveKeybindings = bound?.model.getSnapshot().keybindings;
+-		if (
+-			bound?.hubId === hubId &&
+-			bound.client === client &&
+-			(current !== "readable" || liveKeybindings?.storageUnavailable === true)
+-		) {
+-			// A live model exists for this hub, and its OWN keybindings store
+-			// classifies this same record independently, from the same storage
+-			// this store-free path just changed - patching a COPY of its
+-			// snapshot here would only be overwritten the next time that store
+-			// publishes (bindNativePreferences' subscribe below always replaces
+-			// `bound.snapshot` outright with model.getSnapshot()), since the
+-			// live store never heard about the change. Nudging its own discard
+-			// keeps ITS state honest instead: the record it classified is now
+-			// gone (or replaced), so its CAS refuses and it re-reads storage
+-			// itself (see keybindingsStore.ts's discardDraft "refused, so
+-			// reclassify" branch) - the exact outcome this call needs, reached
+-			// through the store's own recovery path rather than a duplicate of
+-			// it. Fire-and-forget: discardKeybindingsDraft is synchronous work
+-			// wrapped in a promise, and this path's own return value already
+-			// reflects what discardStoredKeybindingDraft found.
+-			bound.model.discardKeybindingsDraft().catch(() => {});
+-		}
+-		return outcome;
+-	};
+ 	useEffect(() => {
+ 		if (!client || !hubId) return;
+ 		let unsubscribe = () => {};
+@@ -345,9 +116,6 @@ export function NativePreferencesProvider({
+ 				snapshot: selected?.snapshot ?? null,
+ 				config: selected?.config ?? null,
+ 				connected: !!client && state === "ready" && selected?.client === client,
+-				offlineDraftUnreadable,
+-				offlineStorageUnavailable,
+-				discardUnreadableKeybindingsDraft,
+ 			}}
+ 		>
+ 			{children}
+diff --git a/mobile-native/src/mutationOutboxStorage.test.ts b/mobile-native/src/mutationOutboxStorage.test.ts
+index e8dd892ca..bd67d0c66 100644
+--- a/mobile-native/src/mutationOutboxStorage.test.ts
++++ b/mobile-native/src/mutationOutboxStorage.test.ts
+@@ -1,9 +1,15 @@
+-// Persistence assertions inspect raw SQLite rows where the stored encoding is
+-// the contract; read assertions go through the storage port's public methods.
++// The write-path tests below verify each write's effect against the raw
++// SQLite row directly (they predate the read methods this storage now also
++// has, landed as a separate PR); the read-path tests verify through the
++// port's own getOutbox/getOptimistic/listOptimistic/getRecovery/
++// nextDispatchable/listTargetRefs/restoreProvenAbsent instead.
+ //
+-// The web IndexedDB adapter's conformance tests are the behavioral oracle;
+-// this suite exercises the same contracts against node:sqlite's real engine,
+-// since expo-sqlite is unavailable outside a device or simulator.
++// Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
++// describe("MutationOutboxIndexedDB", ...) block - these assertions mirror
++// its per-method contracts against a real (non-mock) SQLite engine, the way
++// draftRepository.test.ts already runs the native draft storage against
++// node:sqlite's DatabaseSync rather than expo-sqlite (unavailable outside a
++// device/simulator).
+ import { mkdtempSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+@@ -12,9 +18,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
+ import type { MutationIntent } from "@evener/appwire-client/state/mutation";
+ import { MutationOutboxSQLite, type MutationOutboxDatabase, type Row } from "./mutationOutboxStorage";
+ 
+-// The default id source is expo-crypto's synchronous randomUUID/getRandomValues,
+-// mocked so this suite proves the adapter never dereferences a bare Web Crypto
+-// global that React Native does not guarantee.
++// The default id source (finding 4, round 2): expo-crypto's synchronous
++// randomUUID/getRandomValues, mocked the way nativeOrganization.test.ts mocks
++// the same module, so a test can prove the adapter never dereferences a bare
++// Web Crypto global React Native does not guarantee.
+ let expoCryptoCalls = 0;
+ vi.mock("expo-crypto", () => ({
+ 	randomUUID: () => `expo-crypto-${++expoCryptoCalls}`,
+@@ -99,50 +106,18 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
+ 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
+ });
+ 
+-test("enqueueIntent persists an absent optimistic display as JSON null and reads it as undefined", async () => {
++test("enqueueIntent persists an absent optimistic display as JSON null so settlement can retire it", async () => {
+ 	const record = await storage.enqueueIntent({
+ 		...intent("without an optimistic display"),
+ 		optimisticDisplay: undefined,
+ 	});
+ 
+ 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ optimistic_display: "null" });
+-	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ optimisticDisplay: undefined });
+ 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+ 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
+ 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
+ });
+ 
+-test("enqueueIntent persists attachments, composer text, and the submitting client identity", async () => {
+-	const identifiedStorage = new MutationOutboxSQLite(databaseAdapter(), {
+-		createMutationId: () => "identified-mutation",
+-		now: () => 1234,
+-		getOwnClientId: () => "client-one",
+-	});
+-	const attachment = {
+-		presentationId: "presentation-1",
+-		marker: 1,
+-		name: "photo.png",
+-		mediaType: "image/png",
+-	};
+-
+-	const record = await identifiedStorage.enqueueIntent({
+-		...intent("with attachment"),
+-		attachments: [attachment],
+-		composerText: "with attachment [image 1]",
+-	});
+-
+-	expect(record).toMatchObject({
+-		attachments: [attachment],
+-		composerText: "with attachment [image 1]",
+-		originClientId: "client-one",
+-	});
+-	await expect(identifiedStorage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+-		attachments: [attachment],
+-		composerText: "with attachment [image 1]",
+-		originClientId: "client-one",
+-	});
+-});
+-
+ test("enqueueIntent rejects an empty or whitespace targetRef before allocating a sequence", async () => {
+ 	await expect(storage.enqueueIntent(intent("no target", "   "))).rejects.toThrow("targetRef is required");
+ 	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("   ")).toBeUndefined();
+@@ -196,8 +171,13 @@ test("intentSequence is gap-free and per target ref", async () => {
+ 	expect(other.intentSequence).toBe(1);
+ });
+ 
+-// This deterministic reentrant call exercises the statement interleaving that
+-// could otherwise make two enqueue operations compute the same sequence.
++// Round 4 Medium (mutationOutboxStorage.ts:152-163): the original allocation
++// read last_sequence on its own statement, separate from the write that
++// persists the next value, so two enqueue operations could both compute the
++// same intentSequence. SQLite serializes actual writers on separate handles
++// (the direct two-handle attempt reports `database is locked` while the first
++// savepoint still owns its read), so this deterministic reentrant call forces
++// the same statement interleaving on one real SQLite connection.
+ test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
+ 	let otherNext = 0;
+ 	const storageB = new MutationOutboxSQLite(
+@@ -289,21 +269,6 @@ test("settleReceipt moves a pending, input-carrying record into the optimistic t
+ 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted", composer_text: null });
+ });
+ 
+-test("settleReceipt clears attempt evidence from the accepted optimistic record", async () => {
+-	const record = await storage.enqueueIntent({
+-		...intent("attempted before receipt"),
+-		optimisticDisplay: { input: [{ type: "text", text: "attempted before receipt" }] },
+-	});
+-	await storage.markAttempted(record.clientMutationId);
+-
+-	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+-
+-	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ attempted: 0 });
+-	const accepted = await storage.getOptimistic(record.clientMutationId);
+-	expect(accepted).toMatchObject({ state: "accepted" });
+-	expect(accepted).not.toHaveProperty("attempted");
+-});
+-
+ // Oracle: "a pending receipt settles a receipt-only control without creating
+ // optimistic display" (mutationOutbox.test.ts:280).
+ test("settleReceipt drops a receipt-only control with no optimistic input to carry", async () => {
+@@ -346,9 +311,12 @@ test("settleReceipt consults recovery when the outbox no longer holds the record
+ 	});
+ });
+ 
+-// A transition landing on an existing id must replace the complete row, so a
+-// stale payload/display cannot survive a receipt handoff. Seed a stale row
+-// directly because the port's own methods keep a record's id content fixed.
++// insert() used to update only state/attempted on a primary-key conflict, so
++// a transition landing on a row that already occupies that id would keep the
++// old payload/display. Seeds a stale row directly (this table's id space
++// never legitimately repeats through the port's own methods today, since a
++// record's stored content is fixed at enqueueIntent) to prove the write this
++// call makes replaces every column, the way the oracle's `put` does.
+ test("settleReceipt's optimistic insert fully replaces a stale row rather than only refreshing state", async () => {
+ 	const record = await storage.enqueueIntent({
+ 		...intent("fresh display"),
+@@ -467,7 +435,7 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
+ 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
+ });
+ 
+-// --- Read path --------------------------------------------------------------
++// --- D25d-1b: the read path -------------------------------------------------
+ 
+ test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
+ 	await storage.enqueueIntent(intent("a", "local:a"));
+@@ -535,20 +503,19 @@ test("nextDispatchable returns the lowest-sequence submitting record, blocked by
+ 	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: second.clientMutationId });
+ });
+ 
+-test("restoreProvenAbsent scopes reopening to the target and preserves authoritative records", async () => {
++test("restoreProvenAbsent reopens a blockedUnknown record the authoritative snapshot omits, and leaves one it names alone", async () => {
+ 	const omitted = await storage.enqueueIntent(intent("omitted"));
+-	const named = await storage.enqueueIntent(intent("named"));
+-	const unrelated = await storage.enqueueIntent(intent("unrelated", "local:thread-2"));
++	const named = await storage.enqueueIntent(intent("named", "local:thread-2"));
+ 	await storage.markUnknown(omitted.clientMutationId, "blockedUnknown");
+ 	await storage.markUnknown(named.clientMutationId, "blockedUnknown");
+-	await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
+ 
+ 	await expect(storage.restoreProvenAbsent(TARGET, new Set([named.clientMutationId]))).resolves.toEqual([
+ 		omitted.clientMutationId,
+ 	]);
+ 	await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
++
++	await expect(storage.restoreProvenAbsent("local:thread-2", new Set([named.clientMutationId]))).resolves.toEqual([]);
+ 	await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+-	await expect(storage.getOutbox(unrelated.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+ });
+ 
+ // Falsifies restoreProvenAbsent's atomicity: a trigger fails the UPDATE for
+diff --git a/mobile-native/src/mutationOutboxStorage.ts b/mobile-native/src/mutationOutboxStorage.ts
+index a4b0c5e69..3f34bc28c 100644
+--- a/mobile-native/src/mutationOutboxStorage.ts
++++ b/mobile-native/src/mutationOutboxStorage.ts
+@@ -1,7 +1,10 @@
+-// Native implementation of the package's MutationOutboxStorage port
+-// (appwire-client/typescript/state/mutation/outbox.ts) over expo-sqlite. The
+-// adapter owns the SQLite handle because the package port names no host
+-// storage global.
++// D25d-1: the phone's implementation of the package's MutationOutboxStorage
++// port (appwire-client/typescript/state/mutation/outbox.ts) - the 13 calls
++// the outbox's discovery and the dispatcher make - over expo-sqlite, the
++// same storage draftRepository.ts already persists drafts through. No host
++// global is named in the package; this adapter is where the sqlite handle
++// lives. Landed as two stacked PRs (1a the write path, 1b the read path)
++// once the whole port measured over the ~150-line target for one PR.
+ //
+ // Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
+ // describe("MutationOutboxIndexedDB", ...) block. This mirrors its
+@@ -124,7 +127,6 @@ export interface Row {
+ }
+ 
+ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecord<A>>(row: Row): T {
+-	const optimisticDisplay = JSON.parse(row.optimistic_display);
+ 	return {
+ 		version: row.version as 1,
+ 		clientMutationId: row.client_mutation_id,
+@@ -134,12 +136,12 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
+ 		method: row.method,
+ 		payload: JSON.parse(row.payload),
+ 		attachments: JSON.parse(row.attachments),
+-		optimisticDisplay: optimisticDisplay === null ? undefined : optimisticDisplay,
++		optimisticDisplay: JSON.parse(row.optimistic_display),
+ 		composerText: row.composer_text ?? undefined,
+ 		intentSequence: row.intent_sequence,
+ 		createdAt: row.created_at,
+ 		state: row.state as MutationOutboxState,
+-		...(row.state === "accepted" ? {} : { attempted: row.attempted === 1 }),
++		attempted: row.attempted === 1,
+ 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
+ 	} as unknown as T;
+ }
+@@ -327,7 +329,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
+ 		});
+ 	}
+ 
+-	// Read methods required by MutationOutboxStorage.
++	// D25d-1b: the read path.
+ 
+ 	async listTargetRefs(): Promise<string[]> {
+ 		const rows = this.db.getAllSync<{ target_ref: string }>(
+@@ -391,7 +393,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
+ 		return rows.map((row) => fromRow<A, T>(row));
+ 	}
+ 
+-	// Shared row plumbing used by the write and read methods above.
++	// Below: shared plumbing D25d-1a's write methods above call (D25d-1b's
++	// read methods, stacked on this, reuse insertValues/get/list too).
+ 	// A fresh clientMutationId has never been seen before, so a primary-key
+ 	// collision (the id generator repeating, the documented insecure
+ 	// fallback under adversarial conditions) means something is wrong with
+diff --git a/mobile-native/src/nativePreferenceDrafts.test.ts b/mobile-native/src/nativePreferenceDrafts.test.ts
+index 592c8200c..c752d01aa 100644
+--- a/mobile-native/src/nativePreferenceDrafts.test.ts
++++ b/mobile-native/src/nativePreferenceDrafts.test.ts
+@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
+ import { fakeDraftBackend } from "./draftBackend.testkit";
+ import {
+ 	classifyDraftRead,
+-	draftUnreadableAfterDiscard,
+ 	isStoredNullRecord,
+ 	isUnparseableDraftBytes,
+ 	matchesStoredBytes,
+@@ -10,9 +9,6 @@ import {
+ 	nativeTranscriptDrafts,
+ 	parseDraftBytes,
+ 	readDraftOutcome,
+-	readDraftOutcomeWithValue,
+-	type RawStringStorage,
+-	rawStringDraftBackend,
+ } from "./nativePreferenceDrafts";
+ 
+ // The keybindings store's discardClassified and its settle paths (a save,
+@@ -24,18 +20,42 @@ import {
+ // reporting a refusal as if it had written the record (or vice versa).
+ const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
+ 
+-// The real backend's own get/deleteIf/replaceIf (NativePreferencesProvider.tsx)
++// Mirrors the real backend's own get() (NativePreferencesProvider.tsx), which
+ // is Storage-backed and cannot be reached directly from this package's tests
+-// - a Map of raw bytes stands in for Storage, and rawStringDraftBackend is the
+-// same function production calls over it, not a parallel reimplementation.
++// - a Map of raw bytes plus parseDraftBytes stands in for it, the same
++// round-trip the real backend runs on stringified values. Shared by both
++// drafts' describe blocks: keybindings and transcript drafts go through the
++// SAME backend.get() in production.
+ function rawBytesBackend() {
+ 	const raw = new Map<string, string>();
+-	const storage: RawStringStorage = {
+-		getItemSync: (key) => raw.get(key) ?? null,
+-		setItemSync: (key, value) => raw.set(key, value),
+-		removeItemSync: (key) => raw.delete(key),
++	const b = {
++		createId: () => "draft-1",
++		get: (key: string) => {
++			const value = raw.get(key);
++			return value === undefined ? null : parseDraftBytes(value);
++		},
++		set: (key: string, value: unknown) => {
++			raw.set(key, JSON.stringify(value));
++		},
++		insertIfAbsent: (key: string, value: unknown): boolean => {
++			if (raw.has(key)) return false;
++			raw.set(key, JSON.stringify(value));
++			return true;
++		},
++		delete: (key: string) => {
++			raw.delete(key);
++		},
++		deleteIf: (key: string, value: unknown): boolean => {
++			if (!matchesStoredBytes(raw.get(key) ?? null, value)) return false;
++			raw.delete(key);
++			return true;
++		},
++		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
++			if (!matchesStoredBytes(raw.get(key) ?? null, expected)) return false;
++			raw.set(key, JSON.stringify(next));
++			return true;
++		},
+ 	};
+-	const b = rawStringDraftBackend(storage, () => "draft-1");
+ 	return { raw, b };
+ }
+ 
+@@ -147,18 +167,6 @@ describe("nativeKeybindingDrafts", () => {
+ 		expect(storage.replaceIf(checkpoint, next)).toBe(true);
+ 		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(next);
+ 	});
+-
+-	it("removes a stored record through the shared backend with a different key order", () => {
+-		const { raw, b } = rawBytesBackend();
+-		const storage = nativeKeybindingDrafts("hub", b);
+-		raw.set(
+-			"evener.native.keybinding-draft.hub",
+-			JSON.stringify({ writeUncertain: false, rules: [], baseRevision: 3, id: "draft-1" }),
+-		);
+-
+-		expect(storage.removeIf(checkpoint)).toBe(true);
+-		expect(raw.has("evener.native.keybinding-draft.hub")).toBe(false);
+-	});
+ });
+ 
+ describe("nativeTranscriptDrafts", () => {
+@@ -241,45 +249,6 @@ describe("readDraftOutcome", () => {
+ 	});
+ });
+ 
+-describe("readDraftOutcomeWithValue", () => {
+-	const isReadable = (value: unknown) =>
+-		typeof value === "object" && value !== null && "id" in value;
+-
+-	it("returns the classification and the exact value from one read", () => {
+-		const record = { id: "d1" };
+-		expect(readDraftOutcomeWithValue({ load: () => record }, isReadable)).toEqual({
+-			outcome: "readable",
+-			value: record,
+-		});
+-		expect(readDraftOutcomeWithValue({ load: () => null }, isReadable)).toEqual({
+-			outcome: "absent",
+-			value: null,
+-		});
+-	});
+-
+-	it("calls load once and degrades a throwing port", () => {
+-		let calls = 0;
+-		const storage = {
+-			load: () => {
+-				calls++;
+-				return { id: "d1" };
+-			},
+-		};
+-		expect(readDraftOutcomeWithValue(storage, isReadable).outcome).toBe("readable");
+-		expect(calls).toBe(1);
+-		expect(
+-		readDraftOutcomeWithValue(
+-			{
+-				load: () => {
+-					throw new Error("disk unavailable");
+-				},
+-			},
+-			isReadable,
+-		),
+-	).toEqual({ outcome: "storageUnavailable", value: undefined });
+-	});
+-});
+-
+ describe("matchesStoredBytes", () => {
+ 	it("is false when nothing is stored", () => {
+ 		expect(matchesStoredBytes(null, "{not json")).toBe(false);
+@@ -326,16 +295,6 @@ describe("matchesStoredBytes", () => {
+ 	it("does not match a genuinely different value", () => {
+ 		expect(matchesStoredBytes(JSON.stringify({ id: "d1" }), { id: "d2" })).toBe(false);
+ 	});
+-
+-	it("does not collide with valid JSON shaped like the unreadable marker", () => {
+-		const identity = parseDraftBytes("{not json");
+-		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
+-	});
+-
+-	it("does not collide with valid JSON shaped like the stored-null marker", () => {
+-		const identity = parseDraftBytes("null");
+-		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
+-	});
+ });
+ 
+ describe("parseDraftBytes", () => {
+@@ -404,14 +363,3 @@ describe("fakeDraftBackend", () => {
+ 		expect(b.store.has("k")).toBe(false);
+ 	});
+ });
+-
+-describe("draftUnreadableAfterDiscard", () => {
+-	it("keeps the notice when the current record is still unreadable", () => {
+-		expect(draftUnreadableAfterDiscard("unreadable")).toBe(true);
+-	});
+-
+-	it("clears the notice when the current record is readable or absent", () => {
+-		expect(draftUnreadableAfterDiscard("readable")).toBe(false);
+-		expect(draftUnreadableAfterDiscard("absent")).toBe(false);
+-	});
+-});
+diff --git a/mobile-native/src/nativePreferenceDrafts.ts b/mobile-native/src/nativePreferenceDrafts.ts
+index 526344e9a..c0b50fa19 100644
+--- a/mobile-native/src/nativePreferenceDrafts.ts
++++ b/mobile-native/src/nativePreferenceDrafts.ts
+@@ -16,22 +16,22 @@ import type {
+  * that identical primitive, so a bare-string sentinel here would make the
+  * two indistinguishable - exactly the collision that let a present, invalid
+  * transcript checkpoint (the string case) read as no draft at all (the null
+- * case). Branded with a symbol rather than checked by string-tagged shape:
+- * JSON.parse can never produce a symbol-keyed property, so no legitimately
+- * stored (successfully parsed) value can ever satisfy this predicate by
+- * coincidence. A shape/string tag does not have that guarantee: stored bytes
+- * that happen to be the JSON text of a previously-seen marker would parse
+- * right back into something indistinguishable from it. */
+-const STORED_NULL_BRAND: unique symbol = Symbol("evener.nativePreferenceDrafts.storedNull");
++ * case). Namespaced (never the bare "storedNull" a future checkpoint field
++ * could plausibly reuse) and checked by exact shape, not the tag alone: a
++ * real checkpoint always carries its own substantive fields, so requiring
++ * this to be the record's ONLY key rules out a checkpoint that happens to
++ * also carry a same-named field of its own. */
++const STORED_NULL_KIND = "evener.nativePreferenceDrafts.storedNull";
+ export interface StoredNullRecord {
+-	readonly [STORED_NULL_BRAND]: true;
++	readonly kind: typeof STORED_NULL_KIND;
+ }
+-export const STORED_NULL_RECORD: StoredNullRecord = { [STORED_NULL_BRAND]: true };
++export const STORED_NULL_RECORD: StoredNullRecord = { kind: STORED_NULL_KIND };
+ export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
+ 	return (
+ 		typeof value === "object" &&
+ 		value !== null &&
+-		(value as { [STORED_NULL_BRAND]?: unknown })[STORED_NULL_BRAND] === true
++		Object.keys(value).length === 1 &&
++		(value as { kind?: unknown }).kind === STORED_NULL_KIND
+ 	);
+ }
+ 
+@@ -40,17 +40,18 @@ export function isStoredNullRecord(value: unknown): value is StoredNullRecord {
+  * coincidentally equal a legitimately decoded value (a checkpoint field, or
+  * STORED_NULL_RECORD's own would-be sentinel), which is the same class of
+  * collision StoredNullRecord exists to close - see its own comment on the
+- * symbol brand. */
+-const UNPARSEABLE_BRAND: unique symbol = Symbol("evener.nativePreferenceDrafts.unparseable");
++ * namespaced tag and exact-shape check. */
++const UNPARSEABLE_KIND = "evener.nativePreferenceDrafts.unparseable";
+ export interface UnparseableDraftBytes {
+-	readonly [UNPARSEABLE_BRAND]: true;
++	readonly kind: typeof UNPARSEABLE_KIND;
+ 	readonly raw: string;
+ }
+ export function isUnparseableDraftBytes(value: unknown): value is UnparseableDraftBytes {
+ 	return (
+ 		typeof value === "object" &&
+ 		value !== null &&
+-		(value as { [UNPARSEABLE_BRAND]?: unknown })[UNPARSEABLE_BRAND] === true &&
++		Object.keys(value).length === 2 &&
++		(value as { kind?: unknown }).kind === UNPARSEABLE_KIND &&
+ 		typeof (value as { raw?: unknown }).raw === "string"
+ 	);
+ }
+@@ -65,7 +66,7 @@ export function parseDraftBytes(raw: string): unknown {
+ 	try {
+ 		parsed = JSON.parse(raw);
+ 	} catch {
+-		return { [UNPARSEABLE_BRAND]: true, raw } satisfies UnparseableDraftBytes;
++		return { kind: UNPARSEABLE_KIND, raw } satisfies UnparseableDraftBytes;
+ 	}
+ 	return parsed === null ? STORED_NULL_RECORD : parsed;
+ }
+@@ -127,52 +128,6 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
+ 	): boolean;
+ }
+ 
+-/** The raw string-keyed storage a backend's own get/set/deleteIf/replaceIf
+- * run on - Storage.getItemSync et al. in production and a Map-backed fake in
+- * tests. */
+-export interface RawStringStorage {
+-	getItemSync(key: string): string | null;
+-	setItemSync(key: string, value: string): void;
+-	removeItemSync(key: string): void;
+-}
+-
+-/** One native keybinding backend over any raw string storage. Keeping parsing
+- * and identity comparison here lets tests exercise the same code production
+- * uses, including malformed bytes, stored JSON null, and key-order changes. */
+-export function rawStringDraftBackend(storage: RawStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+-	function matches(key: string, value: unknown): boolean {
+-		return matchesStoredBytes(storage.getItemSync(key), value);
+-	}
+-	return {
+-		createId,
+-		get(key: string): unknown {
+-			const value = storage.getItemSync(key);
+-			return value === null ? null : parseDraftBytes(value);
+-		},
+-		set(key: string, value: unknown) {
+-			storage.setItemSync(key, JSON.stringify(value));
+-		},
+-		insertIfAbsent(key: string, value: unknown): boolean {
+-			if (storage.getItemSync(key) !== null) return false;
+-			storage.setItemSync(key, JSON.stringify(value));
+-			return true;
+-		},
+-		delete(key: string) {
+-			storage.removeItemSync(key);
+-		},
+-		deleteIf(key: string, value: unknown): boolean {
+-			if (!matches(key, value)) return false;
+-			storage.removeItemSync(key);
+-			return true;
+-		},
+-		replaceIf(key: string, expected: unknown, next: unknown): boolean {
+-			if (!matches(key, expected)) return false;
+-			storage.setItemSync(key, JSON.stringify(next));
+-			return true;
+-		},
+-	};
+-}
+-
+ /** What a draft read named, once decoded: no record, a record this build can
+  * read, or a record present but unreadable. Absent and unreadable used to be
+  * told apart by a single boolean (readable or not), which cannot distinguish
+@@ -188,42 +143,23 @@ export function classifyDraftRead(
+ 	return isReadable(loaded) ? "readable" : "unreadable";
+ }
+ 
+-/** Reads a draft port ONCE and reports both its classification and the raw
+- * value load() returned, so a caller that also needs to decode a readable
+- * record never re-reads the port outside this same guard. Every DraftPort
+- * method may throw a genuine storage failure; that says nothing about what
+- * is stored, so `value` is undefined for that outcome. */
+-export function readDraftOutcomeWithValue(
+-	storage: Pick<KeybindingDraftStorage, "load">,
+-	isReadable: (value: unknown) => boolean,
+-): { outcome: DraftReadOutcome | "storageUnavailable"; value: unknown } {
+-	try {
+-		const value = storage.load();
+-		return { outcome: classifyDraftRead(value, isReadable), value };
+-	} catch {
+-		return { outcome: "storageUnavailable", value: undefined };
+-	}
+-}
+-
+ /** Reads a draft port and classifies the outcome the way a cold-offline probe
+- * or a store-free discard's re-read must. The value-returning helper owns the
+- * try/catch so callers that need both pieces cannot accidentally read twice. */
++ * or a store-free discard's re-read must: every DraftPort method may throw (a
++ * genuine storage failure, not a record this build cannot decode - see
++ * UnreadableDraftError for the live-store equivalent), and a throw here says
++ * nothing about what is actually stored. Coming back as its own outcome,
++ * rather than escaping the caller's effect or event handler uncaught, is what
++ * lets the caller degrade to a storage-unavailable state instead of
++ * crashing. */
+ export function readDraftOutcome(
+ 	storage: Pick<KeybindingDraftStorage, "load">,
+ 	isReadable: (value: unknown) => boolean,
+ ): DraftReadOutcome | "storageUnavailable" {
+-	return readDraftOutcomeWithValue(storage, isReadable).outcome;
+-}
+-
+-/** Whether the store-free discard action should still present the record as
+- * unreadable, given the CURRENT record a follow-up read just found -
+- * `outcome` (discardStoredKeybindingDraft's own result) plays no part: a
+- * "removed" or "absent" outcome does not mean the record is gone NOW, since
+- * a concurrent writer can insert a fresh unreadable record between
+- * draftCheckpointPort's own re-read and this caller's - only the follow-up
+- * read's own classification of what is there right now can say that. */
+-export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean {
+-	return current === "unreadable";
++	try {
++		return classifyDraftRead(storage.load(), isReadable);
++	} catch {
++		return "storageUnavailable";
++	}
+ }
+ 
+ export function nativeKeybindingDrafts(
+diff --git a/mobile-native/src/nativePreferences.test.ts b/mobile-native/src/nativePreferences.test.ts
+index 006b677ad..114e6f8ee 100644
+--- a/mobile-native/src/nativePreferences.test.ts
++++ b/mobile-native/src/nativePreferences.test.ts
+@@ -327,13 +327,6 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
+ 	});
+ 	await model.refresh();
+ 	await expect(model.saveKeybindings([])).rejects.toThrow();
+-	expect(model.getSnapshot().keybindings).toMatchObject({
+-		draftError: null,
+-		hubError: "unreadable settings",
+-		loadError: "unreadable settings",
+-		error:
+-			"The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
+-	});
+ 	expect(client.requests.map((x) => x.method)).toEqual([
+ 		"evener/settings/keybindings/get",
+ 	]);
+@@ -342,43 +335,8 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
+ 	);
+ });
+ 
+-it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
+-	const client = fakeClient();
+-	client.handlers.set("evener/settings/keybindings/get", () => {
+-		throw new Error("hub request failed");
+-	});
+-	const backend = fakeDraftBackend();
+-	backend.store.set("evener.native.keybinding-draft.hub", "{not json");
+-	const model = new NativePreferences(
+-		client,
+-		{ keybindingsSettings: true, transcriptDisplaySettings: false },
+-		undefined,
+-		nativeKeybindingDrafts("hub", backend),
+-	);
+-	await model.refresh();
+-	expect(model.getSnapshot().keybindings).toMatchObject({
+-		draftError: expect.any(String),
+-		hubError: "hub request failed",
+-		loadError: null,
+-		error: expect.any(String),
+-	});
+-
+-	await model.discardKeybindingsDraft();
+-	expect(model.getSnapshot().keybindings).toMatchObject({
+-		draft: null,
+-		draftError: null,
+-		hubError: "hub request failed",
+-		loadError: null,
+-		error: "The hub request could not be confirmed.",
+-	});
+-	model.dispose();
+-});
+-
+ import { fakeDraftBackend } from "./draftBackend.testkit";
+-import {
+-	nativeKeybindingDrafts,
+-	nativeTranscriptDrafts,
+-} from "./nativePreferenceDrafts";
++import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+ 
+ function draftStorage() {
+ 	const backend = fakeDraftBackend();
+diff --git a/mobile-native/src/nativePreferences.ts b/mobile-native/src/nativePreferences.ts
+index 32124ff7c..e4b802535 100644
+--- a/mobile-native/src/nativePreferences.ts
++++ b/mobile-native/src/nativePreferences.ts
+@@ -36,11 +36,6 @@ export interface PreferenceState<T> {
+ 	conflict: boolean;
+ 	writeUncertain: boolean;
+ 	storageUnavailable: boolean;
+-	/** The port answered but what it held could not be read - see
+-	 * keybindingsStore's own field of the same name. Always false for
+-	 * transcriptMobile: the pre-migration transcript design has no
+-	 * unreadable-record recovery path of its own. */
+-	draftUnreadable: boolean;
+ }
+ 
+ /** The confirmed payload as the shared store holds it: its rule list is the
+@@ -49,14 +44,8 @@ export type ConfirmedKeybindings = Omit<KeybindingsOverrides, "rules"> & {
+ 	rules: readonly KeybindingsRule[];
+ };
+ 
+-export type KeybindingsPreferenceState = PreferenceState<ConfirmedKeybindings> & {
+-	draftError: string | null;
+-	hubError: string | null;
+-	loadError: string | null;
+-};
+-
+ export interface NativePreferencesSnapshot {
+-	keybindings: KeybindingsPreferenceState;
++	keybindings: PreferenceState<ConfirmedKeybindings>;
+ 	transcriptMobile: PreferenceState<{
+ 		revision: number;
+ 		config: TranscriptDisplayConfigV1;
+@@ -73,7 +62,6 @@ const initialDomain = <T>(): PreferenceState<T> => ({
+ 	conflict: false,
+ 	writeUncertain: false,
+ 	storageUnavailable: false,
+-	draftUnreadable: false,
+ });
+ 
+ function isRecord(value: unknown): value is Record<string, unknown> {
+@@ -141,14 +129,9 @@ const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
+ const KEYBINDINGS_LOAD_ERROR_MESSAGE =
+ 	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
+ 
+-export function keybindingsErrorMessage(
+-	draftError: string | null,
+-	hubError: string | null,
+-	loadError: string | null,
+-): string | null {
+-	if (draftError !== null) return draftError;
+-	if (loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
+-	return hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
++function hubErrorMessage(state: KeybindingsStoreState): string | null {
++	if (state.loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
++	return state.hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
+ }
+ 
+ // The keybinding domain is a projection of the shared store's state: the
+@@ -160,7 +143,7 @@ export function keybindingsErrorMessage(
+ // unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
+ function keybindingsDomain(
+ 	state: KeybindingsStoreState,
+-): KeybindingsPreferenceState {
++): PreferenceState<ConfirmedKeybindings> {
+ 	return {
+ 		support: state.hubSupport,
+ 		loading: state.hubLoading,
+@@ -174,18 +157,10 @@ function keybindingsDomain(
+ 				}
+ 			: null,
+ 		draft: state.draft,
+-		error: keybindingsErrorMessage(
+-			state.draftError,
+-			state.hubError,
+-			state.loadError,
+-		),
++		error: state.draftError ?? hubErrorMessage(state),
+ 		conflict: state.draftConflict,
+ 		writeUncertain: state.writeUncertain,
+ 		storageUnavailable: state.storageUnavailable,
+-		draftUnreadable: state.draftUnreadable,
+-		draftError: state.draftError,
+-		hubError: state.hubError,
+-		loadError: state.loadError,
+ 	};
+ }
+ 

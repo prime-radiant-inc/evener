@@ -1,0 +1,3 @@
+Remote review disposition for exact e6d550e472a0ed09d8290665a8682bbb97336ca2: Muse 22129 found no issues. DeepSeek 22130 found no production defect and one cost-test Low. Independent reproduction refutes the blanket vacuity claim: the existing guards fail the original quadratic collector (72→272 reads against bound 232; 460→1720 against bound 1420). Zero current counts reflect skipped ordinary-item work.
+
+The narrower gap—scaling active tool-call/result candidates after the callId guard—is tracked separately in #2006. The qualified patch is unchanged. Luna 22128 and final current-head CI remain pending; this is not a merge-completion claim.

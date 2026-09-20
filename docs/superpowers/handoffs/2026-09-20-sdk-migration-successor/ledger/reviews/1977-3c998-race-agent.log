@@ -1,0 +1,360 @@
+﻿2026-09-19T07:37:47.7643589Z Current runner version: '2.337.0'
+2026-09-19T07:37:47.7669712Z ##[group]Runner Image Provisioner
+2026-09-19T07:37:47.7670878Z Hosted Compute Agent
+2026-09-19T07:37:47.7671474Z Version: 20260828.587
+2026-09-19T07:37:47.7672212Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-09-19T07:37:47.7672993Z Build Date: 2026-08-28T16:44:25Z
+2026-09-19T07:37:47.7673728Z Worker ID: {c3de65aa-2476-41a1-b6c2-42884b8c682c}
+2026-09-19T07:37:47.7674462Z Azure Region: westus3
+2026-09-19T07:37:47.7675039Z ##[endgroup]
+2026-09-19T07:37:47.7676578Z ##[group]Operating System
+2026-09-19T07:37:47.7677259Z Ubuntu
+2026-09-19T07:37:47.7677767Z 24.04.5
+2026-09-19T07:37:47.7678405Z LTS
+2026-09-19T07:37:47.7678915Z ##[endgroup]
+2026-09-19T07:37:47.7679509Z ##[group]Runner Image
+2026-09-19T07:37:47.7680474Z Image: ubuntu-24.04
+2026-09-19T07:37:47.7681120Z Version: 20260907.300.1
+2026-09-19T07:37:47.7682464Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260907.300/images/ubuntu/Ubuntu2404-Readme.md
+2026-09-19T07:37:47.7684117Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260907.300
+2026-09-19T07:37:47.7685094Z ##[endgroup]
+2026-09-19T07:37:47.7686240Z ##[group]GITHUB_TOKEN Permissions
+2026-09-19T07:37:47.7688138Z Contents: read
+2026-09-19T07:37:47.7688746Z Metadata: read
+2026-09-19T07:37:47.7689451Z ##[endgroup]
+2026-09-19T07:37:47.7691842Z Secret source: Actions
+2026-09-19T07:37:47.7692957Z Cache mode: write
+2026-09-19T07:37:47.7693720Z Prepare workflow directory
+2026-09-19T07:37:47.8083157Z Prepare all required actions
+2026-09-19T07:37:47.8130892Z Getting action download info
+2026-09-19T07:37:48.1349824Z Download action repository 'actions/checkout@v7' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-09-19T07:37:48.3786897Z Complete job name: race-modules / agent
+2026-09-19T07:37:48.4547328Z ##[group]Run actions/checkout@v7
+2026-09-19T07:37:48.4548228Z with:
+2026-09-19T07:37:48.4548704Z   repository: prime-radiant-inc/evener
+2026-09-19T07:37:48.4552697Z   token: ***
+2026-09-19T07:37:48.4553199Z   ssh-strict: true
+2026-09-19T07:37:48.4553645Z   ssh-user: git
+2026-09-19T07:37:48.4554103Z   persist-credentials: true
+2026-09-19T07:37:48.4554609Z   clean: true
+2026-09-19T07:37:48.4555063Z   sparse-checkout-cone-mode: true
+2026-09-19T07:37:48.4555592Z   fetch-depth: 1
+2026-09-19T07:37:48.4556125Z   fetch-tags: false
+2026-09-19T07:37:48.4556630Z   show-progress: true
+2026-09-19T07:37:48.4557080Z   lfs: false
+2026-09-19T07:37:48.4557500Z   submodules: false
+2026-09-19T07:37:48.4557953Z   set-safe-directory: true
+2026-09-19T07:37:48.4558475Z   allow-unsafe-pr-checkout: false
+2026-09-19T07:37:48.4559314Z ##[endgroup]
+2026-09-19T07:37:48.5630777Z Syncing repository: prime-radiant-inc/evener
+2026-09-19T07:37:48.5633471Z ##[group]Getting Git version info
+2026-09-19T07:37:48.5634317Z Working directory is '/home/runner/work/evener/evener'
+2026-09-19T07:37:48.5635321Z [command]/usr/bin/git version
+2026-09-19T07:37:48.5707043Z git version 2.55.0
+2026-09-19T07:37:48.5730736Z ##[endgroup]
+2026-09-19T07:37:48.5743566Z Temporarily overriding HOME='/home/runner/work/_temp/c8ea715c-df3a-44ad-9e7c-ba625e8b4881' before making global git config changes
+2026-09-19T07:37:48.5745980Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-19T07:37:48.5750660Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/evener/evener
+2026-09-19T07:37:48.5799678Z Deleting the contents of '/home/runner/work/evener/evener'
+2026-09-19T07:37:48.5803789Z ##[group]Determining repository object format
+2026-09-19T07:37:48.5805225Z ##[endgroup]
+2026-09-19T07:37:48.5806184Z ##[group]Initializing the repository
+2026-09-19T07:37:48.5809640Z [command]/usr/bin/git init /home/runner/work/evener/evener
+2026-09-19T07:37:48.5919284Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-19T07:37:48.5920749Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-19T07:37:48.5922319Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-19T07:37:48.5924237Z hint: call:
+2026-09-19T07:37:48.5925032Z hint:
+2026-09-19T07:37:48.5926017Z hint: 	git config --global init.defaultBranch <name>
+2026-09-19T07:37:48.5927207Z hint:
+2026-09-19T07:37:48.5928324Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-19T07:37:48.5930468Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-19T07:37:48.5931979Z hint:
+2026-09-19T07:37:48.5932756Z hint: 	git branch -m <name>
+2026-09-19T07:37:48.5933686Z hint:
+2026-09-19T07:37:48.5934879Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-19T07:37:48.5936709Z Initialized empty Git repository in /home/runner/work/evener/evener/.git/
+2026-09-19T07:37:48.5939424Z [command]/usr/bin/git remote add origin https://github.com/prime-radiant-inc/evener
+2026-09-19T07:37:48.5982611Z ##[endgroup]
+2026-09-19T07:37:48.5983937Z ##[group]Disabling automatic garbage collection
+2026-09-19T07:37:48.5986225Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-19T07:37:48.6017953Z ##[endgroup]
+2026-09-19T07:37:48.6019610Z ##[group]Setting up auth
+2026-09-19T07:37:48.6020836Z Removing SSH command configuration
+2026-09-19T07:37:48.6025418Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-19T07:37:48.6058733Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-19T07:37:48.6417126Z Removing HTTP extra header
+2026-09-19T07:37:48.6423005Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-19T07:37:48.6454521Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-19T07:37:48.6673668Z Removing includeIf entries pointing to credentials config files
+2026-09-19T07:37:48.6678319Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-19T07:37:48.6717659Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-19T07:37:48.6940910Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-19T07:37:48.6978218Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/evener/evener/.git.path /home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:37:48.7008990Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:37:48.7044627Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:37:48.7079294Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:37:48.7108967Z ##[endgroup]
+2026-09-19T07:37:48.7109758Z ##[group]Fetching the repository
+2026-09-19T07:37:48.7116886Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +38f884baf2d6a0472cfce5a71e7293c786b356e7:refs/remotes/pull/1977/merge
+2026-09-19T07:37:51.7274057Z From https://github.com/prime-radiant-inc/evener
+2026-09-19T07:37:51.7275344Z  * [new ref]         38f884baf2d6a0472cfce5a71e7293c786b356e7 -> pull/1977/merge
+2026-09-19T07:37:51.7286969Z ##[endgroup]
+2026-09-19T07:37:51.7288625Z ##[group]Determining the checkout info
+2026-09-19T07:37:51.7290580Z ##[endgroup]
+2026-09-19T07:37:51.7293864Z [command]/usr/bin/git sparse-checkout disable
+2026-09-19T07:37:51.7346641Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-19T07:37:51.7382755Z ##[group]Checking out the ref
+2026-09-19T07:37:51.7384303Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/1977/merge
+2026-09-19T07:37:52.5270483Z Note: switching to 'refs/remotes/pull/1977/merge'.
+2026-09-19T07:37:52.5271406Z 
+2026-09-19T07:37:52.5272095Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-09-19T07:37:52.5273575Z changes and commit them, and you can discard any commits you make in this
+2026-09-19T07:37:52.5275124Z state without impacting any branches by switching back to a branch.
+2026-09-19T07:37:52.5276010Z 
+2026-09-19T07:37:52.5276667Z If you want to create a new branch to retain commits you create, you may
+2026-09-19T07:37:52.5277939Z do so (now or later) by using -c with the switch command. Example:
+2026-09-19T07:37:52.5278592Z 
+2026-09-19T07:37:52.5278899Z   git switch -c <new-branch-name>
+2026-09-19T07:37:52.5279403Z 
+2026-09-19T07:37:52.5279692Z Or undo this operation with:
+2026-09-19T07:37:52.5280423Z 
+2026-09-19T07:37:52.5280709Z   git switch -
+2026-09-19T07:37:52.5281095Z 
+2026-09-19T07:37:52.5281711Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-09-19T07:37:52.5291085Z 
+2026-09-19T07:37:52.5302673Z HEAD is now at 38f884b Merge 3c99890518646385a9cc5e1e371774357a74cca9 into 0467e15b3db2541c1a0a51834f60af5b6b2be632
+2026-09-19T07:37:52.5305505Z ##[endgroup]
+2026-09-19T07:37:52.5339451Z [command]/usr/bin/git log -1 --format=%H
+2026-09-19T07:37:52.5366883Z 38f884baf2d6a0472cfce5a71e7293c786b356e7
+2026-09-19T07:37:52.5639821Z Prepare all required actions
+2026-09-19T07:37:52.5640913Z Getting action download info
+2026-09-19T07:37:52.6900647Z Download action repository 'actions/setup-go@v7' (SHA:b7ad1dad31e06c5925ef5d2fc7ad053ef454303e)
+2026-09-19T07:37:53.4104749Z Download action repository 'actions/setup-node@v7' (SHA:820762786026740c76f36085b0efc47a31fe5020)
+2026-09-19T07:37:53.5073906Z ##[group]Run ./.github/actions/setup-toolchain
+2026-09-19T07:37:53.5074238Z ##[endgroup]
+2026-09-19T07:37:53.5129502Z ##[start-action display=Run actions/setup-go@v7;id=__self.__actions_setup-go]
+2026-09-19T07:37:53.5216847Z ##[group]Run actions/setup-go@v7
+2026-09-19T07:37:53.5217140Z with:
+2026-09-19T07:37:53.5217349Z   go-version-file: go.work
+2026-09-19T07:37:53.5217587Z   cache: true
+2026-09-19T07:37:53.5217855Z   cache-dependency-path: go.work
+go.work.sum
+**/go.sum
+
+2026-09-19T07:37:53.5218180Z   check-latest: false
+2026-09-19T07:37:53.5220684Z   token: ***
+2026-09-19T07:37:53.5220902Z ##[endgroup]
+2026-09-19T07:37:53.6345427Z Setup go version spec 1.27.0
+2026-09-19T07:37:53.6360958Z Attempting to download 1.27.0...
+2026-09-19T07:37:54.5912136Z matching 1.27.0...
+2026-09-19T07:37:54.5953742Z Acquiring 1.27.0 from https://github.com/actions/go-versions/releases/download/1.27.0-32325163857/go-1.27.0-linux-x64.tar.gz
+2026-09-19T07:37:55.2591195Z Extracting Go...
+2026-09-19T07:37:55.2711019Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/74493bbf-8678-487c-b484-b808ee5927a4 -f /home/runner/work/_temp/31f2d1aa-6620-483c-a418-8d7cc586c0b5
+2026-09-19T07:37:56.9978186Z Successfully extracted go to /home/runner/work/_temp/74493bbf-8678-487c-b484-b808ee5927a4
+2026-09-19T07:37:56.9978943Z Adding to the cache ...
+2026-09-19T07:38:02.9285244Z Successfully cached go to /opt/hostedtoolcache/go/1.27.0/x64
+2026-09-19T07:38:02.9285875Z Added go to the path
+2026-09-19T07:38:02.9287122Z Successfully set up Go version 1.27.0
+2026-09-19T07:38:02.9488830Z [command]/opt/hostedtoolcache/go/1.27.0/x64/bin/go env GOMODCACHE
+2026-09-19T07:38:02.9520752Z [command]/opt/hostedtoolcache/go/1.27.0/x64/bin/go env GOCACHE
+2026-09-19T07:38:02.9555075Z /home/runner/go/pkg/mod
+2026-09-19T07:38:02.9573959Z /home/runner/.cache/go-build
+2026-09-19T07:38:04.1896623Z Cache hit for: setup-go-Linux-x64-ubuntu24-go-1.27.0-1f99213afae0baba94711e23198f349a68b3afb28f5407f784911d7fedd6c6a8
+2026-09-19T07:38:05.4111738Z Received 33554432 of 137134908 (24.5%), 32.0 MBs/sec
+2026-09-19T07:38:06.2000924Z Received 137134908 of 137134908 (100.0%), 73.1 MBs/sec
+2026-09-19T07:38:06.2002359Z Cache Size: ~131 MB (137134908 B)
+2026-09-19T07:38:06.2049473Z [command]/usr/bin/tar -xf /home/runner/work/_temp/54cecb5c-9890-4d1d-88af-6ab15aa43d64/cache.tzst -P -C /home/runner/work/evener/evener --use-compress-program unzstd
+2026-09-19T07:38:07.0571711Z Cache restored successfully
+2026-09-19T07:38:07.0641189Z Cache restored from key: setup-go-Linux-x64-ubuntu24-go-1.27.0-1f99213afae0baba94711e23198f349a68b3afb28f5407f784911d7fedd6c6a8
+2026-09-19T07:38:07.0668485Z go version go1.27.0 linux/amd64
+2026-09-19T07:38:07.0668954Z 
+2026-09-19T07:38:07.0669348Z ##[group]go env
+2026-09-19T07:38:07.0804891Z AR='ar'
+2026-09-19T07:38:07.0805325Z CC='gcc'
+2026-09-19T07:38:07.0805765Z CGO_CFLAGS='-O2 -g'
+2026-09-19T07:38:07.0806218Z CGO_CPPFLAGS=''
+2026-09-19T07:38:07.0806653Z CGO_CXXFLAGS='-O2 -g'
+2026-09-19T07:38:07.0807130Z CGO_ENABLED='1'
+2026-09-19T07:38:07.0807522Z CGO_FFLAGS='-O2 -g'
+2026-09-19T07:38:07.0807884Z CGO_LDFLAGS='-O2 -g'
+2026-09-19T07:38:07.0808261Z CXX='g++'
+2026-09-19T07:38:07.0808610Z GCCGO='gccgo'
+2026-09-19T07:38:07.0808974Z GO111MODULE=''
+2026-09-19T07:38:07.0809337Z GOAMD64='v1'
+2026-09-19T07:38:07.0809701Z GOARCH='amd64'
+2026-09-19T07:38:07.0810040Z GOAUTH='netrc'
+2026-09-19T07:38:07.0810648Z GOBIN='/home/runner/go/bin'
+2026-09-19T07:38:07.0811142Z GOCACHE='/home/runner/.cache/go-build'
+2026-09-19T07:38:07.0811602Z GOCACHEPROG=''
+2026-09-19T07:38:07.0811940Z GODEBUG=''
+2026-09-19T07:38:07.0812306Z GOENV='/home/runner/.config/go/env'
+2026-09-19T07:38:07.0813101Z GOEXE=''
+2026-09-19T07:38:07.0813450Z GOEXPERIMENT=''
+2026-09-19T07:38:07.0813809Z GOFIPS140='off'
+2026-09-19T07:38:07.0814145Z GOFLAGS=''
+2026-09-19T07:38:07.0815289Z GOGCCFLAGS='-fPIC -m64 -pthread -Wl,--no-gc-sections -fmessage-length=0 -ffile-prefix-map=/tmp/go-build559771848=/tmp/go-build -gno-record-gcc-switches'
+2026-09-19T07:38:07.0816569Z GOHOSTARCH='amd64'
+2026-09-19T07:38:07.0816953Z GOHOSTOS='linux'
+2026-09-19T07:38:07.0817327Z GOINSECURE=''
+2026-09-19T07:38:07.0817758Z GOMOD='/home/runner/work/evener/evener/go.mod'
+2026-09-19T07:38:07.0818373Z GOMODCACHE='/home/runner/go/pkg/mod'
+2026-09-19T07:38:07.0818835Z GONOPROXY=''
+2026-09-19T07:38:07.0819202Z GONOSUMDB=''
+2026-09-19T07:38:07.0819563Z GOOS='linux'
+2026-09-19T07:38:07.0819922Z GOPACKAGESDRIVER=''
+2026-09-19T07:38:07.0820611Z GOPATH='/home/runner/go'
+2026-09-19T07:38:07.0820983Z GOPRIVATE=''
+2026-09-19T07:38:07.0821391Z GOPROXY='https://proxy.golang.org,direct'
+2026-09-19T07:38:07.0821947Z GOROOT='/opt/hostedtoolcache/go/1.27.0/x64'
+2026-09-19T07:38:07.0822411Z GOSUMDB='sum.golang.org'
+2026-09-19T07:38:07.0822782Z GOTELEMETRY='local'
+2026-09-19T07:38:07.0823205Z GOTELEMETRYDIR='/home/runner/.config/go/telemetry'
+2026-09-19T07:38:07.0823700Z GOTMPDIR=''
+2026-09-19T07:38:07.0824030Z GOTOOLCHAIN='local'
+2026-09-19T07:38:07.0824536Z GOTOOLDIR='/opt/hostedtoolcache/go/1.27.0/x64/pkg/tool/linux_amd64'
+2026-09-19T07:38:07.0825187Z GOVCS=''
+2026-09-19T07:38:07.0825549Z GOVERSION='go1.27.0'
+2026-09-19T07:38:07.0825982Z GOWORK='/home/runner/work/evener/evener/go.work'
+2026-09-19T07:38:07.0826469Z PKG_CONFIG='pkg-config'
+2026-09-19T07:38:07.0826744Z 
+2026-09-19T07:38:07.0827215Z ##[endgroup]
+2026-09-19T07:38:07.0987955Z ##[end-action id=__self.__actions_setup-go;outcome=success;conclusion=success;duration_ms=13585]
+2026-09-19T07:38:07.0991971Z ##[start-action display=Run actions/setup-node@v7;id=__self.__actions_setup-node]
+2026-09-19T07:38:07.1069875Z ##[group]Run actions/setup-node@v7
+2026-09-19T07:38:07.1070344Z with:
+2026-09-19T07:38:07.1070562Z   node-version: 22
+2026-09-19T07:38:07.1070767Z   cache: npm
+2026-09-19T07:38:07.1071066Z   cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+2026-09-19T07:38:07.1071455Z   check-latest: false
+2026-09-19T07:38:07.1073814Z   token: ***
+2026-09-19T07:38:07.1074041Z   package-manager-cache: true
+2026-09-19T07:38:07.1074479Z env:
+2026-09-19T07:38:07.1074668Z   GOTOOLCHAIN: local
+2026-09-19T07:38:07.1074878Z ##[endgroup]
+2026-09-19T07:38:07.2405236Z Found in cache @ /opt/hostedtoolcache/node/22.23.2/x64
+2026-09-19T07:38:07.2408509Z ##[group]Environment details
+2026-09-19T07:38:07.6471736Z node: v22.23.2
+2026-09-19T07:38:07.6472465Z npm: 10.9.8
+2026-09-19T07:38:07.6473075Z yarn: 1.22.22
+2026-09-19T07:38:07.6473805Z ##[endgroup]
+2026-09-19T07:38:07.6495317Z [command]/opt/hostedtoolcache/node/22.23.2/x64/bin/npm config get cache
+2026-09-19T07:38:07.7563077Z /home/runner/.npm
+2026-09-19T07:38:07.9732669Z Cache hit for: node-cache-Linux-x64-npm-27aa06c9731f5533c831a8ae0cc3eb4761c4b31313e68aba69bddb65bbd5a9ce
+2026-09-19T07:38:09.2079674Z Received 29360128 of 66100874 (44.4%), 28.0 MBs/sec
+2026-09-19T07:38:09.4628537Z Received 66100874 of 66100874 (100.0%), 50.2 MBs/sec
+2026-09-19T07:38:09.4629931Z Cache Size: ~63 MB (66100874 B)
+2026-09-19T07:38:09.4692028Z [command]/usr/bin/tar -xf /home/runner/work/_temp/4c19d487-4f24-4558-8ea5-affadaa1ec23/cache.tzst -P -C /home/runner/work/evener/evener --use-compress-program unzstd
+2026-09-19T07:38:09.5919901Z Cache restored successfully
+2026-09-19T07:38:09.5957401Z Cache restored from key: node-cache-Linux-x64-npm-27aa06c9731f5533c831a8ae0cc3eb4761c4b31313e68aba69bddb65bbd5a9ce
+2026-09-19T07:38:09.6062853Z ##[end-action id=__self.__actions_setup-node;outcome=success;conclusion=success;duration_ms=2507]
+2026-09-19T07:38:09.6136252Z ##[group]Run make test-race RACE_SCOPE=agent
+2026-09-19T07:38:09.6136667Z [36;1mmake test-race RACE_SCOPE=agent[0m
+2026-09-19T07:38:09.6184246Z shell: /usr/bin/bash -e {0}
+2026-09-19T07:38:09.6184526Z env:
+2026-09-19T07:38:09.6184731Z   GOTOOLCHAIN: local
+2026-09-19T07:38:09.6184965Z ##[endgroup]
+2026-09-19T07:45:36.2938347Z FAIL  agent   
+2026-09-19T07:45:36.2938686Z 
+2026-09-19T07:45:36.2938995Z === failing module output ===
+2026-09-19T07:45:36.2956577Z ----- agent -----
+2026-09-19T07:45:36.2967177Z go: downloading pgregory.net/rapid v1.3.0
+2026-09-19T07:45:36.2967960Z go: downloading github.com/oklog/ulid/v2 v2.1.1
+2026-09-19T07:45:36.2968752Z go: downloading go.uber.org/goleak v1.3.0
+2026-09-19T07:45:36.2969567Z --- FAIL: TestNoBareWallClockDeadlineInAgentTests (5.10s)
+2026-09-19T07:45:36.2971197Z     deadline_audit_test.go:56: bare wall-clock deadline(s) in agent test sources:
+2026-09-19T07:45:36.2972941Z         session_ask_durable_admission_test.go:45: bare wall-clock bound passed to context.WithTimeout(...)
+2026-09-19T07:45:36.2973869Z         
+2026-09-19T07:45:36.2976811Z         Fix: await the real completion signal instead of a bound, or add a "// TRIPWIRE: <why this sits far above the expected time>" comment on or directly above the literal. Only add a file to deadlineAuditAllowlist if it is already grandfathered and this is not a new offense.
+2026-09-19T07:45:36.2978492Z --- FAIL: TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued (0.05s)
+2026-09-19T07:45:36.2981485Z     session_environment_rollback_regression_test.go:1207: interrupted turn behind the poisoning = append user input: write transcript entry: injected transcript write failure, want an error wrapping transcript.ErrWriterPoisoned
+2026-09-19T07:45:36.2982485Z FAIL
+2026-09-19T07:45:36.2982802Z FAIL	primeradiant.com/evener/agent	350.381s
+2026-09-19T07:45:36.2983235Z ok  	primeradiant.com/evener/agent/command	1.068s
+2026-09-19T07:45:36.2983685Z ok  	primeradiant.com/evener/agent/diagnostic	1.065s
+2026-09-19T07:45:36.2984138Z ok  	primeradiant.com/evener/agent/doctor	2.158s
+2026-09-19T07:45:36.2984552Z ok  	primeradiant.com/evener/agent/envctx	1.026s
+2026-09-19T07:45:36.2984952Z ok  	primeradiant.com/evener/agent/events	1.111s
+2026-09-19T07:45:36.2985365Z ok  	primeradiant.com/evener/agent/execenv	18.777s
+2026-09-19T07:45:36.2985838Z ok  	primeradiant.com/evener/agent/internal/agenttest	1.059s
+2026-09-19T07:45:36.2986376Z ok  	primeradiant.com/evener/agent/internal/artifactstore	2.056s
+2026-09-19T07:45:36.2986890Z ok  	primeradiant.com/evener/agent/internal/atif	1.067s
+2026-09-19T07:45:36.2987665Z ok  	primeradiant.com/evener/agent/internal/cheapmodel	2.641s
+2026-09-19T07:45:36.2988150Z ok  	primeradiant.com/evener/agent/internal/clock	1.074s
+2026-09-19T07:45:36.2988628Z ok  	primeradiant.com/evener/agent/internal/contextmgr	6.962s
+2026-09-19T07:45:36.2989129Z ok  	primeradiant.com/evener/agent/internal/delegatestore	1.701s
+2026-09-19T07:45:36.2989629Z ok  	primeradiant.com/evener/agent/internal/foldcache	5.446s
+2026-09-19T07:45:36.2990129Z ok  	primeradiant.com/evener/agent/internal/frontmatter	1.015s
+2026-09-19T07:45:36.2991429Z ok  	primeradiant.com/evener/agent/internal/globpattern	1.033s
+2026-09-19T07:45:36.2992235Z ok  	primeradiant.com/evener/agent/internal/goal	1.013s
+2026-09-19T07:45:36.2992869Z ok  	primeradiant.com/evener/agent/internal/hooks	3.322s
+2026-09-19T07:45:36.2993402Z make: *** [make/testing.mk:187: test-race] Error 1
+2026-09-19T07:45:36.2993863Z ok  	primeradiant.com/evener/agent/internal/installid	1.037s
+2026-09-19T07:45:36.2994367Z ok  	primeradiant.com/evener/agent/internal/jobstore	2.385s
+2026-09-19T07:45:36.2994889Z ok  	primeradiant.com/evener/agent/internal/linecap	1.020s
+2026-09-19T07:45:36.2995415Z ok  	primeradiant.com/evener/agent/internal/liveeval	1.015s
+2026-09-19T07:45:36.2995871Z ok  	primeradiant.com/evener/agent/internal/mcp	1.580s
+2026-09-19T07:45:36.2996331Z ok  	primeradiant.com/evener/agent/internal/mcphttp	1.019s
+2026-09-19T07:45:36.2997111Z ok  	primeradiant.com/evener/agent/internal/modelavailability	1.180s
+2026-09-19T07:45:36.2997745Z ok  	primeradiant.com/evener/agent/internal/promptpath	1.010s [no tests to run]
+2026-09-19T07:45:36.2998305Z ok  	primeradiant.com/evener/agent/internal/runetrim	1.017s
+2026-09-19T07:45:36.2998793Z ok  	primeradiant.com/evener/agent/internal/sessionlog	1.034s
+2026-09-19T07:45:36.2999277Z ok  	primeradiant.com/evener/agent/internal/tool	1.671s
+2026-09-19T07:45:36.2999756Z ok  	primeradiant.com/evener/agent/internal/tool/repair	1.204s
+2026-09-19T07:45:36.3000532Z ok  	primeradiant.com/evener/agent/internal/toolname	1.011s
+2026-09-19T07:45:36.3001043Z ok  	primeradiant.com/evener/agent/internal/worktree	3.645s
+2026-09-19T07:45:36.3001494Z ok  	primeradiant.com/evener/agent/mcpconfig	1.050s
+2026-09-19T07:45:36.3001917Z ok  	primeradiant.com/evener/agent/mcpprobe	1.441s
+2026-09-19T07:45:36.3002331Z ok  	primeradiant.com/evener/agent/plugin	1.170s
+2026-09-19T07:45:36.3002758Z ok  	primeradiant.com/evener/agent/provenance	1.035s
+2026-09-19T07:45:36.3003193Z ok  	primeradiant.com/evener/agent/provider	8.532s
+2026-09-19T07:45:36.3003608Z ok  	primeradiant.com/evener/agent/sandbox	6.295s
+2026-09-19T07:45:36.3004010Z ok  	primeradiant.com/evener/agent/schema	1.258s
+2026-09-19T07:45:36.3004412Z ok  	primeradiant.com/evener/agent/skill	2.478s
+2026-09-19T07:45:36.3004804Z ok  	primeradiant.com/evener/agent/task	1.253s
+2026-09-19T07:45:36.3005224Z ok  	primeradiant.com/evener/agent/transcript	1.368s
+2026-09-19T07:45:36.3005529Z FAIL
+2026-09-19T07:45:36.3005732Z real 446.47
+2026-09-19T07:45:36.3005933Z user 700.66
+2026-09-19T07:45:36.3006139Z sys 112.02
+2026-09-19T07:45:36.3006250Z 
+2026-09-19T07:45:36.3006440Z full logs: /tmp/evener-module-tests.sdZOaa
+2026-09-19T07:45:36.3018726Z ##[error]Process completed with exit code 2.
+2026-09-19T07:45:36.3111085Z Post job cleanup.
+2026-09-19T07:45:36.3115445Z ##[start-action display=Run actions/setup-node@v7;id=__1a995fb5-b2fd-45e6-829d-c34a39154ca2.__actions_setup-node]
+2026-09-19T07:45:36.3118802Z ##[end-action id=__1a995fb5-b2fd-45e6-829d-c34a39154ca2.__actions_setup-node;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-09-19T07:45:36.3121455Z ##[start-action display=Run actions/setup-go@v7;id=__1a995fb5-b2fd-45e6-829d-c34a39154ca2.__actions_setup-go]
+2026-09-19T07:45:36.3123742Z ##[end-action id=__1a995fb5-b2fd-45e6-829d-c34a39154ca2.__actions_setup-go;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-09-19T07:45:36.3189249Z Post job cleanup.
+2026-09-19T07:45:36.4059483Z [command]/usr/bin/git version
+2026-09-19T07:45:36.4105432Z git version 2.55.0
+2026-09-19T07:45:36.4139806Z Temporarily overriding HOME='/home/runner/work/_temp/3fc2bca4-d514-41ad-9425-9ba7d427f0e8' before making global git config changes
+2026-09-19T07:45:36.4141822Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-19T07:45:36.4144759Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/evener/evener
+2026-09-19T07:45:36.4175342Z Removing SSH command configuration
+2026-09-19T07:45:36.4182356Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-19T07:45:36.4216319Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-19T07:45:36.4452193Z Removing HTTP extra header
+2026-09-19T07:45:36.4456292Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-19T07:45:36.4488537Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-19T07:45:36.4718216Z Removing includeIf entries pointing to credentials config files
+2026-09-19T07:45:36.4724398Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-19T07:45:36.4746787Z includeif.gitdir:/home/runner/work/evener/evener/.git.path
+2026-09-19T07:45:36.4748081Z includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path
+2026-09-19T07:45:36.4749244Z includeif.gitdir:/github/workspace/.git.path
+2026-09-19T07:45:36.4750576Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-19T07:45:36.4757632Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/evener/evener/.git.path
+2026-09-19T07:45:36.4779165Z /home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:45:36.4789810Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/evener/evener/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-92f64f6b\-473d\-4958\-8bc7\-287e15a988fb\.config
+2026-09-19T07:45:36.4823551Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path
+2026-09-19T07:45:36.4845327Z /home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:45:36.4855822Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/evener/evener/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-92f64f6b\-473d\-4958\-8bc7\-287e15a988fb\.config
+2026-09-19T07:45:36.4893381Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-19T07:45:36.4915232Z /github/runner_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:45:36.4923001Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-92f64f6b\-473d\-4958\-8bc7\-287e15a988fb\.config
+2026-09-19T07:45:36.4955144Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-19T07:45:36.4978135Z /github/runner_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config
+2026-09-19T07:45:36.4988819Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-92f64f6b\-473d\-4958\-8bc7\-287e15a988fb\.config
+2026-09-19T07:45:36.5025161Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-19T07:45:36.5276615Z Removing credentials config '/home/runner/work/_temp/git-credentials-92f64f6b-473d-4958-8bc7-287e15a988fb.config'
+2026-09-19T07:45:36.5444582Z Cleaning up orphan processes

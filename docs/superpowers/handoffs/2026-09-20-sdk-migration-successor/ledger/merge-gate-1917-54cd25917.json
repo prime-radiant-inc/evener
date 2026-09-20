@@ -1,0 +1,309 @@
+{
+  "observed_at": "2026-09-19T03:28:39Z",
+  "pr": 1917,
+  "head": "54cd2591736f42c7a48d5663a5d21829b3d50f97",
+  "base": "617b188c8221c92f8a4c117a1ee49aac572a3757",
+  "qualified": true,
+  "substantive_review_qualified": true,
+  "no_held_findings": true,
+  "merge_ready": true,
+  "receipts": {
+    "pr": {
+      "state": "open",
+      "mergeable": true,
+      "mergeable_state": "blocked",
+      "commits": 2,
+      "changed_files": 2,
+      "additions": 193,
+      "deletions": 22
+    },
+    "main": {
+      "ref": "refs/heads/main",
+      "sha": "617b188c8221c92f8a4c117a1ee49aac572a3757",
+      "checks": {
+        "total": 19,
+        "completed": 19,
+        "success": 17,
+        "skipped": 2,
+        "failures": 0,
+        "runs": [
+          {
+            "id": 105831134131,
+            "name": "Build snapshot artifacts",
+            "conclusion": "skipped"
+          },
+          {
+            "id": 105830322405,
+            "name": "static",
+            "conclusion": "success"
+          },
+          {
+            "id": 105830167482,
+            "name": "race-modules",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829407800,
+            "name": "Refresh snapshot channel",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027432,
+            "name": "Publish release",
+            "conclusion": "skipped"
+          },
+          {
+            "id": 105829027379,
+            "name": "native",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027347,
+            "name": "lint-golangci",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027341,
+            "name": "web",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027332,
+            "name": "race-root",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027306,
+            "name": "fuzz",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027295,
+            "name": "static-build",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027291,
+            "name": "lint-repository",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027279,
+            "name": "race-modules / agent",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027277,
+            "name": "fuzz-checks",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027250,
+            "name": "race-modules / nonagent",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027247,
+            "name": "tests",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829027174,
+            "name": "api-package",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829026687,
+            "name": "Build snapshot artifacts",
+            "conclusion": "success"
+          },
+          {
+            "id": 105829026619,
+            "name": "trigger",
+            "conclusion": "success"
+          }
+        ]
+      }
+    },
+    "head_checks": {
+      "total": 15,
+      "completed": 15,
+      "success": 15,
+      "skipped": 0,
+      "failures": 0,
+      "runs": [
+        {
+          "id": 105830886847,
+          "name": "Build snapshot artifacts",
+          "conclusion": "success"
+        },
+        {
+          "id": 105830609672,
+          "name": "static",
+          "conclusion": "success"
+        },
+        {
+          "id": 105830562669,
+          "name": "race-modules",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547874,
+          "name": "web",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547804,
+          "name": "fuzz",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547798,
+          "name": "race-modules / agent",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547791,
+          "name": "lint-repository",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547786,
+          "name": "api-package",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547781,
+          "name": "lint-golangci",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547777,
+          "name": "native",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547770,
+          "name": "tests",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547762,
+          "name": "static-build",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547752,
+          "name": "race-root",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547738,
+          "name": "race-modules / nonagent",
+          "conclusion": "success"
+        },
+        {
+          "id": 105829547645,
+          "name": "fuzz-checks",
+          "conclusion": "success"
+        }
+      ]
+    },
+    "status": {
+      "state": "success",
+      "contexts": [
+        {
+          "url": "https://api.github.com/repos/prime-radiant-inc/evener/statuses/54cd2591736f42c7a48d5663a5d21829b3d50f97",
+          "avatar_url": "https://avatars.githubusercontent.com/u/253595997?v=4",
+          "id": 54494456354,
+          "node_id": "SC_kwDORMusps8AAAAMsB9qIg",
+          "state": "success",
+          "description": "Review complete",
+          "target_url": null,
+          "context": "roborev",
+          "created_at": "2026-09-19T03:28:59Z",
+          "updated_at": "2026-09-19T03:28:59Z"
+        }
+      ]
+    },
+    "own_patch": {
+      "sha256": "aea4b58127102b73bc161ee072dede792be3df5597c19dd4cfe8aa39b54febab",
+      "stable_patch_id": "f1976c1a394ff3ee3f0b529b1fd278d538a54b96",
+      "standing_ruling": "prior exact-own-patch review carries to this restack",
+      "identity_evidence": "PR body and ledger; GitHub comparisons old-base..73fff461 and main..54cd259 have the same two files, counts, and stable patch ID"
+    },
+    "raw_panel": {
+      "source": "/Users/jesse/.codex/worktrees/mobile-sdk-1934-pickup/evener/.superpowers/sdd/2026-09-12-mobile-landing-queue-cont/reviews/raw/1917-54cd25917.md",
+      "historical_command": "/Users/jesse/.codex/worktrees/mobile-sdk-1934-pickup/evener/docs/superpowers/handoffs/2026-09-18-mobile-landing-sdk-migration/ledger/bin/rawreviews.sh 1917 54cd25917",
+      "panel_uuid": "e55ac732-9a5d-4f3a-a779-480c09273454",
+      "head_prefix": "54cd25917",
+      "outcome": "review_posted",
+      "synthesis_agent": "",
+      "members": [
+        {
+          "index": 0,
+          "agent": "codex/gpt-5.6-luna",
+          "status": "done",
+          "verdict": 1,
+          "chars": 127,
+          "disposition": "pass"
+        },
+        {
+          "index": 1,
+          "agent": "codex/meta/muse-spark-1.3-contributor",
+          "status": "done",
+          "verdict": 1,
+          "chars": 122,
+          "disposition": "pass"
+        },
+        {
+          "index": 2,
+          "agent": "pi/deepseek-4.1-flash",
+          "status": "done",
+          "verdict": 0,
+          "chars": 2617,
+          "findings": [
+            "restoreProvenAbsent test does not isolate target filtering",
+            "historical read-half comment is stale"
+          ],
+          "disposition": "both follow-up Lows appended to #1927; no merge blocker"
+        },
+        {
+          "index": 3,
+          "agent": "codex/glm-5.3-vision",
+          "status": "done",
+          "verdict": 1,
+          "chars": 179,
+          "disposition": "pass; no issues found"
+        }
+      ]
+    }
+  },
+  "dispositions": [
+    {
+      "finding": "DeepSeek target-filter coverage and stale comment",
+      "severity": "low",
+      "issue": 1927,
+      "merge_blocker": false
+    },
+    {
+      "finding": "native note supersession parity",
+      "severity": "medium",
+      "issue": 1938,
+      "merge_blocker": false,
+      "reason": "no native notes producer in approved D25d scope; prerequisite before native notes support"
+    },
+    {
+      "finding": "cross-table mutation ID uniqueness",
+      "severity": "hardening",
+      "issue": 1957,
+      "merge_blocker": false,
+      "reason": "shared web/native oracle behavior and fresh secure IDs; no native-only fix"
+    }
+  ],
+  "remaining_blockers": [],
+  "source_mutations": false,
+  "test_runs": false,
+  "ref_mutations": false,
+  "external_mutations": false
+}

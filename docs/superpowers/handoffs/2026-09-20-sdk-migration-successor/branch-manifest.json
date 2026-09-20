@@ -1,0 +1,647 @@
+[
+  {
+    "local_branch": "codex/ask-boundary-2005-low",
+    "sha": "1b114a47f86678d2d8b1d8bc59f1c400cd5bf662",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-2005-low"
+  },
+  {
+    "local_branch": "codex/ask-boundary-a-pre-main-3ca-refresh",
+    "sha": "50f6d6bf8393b0460f5d1335bc3ba5646862b9af",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-a-pre-main-3ca-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-a-pre-main-6cf-refresh",
+    "sha": "4550c33ea8e17cd98696c528e5dbfc0fe6a18f8e",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-a-pre-main-6cf-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-a-pre-main-refresh",
+    "sha": "551d44573c9b5ec971226929fea6462ead093d1e",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-a-pre-main-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-b-pre-main-3ca-refresh",
+    "sha": "eb38fefeccd8d9fd22a23fcd0dcb7892fd9fe7a6",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-b-pre-main-3ca-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-b-pre-main-6cf-refresh",
+    "sha": "a55e6f1d3a6d0c319e62df24fda30eff5794f4cc",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-b-pre-main-6cf-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-b-pre-main-refresh",
+    "sha": "f6e86b56607d5295b61cfb98d5628bbb9a5e7ba4",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-b-pre-main-refresh"
+  },
+  {
+    "local_branch": "codex/ask-boundary-carrier-panic",
+    "sha": "00849a796e8ec03b76426fca443e132dbbd62dd2",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-carrier-panic"
+  },
+  {
+    "local_branch": "codex/ask-boundary-durable-admission",
+    "sha": "b84a87d256f3a6c00458614e723bea4121d14d2f",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-durable-admission"
+  },
+  {
+    "local_branch": "codex/ask-boundary-live-boundaries",
+    "sha": "437f4ed159f8b49b0ef7bba2aa8e9066b23f9b4a",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-live-boundaries"
+  },
+  {
+    "local_branch": "codex/ask-boundary-oracle",
+    "sha": "6157655ddae619e1f33f279d2f141daf1d2e4e4b",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-oracle"
+  },
+  {
+    "local_branch": "codex/ask-boundary-original-8c-backup",
+    "sha": "8c55253d1b9479a30dfb9558dd806a66ee00e440",
+    "archive_branch": "codex/handoff-2026-09-20/ask-boundary-original-8c-backup"
+  },
+  {
+    "local_branch": "codex/backup-history-placement-round3-558f",
+    "sha": "558f1ed53751ecf1aa53f00129260df3650d6674",
+    "archive_branch": "codex/handoff-2026-09-20/backup-history-placement-round3-558f"
+  },
+  {
+    "local_branch": "codex/backup-history-public-760-before-cbf6",
+    "sha": "76014753f352b7101ea6a99bcea18d753cfa1b0f",
+    "archive_branch": "codex/handoff-2026-09-20/backup-history-public-760-before-cbf6"
+  },
+  {
+    "local_branch": "codex/backup-history-result-precedence-e6-before-main4413",
+    "sha": "e6d550e472a0ed09d8290665a8682bbb97336ca2",
+    "archive_branch": "codex/handoff-2026-09-20/backup-history-result-precedence-e6-before-main4413"
+  },
+  {
+    "local_branch": "codex/backup-marketplace-removal-warning-a551",
+    "sha": "a55194188d99f6cfc7a0522eeffc6883c5fa2e1e",
+    "archive_branch": "codex/handoff-2026-09-20/backup-marketplace-removal-warning-a551"
+  },
+  {
+    "local_branch": "codex/backup-sdk-d25d-1b-read-73fff4614",
+    "sha": "73fff46143348e8d88eb5d76909e604b396d03ef",
+    "archive_branch": "codex/handoff-2026-09-20/backup-sdk-d25d-1b-read-73fff4614"
+  },
+  {
+    "local_branch": "codex/checkpoint-identity-low",
+    "sha": "1351fb3bd4e201d85bef954f965b4fad84c36de0",
+    "archive_branch": "codex/handoff-2026-09-20/checkpoint-identity-low"
+  },
+  {
+    "local_branch": "codex/history-merge-round-five-backup",
+    "sha": "18104ad542142a50830e933f23be5a24412db2a9",
+    "archive_branch": "codex/handoff-2026-09-20/history-merge-round-five-backup"
+  },
+  {
+    "local_branch": "codex/interrupt-boundary-successor",
+    "sha": "5167475c68decac98a5410e47c234ea2e8129270",
+    "archive_branch": "codex/handoff-2026-09-20/interrupt-boundary-successor"
+  },
+  {
+    "local_branch": "codex/interrupt-marker-persistence",
+    "sha": "755f6a1ecd36657a0eb36a87b6e548e8c2beaa8b",
+    "archive_branch": "codex/handoff-2026-09-20/interrupt-marker-persistence"
+  },
+  {
+    "local_branch": "codex/issue-2006-history-cost",
+    "sha": "d4ae0edf8840cda8eb0d7e19f8d2513e33712a84",
+    "archive_branch": "codex/handoff-2026-09-20/issue-2006-history-cost"
+  },
+  {
+    "local_branch": "codex/marketplace-accepted-cache-retirement",
+    "sha": "623d1d3015c57f2d0e5be9ff286f99fd66826ccb",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-accepted-cache-retirement"
+  },
+  {
+    "local_branch": "codex/marketplace-applied-reconciliation",
+    "sha": "29375e8af0518ff22f9ce38a330c7d4be48a608d",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-applied-reconciliation"
+  },
+  {
+    "local_branch": "codex/marketplace-applied-reconciliation-restack",
+    "sha": "f3d4435207bc7429785542504559550b210751b4",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-applied-reconciliation-restack"
+  },
+  {
+    "local_branch": "codex/marketplace-applied-unavailable",
+    "sha": "5e3233c156226bb40df8c15ebb46651382f83fa5",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-applied-unavailable"
+  },
+  {
+    "local_branch": "codex/marketplace-applied-unavailable-1960",
+    "sha": "760593846c27def2c1aeecbc889d71ba152c9ca5",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-applied-unavailable-1960"
+  },
+  {
+    "local_branch": "codex/marketplace-applied-unavailable-main-review",
+    "sha": "d55475199dbaa93a15ae4a720a7408f29e688126",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-applied-unavailable-main-review"
+  },
+  {
+    "local_branch": "codex/marketplace-landing-prep",
+    "sha": "ba01c2a76b63f5299cd239334e45ce621bd23259",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-landing-prep"
+  },
+  {
+    "local_branch": "codex/marketplace-native-guard-recovery",
+    "sha": "de951b7a044a1c796b678e0abe1ed71291ac5ef1",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-native-guard-recovery"
+  },
+  {
+    "local_branch": "codex/marketplace-native-model-lifetime",
+    "sha": "f50f58e2a08e1d13d68e8bcb1d8203f2329777fb",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-native-model-lifetime"
+  },
+  {
+    "local_branch": "codex/marketplace-native-outcome",
+    "sha": "6a525baf70ac2479a5c3db828737e2ba35e6c096",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-native-outcome"
+  },
+  {
+    "local_branch": "codex/marketplace-publication-low",
+    "sha": "b384e8c041f9a4da19180a4466182afca048ffea",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-publication-low"
+  },
+  {
+    "local_branch": "codex/marketplace-publication-restack",
+    "sha": "f947bba6b6d368fa6caea023cabdce3a2ebfd49d",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-publication-restack"
+  },
+  {
+    "local_branch": "codex/marketplace-publication-signal",
+    "sha": "ea0f959a67d2ee6eda35b9ee5b0259d49bbe4c7d",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-publication-signal"
+  },
+  {
+    "local_branch": "codex/marketplace-removal-warning",
+    "sha": "9c65b072f65a0de990e9ae7824e04d70b18289e7",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-removal-warning"
+  },
+  {
+    "local_branch": "codex/marketplace-remove-outcome",
+    "sha": "96a2cc059ca5fca306a7ce59f2e1c7601d203bb4",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-remove-outcome"
+  },
+  {
+    "local_branch": "codex/marketplace-s3-recovery-errors",
+    "sha": "6ec976e4d44d28bcd5b0ab7f1eab9654e579516e",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-s3-recovery-errors"
+  },
+  {
+    "local_branch": "codex/marketplace-s3-replacement",
+    "sha": "4b4b13e15cf7bf600ffe6026afc6311679e2cc56",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-s3-replacement"
+  },
+  {
+    "local_branch": "codex/marketplace-tui-applied-outcome",
+    "sha": "4b22d0a84c6a4b07b868d529a21cb48688510375",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-tui-applied-outcome"
+  },
+  {
+    "local_branch": "codex/marketplace-tui-cc239-backup",
+    "sha": "cc239432845c501ccd9d68e723151f259a723449",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-tui-cc239-backup"
+  },
+  {
+    "local_branch": "codex/marketplace-tui-ordered-reconciliation",
+    "sha": "2c45c69f2154a80f79fb55654c07e3bafb2deb3b",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-tui-ordered-reconciliation"
+  },
+  {
+    "local_branch": "codex/marketplace-tui-outcome",
+    "sha": "cc239432845c501ccd9d68e723151f259a723449",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-tui-outcome"
+  },
+  {
+    "local_branch": "codex/marketplace-web-restack",
+    "sha": "a6e134f2125166b654fbabe669c09dc00bd8cc2f",
+    "archive_branch": "codex/handoff-2026-09-20/marketplace-web-restack"
+  },
+  {
+    "local_branch": "codex/mobile-sdk-1934-pickup",
+    "sha": "5f14e4d6465baf8b15e8509e3895eedce11e13b2",
+    "archive_branch": "codex/handoff-2026-09-20/mobile-sdk-1934-pickup"
+  },
+  {
+    "local_branch": "codex/native-outbox-authoritative-replay",
+    "sha": "a1412e3e6e3fb79f28da979f2e5af299917add36",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-authoritative-replay"
+  },
+  {
+    "local_branch": "codex/native-outbox-dispatch",
+    "sha": "991826d54a40e39ff870ce8612a2b16b85473901",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-dispatch"
+  },
+  {
+    "local_branch": "codex/native-outbox-draft-restore",
+    "sha": "f1754a0642196c45b8422c8b237434c89d413f33",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-draft-restore"
+  },
+  {
+    "local_branch": "codex/native-outbox-followups",
+    "sha": "3c008e90c1788f0049931b27ee7edd1d5b8ed459",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-followups"
+  },
+  {
+    "local_branch": "codex/native-outbox-foundation",
+    "sha": "f0f0670ecf35c27b8c98b803285580dfdeba2d85",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-foundation"
+  },
+  {
+    "local_branch": "codex/native-outbox-foundation-correction2",
+    "sha": "5d346b79d91b4b50c255ee1b1ba664b13b9bf1ea",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-foundation-correction2"
+  },
+  {
+    "local_branch": "codex/native-outbox-foundations-integration",
+    "sha": "1f3203bd73ec29cc5196f670748c638a13955235",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-foundations-integration"
+  },
+  {
+    "local_branch": "codex/native-outbox-hostb-send",
+    "sha": "ba3b03708f5649026675ab09648577367286926f",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-hostb-send"
+  },
+  {
+    "local_branch": "codex/native-outbox-producer-metadata",
+    "sha": "1349fcbd3193d6f126f95b3631de56a9dddb8baf",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-producer-metadata"
+  },
+  {
+    "local_branch": "codex/native-outbox-recovery-hook",
+    "sha": "62a15b68eac1d38c82e38b11af621dae5168ffa1",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-recovery-hook"
+  },
+  {
+    "local_branch": "codex/native-outbox-recovery-status",
+    "sha": "4dd099f3b819812c96caf76e6abf43f6a83533f1",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-recovery-status"
+  },
+  {
+    "local_branch": "codex/native-outbox-runtime",
+    "sha": "c8828ce2d855cea89a2e90e4929d0fe614495081",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-runtime"
+  },
+  {
+    "local_branch": "codex/native-outbox-runtime-read",
+    "sha": "bde874c38536bf8bc84ffce0a4bd667735761a6f",
+    "archive_branch": "codex/handoff-2026-09-20/native-outbox-runtime-read"
+  },
+  {
+    "local_branch": "codex/native-recovery-action-conversion",
+    "sha": "464c580fcc3d5d16c7fb8fe50dc77a3a6f7a67d1",
+    "archive_branch": "codex/handoff-2026-09-20/native-recovery-action-conversion"
+  },
+  {
+    "local_branch": "codex/offline-draft-connection-recovery",
+    "sha": "9ffba9a3396d4639ae74a1f6f442539d7753fa9b",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-connection-recovery"
+  },
+  {
+    "local_branch": "codex/offline-draft-connection-recovery-pre-d9f2-af83",
+    "sha": "af83b51b19781a3257dee2ba8cd78469b604da29",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-connection-recovery-pre-d9f2-af83"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider",
+    "sha": "e4f03c86fcc9d3a8fa947af5d853000469a53dfb",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider-backup-f7e6a60",
+    "sha": "f7e6a60452dbba99128edf6af27f68d46e527b07",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider-backup-f7e6a60"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider-pre-6cf-a69867",
+    "sha": "a69867528466fb0db7d9967d92a38b5ca3af424d",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider-pre-6cf-a69867"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider-pre-d25-27f9c0",
+    "sha": "27f9c0b563309566f6c99199400ca2c081d48e3f",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider-pre-d25-27f9c0"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider-pre-de981-b02381",
+    "sha": "b023817024734603805b469c4328529c4052741f",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider-pre-de981-b02381"
+  },
+  {
+    "local_branch": "codex/offline-draft-provider-pre-rebase-3b3ae0",
+    "sha": "3b3ae07a44c0b94078d60123fccda5001ccdd631",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-provider-pre-rebase-3b3ae0"
+  },
+  {
+    "local_branch": "codex/offline-draft-recovery-screen",
+    "sha": "9b4dbb09de408faee7f3eb666dce1dc28f8513fb",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-recovery-screen"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-backup-dd60a43",
+    "sha": "dd60a43b90546e3cf7ab3e73571132fe7c71f6a7",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-backup-dd60a43"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-36c-70e6d0",
+    "sha": "70e6d0c04d6fb261ee01220e43d45697f047ec7b",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-36c-70e6d0"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-6cf-68368e5",
+    "sha": "68368e5c3fec648660590dae63bdc914fc99beeb",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-6cf-68368e5"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-d25-4d9a13",
+    "sha": "4d9a130163c7489e992edc41dcd5318048c4db27",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-d25-4d9a13"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-de981-067400",
+    "sha": "0674003fc26f3584a42fae7e229403f986d10c1b",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-de981-067400"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-rebase-96501d",
+    "sha": "96501d5a400c107e6b865a3daae59a26deec9ef6",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-rebase-96501d"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-pre-same-client-3c4285",
+    "sha": "3c42857f491fa08fb468990022ade6f8f9717815",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-pre-same-client-3c4285"
+  },
+  {
+    "local_branch": "codex/offline-draft-retained-snapshot",
+    "sha": "3c42857f491fa08fb468990022ade6f8f9717815",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-retained-snapshot"
+  },
+  {
+    "local_branch": "codex/offline-draft-round-five",
+    "sha": "18dd49684f66d6b32235f1150650593ae9645e77",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-round-five"
+  },
+  {
+    "local_branch": "codex/offline-draft-storage",
+    "sha": "217950a359526367984f7c7ff5edda57a9b1ee24",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-storage"
+  },
+  {
+    "local_branch": "codex/offline-draft-storage-backup-1f5cb2e",
+    "sha": "1f5cb2e61bb829e0602ae5b286686615d74b946e",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-storage-backup-1f5cb2e"
+  },
+  {
+    "local_branch": "codex/offline-draft-storage-pre-6cf-c9173d",
+    "sha": "c9173db55aa64dedbfa5420ffca0fd233fe58d73",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-storage-pre-6cf-c9173d"
+  },
+  {
+    "local_branch": "codex/offline-draft-storage-pre-d25-3f6ba2",
+    "sha": "3f6ba28ad777ff00b2e5eb235fa1b1cb64c177d9",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-storage-pre-d25-3f6ba2"
+  },
+  {
+    "local_branch": "codex/offline-draft-storage-pre-de981-7db6c5",
+    "sha": "7db6c56bb77eb238700b07d40895ac305d864e57",
+    "archive_branch": "codex/handoff-2026-09-20/offline-draft-storage-pre-de981-7db6c5"
+  },
+  {
+    "local_branch": "codex/p10b-reentrancy-fix",
+    "sha": "d84fbc69da763ae1226b9e0a3eb9a6218bd56bc1",
+    "archive_branch": "codex/handoff-2026-09-20/p10b-reentrancy-fix"
+  },
+  {
+    "local_branch": "codex/p8-generation-order-low-fix",
+    "sha": "34ae56cd7d99c047f40c44caf52442ea4bc21d1f",
+    "archive_branch": "codex/handoff-2026-09-20/p8-generation-order-low-fix"
+  },
+  {
+    "local_branch": "codex/p8-generation-order-low-fix-backup-34ae56cd7",
+    "sha": "34ae56cd7d99c047f40c44caf52442ea4bc21d1f",
+    "archive_branch": "codex/handoff-2026-09-20/p8-generation-order-low-fix-backup-34ae56cd7"
+  },
+  {
+    "local_branch": "codex/p8-generation-order-low-fix-restacked",
+    "sha": "3ec95b590661d6a9c1a31f183888aa5866a4e45f",
+    "archive_branch": "codex/handoff-2026-09-20/p8-generation-order-low-fix-restacked"
+  },
+  {
+    "local_branch": "codex/reconnect-banners",
+    "sha": "709a65ca68ca5ffa18485775f6781e0060384af3",
+    "archive_branch": "codex/handoff-2026-09-20/reconnect-banners"
+  },
+  {
+    "local_branch": "codex/reconnect-mutation-readiness",
+    "sha": "9c619f1029b0f90e2b77f5c5d54af0d12d29026c",
+    "archive_branch": "codex/handoff-2026-09-20/reconnect-mutation-readiness"
+  },
+  {
+    "local_branch": "codex/reconnect-recovery",
+    "sha": "1d4b25b1b13d3b82e5fed97cecf6ceea6e50a918",
+    "archive_branch": "codex/handoff-2026-09-20/reconnect-recovery"
+  },
+  {
+    "local_branch": "codex/reconnect-round-four",
+    "sha": "ed3144fbb025eb0412e0f2cb2dcf4f97ac27b878",
+    "archive_branch": "codex/handoff-2026-09-20/reconnect-round-four"
+  },
+  {
+    "local_branch": "codex/recovery-sdk-d25d-1b-native-outbox-storage-read-ee0013dc8",
+    "sha": "ee0013dc819e945dc878df6f3812b67ee680488f",
+    "archive_branch": "codex/handoff-2026-09-20/recovery-sdk-d25d-1b-native-outbox-storage-read-ee0013dc8"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-generation-fence",
+    "sha": "8ac9e61f7607beb105e86cc4bb3a522de4d53456",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-generation-fence"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-generation-reload",
+    "sha": "264ae08142c0aed8841a089c24cc1917122c7ec5",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-generation-reload"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-generation-reload-successor",
+    "sha": "d521522b9933933b1d1d1e7db99713936f7acffc",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-generation-reload-successor"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-generation-stamp",
+    "sha": "513344e43eee0fc2f3b6c3a66bb010ac2dfd3c2a",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-generation-stamp"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-generation-stamp-pre-main-refresh",
+    "sha": "4bf7bb06a1659aaaeafae89697a469e8b73bf102",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-generation-stamp-pre-main-refresh"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p7-parent-qualification",
+    "sha": "41fc2f2e8408b601c5e3b73fdd5ef360046e3d42",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p7-parent-qualification"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p8-settings-hub-generation-restack",
+    "sha": "e8521d4db057821d3e51c83ab0c6c304b4140e8e",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p8-settings-hub-generation-restack"
+  },
+  {
+    "local_branch": "codex/sdk-d6-p9-checkpointed-draft-editor-restack",
+    "sha": "98cb71188f6bb30656b01e1d055e64d8db063e2c",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-d6-p9-checkpointed-draft-editor-restack"
+  },
+  {
+    "local_branch": "codex/sdk-plan-pr-links",
+    "sha": "7b1f67d6f5332d7b64bc3f116edccbb529eceb22",
+    "archive_branch": "codex/handoff-2026-09-20/sdk-plan-pr-links"
+  },
+  {
+    "local_branch": "codex/skillguard-continuation-failure",
+    "sha": "8642272c2019b269d0f7767ab7f4d3b7a9e5fe6e",
+    "archive_branch": "codex/handoff-2026-09-20/skillguard-continuation-failure"
+  },
+  {
+    "local_branch": "codex/transcript-cross-tab",
+    "sha": "f84794a4ea5b97f17fe63843dda4a8583e0675e6",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-cross-tab"
+  },
+  {
+    "local_branch": "codex/transcript-display-patch-preview",
+    "sha": "c660aee9999ef0b0e80dcf53eac9d88e62a2a108",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-display-patch-preview"
+  },
+  {
+    "local_branch": "codex/transcript-display-read-generation",
+    "sha": "b47385c356c67ae46f4e55da76340f5cd3bd7981",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-display-read-generation"
+  },
+  {
+    "local_branch": "codex/transcript-display-wire-contracts",
+    "sha": "68244fb400d17c7d4fd72696d4a3117700227afa",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-display-wire-contracts"
+  },
+  {
+    "local_branch": "codex/transcript-display-wire-contracts-restack",
+    "sha": "dea5d5a3eb5c2851512894d24d2116511e89d8b9",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-display-wire-contracts-restack"
+  },
+  {
+    "local_branch": "codex/transcript-generation-settlement",
+    "sha": "1bf707e70ba5b3bb45e871c931dff4abd8cc3877",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-generation-settlement"
+  },
+  {
+    "local_branch": "codex/transcript-generation-settlement-e2b62-backup",
+    "sha": "e2b62bb85b0bfc1090f753356c9f8b322da607c7",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-generation-settlement-e2b62-backup"
+  },
+  {
+    "local_branch": "codex/transcript-local-store",
+    "sha": "a9b33fe950154f7e43bd6ec247ddff8ae36bde31",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-local-store"
+  },
+  {
+    "local_branch": "codex/transcript-patch-integration",
+    "sha": "933edc60f4efa10080bab2ce4c018f538d7e7ff5",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-patch-integration"
+  },
+  {
+    "local_branch": "codex/transcript-public-types-low",
+    "sha": "93cac3012a158d81fd1a0edc8564a3e04a83e05f",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-public-types-low"
+  },
+  {
+    "local_branch": "codex/transcript-read-store",
+    "sha": "0d57f3b888ec75977fde870d7b096c25b657ecbc",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-read-store"
+  },
+  {
+    "local_branch": "codex/transcript-read-store-pre-atomic-11995",
+    "sha": "11995f872570a9312f75c33e9c8c39375b4af5cd",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-read-store-pre-atomic-11995"
+  },
+  {
+    "local_branch": "codex/transcript-transitions",
+    "sha": "4cc99f9579d7367e1cf22777f24bfa86133a9382",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-transitions"
+  },
+  {
+    "local_branch": "codex/transcript-transitions-reviewed-b065ccf",
+    "sha": "b065ccff7730eb4d9a03d0abba7493f9133126e3",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-transitions-reviewed-b065ccf"
+  },
+  {
+    "local_branch": "codex/transcript-wire-comment-low",
+    "sha": "f3f87e9db25e100b130002fbfa199ef2748e93d7",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-wire-comment-low"
+  },
+  {
+    "local_branch": "codex/transcript-wire-comment-reviewed-786b",
+    "sha": "786b1ccb3cd69ea9b1b7956d59da27450203be2a",
+    "archive_branch": "codex/handoff-2026-09-20/transcript-wire-comment-reviewed-786b"
+  },
+  {
+    "local_branch": "codex/turn-history-consumer-integration",
+    "sha": "cd15c4666fb2a5b130eec0eebeff15f81439c869",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-consumer-integration"
+  },
+  {
+    "local_branch": "codex/turn-history-coverage-alias-successor",
+    "sha": "a0879342d960188cbd0b574a9e8c792fda5b1002",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-coverage-alias-successor"
+  },
+  {
+    "local_branch": "codex/turn-history-coverage-export",
+    "sha": "6960a98f8ee997b7a1fd611d758ae324f6ccf480",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-coverage-export"
+  },
+  {
+    "local_branch": "codex/turn-history-coverage-export-integration",
+    "sha": "6acdb3b414904c481b2b9a0a542906f1432da61f",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-coverage-export-integration"
+  },
+  {
+    "local_branch": "codex/turn-history-coverage-export-qualified",
+    "sha": "baee3be8296632eaabbec5a106e103701ca99384",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-coverage-export-qualified"
+  },
+  {
+    "local_branch": "codex/turn-history-merge",
+    "sha": "18104ad542142a50830e933f23be5a24412db2a9",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-merge"
+  },
+  {
+    "local_branch": "codex/turn-history-merge-piece1",
+    "sha": "c83345d06c29f921bad4cac678771860f39df337",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-merge-piece1"
+  },
+  {
+    "local_branch": "codex/turn-history-metadata",
+    "sha": "3f297910ff41ea75612662f3d233a3f050622c61",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-metadata"
+  },
+  {
+    "local_branch": "codex/turn-history-metadata-alias-refresh",
+    "sha": "c5122160191ffe595a4c55e2b1946ce04a8d096d",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-metadata-alias-refresh"
+  },
+  {
+    "local_branch": "codex/turn-history-metadata-integration",
+    "sha": "c48151983008ec35741a696da5fc43d52150acde",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-metadata-integration"
+  },
+  {
+    "local_branch": "codex/turn-history-result-precedence",
+    "sha": "7144d78f64eccc477ea69a541315af2cf3b47ab9",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-result-precedence"
+  },
+  {
+    "local_branch": "codex/turn-history-retained-placement",
+    "sha": "53ea59b003e5afe40620d2b8341c12c3efa5d654",
+    "archive_branch": "codex/handoff-2026-09-20/turn-history-retained-placement"
+  }
+]

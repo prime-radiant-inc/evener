@@ -1,0 +1,85 @@
+{
+  "observed_at": "2026-09-19T03:05:29.823777+00:00",
+  "pr": 1916,
+  "head": "2188f800bda88d0aac0b7c63f276bbc42d224f56",
+  "main": "c74f82c77a06e555df631218f37a3e242c3c2689",
+  "checks": [
+    {
+      "name": "Build snapshot artifacts",
+      "id": 105828379265,
+      "conclusion": "success"
+    },
+    {
+      "name": "race-modules",
+      "id": 105827712957,
+      "conclusion": "success"
+    },
+    {
+      "name": "static",
+      "id": 105827477609,
+      "conclusion": "success"
+    },
+    {
+      "name": "tests",
+      "id": 105826675482,
+      "conclusion": "success"
+    },
+    {
+      "name": "race-root",
+      "id": 105826675418,
+      "conclusion": "success"
+    },
+    {
+      "name": "native",
+      "id": 105826675393,
+      "conclusion": "success"
+    },
+    {
+      "name": "race-modules / nonagent",
+      "id": 105826675385,
+      "conclusion": "success"
+    },
+    {
+      "name": "race-modules / agent",
+      "id": 105826675378,
+      "conclusion": "success"
+    },
+    {
+      "name": "web",
+      "id": 105826675353,
+      "conclusion": "success"
+    },
+    {
+      "name": "lint-golangci",
+      "id": 105826675341,
+      "conclusion": "success"
+    },
+    {
+      "name": "fuzz",
+      "id": 105826675338,
+      "conclusion": "success"
+    },
+    {
+      "name": "lint-repository",
+      "id": 105826675331,
+      "conclusion": "success"
+    },
+    {
+      "name": "fuzz-checks",
+      "id": 105826675326,
+      "conclusion": "success"
+    },
+    {
+      "name": "api-package",
+      "id": 105826675319,
+      "conclusion": "success"
+    },
+    {
+      "name": "static-build",
+      "id": 105826675239,
+      "conclusion": "success"
+    }
+  ],
+  "review": "Local2543 and independent accepted; full raw panel at6776ea4fa read; notes supersession scoped to #1938 before native notes; shared collision hardening #1957; Lows #1927/#1929. Exact own-patch refresh exemption applies to2188f800b; no fresh reviewer required.",
+  "patch_sha256": "8a1761fd7d9fc66451884bd6db56a41491a12604324539b3ae5d9d743111b427"
+}

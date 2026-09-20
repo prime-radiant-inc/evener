@@ -1,0 +1,7 @@
+Keeps previously loaded native screens visible through recoverable connection loss and shows a reconnect banner, while initial connection and fatal protocol failures retain the blocking connection display. Store-backed settings, plugin, marketplace, and provider views retain their presentation client during a recoverable flap.
+
+This is the screen-retention replacement for the first part of #1915. A separate readiness successor will revalidate deferred mutations against the current live client. #1922 owns reconnect refetch and replacement-client recovery. Merge is held until these dependent pieces are concrete and qualified; the retained display client must never become authority for a mutation.
+
+Validation at e9f8526a49375d1f9944f309d77bb6d138e6dbfa: 20 focused display/connection/provider tests, native typecheck, package-import lint, and diff checks pass. Main 9cb596336f6b33fa61606f950b99dbf3829a9222 is included. Independent review/simplification found no B-owned must-fix. Local RoboRev2555 reported the explicit reconnect-recovery dependencies; the reviewer verified their implementation and tests in #1922 at 7d5d68b09, which must be restacked and revalidated before the batch merges.
+
+Own non-test scope is 266 changed lines (184 additions, 82 deletions). The original implementation is preserved; stable mobile patch identity is 10c9c41ba1714063a29bec239f10b437373ed556. Full combined #1915 work remains preserved at codex/reconnect-round-four. No native/mobile Biome or local full suite was run.

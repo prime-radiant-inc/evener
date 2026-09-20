@@ -1,0 +1,5 @@
+Marketplace notifications and late mutation replies can arrive in either order. This change keeps stale snapshots from restoring a removed marketplace, preserves add/refresh failures even when a newer read has arrived, and lets only the matching removal completion advance its reconciliation state. A failed reconciliation remains retryable.
+
+Stacked on #1940 and #1966; based on refreshed A `4b22d0a84`. The owned change is 138 production lines across five files. It preserves the earlier combined implementation and ordering regressions rather than dropping them. Both TUI slices remain held for current-head CI and complete remote raw reviews.
+
+Validation: focused normal/tagged/race tests, normal/tagged/Windows vet, lint, formatting, and diff checks passed. Independent whole-change spec/correctness/simplify review and local RoboRev2605 found no actionable issues at `74dcdccb7`. Merge-only refresh to main `6cf3f026` produced `2c45c69f2`; complete owned patch bytes are identical, and focused normal/tagged integration tests pass.

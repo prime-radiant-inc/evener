@@ -1,0 +1,3 @@
+Independent review of the marketplace applied-reconciliation replacement at b9884a92ab03208a3c9ac64aba6044758ebcc1a7 found a Low boundary-validation gap: the failure publisher verifies that applied.marketplaces is an array, but does not validate each row before storing it.
+
+Measure the existing marketplace-list decode contract and add the smallest consistent member validation before authoritative error-data publication. Malformed members must not clear a valid current list or create fabricated empty state. Preserve original revision/generation fences and rethrow the original typed clone-litter outcome. Cover malformed members with behavioral store tests; JSON-RPC round-trip coverage is #1944. Keep this in a separate follow-up PR.

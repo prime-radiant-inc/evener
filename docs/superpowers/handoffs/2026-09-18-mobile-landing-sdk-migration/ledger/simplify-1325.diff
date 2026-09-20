@@ -1,0 +1,3362 @@
+diff --git a/cmd/evener-hub/app_force_stop_test.go b/cmd/evener-hub/app_force_stop_test.go
+index 08d5429eb..4114ce855 100644
+--- a/cmd/evener-hub/app_force_stop_test.go
++++ b/cmd/evener-hub/app_force_stop_test.go
+@@ -436,7 +436,7 @@ func TestForceStopSerializesResumeAndDeletionEntryPoints(t *testing.T) {
+ 					currentID, stableID = stableID, currentID
+ 				}
+ 				runDir := t.TempDir()
+-				writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
++				writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
+ 				process := &waitingForceStopProcess{entered: make(chan struct{}), release: make(chan struct{})}
+ 				spawned := make(chan struct{}, 1)
+ 				cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
+@@ -865,7 +865,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
+ 			}
+ 			mutation := make(chan error, 1)
+ 			started := make(chan struct{})
+-			sources := newHubSourceRegistry(cfg)
++			sources, _ := newHubSourceRegistry(cfg)
+ 			go func() {
+ 				close(started)
+ 				if method == appwire.MethodThreadModelSet {
+@@ -1026,7 +1026,7 @@ func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
+ 	if _, err := past.Rebuild(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
++	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
+ 	var events []string
+ 	var resumes atomic.Int32
+ 	cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
+@@ -1645,3 +1645,18 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
+ 		t.Fatalf("durable current target overwritten: %q", got)
+ 	}
+ }
++
++// exitedPID is the PID of a process that has already exited: a rendezvous
++// file naming it is a crashed daemon's on any host. A fixed number (4242 was
++// the habit) is dead on one machine and somebody's live process on another -
++// on a GitHub runner it was, and a hub with no roster of its own probes the
++// file's PID against the real process table, so the "dead daemon" fixture
++// read as a live one there.
++func exitedPID(t *testing.T) int {
++	t.Helper()
++	exited := exec.Command("true")
++	if err := exited.Run(); err != nil {
++		t.Fatalf("run a process to completion: %v", err)
++	}
++	return exited.Process.Pid
++}
+diff --git a/cmd/evener-hub/app_fork_capabilities_test.go b/cmd/evener-hub/app_fork_capabilities_test.go
+index 9c7b5f143..cb3553aa7 100644
+--- a/cmd/evener-hub/app_fork_capabilities_test.go
++++ b/cmd/evener-hub/app_fork_capabilities_test.go
+@@ -850,7 +850,9 @@ func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
+ 		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
+ 	})
+ 	prober := &crashingSubagentProber{sessionID: parentID, childID: childID}
+-	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() })
++	// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
++	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() }).
++		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 	roster.Refresh()
+ 	if !roster.IsSubagentActive(childID) {
+ 		t.Fatal("scripted live roster did not admit the delegate")
+@@ -963,7 +965,9 @@ func TestHubForkRefusesDelegateThatWentLiveBeforeAdmission(t *testing.T) {
+ 		Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+ 	})
+ 	prober := &delegateArrivalProber{sessionID: parentID, childID: childID}
+-	roster := hubcore.NewRoster(runDir, prober)
++	// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
++	roster := hubcore.NewRoster(runDir, prober).
++		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 	roster.Refresh()
+ 	if roster.IsSubagentActive(childID) {
+ 		t.Fatal("the roster already lists the delegate; this fixture is not stale")
+@@ -1030,7 +1034,9 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
+ 			if tc.probeNoName {
+ 				probed = ""
+ 			}
+-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: probed, status: appwire.ThreadStatusIdle})
++			// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
++			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: probed, status: appwire.ThreadStatusIdle}).
++				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 			roster.Refresh()
+ 			listed := roster.List()
+ 			if len(listed) != 1 || listed[0].SessionID != probed || listed[0].Entry.SessionID != currentID {
+@@ -1845,7 +1851,9 @@ func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
+ 					WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+ 					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+ 				})
+-				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
++				// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
++				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle}).
++					SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 				roster.Refresh()
+ 				cfg.Roster = roster
+ 			}
+@@ -2089,7 +2097,9 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
+ 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+ 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+ 			})
+-			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags})
++			// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
++			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags}).
++				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 			roster.Refresh()
+ 			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
+ 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
+@@ -2144,7 +2154,10 @@ func TestHubForkReportsAResolvedSessionsDeletionEvenWhenTheRefreshFails(t *testi
+ 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+ 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+ 			})
+-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
++			// A synthetic claim: PID 1001 is nobody's daemon on this host, so the
++			// identity probe must not answer for it, as SetProcessAlive's rule says.
++			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle}).
++				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 			roster.Refresh()
+ 			store, err := hubcore.NewDeletionStore(t.TempDir())
+ 			if err != nil {
+@@ -2237,7 +2250,10 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
+ 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+ 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+ 			})
+-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
++			// A synthetic claim: PID 1001 is nobody's daemon on this host, so the
++			// identity probe must not answer for it, as SetProcessAlive's rule says.
++			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle}).
++				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+ 			roster.Refresh()
+ 			var probes []string
+ 			cfg := hubcore.WebConfig{
+diff --git a/cmd/evener-hub/app_relay.go b/cmd/evener-hub/app_relay.go
+index a202b1785..667f54fff 100644
+--- a/cmd/evener-hub/app_relay.go
++++ b/cmd/evener-hub/app_relay.go
+@@ -226,6 +226,45 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork
+ 	return notification
+ }
+ 
++// stampResyncTarget names the route a fanned-out resync is being delivered to.
++// The daemon-gone resync (appsource.DaemonGoneResync) carries no target so it
++// reaches every route the relay serves - a read-only child alias shares the
++// root's relay session - and each subscriber acts on the ref it names, so
++// each copy names the subscriber's own.
++//
++// Two keys are set, the rest of the payload is passed through as raw JSON, the
++// way stampClosedThreadCapabilities replaces one key: re-minting the frame
++// from the fields this hub understands would drop anything else the relay
++// session put in it.
++func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
++	if notification.Method != appwire.NotifyEvenerThreadResync {
++		return notification
++	}
++	params := map[string]json.RawMessage{}
++	if len(notification.Params) != 0 && json.Unmarshal(notification.Params, &params) != nil {
++		return notification
++	}
++	if params == nil { // "params": null decodes into a nil map
++		params = map[string]json.RawMessage{}
++	}
++	threadIDValue, err := json.Marshal(threadID)
++	if err != nil {
++		return notification
++	}
++	refValue, err := json.Marshal(ref)
++	if err != nil {
++		return notification
++	}
++	params["threadId"] = threadIDValue
++	params["ref"] = refValue
++	stamped, err := json.Marshal(params)
++	if err != nil {
++		return notification
++	}
++	notification.Params = stamped
++	return notification
++}
++
+ // stampForkCapability adds the hub-owned action to an existing capability
+ // update. Other permissions and fields remain the daemon's current values.
+ func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
+@@ -606,6 +645,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
+ 			}
+ 			publishTarget := func(delivery appsource.RelayDelivery, target relayTargetState) {
+ 				notification := delivery.Notification
++				// The relay's own daemon-gone resync is addressed to every
++				// route; the copy each route gets names that route. Keyed on
++				// the delivery's mark, never on an absent target, which a
++				// malformed daemon frame could share.
++				if delivery.DaemonGone {
++					notification = stampResyncTarget(notification, target.threadID, target.ref)
++				}
+ 				// The edits only this hub can make to a local daemon's
+ 				// notification on its way to a browser: the images it can
+ 				// resolve off disk, and the answer to what a thread can still
+diff --git a/cmd/evener-hub/app_relay_test.go b/cmd/evener-hub/app_relay_test.go
+index 95078306b..0ee482563 100644
+--- a/cmd/evener-hub/app_relay_test.go
++++ b/cmd/evener-hub/app_relay_test.go
+@@ -7,14 +7,22 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strconv"
++	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
+ 
++	"primeradiant.com/evener/agent/schema"
+ 	"primeradiant.com/evener/appwire"
+ 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+ 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+ 	"primeradiant.com/evener/internal/appserver"
++	"primeradiant.com/evener/rendezvous"
+ )
+ 
+ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
+@@ -296,6 +304,683 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T)
+ 	}
+ }
+ 
++// The reconnect resync above is targeted at the canonical ref on purpose. The
++// resync recovery publishes when the daemon has left the roster for good is
++// the opposite case: nothing else will ever tell a subscriber on a read-only
++// child alias that the daemon behind its session is gone, so it reaches every
++// route the relay serves, each stamped with that route's own identity - the
++// clients act on params.ref (issue #1318, review round 1).
++func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
++	const (
++		rootRef  = "local:gone-root"
++		childRef = "local:gone-child"
++	)
++	deliveries := make(chan appsource.RelayDelivery)
++	lease := &scriptedRelaySessionLease{
++		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
++			ref, err := appwire.ParseRef(params.Ref)
++			if err != nil {
++				return appsource.RelayReadResult{}, err
++			}
++			return appsource.RelayReadResult{
++				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
++					ID: ref.ThreadID, Source: ref.SourceID,
++					Evener: appwire.EvenerThread{Ref: params.Ref},
++				}},
++				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
++			}, nil
++		},
++		deliveries: deliveries,
++	}
++	source := &relaySessionTestSource{
++		lease: lease,
++		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
++			return appwire.ParseRef(rootRef)
++		},
++	}
++	sources := appsource.NewRegistry()
++	sources.Add(source)
++	appServer := newHubAppServer(hubcore.WebConfig{
++		HubStateRoot: t.TempDir(),
++		Past:         hubcore.NewPastIndex(""),
++	}, sources)
++	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
++	defer hub.Close()
++	root := dialHubRPC(t, hub)
++	defer root.Close()
++	child := dialHubRPC(t, hub)
++	defer child.Close()
++	for _, client := range []*appwire.Client{root, child} {
++		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
++			t.Fatalf("Initialize: %v", err)
++		}
++	}
++	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
++		t.Fatalf("root ThreadRead: %v", err)
++	}
++	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
++		t.Fatalf("child ThreadRead: %v", err)
++	}
++
++	acknowledged := make(chan struct{})
++	deliveries <- appsource.RelayDelivery{
++		Notification: appsource.DaemonGoneResync(),
++		DaemonGone:   true,
++		Acknowledge:  func() { close(acknowledged) },
++	}
++	<-acknowledged
++	for _, subscriber := range []struct {
++		name   string
++		client *appwire.Client
++		ref    string
++	}{{"root", root, rootRef}, {"child", child, childRef}} {
++		select {
++		case got := <-subscriber.client.Notifications():
++			if got.Method != appwire.NotifyEvenerThreadResync {
++				t.Fatalf("%s received %q, want %q", subscriber.name, got.Method, appwire.NotifyEvenerThreadResync)
++			}
++			var params appwire.ThreadResyncParams
++			if err := json.Unmarshal(got.Params, &params); err != nil {
++				t.Fatalf("%s resync params: %v", subscriber.name, err)
++			}
++			want, _ := appwire.ParseRef(subscriber.ref)
++			if params.Ref != subscriber.ref || params.ThreadID != want.ThreadID {
++				t.Fatalf("%s resync names ref=%q threadId=%q, want its own %q/%q", subscriber.name, params.Ref, params.ThreadID, subscriber.ref, want.ThreadID)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("%s never received the daemon-gone resync", subscriber.name)
++		}
++	}
++}
++
++// A copy names its route; the rest of what the relay session put in the
++// frame passes through, the way stampClosedThreadCapabilities replaces one
++// key and leaves the payload alone (review round 3 on #1325).
++func TestStampResyncTargetKeepsTheOtherFields(t *testing.T) {
++	stamped := stampResyncTarget(appwire.Notification{
++		Method: appwire.NotifyEvenerThreadResync,
++		Params: json.RawMessage(`{"reason":"daemon gone"}`),
++	}, "gone-child", "local:gone-child")
++	var params map[string]any
++	if err := json.Unmarshal(stamped.Params, &params); err != nil {
++		t.Fatalf("stamped params: %v", err)
++	}
++	if params["ref"] != "local:gone-child" || params["threadId"] != "gone-child" {
++		t.Fatalf("stamped params name ref=%v threadId=%v, want local:gone-child/gone-child", params["ref"], params["threadId"])
++	}
++	if params["reason"] != "daemon gone" {
++		t.Fatalf("stamping dropped the frame's other field: %v", params)
++	}
++}
++
++// With no roster the hub lists daemons straight from the rendezvous files,
++// and a daemon that died leaves its file behind. The relay classifies a
++// daemon as gone only once it is no longer listed, so a dead daemon that
++// stays listed is dialled forever and the subscriber never hears it is gone
++// (review round 3 on #1325). The file alone must not keep a dead process
++// dialable.
++func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
++	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
++	defer cancel()
++	daemon, upstream := newDaemonStandIn(t, "gone")
++	// The rendezvous file claims a real process, alive for now.
++	process := exec.Command("sleep", "60")
++	if err := process.Start(); err != nil {
++		t.Fatalf("start stand-in process: %v", err)
++	}
++	t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
++	runDir := t.TempDir()
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       process.Process.Pid,
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "gone",
++		SessionID: "gone",
++	})
++	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
++	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
++	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
++	defer wire.Close()
++	client := dialHubRPC(t, wire)
++	defer client.Close()
++	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:gone", Subscribe: true}); err != nil {
++		t.Fatal(err)
++	}
++
++	// The daemon dies: its process is gone and its socket closes, but its
++	// rendezvous file stays. (httptest's CloseClientConnections skips
++	// hijacked WebSockets; the daemon server closes its own.)
++	if err := process.Process.Kill(); err != nil {
++		t.Fatal(err)
++	}
++	_ = process.Wait()
++	if err := daemon.Shutdown(ctx); err != nil {
++		t.Fatalf("daemon shutdown: %v", err)
++	}
++
++	deadline := time.After(10 * time.Second)
++	for {
++		select {
++		case got := <-client.Notifications():
++			if got.Method != appwire.NotifyEvenerThreadResync {
++				continue
++			}
++			var params appwire.ThreadResyncParams
++			if err := json.Unmarshal(got.Params, &params); err != nil {
++				t.Fatalf("resync params: %v", err)
++			}
++			if params.Ref != "local:gone" {
++				t.Fatalf("resync names %q, want local:gone", params.Ref)
++			}
++			return
++		case <-deadline:
++			t.Fatal("the subscriber was never told to re-read: the dead daemon's rendezvous file kept it dialable")
++		}
++	}
++}
++
++// newDaemonStandIn serves one session over a real WebSocket the way a daemon
++// does, enough for both a subscribing thread/read and the roster's identity
++// probe (thread/list plus a bare thread/read naming the root).
++func newDaemonStandIn(t *testing.T, sessionID string) (*appserver.Server, *httptest.Server) {
++	t.Helper()
++	thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + sessionID}}
++	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
++	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
++		return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
++	})
++	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
++		if p.Subscribe {
++			appserver.Subscribe(ctx, sessionID)
++		}
++		return appwire.ThreadReadResponse{Thread: thread}, nil
++	})
++	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
++	t.Cleanup(upstream.Close)
++	return daemon, upstream
++}
++
++// A daemon frame is the daemon's to shape; "params": null decodes into a nil
++// map, and writing the route into it would take the hub down (review round 4
++// on #1325).
++func TestStampResyncTargetToleratesNullParams(t *testing.T) {
++	stamped := stampResyncTarget(appwire.Notification{
++		Method: appwire.NotifyEvenerThreadResync,
++		Params: json.RawMessage(`null`),
++	}, "gone-child", "local:gone-child")
++	var params appwire.ThreadResyncParams
++	if err := json.Unmarshal(stamped.Params, &params); err != nil {
++		t.Fatalf("stamped params: %v", err)
++	}
++	if params.Ref != "local:gone-child" || params.ThreadID != "gone-child" {
++		t.Fatalf("stamped params = %+v, want local:gone-child/gone-child", params)
++	}
++}
++
++// Process liveness alone cannot vouch for a rendezvous file: the PID a
++// crashed daemon left behind can be reused by anything. Without a roster the
++// hub lists a file only once the process behind it answers for that entry,
++// the same probe the roster applies (review round 4 on #1325).
++func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnALivePID(t *testing.T) {
++	runDir := t.TempDir()
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   "127.0.0.1:1",
++		Endpoint:  "ws://127.0.0.1:1/rpc",
++		SourceID:  "local",
++		ThreadID:  "stale",
++		SessionID: "stale",
++	})
++	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
++	local, ok := sources.Source("local")
++	if !ok {
++		t.Fatal("no local source")
++	}
++	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
++	if err != nil {
++		t.Fatalf("ListThreads: %v", err)
++	}
++	if len(listed.Data) != 0 {
++		t.Fatalf("a stale file on a live PID was listed as a daemon: %+v", listed.Data)
++	}
++}
++
++// The roster keeps a confirmed daemon through a probe miss as long as its PID
++// answers signal 0, so a daemon that crashed and had its PID reused stayed
++// listed, the relay kept dialling the dead endpoint, and the subscriber was
++// never told (review round 5 on #1325). Once the process behind the PID is
++// verified not to be the daemon, the entry reads as crashed, leaves the
++// listing, and recovery announces the daemon gone.
++func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
++	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
++	defer cancel()
++	daemon, upstream := newDaemonStandIn(t, "reused")
++	runDir := t.TempDir()
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(), // alive for the whole test, like a reused PID
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "reused",
++		SessionID: "reused",
++		StateDir:  t.TempDir(),
++		StartedAt: time.Now().UTC(),
++	})
++	var identity atomic.Int32
++	identity.Store(int32(hubcore.ProcessOwnsEntry))
++	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
++		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentity(identity.Load()) })
++	roster.Refresh()
++	if _, ok := roster.Find("reused"); !ok {
++		t.Fatal("the stand-in daemon was not confirmed into the roster")
++	}
++	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
++	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
++	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
++	defer wire.Close()
++	client := dialHubRPC(t, wire)
++	defer client.Close()
++	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:reused", Subscribe: true}); err != nil {
++		t.Fatal(err)
++	}
++
++	// The daemon crashes and its PID is reused: the endpoint stops answering,
++	// signal 0 still succeeds, the process is no longer the daemon.
++	identity.Store(int32(hubcore.ProcessNotOwner))
++	if err := daemon.Shutdown(ctx); err != nil {
++		t.Fatalf("daemon shutdown: %v", err)
++	}
++	roster.Refresh()
++
++	deadline := time.After(10 * time.Second)
++	for {
++		select {
++		case got := <-client.Notifications():
++			if got.Method != appwire.NotifyEvenerThreadResync {
++				continue
++			}
++			var params appwire.ThreadResyncParams
++			if err := json.Unmarshal(got.Params, &params); err != nil {
++				t.Fatalf("resync params: %v", err)
++			}
++			if params.Ref != "local:reused" {
++				t.Fatalf("resync names %q, want local:reused", params.Ref)
++			}
++			return
++		case <-deadline:
++			t.Fatal("the subscriber was never told to re-read: the reused PID kept the crashed daemon listed")
++		}
++	}
++}
++
++// A daemon resync whose ref cannot be read is malformed. It fans out exactly
++// as any malformed frame does (TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce
++// pins that), but the hub must not mistake it for its own daemon-gone
++// announcement: that one is marked as the relay's own, not recognised by an
++// absent target, so a frame like {"ref": null} reaches each route as the
++// daemon sent it, never rewritten into a valid per-route re-read (review
++// round 7 on #1325).
++func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
++	const (
++		rootRef  = "local:malformed-root"
++		childRef = "local:malformed-child"
++	)
++	deliveries := make(chan appsource.RelayDelivery)
++	lease := &scriptedRelaySessionLease{
++		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
++			ref, err := appwire.ParseRef(params.Ref)
++			if err != nil {
++				return appsource.RelayReadResult{}, err
++			}
++			return appsource.RelayReadResult{
++				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
++					ID: ref.ThreadID, Source: ref.SourceID,
++					Evener: appwire.EvenerThread{Ref: params.Ref},
++				}},
++				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
++			}, nil
++		},
++		deliveries: deliveries,
++	}
++	source := &relaySessionTestSource{
++		lease: lease,
++		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
++			return appwire.ParseRef(rootRef)
++		},
++	}
++	sources := appsource.NewRegistry()
++	sources.Add(source)
++	appServer := newHubAppServer(hubcore.WebConfig{
++		HubStateRoot: t.TempDir(),
++		Past:         hubcore.NewPastIndex(""),
++	}, sources)
++	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
++	defer hub.Close()
++	root := dialHubRPC(t, hub)
++	defer root.Close()
++	child := dialHubRPC(t, hub)
++	defer child.Close()
++	for _, client := range []*appwire.Client{root, child} {
++		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
++			t.Fatalf("Initialize: %v", err)
++		}
++	}
++	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
++		t.Fatalf("root ThreadRead: %v", err)
++	}
++	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
++		t.Fatalf("child ThreadRead: %v", err)
++	}
++
++	const malformed = `{"ref":null}`
++	acknowledged := make(chan struct{})
++	deliveries <- appsource.RelayDelivery{
++		Notification: appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage(malformed)},
++		Acknowledge:  func() { close(acknowledged) },
++	}
++	<-acknowledged
++	for _, subscriber := range []struct {
++		name   string
++		client *appwire.Client
++	}{{"root", root}, {"child", child}} {
++		select {
++		case got := <-subscriber.client.Notifications():
++			if got.Method != appwire.NotifyEvenerThreadResync || string(got.Params) != malformed {
++				t.Fatalf("%s received the malformed daemon resync rewritten as %s %s, want it untouched", subscriber.name, got.Method, got.Params)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("%s never received the malformed daemon resync", subscriber.name)
++		}
++	}
++}
++
++// A hub configured without a roster lists daemons through one it makes for
++// itself; that roster must be the hub's roster, not a private one the local
++// source alone can see, or every other consumer of cfg.Roster (restart
++// verification, ownership, navigation) still runs roster-less (review round
++// 9 on #1325).
++func TestHubWithoutRosterSharesItsFallbackRosterWithEveryConsumer(t *testing.T) {
++	_, upstream := newDaemonStandIn(t, "shared")
++	runDir := t.TempDir()
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "shared",
++		SessionID: "shared",
++	})
++	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
++	if web.cfg.Roster == nil {
++		t.Fatal("a roster-less hub left cfg.Roster nil for its other consumers")
++	}
++	// A roster-less hub's roster is refreshed by the local source's lookups;
++	// what that lookup confirmed is what every other consumer then reads.
++	local, ok := web.sources.Source("local")
++	if !ok {
++		t.Fatal("no local source")
++	}
++	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
++	if err != nil {
++		t.Fatalf("ListThreads: %v", err)
++	}
++	if len(listed.Data) != 1 || listed.Data[0].ID != "shared" {
++		t.Fatalf("local source lists %+v, want the one shared daemon", listed.Data)
++	}
++	if _, ok := web.cfg.Roster.Find("shared"); !ok {
++		t.Fatal("cfg.Roster is not the roster the local source lists through")
++	}
++	if _, required, err := restartRequiredDaemon(context.Background(), web.cfg, "local:shared", ""); err != nil || required {
++		t.Fatalf("restartRequiredDaemon through cfg.Roster: required=%v err=%v", required, err)
++	}
++}
++
++// A roster-less hub's roster has no watcher; the local source refreshed it
++// before listing, and nothing else did, so navigation (and every other direct
++// reader of cfg.Roster) could read it empty or stale unless a thread listing
++// happened to run first. The roster refreshes on every read in that mode, so
++// a daemon that appears after startup is there for whichever consumer asks
++// first (review round 11 on #1325).
++func TestHubWithoutRosterListsALateDaemonInNavigationWithoutAThreadListingFirst(t *testing.T) {
++	runDir := t.TempDir()
++	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
++	if web.cfg.Roster == nil {
++		t.Fatal("a roster-less hub left cfg.Roster nil")
++	}
++	_, upstream := newDaemonStandIn(t, "late")
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "late",
++		SessionID: "late",
++	})
++	snapshot := web.navigationSnapshotInputs(context.Background())
++	if len(snapshot.live) != 1 || snapshot.live[0].SessionID != "late" {
++		t.Fatalf("navigation read the fallback roster as %+v, want the daemon that appeared after startup", snapshot.live)
++	}
++}
++
++// The hub wires the roster's unresolved claims to the local source. A daemon
++// whose rendezvous claim changes identity mid-transition while a probe is
++// missed is parked unconfirmed, off the listing; the relay must keep dialling
++// it rather than announce the session ended, and announce only once the
++// claim is gone altogether (review round 12 on #1325).
++func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone(t *testing.T) {
++	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
++	defer cancel()
++	daemon, upstream := newDaemonStandIn(t, "before")
++	runDir := t.TempDir()
++	claim := rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "before",
++		SessionID: "before",
++		StartedAt: time.Now().UTC(),
++	}
++	writeRendezvous(t, runDir, claim)
++	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
++		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
++	roster.Refresh()
++	if _, ok := roster.Find("before"); !ok {
++		t.Fatal("the stand-in daemon was not confirmed into the roster")
++	}
++	sources, cfg := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
++	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: cfg.Roster}, sources)
++	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
++	defer wire.Close()
++	client := dialHubRPC(t, wire)
++	defer client.Close()
++	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:before", Subscribe: true}); err != nil {
++		t.Fatal(err)
++	}
++
++	// Mid-transition: the claim changes identity under the same PID while the
++	// endpoint stops answering. The roster parks both claims unresolved.
++	claim.SessionID, claim.ThreadID = "after", "after"
++	writeRendezvous(t, runDir, claim)
++	if err := daemon.Shutdown(ctx); err != nil {
++		t.Fatalf("daemon shutdown: %v", err)
++	}
++	roster.Refresh()
++	if len(roster.List()) != 0 || len(roster.UnconfirmedEntries()) == 0 {
++		t.Fatalf("expected the claims parked unresolved, got listed=%+v unconfirmed=%+v", roster.List(), roster.UnconfirmedEntries())
++	}
++	select {
++	case got := <-client.Notifications():
++		if got.Method == appwire.NotifyEvenerThreadResync {
++			t.Fatalf("an unresolved claim was announced gone: %s", got.Params)
++		}
++	case <-time.After(1500 * time.Millisecond):
++	}
++
++	// The claim is gone altogether: now the daemon is gone.
++	if err := os.Remove(filepath.Join(runDir, strconv.Itoa(claim.PID)+".json")); err != nil {
++		t.Fatal(err)
++	}
++	roster.Refresh()
++	deadline := time.After(10 * time.Second)
++	for {
++		select {
++		case got := <-client.Notifications():
++			if got.Method != appwire.NotifyEvenerThreadResync {
++				continue
++			}
++			return
++		case <-deadline:
++			t.Fatal("no resync once the claim was gone altogether")
++		}
++	}
++}
++
++// countingProber answers for the entry's own session and counts probe passes.
++type countingProber struct{ probes atomic.Int32 }
++
++func (p *countingProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
++	p.probes.Add(1)
++	return hubcore.ProbeResult{SessionID: entry.SessionID, Status: appwire.ThreadStatusIdle, OK: true}
++}
++
++// The hub is never a daemon: a stale file naming the hub's own PID, even one
++// whose endpoint another daemon answers, is not listed (review round 13 on
++// #1325).
++func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnItsOwnPID(t *testing.T) {
++	_, upstream := newDaemonStandIn(t, "stale")
++	runDir := t.TempDir()
++	stateDir := t.TempDir()
++	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(stateDir, "sessions", "stale.api.jsonl"), nil, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "stale",
++		SessionID: "stale",
++		StateDir:  stateDir,
++		StartedAt: time.Now().UTC(),
++	})
++	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
++	local, ok := sources.Source("local")
++	if !ok {
++		t.Fatal("no local source")
++	}
++	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
++	if err != nil {
++		t.Fatalf("ListThreads: %v", err)
++	}
++	if len(listed.Data) != 0 {
++		t.Fatalf("a stale file on the hub's own PID was listed as a daemon: %+v", listed.Data)
++	}
++}
++
++// One logical read is one scan. Navigation asks the roster three questions
++// (ownership error, live list, unresolved claims); on a roster that refreshes
++// on read they must come from one pass, or the answers can describe three
++// different moments (review round 13 on #1325).
++func TestHubNavigationReadsTheRosterInOneScan(t *testing.T) {
++	runDir := t.TempDir()
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID: 4242, Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc",
++		SourceID: "local", ThreadID: "one", SessionID: "one",
++	})
++	prober := &countingProber{}
++	roster := hubcore.NewRoster(runDir, prober).RefreshOnRead().
++		SetProcessAlive(func(int) bool { return true }).
++		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
++	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Roster: roster, Past: hubcore.NewPastIndex("")}, nil)
++	prober.probes.Store(0)
++	snapshot := web.navigationSnapshotInputs(context.Background())
++	if len(snapshot.live) != 1 {
++		t.Fatalf("navigation live = %+v, want the one daemon", snapshot.live)
++	}
++	if got := prober.probes.Load(); got != 1 {
++		t.Fatalf("one navigation read ran %d roster scans, want 1", got)
++	}
++}
++
++// A roster-less hub's roster refreshes on read, but navigation caches its
++// snapshot by the source revision, and the roster's listing was not part of
++// that revision: after the first navigation read, a daemon appearing or
++// leaving stayed invisible until something else invalidated. The roster's
++// listing generation is part of the revision, so a plain read sees the
++// change with no other invalidation (review round 14 on #1325).
++func TestHubWithoutRosterNavigationSeesALateDaemonOnThePlainNextRead(t *testing.T) {
++	runDir := t.TempDir()
++	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
++	// The live section renders a roster entry joined with its saved session
++	// meta; the meta is present from the start, the daemon is what appears.
++	web.injectMetasForTest([]schema.SessionMeta{{ID: "late", UpdatedAt: time.Now().UTC()}})
++	live := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
++	readLiveRefs := func() []string {
++		t.Helper()
++		result, err := web.navigation.readV2(t.Context(), live, nil)
++		if err != nil {
++			t.Fatalf("navigation live read: %v", err)
++		}
++		// The v2 snapshot is normalized: session rows are entities of kind
++		// "session" whose value carries the ref.
++		var snapshot struct {
++			Entities []struct {
++				Kind  string `json:"kind"`
++				Value struct {
++					Ref string `json:"ref"`
++				} `json:"value"`
++			} `json:"entities"`
++		}
++		if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
++			t.Fatalf("decode live section: %v", err)
++		}
++		var refs []string
++		for _, entity := range snapshot.Entities {
++			if entity.Kind == "session" {
++				refs = append(refs, entity.Value.Ref)
++			}
++		}
++		return refs
++	}
++	if refs := readLiveRefs(); len(refs) != 0 {
++		t.Fatalf("live section before any daemon: %v", refs)
++	}
++	_, upstream := newDaemonStandIn(t, "late")
++	writeRendezvous(t, runDir, rendezvous.Entry{
++		PID:       os.Getpid(),
++		Protocol:  appwire.ProtocolVersion,
++		Address:   strings.TrimPrefix(upstream.URL, "http://"),
++		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
++		SourceID:  "local",
++		ThreadID:  "late",
++		SessionID: "late",
++	})
++	if refs := readLiveRefs(); len(refs) != 1 || refs[0] != "local:late" {
++		t.Fatalf("live section after the daemon appeared = %v, want [local:late] on a plain read", refs)
++	}
++}
++
+ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
+ 	thread := appwire.Thread{
+ 		ID:        "thread-delivery",
+diff --git a/cmd/evener-hub/app_rpc.go b/cmd/evener-hub/app_rpc.go
+index 8907920a8..f75542384 100644
+--- a/cmd/evener-hub/app_rpc.go
++++ b/cmd/evener-hub/app_rpc.go
+@@ -18,66 +18,88 @@ import (
+ 	"primeradiant.com/evener/cmdutil"
+ 	"primeradiant.com/evener/internal/appserver"
+ 	"primeradiant.com/evener/internal/plugins"
+-	"primeradiant.com/evener/rendezvous"
+ )
+ 
+-func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
++// newHubSourceRegistry builds the hub's sources. A hub configured without a
++// roster still lists daemons through one, over the same rendezvous directory
++// and the same probe, refreshed on every read instead of by a watcher: a
++// rendezvous file names a daemon only once the process behind it answers for
++// that entry. Liveness alone cannot vouch for a file - a crashed daemon's PID
++// can be reused by anything - and the relay classifies a daemon as gone only
++// once it is no longer listed, so an unverified file would keep a dead daemon
++// dialable. The returned configuration carries that roster, so every other
++// consumer of cfg.Roster (restart verification, ownership, navigation) reads
++// the one the local source lists through, and reads it as fresh.
++func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.WebConfig) {
+ 	registry := appsource.NewRegistry()
+-	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+-		if cfg.Roster != nil {
+-			live := cfg.Roster.List()
+-			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
+-			for _, item := range live {
+-				if item.Crashed {
+-					continue
+-				}
+-				entry := appsource.LocalDaemonEntry{
+-					Entry:         item.Entry,
+-					SessionID:     item.SessionID,
+-					Status:        item.Status,
+-					PendingAsk:    item.PendingAsk,
+-					RunningJobs:   item.RunningJobs,
+-					CompletedJobs: item.CompletedJobs,
+-					Watches:       item.Watches,
+-				}
+-				entries = append(entries, entry)
+-				// In-process descendants are addressed as their own AppWire
+-				// threads, but are served by their owner's daemon endpoint.
+-				for _, childID := range item.RunningSubagentIDs {
+-					child := entry
+-					child.OwnerSessionID = entry.SessionID
+-					child.SessionID = childID
+-					// The alias carries the child's OWN watches, sampled by
+-					// the prober into ChildWatches. Inheriting the root
+-					// entry's Watches would put the root's rows on the
+-					// child row (and, for a read-only alias, they were
+-					// suppressed anyway), losing the child's own.
+-					child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
+-					// The child's own projected status when the daemon carries
+-					// it — inheriting the parent's status would render a
+-					// settled delegate as working (or vice versa). "" (old
+-					// daemon) keeps the inherited status, the pre-states
+-					// behavior.
+-					if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
+-						child.Status = childState
+-					}
+-					child.ReadOnlyAlias = true
+-					entries = append(entries, child)
+-				}
++	roster := cfg.Roster
++	if roster == nil && cfg.RunDir != "" {
++		roster = hubcore.NewRoster(cfg.RunDir, &hubcore.StatusProber{}).RefreshOnRead()
++		cfg.Roster = roster
++	}
++	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
++		if roster != nil {
++			return localDaemonEntriesFromRoster(roster.List())
++		}
++		return nil
++	}, http.DefaultClient)
++	if roster != nil {
++		// The claims the roster holds unresolved are off the listing on
++		// purpose; the relay must still tell them apart from a daemon that
++		// is gone.
++		local.SetClaims(func() appsource.LocalDaemonClaims {
++			scan := roster.Snapshot()
++			return appsource.LocalDaemonClaims{Live: localDaemonEntriesFromRoster(scan.Live), Unconfirmed: scan.Unconfirmed}
++		})
++	}
++	registry.Add(local)
++	return registry, cfg
++}
++
++// localDaemonEntriesFromRoster is the local source's view of a roster's live
++// entries: crashed ones skipped, in-process descendants addressed as their own
++// AppWire threads served by their owner's endpoint.
++func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDaemonEntry {
++	entries := make([]appsource.LocalDaemonEntry, 0, len(live))
++	for _, item := range live {
++		if item.Crashed {
++			continue
++		}
++		entry := appsource.LocalDaemonEntry{
++			Entry:         item.Entry,
++			SessionID:     item.SessionID,
++			Status:        item.Status,
++			PendingAsk:    item.PendingAsk,
++			RunningJobs:   item.RunningJobs,
++			CompletedJobs: item.CompletedJobs,
++			Watches:       item.Watches,
++		}
++		entries = append(entries, entry)
++		// In-process descendants are addressed as their own AppWire
++		// threads, but are served by their owner's daemon endpoint.
++		for _, childID := range item.RunningSubagentIDs {
++			child := entry
++			child.OwnerSessionID = entry.SessionID
++			child.SessionID = childID
++			// The alias carries the child's OWN watches, sampled by
++			// the prober into ChildWatches. Inheriting the root
++			// entry's Watches would put the root's rows on the
++			// child row (and, for a read-only alias, they were
++			// suppressed anyway), losing the child's own.
++			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
++			// The child's own projected status when the daemon carries
++			// it — inheriting the parent's status would render a
++			// settled delegate as working (or vice versa). "" (old
++			// daemon) keeps the inherited status, the pre-states
++			// behavior.
++			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
++				child.Status = childState
+ 			}
+-			return entries
++			child.ReadOnlyAlias = true
++			entries = append(entries, child)
+ 		}
+-		if cfg.RunDir == "" {
+-			return nil
+-		}
+-		raw, _ := rendezvous.List(cfg.RunDir)
+-		entries := make([]appsource.LocalDaemonEntry, 0, len(raw))
+-		for _, entry := range raw {
+-			entries = append(entries, appsource.LocalDaemonEntry{Entry: entry})
+-		}
+-		return entries
+-	}, http.DefaultClient))
+-	return registry
++	}
++	return entries
+ }
+ 
+ var (
+diff --git a/cmd/evener-hub/app_rpc_test.go b/cmd/evener-hub/app_rpc_test.go
+index f1bf587df..8d3d7acde 100644
+--- a/cmd/evener-hub/app_rpc_test.go
++++ b/cmd/evener-hub/app_rpc_test.go
+@@ -64,7 +64,7 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
+ 			"sess_child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+ 		},
+ 	})
+-	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
++	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+ 	source, ok := registry.Source("local")
+ 	if !ok {
+ 		t.Fatal("local source missing")
+@@ -862,7 +862,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
+ 		DeletionStore: store,
+ 		ResumeLocks:   hubcore.NewResumeLocks(),
+ 	}
+-	sources := newHubSourceRegistry(cfg)
++	sources, _ := newHubSourceRegistry(cfg)
+ 
+ 	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
+ 	var wire appwire.WireError
+@@ -906,7 +906,8 @@ func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
+ 		ResumeLocks:   hubcore.NewResumeLocks(),
+ 		Past:          past,
+ 	}
+-	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
++	sources, _ := newHubSourceRegistry(cfg)
++	server := newHubAppServer(cfg, sources)
+ 	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -958,7 +959,8 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
+ 		Spawner:       spawner,
+ 	}
+ 
+-	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
++	sources, _ := newHubSourceRegistry(cfg)
++	_, err = hubThreadResume(context.Background(), cfg, sources, appwire.ThreadResumeParams{Ref: ref})
+ 	var wire appwire.WireError
+ 	if !errors.As(err, &wire) {
+ 		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
+@@ -1913,9 +1915,10 @@ func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
+ }
+ 
+ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
+-	runDir := t.TempDir()
+ 	base := time.Now().UTC()
+-	writeRendezvous(t, runDir, rendezvous.Entry{
++	// Nothing answers at these endpoints, so the entries are seeded into a
++	// roster rather than left for the rendezvous directory's probe to reject.
++	older := rendezvous.Entry{
+ 		PID:       101,
+ 		Protocol:  appwire.ProtocolVersion,
+ 		Endpoint:  "ws://127.0.0.1:1/rpc",
+@@ -1923,8 +1926,8 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
+ 		ThreadID:  "02wMz5Txv2enqVTitaig6F",
+ 		SessionID: "02wMz5Txv2enqVTitaig6F",
+ 		StartedAt: base.Add(-time.Hour),
+-	})
+-	writeRendezvous(t, runDir, rendezvous.Entry{
++	}
++	newer := rendezvous.Entry{
+ 		PID:       102,
+ 		Protocol:  appwire.ProtocolVersion,
+ 		Endpoint:  "ws://127.0.0.1:2/rpc",
+@@ -1932,9 +1935,13 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
+ 		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
+ 		SessionID: "02wMz5Txv47YP64RR3B9YJ",
+ 		StartedAt: base,
+-	})
++	}
++	roster := hubcore.NewRosterWithEntries(
++		hubcore.LiveEntry{Entry: older, SessionID: older.SessionID},
++		hubcore.LiveEntry{Entry: newer, SessionID: newer.SessionID},
++	)
+ 
+-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
++	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
+ 	defer hub.Close()
+ 	client := dialHubRPC(t, hub)
+ 	defer client.Close()
+@@ -2114,7 +2121,6 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
+ 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	runDir := t.TempDir()
+ 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+ 	liveUpdated := base
+ 	pastUpdated := base.Add(-time.Hour)
+@@ -2136,7 +2142,9 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
+ 	}); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	writeRendezvous(t, runDir, rendezvous.Entry{
++	// Nothing answers at this endpoint, so the live entry is seeded into a
++	// roster rather than left for the rendezvous directory's probe to reject.
++	live := rendezvous.Entry{
+ 		PID:       501,
+ 		Protocol:  appwire.ProtocolVersion,
+ 		Endpoint:  "ws://127.0.0.1:501/rpc",
+@@ -2144,12 +2152,12 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
+ 		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
+ 		SessionID: "02wMz5Txv9yYdSRJat13MZ",
+ 		StartedAt: liveStarted,
+-	})
++	}
+ 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+ 	if _, err := past.Rebuild(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
++	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
+ 
+ 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
+ 	if err != nil {
+@@ -6483,7 +6491,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T)
+ 			JobID: "job_shell", JobType: "shell", Status: "running",
+ 		}},
+ 	})
+-	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
++	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+ 	source, ok := registry.Source("local")
+ 	if !ok {
+ 		t.Fatal("local source missing")
+@@ -9474,12 +9482,21 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
+ }
+ 
+ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
++	// The stand-in answers the hub's resume read and, with no roster in this
++	// hub, the rendezvous directory's identity probe (thread/list and a bare
++	// thread/read naming the root) that lists it in the first place. Like a
++	// real daemon it carries one id as both thread and session id: the probe
++	// lists it by session id, and the resume reads it by thread id.
++	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
+ 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
++	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
++		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
++	})
+ 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+-		if params.Ref != "local:th_resumed" {
++		if params.Ref != "" && params.Ref != "local:th_resumed" {
+ 			t.Fatalf("ref=%q", params.Ref)
+ 		}
+-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
++		return appwire.ThreadReadResponse{Thread: resumed}, nil
+ 	})
+ 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+ 	defer daemonHTTP.Close()
+@@ -9491,12 +9508,14 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
+ 				t.Fatalf("resume session=%q", req.SessionID)
+ 			}
+ 			entry := rendezvous.Entry{
+-				PID:       105,
++				// The probe, not this PID, decides whether the entry is
++				// listed; it still has to be a live process.
++				PID:       os.Getpid(),
+ 				Protocol:  appwire.ProtocolVersion,
+ 				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+ 				SourceID:  "local",
+ 				ThreadID:  "th_resumed",
+-				SessionID: "sess_resumed",
++				SessionID: "th_resumed",
+ 			}
+ 			writeRendezvous(t, runDir, entry)
+ 			return entry, nil
+diff --git a/cmd/evener-hub/cov_exact_app_rpc_fuzz_test.go b/cmd/evener-hub/cov_exact_app_rpc_fuzz_test.go
+index 6f6907bfc..5eb2fe8d4 100644
+--- a/cmd/evener-hub/cov_exact_app_rpc_fuzz_test.go
++++ b/cmd/evener-hub/cov_exact_app_rpc_fuzz_test.go
+@@ -201,12 +201,12 @@ func FuzzExactAppRPC(f *testing.F) {
+ 			_ = newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
+ 			runDir := t.TempDir()
+ 			_, _ = rendezvous.Write(runDir, rendezvous.Entry{PID: 7, Address: "127.0.0.1:1", ThreadID: "thread"})
+-			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
++			runRegistry, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+ 			if local, ok := runRegistry.Source("local"); ok {
+ 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
+ 			}
+ 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{ThreadID: "x", PID: 1, SessionID: "x"})
+-			rosterRegistry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
++			rosterRegistry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+ 			if local, ok := rosterRegistry.Source("local"); ok {
+ 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
+ 			}
+diff --git a/cmd/evener-hub/cov_rpc_sources_pass6_fuzz_test.go b/cmd/evener-hub/cov_rpc_sources_pass6_fuzz_test.go
+index 24990bd9a..6e2053080 100644
+--- a/cmd/evener-hub/cov_rpc_sources_pass6_fuzz_test.go
++++ b/cmd/evener-hub/cov_rpc_sources_pass6_fuzz_test.go
+@@ -75,7 +75,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
+ 
+ 		switch seed % 3 {
+ 		case 0:
+-			configured := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
++			configured, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
+ 			if local, ok := configured.Source("local"); ok {
+ 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
+ 			}
+diff --git a/cmd/evener-hub/e2e_test.go b/cmd/evener-hub/e2e_test.go
+index 554838a75..dbb5e1b15 100644
+--- a/cmd/evener-hub/e2e_test.go
++++ b/cmd/evener-hub/e2e_test.go
+@@ -2,6 +2,7 @@ package hub
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+@@ -12,6 +13,7 @@ import (
+ 
+ 	"primeradiant.com/evener/appwire"
+ 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
++	"primeradiant.com/evener/rendezvous"
+ 	"primeradiant.com/evener/test/e2e/fakellm"
+ )
+ 
+@@ -53,42 +55,7 @@ func TestE2E_HubAndDaemon(t *testing.T) {
+ 	// $XDG_STATE_HOME/evener/run, started exactly as a user would. The hub
+ 	// knows nothing about it beyond what the daemon writes there.
+ 	daemonDir := t.TempDir()
+-	daemon := exec.Command(filepath.Join(stack.binDir, "evener"), "serve",
+-		"--model", stack.model,
+-		"--addr", "127.0.0.1:0",
+-		"--dir", daemonDir,
+-	)
+-	// XDG_* still point into the package's shared throwaway root, which a
+-	// hand-started daemon treats as its own config: it syncs plugin
+-	// marketplaces there, and a clone interrupted by this test's cleanup
+-	// leaves a .git TestMain's RemoveAll then refuses to delete, which prints
+-	// a leak line on an otherwise passing run. Point them at the stack's HOME
+-	// so the daemon writes only inside its own tree.
+-	daemon.Env = append(os.Environ(),
+-		"HOME="+stack.home,
+-		"XDG_CONFIG_HOME="+filepath.Join(stack.home, "config"),
+-		"XDG_STATE_HOME="+filepath.Join(stack.home, "state"),
+-		"XDG_CACHE_HOME="+filepath.Join(stack.home, "cache"),
+-	)
+-	daemonLog, err := os.Create(filepath.Join(stack.home, "daemon.log"))
+-	if err != nil {
+-		t.Fatalf("create daemon log: %v", err)
+-	}
+-	daemon.Stdout = daemonLog
+-	daemon.Stderr = daemonLog
+-	if err := daemon.Start(); err != nil {
+-		t.Fatalf("start daemon: %v", err)
+-	}
+-	t.Cleanup(func() {
+-		_ = daemon.Process.Kill()
+-		_ = daemon.Wait()
+-		_ = daemonLog.Close()
+-		if t.Failed() {
+-			if body, readErr := os.ReadFile(filepath.Join(stack.home, "daemon.log")); readErr == nil {
+-				t.Logf("daemon log:\n%s", body)
+-			}
+-		}
+-	})
++	startHandStartedDaemon(t, stack, daemonDir)
+ 
+ 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+ 	defer cancel()
+@@ -212,3 +179,178 @@ context_strategy = "ooda"
+ 		}
+ 	}
+ }
++
++// startHandStartedDaemon runs `evener serve` the way a user does, on the
++// stack's HOME so the hub discovers it through the rendezvous directory, and
++// returns the channel its exit lands on.
++func startHandStartedDaemon(t *testing.T, stack hubStack, daemonDir string) <-chan error {
++	t.Helper()
++	daemon := exec.Command(filepath.Join(stack.binDir, "evener"), "serve",
++		"--model", stack.model,
++		"--addr", "127.0.0.1:0",
++		"--dir", daemonDir,
++	)
++	// XDG_* still point into the package's shared throwaway root, which a
++	// hand-started daemon treats as its own config: it syncs plugin
++	// marketplaces there, and a clone interrupted by this test's cleanup
++	// leaves a .git TestMain's RemoveAll then refuses to delete, which prints
++	// a leak line on an otherwise passing run. Point them at the stack's HOME
++	// so the daemon writes only inside its own tree.
++	daemon.Env = append(os.Environ(),
++		"HOME="+stack.home,
++		"XDG_CONFIG_HOME="+filepath.Join(stack.home, "config"),
++		"XDG_STATE_HOME="+filepath.Join(stack.home, "state"),
++		"XDG_CACHE_HOME="+filepath.Join(stack.home, "cache"),
++	)
++	daemonLog, err := os.Create(filepath.Join(stack.home, "daemon.log"))
++	if err != nil {
++		t.Fatalf("create daemon log: %v", err)
++	}
++	daemon.Stdout = daemonLog
++	daemon.Stderr = daemonLog
++	if err := daemon.Start(); err != nil {
++		t.Fatalf("start daemon: %v", err)
++	}
++	exited := make(chan error, 1)
++	waited := make(chan struct{})
++	go func() {
++		defer close(waited)
++		exited <- daemon.Wait()
++	}()
++	t.Cleanup(func() {
++		_ = daemon.Process.Kill()
++		<-waited
++		_ = daemonLog.Close()
++		if t.Failed() {
++			if body, readErr := os.ReadFile(filepath.Join(stack.home, "daemon.log")); readErr == nil {
++				t.Logf("daemon log:\n%s", body)
++			}
++		}
++	})
++	return exited
++}
++
++// The skill guard's capability-loss step, without the browser: a subscribed
++// client whose session's daemon exits must be told, so the pane can render
++// the session as ended. The daemon's own close frame is the racy part - it
++// is sent microseconds before the socket closes and the relay revokes
++// whatever is still unpublished at that moment - so this pins the handoff
++// the hub owes regardless: a resync after the daemon has left the roster,
++// and a re-read that answers the ended state the follow-up composer needs
++// (issue #1318).
++func TestE2E_DaemonExitTellsSubscriberToReread(t *testing.T) {
++	e2ecap.RequireLoopbackBind(t)
++	e2ecap.RequireProcessInspect(t)
++	if testing.Short() {
++		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
++	}
++
++	provider, err := fakellm.New()
++	if err != nil {
++		t.Fatalf("start fake provider: %v", err)
++	}
++	t.Cleanup(provider.Close)
++	stack := startHubStack(t, provider)
++	daemonDir := t.TempDir()
++	exited := startHandStartedDaemon(t, stack, daemonDir)
++
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	client := stack.dialRPC(ctx, t)
++
++	var ref, threadID string
++	deadline := time.Now().Add(30 * time.Second)
++	for ref == "" {
++		if time.Now().After(deadline) {
++			t.Fatalf("the hub roster never listed the hand-started daemon at %s", daemonDir)
++		}
++		list, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
++		if err != nil {
++			t.Fatalf("thread/list: %v", err)
++		}
++		for _, thread := range list.Data {
++			if thread.CWD == daemonDir {
++				ref, threadID = thread.Evener.Ref, thread.ID
++			}
++		}
++		if ref == "" {
++			time.Sleep(200 * time.Millisecond)
++		}
++	}
++	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
++		t.Fatalf("thread/read subscribe: %v", err)
++	}
++
++	// The guard's helper shuts itself down through the real thread/shutdown,
++	// sent straight to the daemon rather than through the hub.
++	entries, err := rendezvous.ListStrict(filepath.Join(stack.home, "state", "evener", "run"))
++	if err != nil {
++		t.Fatalf("rendezvous list: %v", err)
++	}
++	var address string
++	for _, entry := range entries {
++		if entry.SessionID == threadID {
++			address = entry.Address
++		}
++	}
++	if address == "" {
++		t.Fatalf("no rendezvous entry for %s among %d entries", threadID, len(entries))
++	}
++	transport, err := appwire.DialWebSocket(ctx, "ws://"+address+"/rpc", nil)
++	if err != nil {
++		t.Fatalf("dial daemon: %v", err)
++	}
++	direct := appwire.NewClient(transport)
++	direct.Start(context.Background())
++	if _, err := direct.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-e2e-daemon-exit", Version: "test"}}); err != nil {
++		t.Fatalf("daemon initialize: %v", err)
++	}
++	if err := direct.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
++		t.Fatalf("thread/shutdown: %v", err)
++	}
++	_ = direct.Close()
++	select {
++	case err := <-exited:
++		if err != nil {
++			t.Fatalf("daemon exit: %v", err)
++		}
++	case <-time.After(30 * time.Second):
++		t.Fatal("daemon did not exit after thread/shutdown")
++	}
++
++	resyncDeadline := time.After(15 * time.Second)
++	var seen []string
++	for resync := false; !resync; {
++		select {
++		case notification, ok := <-client.Notifications():
++			if !ok {
++				t.Fatalf("hub connection closed before any resync; saw %v", seen)
++			}
++			seen = append(seen, notification.Method)
++			if notification.Method != appwire.NotifyEvenerThreadResync {
++				continue
++			}
++			var params appwire.ThreadResyncParams
++			if err := json.Unmarshal(notification.Params, &params); err != nil {
++				t.Fatalf("decode resync: %v", err)
++			}
++			if params.Ref != ref {
++				t.Fatalf("resync for %q, want %q", params.Ref, ref)
++			}
++			resync = true
++		case <-resyncDeadline:
++			t.Fatalf("no evener/thread/resync for %s within 15s of the daemon exiting; saw %v", ref, seen)
++		}
++	}
++
++	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
++	if err != nil {
++		t.Fatalf("thread/read after the resync: %v", err)
++	}
++	if got := read.Thread.Status.Type; got != appwire.ThreadStatusNotLoaded {
++		t.Fatalf("re-read status = %q, want %q", got, appwire.ThreadStatusNotLoaded)
++	}
++	if !read.Thread.Evener.Capabilities.Send {
++		t.Fatalf("re-read advertises no send, so the follow-up composer would not render: %+v", read.Thread.Evener.Capabilities)
++	}
++}
+diff --git a/cmd/evener-hub/internal/appsource/local_daemon.go b/cmd/evener-hub/internal/appsource/local_daemon.go
+index ea2c2f2b3..3ef56ed84 100644
+--- a/cmd/evener-hub/internal/appsource/local_daemon.go
++++ b/cmd/evener-hub/internal/appsource/local_daemon.go
+@@ -21,8 +21,14 @@ import (
+ type LocalDaemonSource struct {
+ 	sourceID string
+ 	entries  func() []LocalDaemonEntry
+-	client   *http.Client
+-	dial     appwireDialFunc
++	// claims is one roster scan's live entries and unresolved claims together,
++	// read by the relay when it decides whether a daemon is gone. Unresolved
++	// claims are not routable, and they are not gone either: a relay whose
++	// daemon's claim is still on the table keeps dialling instead of
++	// announcing the session ended.
++	claims func() LocalDaemonClaims
++	client *http.Client
++	dial   appwireDialFunc
+ 
+ 	itemPagingLocks keyedMutexRegistry
+ 	itemSnapshots   *itemSnapshotStateCache
+@@ -92,6 +98,24 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
+ 	}, client)
+ }
+ 
++// LocalDaemonClaims is one roster scan's view of the rendezvous claims: the
++// entries it lists as live and the claims it holds unresolved (alive PID,
++// ownership not yet confirmed). The relay reads both from one scan, so a
++// claim cannot fall between the two reads - listed in neither because a probe
++// succeeded between them - and be announced gone.
++type LocalDaemonClaims struct {
++	Live        []LocalDaemonEntry
++	Unconfirmed []rendezvous.Entry
++}
++
++// SetClaims gives the source the roster's claims as one snapshot, for the
++// relay to tell "no claim at all" (the daemon is gone) from "claim present,
++// ownership unresolved" (keep dialling) without reading twice.
++func (s *LocalDaemonSource) SetClaims(claims func() LocalDaemonClaims) *LocalDaemonSource {
++	s.claims = claims
++	return s
++}
++
+ func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
+ 	if sourceID == "" {
+ 		sourceID = "local"
+@@ -147,10 +171,22 @@ func (s *LocalDaemonSource) ResolveSubscriptionAdmission(params appwire.ThreadRe
+ // relayEntry may refresh an endpoint, but a canonical key cannot fall back to
+ // a newly reassociated current-ID alias with a different semantic owner.
+ func (s *LocalDaemonSource) relayEntry(ref appwire.Ref) (rendezvous.Entry, error) {
+-	entry, err := s.entryForReadRef(ref.String(), "")
++	return s.relayEntryAmong(s.liveEntries(), ref)
++}
++
++// relayEntryAmong is relayEntry resolved against one scan's live entries, so
++// the relay's "is the daemon gone" decision and the claims it consults come
++// from the same moment.
++func (s *LocalDaemonSource) relayEntryAmong(live []LocalDaemonEntry, ref appwire.Ref) (rendezvous.Entry, error) {
++	requestedRef, threadID, err := s.acceptRef(ref.String(), "")
+ 	if err != nil {
+ 		return rendezvous.Entry{}, err
+ 	}
++	item, err := s.localEntryAmong(live, requestedRef, threadID, true)
++	if err != nil {
++		return rendezvous.Entry{}, err
++	}
++	entry := localDaemonRendezvousEntry(item)
+ 	canonical, err := s.relaySessionRef(entry)
+ 	if err != nil {
+ 		return rendezvous.Entry{}, err
+@@ -196,8 +232,22 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
+ 	if session == nil {
+ 		created := newRelaySession(
+ 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
+-				currentEntry, resolveErr := s.relayEntry(ref)
++				// One scan decides: the listing and the unresolved claims
++				// read together, so a claim a probe confirms between two
++				// reads cannot be in neither.
++				claims := s.currentClaims()
++				currentEntry, resolveErr := s.relayEntryAmong(claims.Live, ref)
+ 				if resolveErr != nil {
++					// Only "no claim at all" means the daemon is gone. A
++					// resolver failure on a listed entry (its session moved
++					// under the thread, no workspace ref) names a daemon that
++					// is still there, and so does a claim the roster holds
++					// unresolved: alive, ownership not yet confirmed, kept off
++					// the listing on purpose while a probe is missed during a
++					// transition. Both keep dialling.
++					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted && !s.claimNames(claims.Unconfirmed, ref) {
++						return nil, nil, &relayDaemonGoneError{err: resolveErr}
++					}
+ 					return nil, nil, resolveErr
+ 				}
+ 				transport, dialErr := s.dial(ctx, currentEntry.Endpoint, s.client, daemonAuthHeader(currentEntry.HubToken))
+@@ -980,34 +1030,97 @@ func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOn
+ }
+ 
+ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
++	requestedRef, threadID, err := s.acceptRef(rawRef, threadID)
++	if err != nil {
++		return LocalDaemonEntry{}, err
++	}
++	// The inventory is read only for a ref this source can serve: an invalid
++	// or foreign one is refused before the listing is consulted.
++	return s.localEntryAmong(s.liveEntries(), requestedRef, threadID, allowReadOnlyAlias)
++}
++
++// acceptRef parses a requested ref and refuses one this source cannot serve,
++// before any inventory is read. It returns the trimmed ref and the thread id
++// to resolve (the ref's, when a ref is given).
++func (s *LocalDaemonSource) acceptRef(rawRef, threadID string) (string, string, error) {
+ 	requestedRef := strings.TrimSpace(rawRef)
+ 	if requestedRef != "" {
+ 		ref, err := appwire.ParseRef(requestedRef)
+ 		if err != nil {
+-			return LocalDaemonEntry{}, err
++			return "", "", err
+ 		}
+ 		if ref.SourceID != s.sourceID {
+-			return LocalDaemonEntry{}, fmt.Errorf("source not found: %s", ref.SourceID)
++			return "", "", fmt.Errorf("source not found: %s", ref.SourceID)
+ 		}
+ 		threadID = ref.ThreadID
+ 	}
+-	for _, item := range s.liveEntries() {
++	return requestedRef, threadID, nil
++}
++
++// localEntryAmong resolves an accepted ref (or thread id) against the given
++// live entries, the way localEntryForRefMode resolves it against the current
++// listing.
++func (s *LocalDaemonSource) localEntryAmong(live []LocalDaemonEntry, requestedRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
++	for _, item := range live {
+ 		if item.ReadOnlyAlias && !allowReadOnlyAlias {
+ 			continue
+ 		}
+-		entry := localDaemonRendezvousEntry(item)
+-		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
+-			return item, nil
+-		}
+-		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
++		if s.localEntryNamesRef(item, requestedRef, threadID) {
+ 			return item, nil
+ 		}
+ 	}
+-	return LocalDaemonEntry{}, appwire.SessionUnavailable("thread not found: " + threadID)
++	return LocalDaemonEntry{}, &localDaemonThreadNotFoundError{err: appwire.SessionUnavailable("thread not found: " + threadID)}
+ }
+ 
++// currentClaims is one scan's live entries and unresolved claims. Without a
++// claims provider the listing alone is the scan, and nothing is unresolved.
++func (s *LocalDaemonSource) currentClaims() LocalDaemonClaims {
++	if s.claims == nil {
++		return LocalDaemonClaims{Live: s.liveEntries()}
++	}
++	claims := s.claims()
++	claims.Live = s.liveEntriesAmong(s.listedEntriesAmong(claims.Live))
++	return claims
++}
++
++// localEntryNamesRef reports whether an entry is the one a ref (or, without a
++// ref, a thread id) addresses: by its workspace ref, its thread id or its
++// session id.
++func (s *LocalDaemonSource) localEntryNamesRef(item LocalDaemonEntry, requestedRef, threadID string) bool {
++	entry := localDaemonRendezvousEntry(item)
++	if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
++		return true
++	}
++	return localDaemonThreadID(item) == threadID || entry.SessionID == threadID
++}
++
++// unconfirmedClaimNames reports whether a rendezvous claim the roster holds
++// unresolved names the ref: not routable, but not gone either.
++func (s *LocalDaemonSource) claimNames(unconfirmed []rendezvous.Entry, ref appwire.Ref) bool {
++	for _, claim := range unconfirmed {
++		if s.localEntryNamesRef(LocalDaemonEntry{Entry: claim}, ref.String(), ref.ThreadID) {
++			return true
++		}
++	}
++	return false
++}
++
++// localDaemonThreadNotFoundError marks the one resolver failure that means no
++// listed entry names the thread. The wire error inside is what every caller
++// reported before; the type only lets the relay tell "unlisted" apart from a
++// resolver failure on an entry that is still there.
++type localDaemonThreadNotFoundError struct{ err error }
++
++func (e *localDaemonThreadNotFoundError) Error() string { return e.err.Error() }
++func (e *localDaemonThreadNotFoundError) Unwrap() error { return e.err }
++
+ func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
+-	entries := s.listedEntries()
++	return s.liveEntriesAmong(s.listedEntries())
++}
++
++// liveEntriesAmong keeps the routable entries of a listing that has already
++// passed listedEntries' filters.
++func (s *LocalDaemonSource) liveEntriesAmong(entries []LocalDaemonEntry) []LocalDaemonEntry {
+ 	out := make([]LocalDaemonEntry, 0, len(entries))
+ 	for _, item := range entries {
+ 		if item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
+@@ -1023,7 +1136,10 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
+ 	if s.entries == nil {
+ 		return nil
+ 	}
+-	entries := s.entries()
++	return s.listedEntriesAmong(s.entries())
++}
++
++func (s *LocalDaemonSource) listedEntriesAmong(entries []LocalDaemonEntry) []LocalDaemonEntry {
+ 	out := make([]LocalDaemonEntry, 0, len(entries))
+ 	for _, item := range entries {
+ 		entry := item.Entry
+diff --git a/cmd/evener-hub/internal/appsource/relay_session.go b/cmd/evener-hub/internal/appsource/relay_session.go
+index 05173f480..f41a23d42 100644
+--- a/cmd/evener-hub/internal/appsource/relay_session.go
++++ b/cmd/evener-hub/internal/appsource/relay_session.go
+@@ -2,6 +2,8 @@ package appsource
+ 
+ import (
+ 	"context"
++	"encoding/json"
++	"errors"
+ 	"sync"
+ 	"time"
+ 
+@@ -10,6 +12,21 @@ import (
+ 
+ type relaySessionConnect func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error)
+ 
++// relayDaemonGoneError marks a connect attempt that found no daemon to dial:
++// the entry this session relayed has left the roster, which drops an entry
++// only once its process is gone. A dial that fails against a listed entry is
++// not this - that daemon may still be coming back. The message is the
++// resolver's own, unchanged, so what a caller reports stays what it was.
++type relayDaemonGoneError struct{ err error }
++
++func (e *relayDaemonGoneError) Error() string { return e.err.Error() }
++func (e *relayDaemonGoneError) Unwrap() error { return e.err }
++
++func isRelayDaemonGone(err error) bool {
++	_, gone := errors.AsType[*relayDaemonGoneError](err)
++	return gone
++}
++
+ type relaySession struct {
+ 	ctx     context.Context
+ 	cancel  context.CancelFunc
+@@ -48,6 +65,11 @@ type relaySession struct {
+ 	// publishes one evener/thread/resync ahead of anything that connection
+ 	// produces, whichever caller drove the reconnect (kata 8nyk).
+ 	resyncPending bool
++	// goneAnnounced records that recovery has already told the listeners to
++	// re-read because the daemon left the roster, so the retries that follow
++	// (the daemon may yet come back) do not repeat it. Reset with
++	// resyncPending on the next disconnect.
++	goneAnnounced bool
+ 	closed        bool
+ }
+ 
+@@ -78,6 +100,9 @@ type relayPublishJob struct {
+ 	fence         *relayPublicationFence
+ 	notifications []appwire.Notification
+ 	done          chan struct{}
++	// daemonGone marks the relay's own daemon-gone announcement; it reaches
++	// listeners as RelayDelivery.DaemonGone.
++	daemonGone bool
+ }
+ 
+ type relayPublicationFence struct {
+@@ -449,6 +474,7 @@ func (s *relaySession) disconnect(epoch uint64) {
+ 	// connection. A replacement daemon is a new turn-id generation, so the
+ 	// feed cannot resume against that state without a re-read first.
+ 	s.resyncPending = true
++	s.goneAnnounced = false
+ 	if capture != nil && capture.epoch == epoch && (capture.prepared || capture.routesPublished) {
+ 		connection.disconnected = true
+ 		s.mu.Unlock()
+@@ -501,12 +527,52 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
+ 		return
+ 	}
+ 	s.resyncPending = false
++	s.queueResyncLocked(params)
++	s.mu.Unlock()
++}
++
++// publishDaemonGoneResync tells listeners to re-read once the daemon they were
++// following has left the roster for good. A disconnect revokes whatever the
++// daemon said last and was still unpublished (its own close frame included),
++// counting on the reconnect to carry the resync - and a daemon that exited
++// never reconnects, so without this the listener keeps the state from before
++// the exit indefinitely. The pending resync is left armed: a daemon that comes
++// back is a new generation and still owes its own re-read.
++//
++// The job is queued with no epoch and no fence, so it is not revoked by the
++// epoch advance every later reconnect attempt makes: recovery keeps trying
++// after the announcement, and a listener busy with an earlier delivery would
++// otherwise lose the one instruction that tells it the daemon is gone. That
++// is safe where a daemon frame would not be: this frame belongs to no daemon
++// generation, and being re-read late costs one extra read.
++func (s *relaySession) publishDaemonGoneResync() {
++	s.mu.Lock()
++	if s.goneAnnounced || s.closed {
++		s.mu.Unlock()
++		return
++	}
++	s.goneAnnounced = true
++	s.enqueuePublishJob(relayPublishJob{notifications: []appwire.Notification{DaemonGoneResync()}, daemonGone: true})
++	s.mu.Unlock()
++}
++
++// DaemonGoneResync is the re-read instruction recovery publishes once the
++// daemon a session relayed has left the roster for good. It names no ref: a
++// read-only child alias shares the root's relay session, and nothing else will
++// ever tell that subscriber its daemon is gone, so the hub's relay fans this
++// out to every route it serves and stamps each route's own identity in. The
++// delivery is marked DaemonGone; the hub keys the fan-out on that mark, not
++// on the absent ref, which a malformed daemon frame could share.
++func DaemonGoneResync() appwire.Notification {
++	return appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage("{}")}
++}
++
++func (s *relaySession) queueResyncLocked(params appwire.ThreadReadParams) {
+ 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+ 		ThreadID: params.ThreadID,
+ 		Ref:      params.Ref,
+ 	}).Notification
+ 	s.queuePublishLocked(s.epoch, []appwire.Notification{resync}, nil)
+-	s.mu.Unlock()
+ }
+ 
+ func (s *relaySession) recoverCanonicalFeed() {
+@@ -542,6 +608,9 @@ func (s *relaySession) recoverCanonicalFeed() {
+ 			}
+ 			continue
+ 		}
++		if isRelayDaemonGone(err) {
++			s.publishDaemonGoneResync()
++		}
+ 
+ 		attempt++
+ 		delay := 100 * time.Millisecond
+@@ -670,12 +739,17 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
+ }
+ 
+ func (s *relaySession) queuePublishLocked(epoch uint64, notifications []appwire.Notification, done chan struct{}) {
+-	job := relayPublishJob{
++	s.enqueuePublishJob(relayPublishJob{
+ 		epoch:         epoch,
+ 		fence:         s.publicationFence,
+ 		notifications: append([]appwire.Notification(nil), notifications...),
+ 		done:          done,
+-	}
++	})
++}
++
++// enqueuePublishJob appends one job to the FIFO and wakes the publisher. A job
++// with no epoch and no fence is dispatched whatever epoch is current.
++func (s *relaySession) enqueuePublishJob(job relayPublishJob) {
+ 	s.publishMu.Lock()
+ 	s.publishJobs = append(s.publishJobs, job)
+ 	s.publishMu.Unlock()
+@@ -707,7 +781,7 @@ func (s *relaySession) publishLoop() {
+ 				s.publishMu.Unlock()
+ 				pending = s.pruneDeliveryWaits(pending)
+ 				for _, notification := range job.notifications {
+-					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification)...)
++					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification, job.daemonGone)...)
+ 				}
+ 				if job.done != nil {
+ 					waits := append([]relayDeliveryWait(nil), pending...)
+@@ -722,7 +796,7 @@ func (s *relaySession) publishLoop() {
+ 	}
+ }
+ 
+-func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) []relayDeliveryWait {
++func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification, daemonGone bool) []relayDeliveryWait {
+ 	s.mu.Lock()
+ 	listeners := make([]*relayListener, 0, len(s.listeners))
+ 	for _, listener := range s.listeners {
+@@ -732,7 +806,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
+ 
+ 	waits := make([]relayDeliveryWait, 0, len(listeners))
+ 	for _, listener := range listeners {
+-		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification)
++		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification, daemonGone)
+ 		if wait != nil {
+ 			waits = append(waits, *wait)
+ 		}
+@@ -744,7 +818,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
+ }
+ 
+ func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
+-	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification)
++	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification, false)
+ 	if wait != nil {
+ 		return s.waitForDelivery(*wait)
+ 	}
+@@ -756,6 +830,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
+ 	fence *relayPublicationFence,
+ 	listener *relayListener,
+ 	notification appwire.Notification,
++	daemonGone bool,
+ ) (bool, *relayDeliveryWait) {
+ 	ack := make(chan struct{})
+ 	proceed := make(chan struct{})
+@@ -763,6 +838,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
+ 	var proceedOnce sync.Once
+ 	delivery := RelayDelivery{
+ 		Notification: notification,
++		DaemonGone:   daemonGone,
+ 		Acknowledge: func() {
+ 			ackOnce.Do(func() { close(ack) })
+ 		},
+diff --git a/cmd/evener-hub/internal/appsource/relay_session_test.go b/cmd/evener-hub/internal/appsource/relay_session_test.go
+index 5b4c86cba..d9aa0f7e2 100644
+--- a/cmd/evener-hub/internal/appsource/relay_session_test.go
++++ b/cmd/evener-hub/internal/appsource/relay_session_test.go
+@@ -29,9 +29,17 @@ type relayTestDaemon struct {
+ }
+ 
+ func newRelayTestSource(t *testing.T, entries []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
++	t.Helper()
++	return newRelayTestSourceListing(t, func() []rendezvous.Entry { return entries })
++}
++
++// newRelayTestSourceListing is newRelayTestSource over a live entry list, for
++// tests where a daemon leaves the roster mid-test.
++func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
+ 	t.Helper()
+ 	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
+ 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
++		entries := list()
+ 		out := make([]LocalDaemonEntry, 0, len(entries))
+ 		for _, entry := range entries {
+ 			out = append(out, LocalDaemonEntry{Entry: entry})
+@@ -1717,3 +1725,413 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
+ 		t.Fatal("replacement handoff commit lost")
+ 	}
+ }
++
++// A daemon that exits for good never reconnects, so the resync a reconnect
++// would carry never comes. Its last frames, if still unpublished when its
++// socket closed, were revoked with the epoch (the contract
++// TestRelaySessionStaleEpochNotificationCannotPublish pins), so a listener is
++// left holding the state from before the exit with nothing on the way to
++// correct it: a web pane keeps reading "Message the agent…" on a session
++// whose daemon is gone (issue #1318). Once the daemon can no longer be found
++// - the roster drops an entry only when its process is gone - recovery owes
++// the listener the re-read instruction itself.
++func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
++	var listingMu sync.Mutex
++	listed := []rendezvous.Entry{relayEntry("thread-1")}
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		listingMu.Lock()
++		defer listingMu.Unlock()
++		return listed
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++
++	// The daemon exits: its rendezvous entry goes, then its socket closes.
++	listingMu.Lock()
++	listed = nil
++	listingMu.Unlock()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++
++	select {
++	case delivery := <-deliveries:
++		expectDaemonGoneResync(t, delivery)
++		delivery.Acknowledge()
++	case <-time.After(5 * time.Second):
++		t.Fatal("no resync reached the listener after the daemon exited for good")
++	}
++	if dials := daemon.dials.Load(); dials != 1 {
++		t.Fatalf("dials = %d, want 1: a daemon that left the roster is not dialled", dials)
++	}
++}
++
++// expectDaemonGoneResync asserts the re-read instruction recovery publishes
++// for a daemon that is gone: a resync that names no ref, marked as the relay's
++// own so the hub fans it out to every route this session serves (a read-only
++// child alias shares the root's relay session) and stamps each route's own
++// identity in - a marking no daemon frame can carry, malformed or not.
++func expectDaemonGoneResync(t *testing.T, delivery RelayDelivery) {
++	t.Helper()
++	if !delivery.DaemonGone {
++		t.Fatalf("daemon-gone resync is not marked as the relay's own: %+v", delivery.Notification)
++	}
++	notification := delivery.Notification
++	if notification.Method != appwire.NotifyEvenerThreadResync {
++		t.Fatalf("delivery = %+v, want resync", notification)
++	}
++	var params map[string]any
++	if err := json.Unmarshal(notification.Params, &params); err != nil {
++		t.Fatalf("resync params: %v", err)
++	}
++	if _, targeted := params["ref"]; targeted {
++		t.Fatalf("daemon-gone resync names ref %v; it must be untargeted so every route hears it", params["ref"])
++	}
++	if _, targeted := params["threadId"]; targeted {
++		t.Fatalf("daemon-gone resync names threadId %v; it must be untargeted so every route hears it", params["threadId"])
++	}
++}
++
++// Recovery keeps retrying after the daemon is gone (it may come back), and
++// every attempt advances the publication epoch, which revokes whatever is
++// still queued - a queued daemon-gone resync included, when the listener is
++// busy. The resync is the one thing that must survive that: it is published
++// outside the revocable epoch (issue #1318, review round 1).
++func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.T) {
++	var listingMu sync.Mutex
++	listed := []rendezvous.Entry{relayEntry("thread-1")}
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		listingMu.Lock()
++		defer listingMu.Unlock()
++		return listed
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++	session := relaySessionFor(t, source)
++
++	// A delivery the listener has not acknowledged holds the publisher, so
++	// the resync queued behind it is still waiting when the epoch moves.
++	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
++	barrier := <-deliveries
++	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
++		t.Fatalf("barrier delivery = %q, want barrier", got)
++	}
++	listingMu.Lock()
++	listed = nil
++	listingMu.Unlock()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++	// Wait for recovery to have queued the resync, then do what its next
++	// attempt does: advance the epoch, revoking the current publication fence.
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		session.mu.Lock()
++		announced := session.goneAnnounced
++		session.mu.Unlock()
++		if announced {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("recovery never announced the daemon gone")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	session.mu.Lock()
++	session.advanceEpochLocked()
++	session.mu.Unlock()
++	barrier.Acknowledge()
++
++	select {
++	case delivery := <-deliveries:
++		expectDaemonGoneResync(t, delivery)
++		delivery.Acknowledge()
++	case <-time.After(5 * time.Second):
++		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
++	}
++}
++
++// Only "no longer listed" means gone. A resolver failure against an entry that
++// is still listed - here the session id moved under the thread, so the
++// canonical ref no longer matches this relay session - names a daemon that
++// is very much there, and must not send listeners re-reading an ended state
++// (review round 4 on #1325).
++func TestRelaySessionResolverFailureOnAListedEntryIsNotGone(t *testing.T) {
++	var listingMu sync.Mutex
++	listed := []rendezvous.Entry{relayEntry("thread-1")}
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		listingMu.Lock()
++		defer listingMu.Unlock()
++		return listed
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++
++	// The entry stays listed under thread-1 but now names another session,
++	// so relayEntry fails with "relay session identity changed".
++	moved := relayEntry("thread-1")
++	moved.SessionID = "thread-2"
++	listingMu.Lock()
++	listed = []rendezvous.Entry{moved}
++	listingMu.Unlock()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++
++	// Recovery attempts at 0, 100, 300 and 700ms all see the listed entry.
++	select {
++	case delivery := <-deliveries:
++		t.Fatalf("a listed daemon was announced gone: %+v", delivery.Notification)
++	case <-time.After(1500 * time.Millisecond):
++	}
++}
++
++// Recovery keeps retrying while the daemon is gone (it may come back), and
++// every failed attempt would be a reason to announce it again. The listener is
++// told once per disconnect (review round 4 on #1325).
++func TestRelaySessionDaemonGoneIsAnnouncedOncePerDisconnect(t *testing.T) {
++	var listingMu sync.Mutex
++	listed := []rendezvous.Entry{relayEntry("thread-1")}
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		listingMu.Lock()
++		defer listingMu.Unlock()
++		return listed
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++	listingMu.Lock()
++	listed = nil
++	listingMu.Unlock()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++
++	select {
++	case delivery := <-deliveries:
++		expectDaemonGoneResync(t, delivery)
++		delivery.Acknowledge()
++	case <-time.After(5 * time.Second):
++		t.Fatal("no resync reached the listener after the daemon exited for good")
++	}
++	// Recovery retries at 100, 200 and 400ms after the announcing attempt.
++	select {
++	case delivery := <-deliveries:
++		t.Fatalf("the daemon was announced gone again: %+v", delivery.Notification)
++	case <-time.After(1500 * time.Millisecond):
++	}
++}
++
++// Only "no rendezvous claim at all" is gone. The roster keeps an alive claim
++// whose ownership it cannot yet resolve off the listing on purpose (a probe
++// missed during a daemon or session transition), and that claim is not a
++// daemon that left: recovery keeps dialling until the claim is either
++// confirmed or dropped (review round 12 on #1325).
++func TestRelaySessionUnconfirmedClaimIsNotGone(t *testing.T) {
++	var mu sync.Mutex
++	listed := []rendezvous.Entry{relayEntry("thread-1")}
++	var unconfirmed []rendezvous.Entry
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		mu.Lock()
++		defer mu.Unlock()
++		return listed
++	})
++	source.SetClaims(func() LocalDaemonClaims {
++		mu.Lock()
++		defer mu.Unlock()
++		live := make([]LocalDaemonEntry, 0, len(listed))
++		for _, entry := range listed {
++			live = append(live, LocalDaemonEntry{Entry: entry})
++		}
++		return LocalDaemonClaims{Live: live, Unconfirmed: unconfirmed}
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++
++	// The claim leaves the listing but stays on the table, unresolved.
++	mu.Lock()
++	unconfirmed, listed = listed, nil
++	mu.Unlock()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case delivery := <-deliveries:
++		t.Fatalf("an unresolved claim was announced gone: %+v", delivery.Notification)
++	case <-time.After(1500 * time.Millisecond):
++	}
++
++	// The claim is dropped altogether: now the daemon is gone.
++	mu.Lock()
++	unconfirmed = nil
++	mu.Unlock()
++	select {
++	case delivery := <-deliveries:
++		expectDaemonGoneResync(t, delivery)
++		delivery.Acknowledge()
++	case <-time.After(5 * time.Second):
++		t.Fatal("no resync once the claim was gone altogether")
++	}
++}
++
++// The relay decides "gone" from one roster scan. Read as two - the listing,
++// then the unresolved claims - a claim that a probe confirms between the reads
++// is in neither answer, and a live daemon is announced gone (review round 14
++// on #1325). Here the separate reads are made to disagree on purpose while
++// the single snapshot is consistent.
++func TestRelaySessionDecidesGoneFromOneScan(t *testing.T) {
++	entry := relayEntry("thread-1")
++	var offTheList atomic.Bool
++	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
++		if offTheList.Load() {
++			return nil // the listing read alone: the claim is momentarily off the list
++		}
++		return []rendezvous.Entry{entry}
++	})
++	source.SetClaims(func() LocalDaemonClaims {
++		// One scan's consistent answer: the claim is live.
++		return LocalDaemonClaims{Live: []LocalDaemonEntry{{Entry: entry}}}
++	})
++	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
++	leaseValue, err := source.acquireRelaySession(params)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := leaseValue.(*relaySessionLease)
++	defer lease.Close()
++	deliveries, err := lease.Listen(t.Context())
++	if err != nil {
++		t.Fatal(err)
++	}
++	read := readRelayAsync(context.Background(), lease, params)
++	call := <-daemon.reads
++	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
++	result := <-read
++	if result.err != nil {
++		t.Fatal(result.err)
++	}
++	if !result.result.Handoff.Commit() {
++		t.Fatal("initial handoff did not commit")
++	}
++	offTheList.Store(true)
++	// Recovery's redials reach the fake daemon; answer them so the relay is
++	// never left waiting on a read nobody serves.
++	go func() {
++		for {
++			select {
++			case <-t.Context().Done():
++				return
++			case redial := <-daemon.reads:
++				redial.transport.recv <- appwire.ResponseMessage(redial.request.ID, relaySnapshot("thread-1", "redialled"))
++			}
++		}
++	}()
++	if err := call.transport.Close(); err != nil {
++		t.Fatal(err)
++	}
++	// Recovery redials the live claim (attempts at 0, 100, 300, 700ms).
++	select {
++	case delivery := <-deliveries:
++		if delivery.DaemonGone {
++			t.Fatalf("a live daemon was announced gone: %+v", delivery.Notification)
++		}
++	case <-time.After(1500 * time.Millisecond):
++	}
++	if dials := daemon.dials.Load(); dials < 2 {
++		t.Fatalf("dials = %d, want the live claim redialled", dials)
++	}
++}
+diff --git a/cmd/evener-hub/internal/appsource/source.go b/cmd/evener-hub/internal/appsource/source.go
+index d39a686b1..fc4506531 100644
+--- a/cmd/evener-hub/internal/appsource/source.go
++++ b/cmd/evener-hub/internal/appsource/source.go
+@@ -673,7 +673,11 @@ type RelayHandoff interface {
+ 
+ type RelayDelivery struct {
+ 	Notification appwire.Notification
+-	Acknowledge  func()
++	// DaemonGone marks the relay's own announcement that the daemon behind
++	// this session is gone (DaemonGoneResync), the one notification the hub
++	// fans out to every route it serves. Nothing a daemon sends carries it.
++	DaemonGone  bool
++	Acknowledge func()
+ 	// Proceed transfers bounded pending ownership to the listener without
+ 	// acknowledging the delivery. It permits later ordered publications to
+ 	// reach that listener; capture barriers still wait for Acknowledge.
+diff --git a/cmd/evener-hub/internal/daemonprocess/process.go b/cmd/evener-hub/internal/daemonprocess/process.go
+index 24cccd25e..ed5afa7c7 100644
+--- a/cmd/evener-hub/internal/daemonprocess/process.go
++++ b/cmd/evener-hub/internal/daemonprocess/process.go
+@@ -15,6 +15,25 @@ import (
+ // ErrExited means the bound process has been confirmed absent.
+ var ErrExited = errors.New("daemon process exited")
+ 
++// ErrNotDaemon means verification positively found another process at the
++// daemon's PID: a fact that cannot hold for the daemon that wrote the entry -
++// another owner, a start after the entry was written, a generation change
++// under inspection. A refusal that only means the inspection could not vouch
++// for the process does not carry it: no generation or start time read, the
++// log descriptor not seen, an inspection error, or an argv that is not an
++// `evener serve` invocation - the entry does not record how its daemon was
++// launched, and a daemon run inside another binary (a test helper) is still
++// that daemon. Kill refuses on every failure alike; only the roster's reading
++// of a failure differs.
++var ErrNotDaemon = errors.New("process is not the daemon its rendezvous entry names")
++
++// notDaemonError keeps each refusal's own message and answers errors.Is for
++// ErrNotDaemon.
++type notDaemonError struct{ reason string }
++
++func (e notDaemonError) Error() string        { return e.reason }
++func (e notDaemonError) Is(target error) bool { return target == ErrNotDaemon }
++
+ // Target is the rendezvous identity and canonical session data location.
+ type Target struct {
+ 	PID       int
+@@ -36,9 +55,13 @@ type Controller interface{ Open(Target) (Process, error) }
+ type identity struct {
+ 	generation string
+ 	uid        int
+-	startedAt  time.Time
+-	argv       []string
+-	ownsLog    bool
++	// startedAt is the latest the process can have started; startedAtLower
++	// the earliest. A platform that knows the start exactly sets them equal;
++	// Linux knows it to the clock tick and reports the tick's two bounds.
++	startedAt      time.Time
++	startedAtLower time.Time
++	argv           []string
++	ownsLog        bool
+ }
+ 
+ type processHandle interface {
+@@ -95,18 +118,36 @@ func (p *process) verify() error {
+ 		if err != nil {
+ 			return err
+ 		}
+-		if v.generation == "" || (p.generation != "" && v.generation != p.generation) {
+-			return errors.New("daemon process generation changed")
++		if v.generation == "" {
++			return errors.New("daemon process generation unknown")
++		}
++		if p.generation != "" && v.generation != p.generation {
++			return notDaemonError{"daemon process generation changed"}
+ 		}
+ 		if v.uid != os.Geteuid() {
+-			return errors.New("daemon process belongs to another user")
++			return notDaemonError{"daemon process belongs to another user"}
+ 		}
++		if v.startedAt.IsZero() {
++			return errors.New("daemon process start time unknown")
++		}
++		// Positive evidence needs the EARLIEST the process can have started
++		// to be after the entry; a start that merely may postdate the entry
++		// (Linux knows it to the tick) refuses without claiming it.
++		lower := v.startedAtLower
++		if lower.IsZero() {
++			lower = v.startedAt
++		}
++		if lower.After(p.target.StartedAt) {
++			return notDaemonError{"daemon process started after its rendezvous identity"}
++		}
++		if v.startedAt.After(p.target.StartedAt) {
++			return errors.New("daemon process may have started after its rendezvous identity")
++		}
++		// The checks that only fail to vouch come after the ones that can
++		// prove another process, so a refusal reports the strongest fact.
+ 		if len(v.argv) < 2 || v.argv[1] != "serve" {
+ 			return errors.New("daemon process is not a serve command")
+ 		}
+-		if v.startedAt.IsZero() || v.startedAt.After(p.target.StartedAt) {
+-			return errors.New("daemon process started after its rendezvous identity")
+-		}
+ 		if !v.ownsLog {
+ 			return errors.New("daemon process does not own the session API log")
+ 		}
+diff --git a/cmd/evener-hub/internal/daemonprocess/process_darwin.go b/cmd/evener-hub/internal/daemonprocess/process_darwin.go
+index a7634d9a2..e99e2edd5 100644
+--- a/cmd/evener-hub/internal/daemonprocess/process_darwin.go
++++ b/cmd/evener-hub/internal/daemonprocess/process_darwin.go
+@@ -137,7 +137,8 @@ func (p *darwinProcess) inspect(t Target) (identity, error) {
+ 	if gone {
+ 		return identity{}, ErrExited
+ 	}
+-	return identity{generation: strconv.FormatUint(p.unique, 10) + ":" + strconv.FormatUint(uint64(p.version), 10), uid: int(binary.NativeEndian.Uint32(info[20:])), startedAt: time.Unix(int64(binary.NativeEndian.Uint64(info[120:])), int64(binary.NativeEndian.Uint64(info[128:]))*1000), argv: argv, ownsLog: owns}, nil
++	started := time.Unix(int64(binary.NativeEndian.Uint64(info[120:])), int64(binary.NativeEndian.Uint64(info[128:]))*1000)
++	return identity{generation: strconv.FormatUint(p.unique, 10) + ":" + strconv.FormatUint(uint64(p.version), 10), uid: int(binary.NativeEndian.Uint32(info[20:])), startedAt: started, startedAtLower: started, argv: argv, ownsLog: owns}, nil
+ }
+ 
+ func darwinArguments(data []byte) ([]string, error) {
+diff --git a/cmd/evener-hub/internal/daemonprocess/process_linux.go b/cmd/evener-hub/internal/daemonprocess/process_linux.go
+index 6b2492372..c304885c3 100644
+--- a/cmd/evener-hub/internal/daemonprocess/process_linux.go
++++ b/cmd/evener-hub/internal/daemonprocess/process_linux.go
+@@ -107,11 +107,12 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
+ 	}
+ 	// The end of the kernel's reported clock tick is a conservative upper bound
+ 	// on process start. Do not accept a reused PID within that tick.
+-	offset, err := linuxStartOffset(ticks, hz)
++	lower, upper, err := linuxStartOffsetBounds(ticks, hz)
+ 	if err != nil {
+ 		return identity{}, err
+ 	}
+-	started := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano())).Add(offset)
++	base := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano()))
++	started, startedLower := base.Add(upper), base.Add(lower)
+ 	argv, err := os.ReadFile(filepath.Join(root, "cmdline"))
+ 	if err != nil {
+ 		return identity{}, p.inspectionError(err)
+@@ -127,7 +128,7 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
+ 	if gone {
+ 		return identity{}, ErrExited
+ 	}
+-	return identity{generation: fields[19], uid: int(procStat.Uid), startedAt: started, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns}, nil
++	return identity{generation: fields[19], uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns}, nil
+ }
+ func (p *linuxProcess) inspectionError(err error) error {
+ 	if gone, e := p.exited(); e == nil && gone {
+@@ -220,13 +221,33 @@ func linuxClockTicks(data []byte, word int) (uint64, error) {
+ 	return 0, errors.New("process clock frequency unavailable")
+ }
+ 
++// linuxStartOffset is the upper bound of the start tick: (ticks+1)/hz.
+ func linuxStartOffset(ticks, hz uint64) (time.Duration, error) {
++	_, upper, err := linuxStartOffsetBounds(ticks, hz)
++	return upper, err
++}
++
++// linuxStartOffsetBounds is the tick's two bounds, ticks/hz and (ticks+1)/hz:
++// the process started no earlier than the first and no later than the second.
++func linuxStartOffsetBounds(ticks, hz uint64) (lower, upper time.Duration, err error) {
+ 	if hz == 0 || ticks == math.MaxUint64 {
+-		return 0, errors.New("invalid process start ticks or clock frequency")
++		return 0, 0, errors.New("invalid process start ticks or clock frequency")
+ 	}
++	lower, err = linuxTicksDuration(ticks, hz)
++	if err != nil {
++		return 0, 0, err
++	}
++	upper, err = linuxTicksDuration(ticks+1, hz)
++	if err != nil {
++		return 0, 0, err
++	}
++	return lower, upper, nil
++}
++
++func linuxTicksDuration(ticks, hz uint64) (time.Duration, error) {
+ 	// Keep the full product until division: even valid durations exceed a
+ 	// uint64 nanosecond intermediate on long-running hosts at ordinary HZ.
+-	high, low := bits.Mul64(ticks+1, uint64(time.Second))
++	high, low := bits.Mul64(ticks, uint64(time.Second))
+ 	if high >= hz {
+ 		return 0, errors.New("process start offset exceeds duration range")
+ 	}
+diff --git a/cmd/evener-hub/internal/daemonprocess/process_linux_test.go b/cmd/evener-hub/internal/daemonprocess/process_linux_test.go
+index 5013e8aab..b0a1e2877 100644
+--- a/cmd/evener-hub/internal/daemonprocess/process_linux_test.go
++++ b/cmd/evener-hub/internal/daemonprocess/process_linux_test.go
+@@ -157,3 +157,14 @@ func TestLinuxLargeStartTicksRefuseNewerProcess(t *testing.T) {
+ 		t.Fatal("signaled a newer process")
+ 	}
+ }
++
++// The tick's two bounds: ticks/hz and (ticks+1)/hz.
++func TestLinuxStartOffsetBounds(t *testing.T) {
++	lower, upper, err := linuxStartOffsetBounds(150, 100)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if lower != 1500*time.Millisecond || upper != 1510*time.Millisecond {
++		t.Fatalf("bounds = %v..%v, want 1.5s..1.51s", lower, upper)
++	}
++}
+diff --git a/cmd/evener-hub/internal/daemonprocess/process_test.go b/cmd/evener-hub/internal/daemonprocess/process_test.go
+index f59c99d4d..1b42a4d0d 100644
+--- a/cmd/evener-hub/internal/daemonprocess/process_test.go
++++ b/cmd/evener-hub/internal/daemonprocess/process_test.go
+@@ -206,3 +206,86 @@ func TestInspectionFailureAfterExitIsIdempotent(t *testing.T) {
+ 		t.Fatalf("Open did not report confirmed exit: %v", err)
+ 	}
+ }
++
++// Refusals split by what they prove. A process whose owner or start time is
++// not the daemon's, or whose generation changed under inspection, is
++// positively another process: ErrNotDaemon. A refusal that only means the
++// inspection could not vouch for it (no generation read, no start time, the
++// log descriptor not seen, an inspection error, an argv that is not an
++// `evener serve` invocation - the skill guard's daemons run inside a test
++// binary and were disowned by exactly that check) carries no such claim.
++func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
++	positive := []struct {
++		name   string
++		change func(*identity)
++	}{
++		{"wrong owner", func(v *identity) { v.uid++ }},
++		{"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }},
++	}
++	for _, tt := range positive {
++		t.Run("positive/"+tt.name, func(t *testing.T) {
++			k := &kernelProcess{facts: validIdentity()}
++			tt.change(&k.facts)
++			_, err := testController(k).Open(validTarget())
++			if !errors.Is(err, ErrNotDaemon) {
++				t.Fatalf("err = %v, want ErrNotDaemon", err)
++			}
++		})
++	}
++	indeterminate := []struct {
++		name   string
++		change func(*kernelProcess)
++	}{
++		{"wrong command", func(k *kernelProcess) { k.facts.argv = []string{"evener", "hub", "serve"} }},
++		{"missing argv", func(k *kernelProcess) { k.facts.argv = nil }},
++		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }},
++		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }},
++		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }},
++		{"inspection error", func(k *kernelProcess) { k.inspectErr = errors.New("fdinfo vanished") }},
++	}
++	for _, tt := range indeterminate {
++		t.Run("indeterminate/"+tt.name, func(t *testing.T) {
++			k := &kernelProcess{facts: validIdentity()}
++			tt.change(k)
++			_, err := testController(k).Open(validTarget())
++			if err == nil {
++				t.Fatal("unverified identity accepted")
++			}
++			if errors.Is(err, ErrNotDaemon) || errors.Is(err, ErrExited) {
++				t.Fatalf("err = %v claims positive evidence it does not have", err)
++			}
++		})
++	}
++	t.Run("positive/generation changed", func(t *testing.T) {
++		a := validIdentity()
++		b := a
++		b.generation = "generation-b"
++		k := &kernelProcess{facts: b, snapshots: []identity{a, b}}
++		if _, err := testController(k).Open(validTarget()); !errors.Is(err, ErrNotDaemon) {
++			t.Fatalf("err = %v, want ErrNotDaemon", err)
++		}
++	})
++}
++
++// On Linux a process start is known only to the tick: the inspection
++// carries a lower and an upper bound. Positive evidence that the process is
++// not the daemon needs the LOWER bound after the entry's start; an upper
++// bound after it merely fails to vouch, so force-stop still refuses while the
++// roster keeps the entry (review round 13 on #1325).
++func TestOpenSameTickStartRefusesWithoutPositiveEvidence(t *testing.T) {
++	target := validTarget() // StartedAt 200
++	sameTick := validIdentity()
++	sameTick.startedAtLower, sameTick.startedAt = time.Unix(199, 0), time.Unix(201, 0)
++	_, err := testController(&kernelProcess{facts: sameTick}).Open(target)
++	if err == nil {
++		t.Fatal("a start that may postdate the entry was accepted")
++	}
++	if errors.Is(err, ErrNotDaemon) {
++		t.Fatalf("err = %v claims positive evidence from a same-tick start", err)
++	}
++	later := validIdentity()
++	later.startedAtLower, later.startedAt = time.Unix(201, 0), time.Unix(202, 0)
++	if _, err := testController(&kernelProcess{facts: later}).Open(target); !errors.Is(err, ErrNotDaemon) {
++		t.Fatalf("err = %v, want ErrNotDaemon for a lower bound after the entry", err)
++	}
++}
+diff --git a/cmd/evener-hub/internal/hubcore/prober.go b/cmd/evener-hub/internal/hubcore/prober.go
+index 5c75fae81..d1fcb9908 100644
+--- a/cmd/evener-hub/internal/hubcore/prober.go
++++ b/cmd/evener-hub/internal/hubcore/prober.go
+@@ -85,6 +85,13 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
+ 	if strings.TrimSpace(root.ID) == "" || rootID == "" {
+ 		return ProbeResult{}
+ 	}
++	// The answer names the answering daemon's session, and a daemon keeps its
++	// entry's session id current (rvreg.UpdateSessionID). An endpoint that
++	// answers for a session the entry does not name is another daemon that
++	// re-bound the port; its answer is not this entry's.
++	if named := strings.TrimSpace(entry.SessionID); named != "" && rootID != named {
++		return ProbeResult{}
++	}
+ 
+ 	// ThreadList carries the root and descendants from one projection cut. Keep
+ 	// the ThreadRead result only for identity validation, and use the matching
+diff --git a/cmd/evener-hub/internal/hubcore/prober_wire_test.go b/cmd/evener-hub/internal/hubcore/prober_wire_test.go
+index f066eea4e..6de121c93 100644
+--- a/cmd/evener-hub/internal/hubcore/prober_wire_test.go
++++ b/cmd/evener-hub/internal/hubcore/prober_wire_test.go
+@@ -45,6 +45,35 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
+ 	}
+ }
+ 
++// The answer a probe gets carries the answering daemon's session id (its
++// root thread's SessionID, also its Evener.InstanceID), and a daemon keeps its
++// rendezvous entry's session id current (rvreg.UpdateSessionID). So an
++// endpoint answering for a session the entry does not name is another
++// daemon that re-bound the port; its answer must not be published under the
++// entry (review round 12 on #1325).
++func TestStatusProberRejectsAnAnswerForAnotherSession(t *testing.T) {
++	other := appwire.Thread{ID: "other", SessionID: "other", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
++	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
++	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
++		return appwire.ThreadReadResponse{Thread: other}, nil
++	})
++	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
++		return appwire.ThreadListResponse{Data: []appwire.Thread{other}}, nil
++	})
++	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
++	defer httpSrv.Close()
++	prober := &StatusProber{client: httpSrv.Client()}
++	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
++
++	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "mine", ThreadID: "mine"}); got.OK {
++		t.Fatalf("an answer for session %q was published under an entry naming %q: %+v", other.SessionID, "mine", got)
++	}
++	// An entry that names no session takes the answer's, as it always has.
++	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint}); !got.OK || got.SessionID != "other" {
++		t.Fatalf("an entry naming no session did not take the answer's: %+v", got)
++	}
++}
++
+ func (s wireProbeEnvelopeSource) ContextPressure() float64 { return 0 }
+ func (s wireProbeEnvelopeSource) ContextMetrics() server.ContextMetrics {
+ 	return server.ContextMetrics{}
+diff --git a/cmd/evener-hub/internal/hubcore/roster.go b/cmd/evener-hub/internal/hubcore/roster.go
+index aa285096f..28ce59188 100644
+--- a/cmd/evener-hub/internal/hubcore/roster.go
++++ b/cmd/evener-hub/internal/hubcore/roster.go
+@@ -187,6 +187,22 @@ type Roster struct {
+ 	// probe to a live process means the daemon is busy, not gone, so its session
+ 	// is kept; injectable for tests.
+ 	procAlive func(pid int) bool
++	// procIdentity reports whether the live process at an entry's PID is still
++	// the daemon that wrote the entry. Liveness alone cannot tell a daemon
++	// that is busy from a PID the kernel handed to something else after the
++	// daemon crashed; both fail the probe and both answer signal 0.
++	procIdentity func(rendezvous.Entry) ProcessIdentity
++	// refreshOnRead makes every snapshot reader refresh first. A hub with no
++	// watcher over its rendezvous directory (one configured without a roster,
++	// which lists daemons through a roster of its own) has nothing else that
++	// would ever bring the snapshot up to date, and every consumer already
++	// reads through these methods.
++	refreshOnRead bool
++	// generation counts the listing changes this roster has published: the
++	// live set, its statuses, the ownership error or the unresolved claims.
++	// Navigation folds it into its source revision, so a roster nothing
++	// invalidates for (one that refreshes on read) still moves the revision.
++	generation uint64
+ 
+ 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
+ 	// been registered on runDir. Nil in production; injected by tests to
+@@ -223,6 +239,7 @@ func NewRoster(runDir string, prober Prober) *Roster {
+ 		byPID:             make(map[int]LiveEntry),
+ 		entryPublishedGen: make(map[int]uint64),
+ 		procAlive:         processAlive,
++		procIdentity:      processIdentity,
+ 		newWatcher: func() (rosterWatcher, error) {
+ 			w, err := fsnotify.NewWatcher()
+ 			return fsnotifyWatcher{w}, err
+@@ -246,6 +263,45 @@ func (r *Roster) SetProcessAlive(probe func(int) bool) *Roster {
+ 	return r
+ }
+ 
++// ProcessIdentity is what the host can say about the process behind a
++// rendezvous entry whose daemon stopped answering.
++type ProcessIdentity int
++
++const (
++	// ProcessIdentityUnknown: the host cannot verify ownership (platform
++	// without generation-bound process inspection, or an entry from a daemon
++	// that recorded no state directory or start time). Liveness alone decides,
++	// as it always has.
++	ProcessIdentityUnknown ProcessIdentity = iota
++	// ProcessOwnsEntry: the live process is the daemon that wrote the entry.
++	ProcessOwnsEntry
++	// ProcessNotOwner: the PID is alive but belongs to something else, or the
++	// daemon has exited.
++	ProcessNotOwner
++)
++
++// SetProcessIdentity overrides the process-identity probe, for the same reason
++// SetProcessAlive exists.
++func (r *Roster) SetProcessIdentity(probe func(rendezvous.Entry) ProcessIdentity) *Roster {
++	r.procIdentity = probe
++	return r
++}
++
++// RefreshOnRead makes every snapshot reader (List, Find, OwnershipError and
++// the rest) refresh the roster first, for a roster nothing else refreshes.
++func (r *Roster) RefreshOnRead() *Roster {
++	r.refreshOnRead = true
++	return r
++}
++
++// syncForRead runs before a snapshot is read. Outside RefreshOnRead mode the
++// watcher keeps the snapshot current and this is free.
++func (r *Roster) syncForRead() {
++	if r.refreshOnRead {
++		_ = r.refresh()
++	}
++}
++
+ // NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
+ // bypassing the rendezvous-dir scan. Each entry is indexed by its PID (for List)
+ // and, when non-empty, by its SessionID (for Find), mirroring how Refresh
+@@ -487,8 +543,30 @@ func (r *Roster) refresh() error {
+ 	}
+ 	for _, res := range results {
+ 		e := res.entry
++		// A probe that answers proves that a daemon of this hub listens at
++		// the entry's endpoint (the token it presents is the hub's own,
++		// shared by every daemon the hub spawns), not that entry.PID is that
++		// daemon: a crashed daemon's file whose port another daemon re-bound
++		// would otherwise be published under a PID anything may have reused.
++		// The process behind the PID is asked whether or not the probe
++		// answered; verified not the owner, the entry takes the crashed path
++		// - never the unconfirmed one, which would park a reused PID with a
++		// closed socket forever (turns refused, deletion blocked, the stale
++		// file never cleaned).
++		// One verdict per entry per refresh, reused below: the probe is a
++		// real inspection of a process, and two calls in one pass could
++		// disagree. A roster built without a prober admits every entry as
++		// listed and asks the host nothing, so it asks nothing here either.
++		identity := ProcessIdentityUnknown
++		if r.prober != nil {
++			identity = r.procIdentity(e)
++		}
++		disowned := identity == ProcessNotOwner
++		if disowned {
++			res.OK = false
++		}
+ 		if !res.OK {
+-			alive := r.procAlive(e.PID)
++			alive := !disowned && r.procAlive(e.PID)
+ 			if alive {
+ 				for _, claim := range previousUnconfirmed {
+ 					if claim.PID == e.PID {
+@@ -499,6 +577,14 @@ func (r *Roster) refresh() error {
+ 			// A transient probe miss preserves a route only while the complete
+ 			// rendezvous identity is unchanged. PID liveness cannot confirm a
+ 			// replacement's ownership of either the old or the new session.
++			//
++			// Nor can it tell a busy daemon from a PID the kernel reused after
++			// the daemon crashed: both miss the probe, both answer signal 0,
++			// and the crashed daemon's file is byte-identical. The identity
++			// verdict taken above folds into `alive`, so a PID verified not
++			// to be the daemon's never reaches this branch: it takes the
++			// crashed path below and leaves the listing, which is what lets
++			// the relay announce the daemon gone.
+ 			if prev, had := prevByPID[e.PID]; had && alive {
+ 				if !sameDaemonIdentity(prev.Entry, e) {
+ 					retainUnconfirmed(prev.Entry)
+@@ -613,6 +699,9 @@ func (r *Roster) refresh() error {
+ 	r.ownershipErr = nil
+ 	r.unconfirmed = unconfirmed
+ 	changed := fp != r.fingerprint || ownershipChanged
++	if changed {
++		r.generation++
++	}
+ 	r.fingerprint = fp
+ 	statusChanges := make([]string, 0)
+ 	for id, cur := range bySess {
+@@ -639,6 +728,7 @@ func (r *Roster) refresh() error {
+ // OwnershipError reports an incomplete full scan. Individual daemon
+ // confirmations cannot establish that the remaining ownership claims are absent.
+ func (r *Roster) OwnershipError() error {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
+ 	return r.ownershipErr
+@@ -648,6 +738,7 @@ func (r *Roster) OwnershipError() error {
+ // daemon owner, including unresolved claims. This permits retained sessions
+ // with deleted ancestry to recover without guessing which daemon owns them.
+ func (r *Roster) DaemonOwnershipAbsent() bool {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
+ 	if r.ownershipErr != nil || len(r.unconfirmed) != 0 {
+@@ -727,8 +818,40 @@ func (r *Roster) refreshOwnership() {
+ 
+ // List returns all live entries.
+ func (r *Roster) List() []LiveEntry {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
++	return r.listLocked()
++}
++
++// RosterSnapshot is one scan's answer to the questions a navigation read
++// asks together. Taken under one lock after one refresh, so the three cannot
++// describe three different moments.
++type RosterSnapshot struct {
++	OwnershipError error
++	Live           []LiveEntry
++	Unconfirmed    []rendezvous.Entry
++}
++
++// Generation is the count of listing changes published so far; equal
++// generations mean the listing, statuses, ownership error and unresolved
++// claims are all unchanged.
++func (r *Roster) Generation() uint64 {
++	r.syncForRead()
++	r.mu.RLock()
++	defer r.mu.RUnlock()
++	return r.generation
++}
++
++// Snapshot is OwnershipError, List and UnconfirmedEntries from a single scan.
++func (r *Roster) Snapshot() RosterSnapshot {
++	r.syncForRead()
++	r.mu.RLock()
++	defer r.mu.RUnlock()
++	return RosterSnapshot{OwnershipError: r.ownershipErr, Live: r.listLocked(), Unconfirmed: slices.Clone(r.unconfirmed)}
++}
++
++func (r *Roster) listLocked() []LiveEntry {
+ 	bySession := make(map[string]LiveEntry, len(r.byPID))
+ 	out := make([]LiveEntry, 0, len(r.byPID))
+ 	for _, e := range r.byPID {
+@@ -755,7 +878,7 @@ func (r *Roster) List() []LiveEntry {
+ // running in-process child. Child IDs remain outside bySess so callers cannot
+ // mistake the parent's endpoint for an independently routable child daemon.
+ func (r *Roster) IsSubagentActive(sessionID string) bool {
+-	_, live := r.SubagentState(sessionID)
++	_, live := r.SubagentState(sessionID) // syncs for read on its own
+ 	return live
+ }
+ 
+@@ -771,6 +894,7 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
+ // is what lets a stopped persisted delegate stop reading as daemon-owned the
+ // moment its parent dies, rather than when crash retention expires.
+ func (r *Roster) SubagentState(sessionID string) (string, bool) {
++	r.syncForRead()
+ 	if sessionID == "" {
+ 		return "", false
+ 	}
+@@ -810,6 +934,7 @@ func sameDaemonIdentity(a, b rendezvous.Entry) bool {
+ 
+ // HasConfirmedEntry reports whether the exact daemon identity has a live route.
+ func (r *Roster) HasConfirmedEntry(entry rendezvous.Entry) bool {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
+ 	return r.hasConfirmedEntry(entry)
+@@ -824,6 +949,7 @@ func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
+ // RestartRequiredRootRef resolves metadata-only admission from one roster
+ // snapshot. It never reads persisted ancestry or probes daemon endpoints.
+ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
++	r.syncForRead()
+ 	ref, err := appwire.ParseRef(rawRef)
+ 	if err != nil || ref.SourceID != "local" {
+ 		return "", false
+@@ -879,6 +1005,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
+ 
+ // Find returns the entry with the given session_id, or false if not present.
+ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
+ 	e, ok := r.bySess[sessionID]
+@@ -939,6 +1066,7 @@ func (r *Roster) Watch(ctx context.Context) error {
+ // whose daemon identity could not be established. They are not live sessions,
+ // but callers must not treat their absence from List as proof of released ownership.
+ func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
++	r.syncForRead()
+ 	r.mu.RLock()
+ 	defer r.mu.RUnlock()
+ 	return slices.Clone(r.unconfirmed)
+@@ -1073,6 +1201,9 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
+ 	}
+ 	fp := rosterFingerprint(bySess)
+ 	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
++	if changed {
++		r.generation++
++	}
+ 	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
+ 	r.entryPublishedGen[entry.PID] = generation
+ 	r.fingerprint = fp
+diff --git a/cmd/evener-hub/internal/hubcore/roster_other.go b/cmd/evener-hub/internal/hubcore/roster_other.go
+index fa694b559..8ef1b9fe0 100644
+--- a/cmd/evener-hub/internal/hubcore/roster_other.go
++++ b/cmd/evener-hub/internal/hubcore/roster_other.go
+@@ -2,6 +2,8 @@
+ 
+ package hubcore
+ 
++import "primeradiant.com/evener/rendezvous"
++
+ // processAlive has no signal-0 equivalent on this platform via the os
+ // package, and evener-hub never ships here. A false result evicts the entry
+ // from the roster, so assuming alive is the safe direction: it costs a stale
+@@ -9,3 +11,7 @@ package hubcore
+ func processAlive(pid int) bool {
+ 	return true
+ }
++
++// processIdentity: no generation-bound process inspection here, so liveness
++// alone decides, as it always has.
++func processIdentity(rendezvous.Entry) ProcessIdentity { return ProcessIdentityUnknown }
+diff --git a/cmd/evener-hub/internal/hubcore/roster_test.go b/cmd/evener-hub/internal/hubcore/roster_test.go
+index d191691d1..ecb7201ed 100644
+--- a/cmd/evener-hub/internal/hubcore/roster_test.go
++++ b/cmd/evener-hub/internal/hubcore/roster_test.go
+@@ -1649,3 +1649,142 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
+ 		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
+ 	}
+ }
++
++// A daemon that crashed leaves its rendezvous file, and the kernel may hand
++// its PID to anything. To liveness that reuse looks exactly like a busy
++// daemon missing one probe, so a confirmed entry stayed listed for as long as
++// the unrelated process lived and the relay never announced the daemon gone
++// (review round 5 on #1325). The process-identity probe tells the two apart;
++// only the reused PID is dropped, and it reads as a crash.
++func TestRosterDropsRetainedEntryWhoseProcessIsNoLongerItsDaemon(t *testing.T) {
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: 1001, SessionID: "01REUSED", ThreadID: "01REUSED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
++	writeRendezvous(t, dir, entry)
++	prober := &flakyProber{sessionID: "01REUSED"}
++	roster := NewRoster(dir, prober)
++	roster.procAlive = func(int) bool { return true }
++	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessOwnsEntry })
++	roster.Refresh()
++	if !roster.HasConfirmedEntry(entry) {
++		t.Fatal("confirmed entry did not acquire its route")
++	}
++
++	prober.fail = true
++	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessNotOwner })
++	roster.Refresh()
++	if roster.HasConfirmedEntry(entry) {
++		t.Fatal("a PID that no longer belongs to the daemon kept the daemon's route")
++	}
++	live, ok := roster.Find("01REUSED")
++	if !ok || !live.Crashed {
++		t.Fatalf("the daemon behind a reused PID should read as crashed, got ok=%v entry=%+v", ok, live)
++	}
++}
++
++// The other side of the same probe: a daemon that is alive and still itself,
++// merely too busy to answer, keeps its route exactly as before, and so does a
++// daemon on a host that cannot say either way.
++func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
++	for _, identity := range []ProcessIdentity{ProcessOwnsEntry, ProcessIdentityUnknown} {
++		dir := t.TempDir()
++		entry := rendezvous.Entry{PID: 1001, SessionID: "01BUSY", ThreadID: "01BUSY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
++		writeRendezvous(t, dir, entry)
++		prober := &flakyProber{sessionID: "01BUSY"}
++		roster := NewRoster(dir, prober)
++		roster.procAlive = func(int) bool { return true }
++		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
++		roster.Refresh()
++		prober.fail = true
++		for range 3 {
++			roster.Refresh()
++			if !roster.HasConfirmedEntry(entry) {
++				t.Fatalf("identity %d: a busy daemon lost its route on a transient probe failure", identity)
++			}
++			if live, ok := roster.Find("01BUSY"); !ok || live.Crashed {
++				t.Fatalf("identity %d: a busy daemon reads as crashed: ok=%v entry=%+v", identity, ok, live)
++			}
++		}
++	}
++}
++
++// A probe that answers proves only that a daemon of this hub listens at the
++// entry's endpoint: the token it presents is the hub's own, shared by every
++// daemon the hub spawns, and the roster keys the answer by the session the
++// daemon reports, never by the entry. A crashed daemon's file whose port
++// another daemon re-bound and whose PID anything reused would be published
++// under that PID. The process behind the PID is asked on a successful probe
++// too; verified not the owner, the entry takes the crashed path (review
++// round 8 on #1325).
++func TestRosterDoesNotPublishASuccessfulProbeForAPIDThatIsNotItsDaemon(t *testing.T) {
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: 1001, SessionID: "01ANSWERS", ThreadID: "01ANSWERS", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
++	writeRendezvous(t, dir, entry)
++	roster := NewRoster(dir, &flakyProber{sessionID: "01ANSWERS"})
++	roster.procAlive = func(int) bool { return true }
++	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessNotOwner })
++	roster.Refresh()
++	if roster.HasConfirmedEntry(entry) {
++		t.Fatal("a PID that is not the daemon was published on the strength of an answering socket")
++	}
++	live, ok := roster.Find("01ANSWERS")
++	if !ok || !live.Crashed {
++		t.Fatalf("the entry should read as crashed, got ok=%v entry=%+v", ok, live)
++	}
++	for _, identity := range []ProcessIdentity{ProcessOwnsEntry, ProcessIdentityUnknown} {
++		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
++		roster.Refresh()
++		if !roster.HasConfirmedEntry(entry) {
++			t.Fatalf("identity %d: an answering daemon that is (or may be) itself was not published", identity)
++		}
++	}
++}
++
++// A roster built without a prober admits every entry as listed (offline or
++// synthetic rosters); it must not then ask the host about a PID that is
++// nobody's on this machine and mark a complete entry crashed (review round 10
++// on #1325).
++func TestRosterWithoutProberDoesNotAskTheHostAboutAPID(t *testing.T) {
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: 1001, SessionID: "01OFFLINE", ThreadID: "01OFFLINE", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: "/private/state", StartedAt: time.Now().UTC()}
++	writeRendezvous(t, dir, entry)
++	roster := NewRoster(dir, nil)
++	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity {
++		t.Fatal("identity probe consulted by a prober-less roster")
++		return ProcessNotOwner
++	})
++	roster.Refresh()
++	// A prober-less roster keys nothing by a probed session id, so the
++	// listing is the observable: one entry, live, not crashed.
++	listed := roster.List()
++	if len(listed) != 1 || listed[0].Crashed || listed[0].Entry.SessionID != "01OFFLINE" {
++		t.Fatalf("prober-less roster did not list the entry as live: %+v", listed)
++	}
++}
++
++// One verdict per entry per refresh: the identity probe is a real inspection
++// of a process, and two calls in one pass could disagree with each other.
++func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: 1001, SessionID: "01ONCE", ThreadID: "01ONCE", Protocol: appwire.ThreadStatusIdle, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
++	entry.Protocol = appwire.ProtocolVersion
++	writeRendezvous(t, dir, entry)
++	prober := &flakyProber{sessionID: "01ONCE"}
++	roster := NewRoster(dir, prober)
++	roster.procAlive = func(int) bool { return true }
++	var calls atomic.Int32
++	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity {
++		calls.Add(1)
++		return ProcessOwnsEntry
++	})
++	for i, fail := range []bool{false, true, true} {
++		prober.fail = fail
++		calls.Store(0)
++		roster.Refresh()
++		if got := calls.Load(); got != 1 {
++			t.Fatalf("refresh %d (probe fails=%v): identity probe called %d times, want 1", i, fail, got)
++		}
++		if !roster.HasConfirmedEntry(entry) {
++			t.Fatalf("refresh %d: an owning daemon lost its route", i)
++		}
++	}
++}
+diff --git a/cmd/evener-hub/internal/hubcore/roster_unix.go b/cmd/evener-hub/internal/hubcore/roster_unix.go
+index 9ef125a4c..a249ef852 100644
+--- a/cmd/evener-hub/internal/hubcore/roster_unix.go
++++ b/cmd/evener-hub/internal/hubcore/roster_unix.go
+@@ -4,7 +4,13 @@ package hubcore
+ 
+ import (
+ 	"errors"
++	"os"
++	"path/filepath"
+ 	"syscall"
++
++	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
++	"primeradiant.com/evener/envvars"
++	"primeradiant.com/evener/rendezvous"
+ )
+ 
+ // processAlive reports whether a process with the given PID currently exists.
+@@ -18,3 +24,40 @@ func processAlive(pid int) bool {
+ 	err := syscall.Kill(pid, 0)
+ 	return err == nil || errors.Is(err, syscall.EPERM)
+ }
++
++// processIdentity asks the same verifier force-stop binds to
++// (daemonprocess.Controller): process generation, owner, a `serve` argv, a
++// start no later than the rendezvous start time, and possession of the
++// session's API log. Only positive evidence counts against the entry: the
++// process is gone (ErrExited) or is verifiably another process
++// (ErrNotDaemon). A verification that could not run or could not vouch - a
++// pidfd that will not open, a /proc read racing a closing descriptor on a
++// busy daemon, an entry a daemon wrote without the fields it needs - says
++// unknown, and liveness alone decides as it always has.
++func processIdentity(entry rendezvous.Entry) ProcessIdentity {
++	target := daemonprocess.Target{
++		PID:       entry.PID,
++		SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID),
++		StateDir:  entry.StateDir,
++		StartedAt: entry.StartedAt,
++	}
++	if target.SessionID == "" || !filepath.IsAbs(target.StateDir) || target.StartedAt.IsZero() {
++		return ProcessIdentityUnknown
++	}
++	// The hub is never a daemon: a file naming the hub's own PID is a stale
++	// file whose PID the hub reused. The verifier refuses to bind its own
++	// process (rightly, for force-stop), which would read as unknown here and
++	// keep the file listed for as long as the hub ran.
++	if entry.PID == os.Getpid() {
++		return ProcessNotOwner
++	}
++	process, err := daemonprocess.NewController().Open(target)
++	if err != nil {
++		if errors.Is(err, daemonprocess.ErrExited) || errors.Is(err, daemonprocess.ErrNotDaemon) {
++			return ProcessNotOwner
++		}
++		return ProcessIdentityUnknown
++	}
++	_ = process.Close()
++	return ProcessOwnsEntry
++}
+diff --git a/cmd/evener-hub/internal/hubcore/roster_unix_test.go b/cmd/evener-hub/internal/hubcore/roster_unix_test.go
+new file mode 100644
+index 000000000..1700ccd07
+--- /dev/null
++++ b/cmd/evener-hub/internal/hubcore/roster_unix_test.go
+@@ -0,0 +1,118 @@
++//go:build linux || darwin
++
++package hubcore
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"primeradiant.com/evener/appwire"
++	"primeradiant.com/evener/rendezvous"
++)
++
++// crashedDaemonStateDir is a state directory holding the session API log a
++// daemon leaves behind, which the identity verifier opens before it can judge
++// the process at the entry's PID.
++func crashedDaemonStateDir(t *testing.T, sessionID string) string {
++	t.Helper()
++	stateDir := t.TempDir()
++	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(stateDir, "sessions", sessionID+".api.jsonl"), nil, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	return stateDir
++}
++
++// The identity probe evicts only on positive evidence. Verification that
++// cannot vouch either way - here the daemon's API log is missing from the
++// state dir, so the inspection errors before it can judge the process; the
++// same shape as a pidfd that will not open or a /proc read racing a closing
++// descriptor on a busy daemon - is not evidence that the PID belongs to
++// someone else, and the liveness-only retention stands (review round 6 on
++// #1325).
++func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
++	other := exec.Command("sleep", "60")
++	if err := other.Start(); err != nil {
++		t.Fatalf("start stand-in process: %v", err)
++	}
++	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: other.Process.Pid, SessionID: "01UNVERIFIED", ThreadID: "01UNVERIFIED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: t.TempDir(), StartedAt: time.Now().UTC()}
++	writeRendezvous(t, dir, entry)
++	prober := &flakyProber{sessionID: "01UNVERIFIED"}
++	roster := NewRoster(dir, prober)
++	roster.Refresh()
++	if !roster.HasConfirmedEntry(entry) {
++		t.Fatal("confirmed entry did not acquire its route")
++	}
++	prober.fail = true
++	roster.Refresh()
++	if !roster.HasConfirmedEntry(entry) {
++		t.Fatal("an unverifiable identity evicted a live daemon")
++	}
++	if live, ok := roster.Find("01UNVERIFIED"); !ok || live.Crashed {
++		t.Fatalf("an unverifiable identity reads as crashed: ok=%v entry=%+v", ok, live)
++	}
++}
++
++// And the positive case through the real verifier: a live process at the
++// entry's PID that started after the entry was written is another process
++// (a PID the kernel reused), so the entry is never published - whether the
++// socket is closed, as a crashed daemon's is, or still answers - and reads as
++// crashed rather than parking unconfirmed. Both orders, since the closed
++// socket is the one a reused PID actually presents.
++func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
++	for _, order := range []struct {
++		name   string
++		probes []bool
++	}{{"socket closed first", []bool{false, true}}, {"socket answering first", []bool{true, false}}} {
++		t.Run(order.name, func(t *testing.T) {
++			startedAt := time.Now().UTC()
++			time.Sleep(50 * time.Millisecond) // the reused PID's process starts after the entry
++			other := exec.Command("sleep", "60")
++			if err := other.Start(); err != nil {
++				t.Fatalf("start stand-in process: %v", err)
++			}
++			t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
++			dir := t.TempDir()
++			entry := rendezvous.Entry{PID: other.Process.Pid, SessionID: "01OTHER", ThreadID: "01OTHER", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01OTHER"), StartedAt: startedAt}
++			writeRendezvous(t, dir, entry)
++			prober := &flakyProber{sessionID: "01OTHER"}
++			roster := NewRoster(dir, prober)
++			for _, probe := range order.probes {
++				prober.fail = !probe
++				roster.Refresh()
++				if roster.HasConfirmedEntry(entry) {
++					t.Fatalf("probe answering=%v: a PID held by another process acquired the daemon's route", probe)
++				}
++				if live, ok := roster.Find("01OTHER"); !ok || !live.Crashed {
++					t.Fatalf("probe answering=%v: should read as crashed, got ok=%v entry=%+v (unconfirmed: %+v)", probe, ok, live, roster.UnconfirmedEntries())
++				}
++			}
++		})
++	}
++}
++
++// The hub is never a daemon. A stale rendezvous file whose PID the hub itself
++// reused answers signal 0 and cannot be bound by the force-stop verifier
++// (which refuses its own PID), so it read as unknown and was retained for as
++// long as the hub ran. In the roster's reading, the hub's own PID is positive
++// evidence (review round 13 on #1325).
++func TestRosterTreatsItsOwnPIDAsAnotherProcess(t *testing.T) {
++	dir := t.TempDir()
++	entry := rendezvous.Entry{PID: os.Getpid(), SessionID: "01HUB", ThreadID: "01HUB", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01HUB"), StartedAt: time.Now().UTC()}
++	writeRendezvous(t, dir, entry)
++	roster := NewRoster(dir, &flakyProber{sessionID: "01HUB"})
++	roster.Refresh()
++	if roster.HasConfirmedEntry(entry) {
++		t.Fatal("a file naming the hub's own PID was published as a daemon")
++	}
++	if live, ok := roster.Find("01HUB"); !ok || !live.Crashed {
++		t.Fatalf("the file should read as crashed, got ok=%v entry=%+v", ok, live)
++	}
++}
+diff --git a/cmd/evener-hub/navigation_service.go b/cmd/evener-hub/navigation_service.go
+index f24094105..ee8496036 100644
+--- a/cmd/evener-hub/navigation_service.go
++++ b/cmd/evener-hub/navigation_service.go
+@@ -65,6 +65,10 @@ var navigationReadV2MissingCaptured = func() {}
+ type navigationSourceRevision struct {
+ 	Inputs uint64
+ 	Remote uint64
++	// Roster is the roster's listing generation. The watched roster also
++	// invalidates on change; a roster that refreshes on read (a hub with no
++	// roster of its own) has nothing else that would move the revision.
++	Roster uint64
+ }
+ 
+ type navigationSourceSnapshot struct {
+@@ -1322,6 +1326,9 @@ func (s webNavigationSource) Revision() navigationSourceRevision {
+ 	if s.web.cfg.RemoteThreadCache != nil {
+ 		revision.Remote = s.web.cfg.RemoteThreadCache.Generation()
+ 	}
++	if s.web.cfg.Roster != nil {
++		revision.Roster = s.web.cfg.Roster.Generation()
++	}
+ 	return revision
+ }
+ 
+diff --git a/cmd/evener-hub/web.go b/cmd/evener-hub/web.go
+index 0ff0e99ba..c1c4673f2 100644
+--- a/cmd/evener-hub/web.go
++++ b/cmd/evener-hub/web.go
+@@ -72,7 +72,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
+ 	if cfg.KeybindingsStore == nil {
+ 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
+ 	}
+-	sources := newHubSourceRegistry(cfg)
++	sources, cfg := newHubSourceRegistry(cfg)
+ 	// One resume-lock registry backs both the REST send path (lockForSession)
+ 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
+ 	// triggered on either transport serializes a racing resume on the other.
+diff --git a/cmd/evener-hub/web_api_tree.go b/cmd/evener-hub/web_api_tree.go
+index 084155e9f..5c04130e3 100644
+--- a/cmd/evener-hub/web_api_tree.go
++++ b/cmd/evener-hub/web_api_tree.go
+@@ -265,9 +265,10 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
+ 	var unconfirmedOwnership bool
+ 	var ownershipErr error
+ 	if s.cfg.Roster != nil {
+-		ownershipErr = s.cfg.Roster.OwnershipError()
+-		live = s.cfg.Roster.List()
+-		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
++		roster := s.cfg.Roster.Snapshot()
++		ownershipErr = roster.OwnershipError
++		live = roster.Live
++		unconfirmedOwnership = len(roster.Unconfirmed) > 0
+ 	}
+ 	var metas []schema.SessionMeta
+ 	var pastEntries []hubcore.PastEntry

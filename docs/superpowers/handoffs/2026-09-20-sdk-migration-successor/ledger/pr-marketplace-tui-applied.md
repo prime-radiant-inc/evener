@@ -1,0 +1,5 @@
+The TUI recognizes a marketplace removal that succeeded while clone cleanup failed. It shows the cleanup warning, applies an authoritative snapshot when supplied, and starts reconciliation while fencing duplicate removals when the list is unavailable. Recognized malformed payloads remain unavailable; ordinary mutation errors remain retryable.
+
+Stacked on #1940. This is the first of two TUI consumer slices, with 167 changed production lines. The second slice owns ordering of passive reads and asynchronous mutation results. Both must be concrete and qualified before this consumer stack lands; local RoboRev2586's failed-reconciliation retry finding is that required successor dependency.
+
+Validation: focused normal/tagged tests, race tests, normal/tagged/Windows vet, lint, formatting, and diff checks passed. Independent spec/quality/simplify review accepted the bounded A contract at `100e044b6bbefef69a1fd68ddd666ed130e7baa0`. The former combined implementation remains preserved on `codex/marketplace-tui-cc239-backup`; its ordering tests are assigned to the successor rather than dropped.

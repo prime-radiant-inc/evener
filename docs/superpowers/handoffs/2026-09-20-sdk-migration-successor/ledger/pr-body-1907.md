@@ -1,0 +1,5 @@
+A panic while draining steering input could leave the carrier claim marker set. A later unrelated selection failure could then be misclassified as a carrier failure and resolve a pending question during restore. The marker is now cleared by defer on every exit.
+
+Stacked on #1958, #1962, and #1977, with current main `d25d5afaa`. The complete owned change remains seven production lines and 54 test additions; the original carrier slice is preserved and its patch ID is unchanged. No unrelated admission or Low fixes are included.
+
+Validation: the regression panics through the real append path and verifies marker cleanup. Focused normal/tagged/race carrier and live/restore tests, normal/tagged/Windows vet, agent lint, and touched-file formatting checks pass. Independent spec/correctness/simplify review and local RoboRev2613 accepted exact head `14303886c`. Optional direct pending-ask/durable-ownership assertions are tracked separately under #1946; broader semantics already have A/B/C and startup-recovery coverage. Current-head CI and substantive raw member reviews remain required.

@@ -1,0 +1,64 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
+)
+
+func TestTmpRejectedMarkerPhantom(t *testing.T) {
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	fast := llm.ToolCallData{ID: "fast1", Name: "fast_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	cancelCall := llm.ToolCallData{ID: "cancel1", Name: "cancel_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return toolCallResponse(ask) },
+		func(llm.Request) llm.Response { return toolCallResponse(fast, cancelCall) },
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil { t.Fatal(err) }
+	defer sess.Close()
+	sess.RegisterTool("fast_tool", "fast", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return "done", nil })
+	var cancel context.CancelFunc
+	markerErr := errors.New("marker rejected after phantom")
+	recordErr := errors.New("canceled results record failed")
+	var fs *environmentSyncFailureFS
+	sess.RegisterTool("cancel_tool", "cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		fs.mu.Lock()
+		fs.writeFailure = recordErr
+		fs.failure = markerErr
+		fs.mu.Unlock()
+		cancel()
+		return "done", nil
+	})
+	ctx, cancelInitial := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelInitial()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil { t.Fatal(err) }
+	fs = attachEnvironmentFailureFS(t, sess)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "the db is postgres", nil)
+	liveState := sess.State()
+	t.Logf("process err=%v live=%s pending=%d history=%d", err, liveState, sess.askPendingCount(), len(sessionHistory(sess)))
+	for i, turn := range sessionHistory(sess) { t.Logf("live[%d]=%s text=%q", i, turn.Kind, turn.Message.Text()) }
+	b, readErr := os.ReadFile(sess.TranscriptPath())
+	t.Logf("transcript read err=%v bytes=%q", readErr, b)
+	meta := sess.Meta()
+	sess.Close()
+	restored, restoreErr := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if restoreErr != nil { t.Logf("restore err=%v", restoreErr); return }
+	defer restored.Close()
+	t.Logf("restored=%s pending=%d history=%d", restored.State(), restored.askPendingCount(), len(sessionHistory(restored)))
+	if liveState != restored.State() {
+		t.Fatalf("live/restored state mismatch: live=%s restored=%s", liveState, restored.State())
+	}
+	for i, turn := range sessionHistory(restored) { t.Logf("restore[%d]=%s text=%q", i, turn.Kind, turn.Message.Text()) }
+}

@@ -1,0 +1,5 @@
+Restoring a session now derives pending questions from the same steering and failure boundaries as the live session. Human-note rounds preserve unanswered questions, resolving user steering clears them, and forked history uses the correct session provenance instead of a child journal with reused mutation IDs.
+
+This is the transcript/restore oracle replacement for part of #1906. The separate live-boundary successor will carry the existing failure parity tests and the confirmed observer/notification yield correction. Merge is held until that successor is concrete. The original branch is preserved as codex/ask-boundary-original-8c-backup; the carrier-defer work in #1907 remains separate.
+
+Validation: focused ask/oracle tests and race tests, normal/tagged/Windows vet coverage, generated tagged compile gate, pinned gofmt and lint passed. Independent spec/quality/simplify review found no must-fix; local RoboRev2570 passed at551d44573c9b5ec971226929fea6462ead093d1e. Known text-evidence cleanup remains #1946. Non-test scope is384 touched lines; this cohesive oracle piece is below the400 ceiling.

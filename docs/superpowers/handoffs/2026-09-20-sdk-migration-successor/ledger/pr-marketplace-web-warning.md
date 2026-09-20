@@ -1,0 +1,7 @@
+Removing a marketplace can succeed while cleanup of its local clone fails. Preserve that applied outcome across the marketplace sheet closing and reopening, reconcile the catalog automatically, and prevent a second removal while the authoritative list is unavailable. Ordinary removal failures remain retryable. A replacement connection clears the old connection's pending outcome and ignores late results from it.
+
+This is the web consumer of #1940 and #1954. The own change is 123 non-test lines across the web consumer and the shared marketplace-specific outcome classifier. Recognized outcomes with malformed or unavailable snapshots request reconciliation instead of fabricating an empty catalog. Native and TUI consumers follow separately; the replacement stack is held until its required consumers are qualified.
+
+Validation: 289 focused tests across 12 files; frontend typecheck, Biome, package qualification, native typecheck, package import lint, and diff checks passed. Independent spec/quality/simplify review passed, and local RoboRev branch review 2575 passed. Refreshing to main `617b188c8221c92f8a4c117a1ee49aac572a3757` preserved the own patch byte-for-byte (stable patch ID `76ffee8209e39b8e82b57847538441bbe95966d8`); CI must qualify refreshed head `343f4aa2d31944506841ab82476980453fdf1980`.
+
+Separate follow-ups: #1944 (JSON-RPC coverage), #1951 (secondary reconciliation logging), #1953 (typed array validation), and #1959 (late page/client outcome coverage).

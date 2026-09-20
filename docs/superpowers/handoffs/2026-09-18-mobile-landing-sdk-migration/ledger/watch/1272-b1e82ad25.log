@@ -1,0 +1,4 @@
+CI lint-golangci: FAILURE
+CI static: FAILURE
+CI COMPLETE: FAILURE=2 SKIPPED=1 SUCCESS=12
+ROBOREV NOT CLEAN at b1e82ad25; ## roborev: Combined Review (`b1e82ad`)

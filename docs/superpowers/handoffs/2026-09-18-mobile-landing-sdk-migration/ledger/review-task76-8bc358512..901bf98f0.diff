@@ -1,0 +1,555 @@
+diff --git a/agent/internal/hooks/hooks.go b/agent/internal/hooks/hooks.go
+index b2c898003..ad0cbc931 100644
+--- a/agent/internal/hooks/hooks.go
++++ b/agent/internal/hooks/hooks.go
+@@ -154,6 +154,26 @@ func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
+ 	r.onEvent = fn
+ }
+ 
++// recordOwnerKey carries the owner of the records a run's hooks produce.
++type recordOwnerKey struct{}
++
++// WithRecordOwner names the logical turn that owns the records produced by the
++// hooks dispatched under ctx, which the runner stamps on each completion it
++// reports. A fold's PreCompact hook is one of the fold's records, and the
++// fold's goroutine can outlive the turn it staged under, so the turn executing
++// when that hook completes is not who the record belongs to. The name rides on
++// the run's own context, so a hook dispatched by any other run — on its own
++// goroutine, possibly at the same moment — is untouched by it. Unnamed, a
++// completion carries no owner and the caller decides.
++func WithRecordOwner(ctx context.Context, owner string) context.Context {
++	return context.WithValue(ctx, recordOwnerKey{}, owner)
++}
++
++func recordOwner(ctx context.Context) string {
++	owner, _ := ctx.Value(recordOwnerKey{}).(string)
++	return owner
++}
++
+ // SetSandboxWrapper confines every command hook this runner spawns to the
+ // session's sandbox policy. A nil wrapper leaves hooks unconfined (today's
+ // behavior); the secret scrub on hook env still applies regardless.
+@@ -597,12 +617,13 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
+ 			elapsed := time.Since(start)
+ 			if r.onEvent != nil {
+ 				r.onEvent(events.EventHookEnd, events.HookEndData{
+-					Event:      string(event),
+-					HookType:   h.Type,
+-					Matcher:    h.Matcher,
+-					PluginName: h.PluginName,
+-					ExitCode:   results[idx].RawExitCode,
+-					DurationMS: elapsed.Milliseconds(),
++					OwningTurnID: recordOwner(ctx),
++					Event:        string(event),
++					HookType:     h.Type,
++					Matcher:      h.Matcher,
++					PluginName:   h.PluginName,
++					ExitCode:     results[idx].RawExitCode,
++					DurationMS:   elapsed.Milliseconds(),
+ 				})
+ 			}
+ 		}(i, hook)
+diff --git a/agent/session.go b/agent/session.go
+index 6e672ab3c..583d98836 100644
+--- a/agent/session.go
++++ b/agent/session.go
+@@ -301,7 +301,6 @@ type Session struct {
+ 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
+ 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
+ 	history                       []schema.Turn
+-	foldHookOwner                 string        // owner of the fold whose PreCompact hook is running right now, set for the duration of that hook's execution. A fold's hook completes on the fold's goroutine, which can outlive the turn the fold staged under, so the executing turn is not who those records belong to — the fold is, like every other record it writes. Empty whenever no fold's hook is running. Guarded by mu.
+ 	directTurnID                  string        // logical-turn id of the turn EXECUTING right now when no client mutation named it: a bare ProcessInput caller's input, a goal continuation or notification wake whose mintRunningTurnID was refused (turnNameUnserved for every session no daemon serves, turnNameHeld beside an accepted-but-unstarted mutation), or a delegate input whose preseed minted the id when it wrote the entry. Set by nameTurnItself, or by adoptSelfMintedTurnID for a name minted before the run began. Names the turn on its persisted entry and its opening event, and activeTurnOwner reports it — ahead of a held ActiveTurnID — for everything published while it runs, so the live and cold projections group them identically instead of each falling back to its own turn_%d numbering. Cleared at the turn's end. Guarded by mu.
+ 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
+ 	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
+diff --git a/agent/session_compaction.go b/agent/session_compaction.go
+index 1d8315e40..09908305d 100644
+--- a/agent/session_compaction.go
++++ b/agent/session_compaction.go
+@@ -10,6 +10,7 @@ import (
+ 
+ 	"primeradiant.com/evener/agent/events"
+ 	"primeradiant.com/evener/agent/internal/contextmgr"
++	"primeradiant.com/evener/agent/internal/hooks"
+ 	"primeradiant.com/evener/agent/plugin"
+ 	"primeradiant.com/evener/agent/schema"
+ 	"primeradiant.com/evener/llm"
+@@ -422,21 +423,6 @@ func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) b
+ 	return false
+ }
+ 
+-// compactionRecordOwnerKey carries the fold's owner from stageCompactionEffects
+-// down to runPreCompactHook, which needs it for the one record the fold does
+-// not write itself: its PreCompact hook's completion, emitted through the
+-// session's hook-runner callback rather than through the fold's staging.
+-type compactionRecordOwnerKey struct{}
+-
+-func withCompactionRecordOwner(ctx context.Context, owner string) context.Context {
+-	return context.WithValue(ctx, compactionRecordOwnerKey{}, owner)
+-}
+-
+-func compactionRecordOwnerFromContext(ctx context.Context) string {
+-	owner, _ := ctx.Value(compactionRecordOwnerKey{}).(string)
+-	return owner
+-}
+-
+ // noteClaimRegistrarKey carries the fold staging's registrar for the
+ // pinned-note claim from stageCompactionEffects down to runPreCompactHook.
+ type noteClaimRegistrarKey struct{}
+@@ -481,7 +467,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
+ 	// to keep. See publishFoldTransaction for why the copies are written
+ 	// first and schema.Turn.CompactionFoldID for what the tag claims.
+ 	foldID := mintCompactionFoldID()
+-	ctx = withCompactionRecordOwner(ctx, compactionOwner)
+ 	var existingArtifacts []schema.Turn
+ 	if history != nil {
+ 		for _, turn := range *history {
+@@ -585,7 +570,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
+ 			if !preCompactRan {
+ 				preCompactRan = true
+ 				var records []steeringTurnRecord
+-				records, noteCommit = s.runPreCompactHook(ctx, history)
++				records, noteCommit = s.runPreCompactHook(ctx, history, compactionOwner)
+ 				for i := len(*history) - len(records); i < len(*history); i++ {
+ 					(*history)[i].OwningTurnID = compactionOwner
+ 				}
+@@ -727,22 +712,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
+ 	return ctx, emitFn, commit, injectedTurns
+ }
+ 
+-// beginFoldHookOwner names the fold whose PreCompact hook is about to run and
+-// returns the restore its caller must run when the hook is done. Restoring the
+-// PREVIOUS value rather than clearing keeps two folds' hooks from erasing each
+-// other's name when they overlap.
+-func (s *Session) beginFoldHookOwner(owner string) func() {
+-	s.mu.Lock()
+-	previous := s.foldHookOwner
+-	s.foldHookOwner = owner
+-	s.mu.Unlock()
+-	return func() {
+-		s.mu.Lock()
+-		s.foldHookOwner = previous
+-		s.mu.Unlock()
+-	}
+-}
+-
+ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn) bool {
+ 	for i, candidate := range *existing {
+ 		if reflect.DeepEqual(candidate, turn) {
+@@ -780,7 +749,7 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
+ // content before publish is even attempted. A losing, retried fold re-runs
+ // the hook again next attempt — the same re-execution
+ // foldWithForceCompact's retry already accepts for the rest of the fold.
+-func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) (records []steeringTurnRecord, commit func()) {
++func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn, owner string) (records []steeringTurnRecord, commit func()) {
+ 	if history == nil {
+ 		return nil, nil
+ 	}
+@@ -789,11 +758,10 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
+ 	if s.hookRunner != nil {
+ 		// The completion this hook emits goes out through the session's
+ 		// hook-runner callback, which has no idea a fold is running. Name the
+-		// fold for its duration so emitHookCompleted stamps the record with
+-		// the owner the fold's other records carry.
+-		restore := s.beginFoldHookOwner(compactionRecordOwnerFromContext(ctx))
+-		compactResult := s.hookRunner.RunPreCompact(s.apiLogContext(ctx), s.hookInput(plugin.HookPreCompact))
+-		restore()
++		// fold on THIS run so the runner stamps its completion with the owner
++		// the fold's other records carry, and every hook dispatched by any
++		// other run keeps its own.
++		compactResult := s.hookRunner.RunPreCompact(hooks.WithRecordOwner(s.apiLogContext(ctx), owner), s.hookInput(plugin.HookPreCompact))
+ 		for _, m := range compactResult.ModelContext {
+ 			messages = append(messages, preCompactMessage{text: wrapHookContext(m), kind: events.SteeringKindPrecompactHook})
+ 		}
+diff --git a/agent/session_compaction_replay_transcript_test.go b/agent/session_compaction_replay_transcript_test.go
+index 8b9a5f98a..c311aa266 100644
+--- a/agent/session_compaction_replay_transcript_test.go
++++ b/agent/session_compaction_replay_transcript_test.go
+@@ -2,12 +2,16 @@ package agent
+ 
+ import (
+ 	"context"
++	"fmt"
++	"os"
++	"path/filepath"
+ 	"regexp"
+ 	"slices"
+ 	"strings"
+-	"sync"
+ 	"sync/atomic"
++	"syscall"
+ 	"testing"
++	"time"
+ 
+ 	"primeradiant.com/evener/agent/events"
+ 	"primeradiant.com/evener/agent/internal/agenttest"
+@@ -423,15 +427,18 @@ func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
+ 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir, PluginDirs: []string{writePluginHooks(t, "fold-hook-owner-plugin", hooks)}}))
+ 	seedNumberedSessionHistory(t, s, 12)
+ 
+-	var mu sync.Mutex
+-	var emitted []events.HookEndData
++	// The live hook end crosses a channel and a consumer goroutine, so
++	// Compact's return says nothing about whether it has arrived. Receiving it
++	// below is the synchronization; the buffer is wider than the one hook this
++	// fixture runs so the consumer never parks.
++	preCompactEnds := make(chan events.HookEndData, 8)
+ 	go func() {
+ 		for event := range s.Events() {
+-			if data, ok := event.Data.(events.HookEndData); ok && event.Kind == events.EventHookEnd {
+-				mu.Lock()
+-				emitted = append(emitted, data)
+-				mu.Unlock()
++			data, ok := event.Data.(events.HookEndData)
++			if !ok || event.Kind != events.EventHookEnd || data.Event != "PreCompact" {
++				continue
+ 			}
++			preCompactEnds <- data
+ 		}
+ 	}()
+ 
+@@ -454,33 +461,110 @@ func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
+ 	if foldOwner == "" {
+ 		t.Fatal("test setup: the fold wrote no owned marker to compare against")
+ 	}
+-	hooks_ := 0
++	preCompactEntries := 0
+ 	for _, entry := range data.Entries {
+ 		if entry.Turn.Kind != schema.TurnHookCompleted || entry.Turn.Hook == nil || entry.Turn.Hook.Event != "PreCompact" {
+ 			continue
+ 		}
+-		hooks_++
++		preCompactEntries++
+ 		if entry.Turn.OwningTurnID != foldOwner {
+ 			t.Fatalf("the fold's PreCompact hook entry is owned by %q, want the fold's own owner %q; unowned, it closes the fold's group on reload", entry.Turn.OwningTurnID, foldOwner)
+ 		}
+ 	}
+-	if hooks_ == 0 {
++	if preCompactEntries == 0 {
+ 		t.Fatal("test setup: the fold ran no PreCompact hook")
+ 	}
+-	mu.Lock()
+-	live := append([]events.HookEndData(nil), emitted...)
+-	mu.Unlock()
+-	seen := 0
+-	for _, end := range live {
+-		if end.Event != "PreCompact" {
+-			continue
+-		}
+-		seen++
+-		if end.OwningTurnID != foldOwner {
+-			t.Fatalf("the live PreCompact hook end is owned by %q, want %q", end.OwningTurnID, foldOwner)
+-		}
++	var live events.HookEndData
++	select {
++	case live = <-preCompactEnds:
++	// TRIPWIRE: the entry above proves the hook completed, and the event is
++	// published by the same call; 10s only fires if it never reaches the
++	// stream at all.
++	case <-time.After(10 * time.Second):
++		t.Fatal("no PreCompact hook end reached the live stream")
+ 	}
+-	if seen == 0 {
+-		t.Fatal("test setup: no PreCompact hook end reached the live stream")
++	if live.OwningTurnID != foldOwner {
++		t.Fatalf("the live PreCompact hook end is owned by %q, want %q", live.OwningTurnID, foldOwner)
++	}
++}
++
++// A fold names the owner of every record it writes, and its PreCompact hook's
++// completion is one of them. That name belongs to the fold's OWN run: hooks
++// dispatch on a goroutine per hook (hooks.Runner.runAll), so a hook from
++// another producer can complete while the fold's hook window is open, and it
++// must keep the owner of its own run — whatever turn is executing then, or
++// none — instead of inheriting the fold's.
++func TestCompactionReplay_HookCompletionBesideAFoldKeepsItsOwnOwner(t *testing.T) {
++	t.Parallel()
++	// The fold's PreCompact hook announces itself and then waits, so the
++	// notification below completes strictly inside the fold's hook window.
++	// Both halves are FIFO rendezvous: a reader completes only once the writer
++	// arrives, so neither side polls or sleeps.
++	rendezvous := t.TempDir()
++	started := filepath.Join(rendezvous, "started")
++	release := filepath.Join(rendezvous, "release")
++	for _, path := range []string{started, release} {
++		if err := syscall.Mkfifo(path, 0o600); err != nil {
++			t.Fatalf("mkfifo %s: %v", path, err)
++		}
++	}
++	hooks := fmt.Sprintf(`{"hooks":{"PreCompact":[{"matcher":"*","hooks":[{"type":"command","command":"echo open > '%s'; cat '%s' > /dev/null"}]}],"Notification":[{"matcher":"*","hooks":[{"type":"command","command":"true"}]}]}}`, started, release)
++	stateDir := t.TempDir()
++	s := newScriptedSummaryCompactSession(t, "hook-owner-beside-cheap", func(llm.Request) llm.Response {
++		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
++	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir, PluginDirs: []string{writePluginHooks(t, "hook-owner-beside-plugin", hooks)}}))
++	seedNumberedSessionHistory(t, s, 12)
++
++	compacted := make(chan error, 1)
++	go func() { compacted <- s.Compact(context.Background()) }()
++
++	// TRIPWIRE: the hook opens the FIFO as soon as it runs; the ceiling only
++	// fires if the fold never reaches its hook at all.
++	awaitWithin(t, 30*time.Second, "the fold's PreCompact hook entering its window", func() {
++		if _, err := os.ReadFile(started); err != nil {
++			t.Errorf("read the hook's start rendezvous: %v", err)
++		}
++	})
++
++	// Idle beside the fold: nothing is executing, so this completion is owned
++	// by nobody.
++	s.runNotificationHook(context.Background(), "beside the fold")
++
++	// TRIPWIRE: the hook is already parked on this FIFO; the ceiling only
++	// fires if it left without reading.
++	awaitWithin(t, 30*time.Second, "releasing the fold's PreCompact hook", func() {
++		if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
++			t.Errorf("write the hook's release rendezvous: %v", err)
++		}
++	})
++	if err := <-compacted; err != nil {
++		t.Fatalf("Compact: %v", err)
++	}
++
++	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
++	if err != nil {
++		t.Fatalf("read transcript: %v", err)
++	}
++	foldOwner := ""
++	for _, entry := range data.Entries {
++		if entry.Turn.Kind == schema.TurnSummary || entry.Turn.Kind == schema.TurnCheckpoint {
++			foldOwner = entry.Turn.OwningTurnID
++		}
++	}
++	if foldOwner == "" {
++		t.Fatal("test setup: the fold wrote no owned marker to compare against")
++	}
++	notifications := 0
++	for _, entry := range data.Entries {
++		if entry.Turn.Kind != schema.TurnHookCompleted || entry.Turn.Hook == nil || entry.Turn.Hook.Event != "Notification" {
++			continue
++		}
++		notifications++
++		if entry.Turn.OwningTurnID != "" {
++			t.Fatalf("a Notification hook completing beside the fold is owned by %q (the fold's own owner is %q), want the owner of its own run: none", entry.Turn.OwningTurnID, foldOwner)
++		}
++	}
++	if notifications == 0 {
++		t.Fatal("test setup: no Notification hook completed inside the fold's hook window")
+ 	}
+ }
+diff --git a/agent/session_events.go b/agent/session_events.go
+index f150db4bf..5e80183db 100644
+--- a/agent/session_events.go
++++ b/agent/session_events.go
+@@ -306,7 +306,18 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
+ // — turning it on would reveal only hooks that ran afterwards, which is the
+ // same "switch that governs nothing" complaint this fixes (kata qm9y).
+ func (s *Session) emitHookCompleted(data events.HookEndData) {
+-	data.OwningTurnID = s.hookCompletionOwner()
++	// The run that dispatched the hook names the owner of the records it
++	// produces (hooks.WithRecordOwner) when the executing turn is not who they
++	// belong to: a fold's PreCompact hook is one of the fold's records, and
++	// the fold's goroutine can outlive the turn it staged under. Unowned, a
++	// HOOK_COMPLETED is not merely unlabelled — the transcript projection
++	// makes it its own logical turn and CLOSES the open group, so everything
++	// the fold writes after it lands in a different group than the live
++	// projector puts it in. Every other hook belongs to whatever turn is
++	// executing, as before.
++	if data.OwningTurnID == "" {
++		data.OwningTurnID = s.activeTurnOwner()
++	}
+ 	info := schema.HookInfo{
+ 		Event:      data.Event,
+ 		HookType:   data.HookType,
+@@ -343,24 +354,6 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
+ 	s.emit(events.EventHookEnd, data)
+ }
+ 
+-// hookCompletionOwner names the logical turn a completing hook's records belong
+-// to. A fold running its PreCompact hook owns them: that hook is one of the
+-// fold's records, and the fold's goroutine can outlive the turn it staged
+-// under, leaving activeTurnOwner with nothing to answer. An unowned
+-// HOOK_COMPLETED is not merely unlabelled — the transcript projection makes it
+-// its own logical turn and CLOSES the open group, so everything the fold writes
+-// after it lands in a different group than the live projector puts it in.
+-// Every other hook is owned by whatever turn is executing, as before.
+-func (s *Session) hookCompletionOwner() string {
+-	s.mu.Lock()
+-	fold := s.foldHookOwner
+-	s.mu.Unlock()
+-	if fold != "" {
+-		return fold
+-	}
+-	return s.activeTurnOwner()
+-}
+-
+ // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
+ // CLI/TUI/hub render it (they inspect WarningData on the stream), but WITHOUT
+ // running the Notification hook. These diagnostics are about the plugin's own
+diff --git a/agent/session_hook_turn_test.go b/agent/session_hook_turn_test.go
+index 1df8af710..0c07753ea 100644
+--- a/agent/session_hook_turn_test.go
++++ b/agent/session_hook_turn_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"sync"
+ 	"testing"
+ 	"time"
+ 
+@@ -17,6 +18,7 @@ import (
+ 	"primeradiant.com/evener/agent/internal/contextmgr"
+ 	"primeradiant.com/evener/agent/internal/tool"
+ 	"primeradiant.com/evener/agent/schema"
++	"primeradiant.com/evener/agent/transcript"
+ 	"primeradiant.com/evener/llm"
+ )
+ 
+@@ -409,3 +411,64 @@ func validateSingleSuccessfulToolResult(messages []llm.Message, callID string) e
+ 	}
+ 	return nil
+ }
++
++// A hook completion is published twice — the durable entry and the live event
++// — and the two are not atomic, so whichever goes second can be overtaken by a
++// concurrently recorded round and the live and durable projections then order
++// the hook differently inside the same turn. The entry goes first, and this is
++// where that order is observable rather than assumed: an authoritative
++// consumer that is not draining holds the announce at the saturated event
++// channel, and the transcript is read from outside the emitter while it waits.
++func TestHookEndWritesTheEntryBeforeAnnouncingIt(t *testing.T) {
++	t.Parallel()
++	path := filepath.Join(t.TempDir(), "hook-order.jsonl")
++	writer, err := transcript.NewWriterNoSync(path, transcript.Header{})
++	if err != nil {
++		t.Fatalf("NewWriterNoSync: %v", err)
++	}
++	t.Cleanup(func() { _ = writer.Close() })
++	s := &Session{
++		id:              "hook-order",
++		transcript:      writer,
++		transcriptReady: true,
++		events:          make(chan events.SessionEvent, 1),
++		// Nothing drains this session, so an ordinary emitter would drop the
++		// event and never park. The mark is what makes the send wait.
++		authoritativeConsumer: true,
++	}
++	s.events <- events.SessionEvent{Kind: events.EventWarning, Data: events.WarningData{Message: "fills the buffer"}}
++
++	blocked := make(chan struct{})
++	var blockedOnce sync.Once
++	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
++
++	announced := make(chan struct{})
++	go func() {
++		defer close(announced)
++		s.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
++	}()
++
++	select {
++	case <-blocked:
++	// TRIPWIRE: the callback fires as the emitter reaches the saturated
++	// channel, which is immediate; 10s only fires if it never gets there.
++	case <-time.After(10 * time.Second):
++		t.Fatal("the hook completion's event never reached the saturated channel")
++	}
++
++	if hooks := transcriptHookTurns(t, path); len(hooks) != 1 {
++		t.Fatalf("HOOK_COMPLETED entries while the event is still held at the channel: got %d, want 1; an announce that precedes its own entry lets a concurrently recorded round land between them and order the hook differently in the live and durable projections", len(hooks))
++	}
++
++	<-s.events // releases the parked announce
++	select {
++	case <-announced:
++	// TRIPWIRE: the send completes as soon as the buffer has room; 10s only
++	// fires if the emitter stays parked after the drain.
++	case <-time.After(10 * time.Second):
++		t.Fatal("the hook completion's event stayed parked after the channel drained")
++	}
++	if got := len(s.events); got != 1 {
++		t.Fatalf("events on the channel after the release = %d, want the announced hook end", got)
++	}
++}
+diff --git a/agent/session_self_compact_test.go b/agent/session_self_compact_test.go
+index e92dfeff8..172bf8301 100644
+--- a/agent/session_self_compact_test.go
++++ b/agent/session_self_compact_test.go
+@@ -107,7 +107,7 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
+ 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
+ 
+ 	hist := makeSteeringSeed(4)
+-	_, commit := s.runPreCompactHook(context.Background(), &hist)
++	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
+ 
+ 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
+ 	goalIdx := indexOfSteering(hist, "Ship the feature")
+@@ -141,12 +141,12 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
+ 	s := newTestSession(t)
+ 	s.setPinnedNote("REMEMBER: do X")
+ 	hist := makeSteeringSeed(4)
+-	_, commit := s.runPreCompactHook(context.Background(), &hist)
++	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
+ 	if commit == nil {
+ 		t.Fatal("expected a non-nil commit from the first pass")
+ 	}
+ 	commit()
+-	_, commit = s.runPreCompactHook(context.Background(), &hist)
++	_, commit = s.runPreCompactHook(context.Background(), &hist, "")
+ 	if commit != nil {
+ 		t.Fatal("second pass found no pinned note (already committed-cleared) — expected a nil commit, nothing to defer")
+ 	}
+@@ -170,7 +170,7 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
+ 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
+ 
+ 	hist := makeSteeringSeed(4)
+-	records, _ := s.runPreCompactHook(context.Background(), &hist)
++	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
+ 
+ 	if got := kindOfSteeringRecord(records, noteHandoffPrefix); got != events.SteeringKindNoteHandoff {
+ 		t.Errorf("note handoff kind = %q, want %q", got, events.SteeringKindNoteHandoff)
+@@ -199,7 +199,7 @@ func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
+ 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
+ 
+ 	hist := makeSteeringSeed(4)
+-	s.runPreCompactHook(context.Background(), &hist)
++	s.runPreCompactHook(context.Background(), &hist, "")
+ 
+ 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
+ 	goalIdx := indexOfSteering(hist, "Ship the feature")
+@@ -232,7 +232,7 @@ func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.
+ 	s.hookRunner = runner
+ 
+ 	hist := makeSteeringSeed(2)
+-	records, _ := s.runPreCompactHook(context.Background(), &hist)
++	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
+ 
+ 	if got := kindOfSteeringRecord(records, "plugin context"); got != events.SteeringKindPrecompactHook {
+ 		t.Errorf("plugin ModelContext kind = %q, want %q", got, events.SteeringKindPrecompactHook)
+diff --git a/internal/apptranscript/compaction_grouping_test.go b/internal/apptranscript/compaction_grouping_test.go
+index bdc1e2a70..5921a42b7 100644
+--- a/internal/apptranscript/compaction_grouping_test.go
++++ b/internal/apptranscript/compaction_grouping_test.go
+@@ -57,12 +57,18 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
+ 			fold(record(schema.TurnSteering, "steering", "turn_active")),
+ 			record(schema.TurnUserInput, "turn_next", ""),
+ 		}, []string{"turn_active", "turn_next"}},
+-		// The reviewer's leading-replay case: the first record of the tail is
+-		// a copy, so a bounded reader whose window opens on it has a
+-		// non-opener with no group to join. It must allocate neither a
+-		// logical group nor an entry ordinal, or the indexed keys drift from
+-		// the full projection's.
+-		{"a leading copy allocates no group", []schema.Turn{
++		// The same run with no copy of an OPENER among its copies: this fold
++		// ran mid-turn, so its first copy is an assistant record rather than
++		// the user input the case above copies. It has to join the group
++		// already open instead of starting one of its own, in the indexed
++		// build as in the full one.
++		//
++		// A copy that is the first record of a transcript — a non-opener with
++		// no group to join at all — is not reachable: a fold copies the turns
++		// recorded while it ran (session_compaction.go:195, :257), and each of
++		// those was written to this same transcript by the pair that logged it
++		// (session.go:1727, :1776), so an original always precedes its copy.
++		{"copies with no opener among them preserve the open group", []schema.Turn{
+ 			fold(replay(record(schema.TurnAssistant, "assistant", ""))),
+ 			fold(replay(record(schema.TurnRoundTimings, "timing", "turn_active"))),
+ 			fold(record(schema.TurnSummary, "summary", "turn_active")),

@@ -1,0 +1,7 @@
+{
+  "captured_utc": "2026-09-20T04:54:02.781317+00:00",
+  "main_at_packaging": "d55475199dbaa93a15ae4a720a7408f29e688126",
+  "archive_branches_verified": 129,
+  "purpose": "Preservation, not qualification or completion",
+  "excluded": "Unrelated shared-artifacts/MCP branches and private journal; node_modules links"
+}

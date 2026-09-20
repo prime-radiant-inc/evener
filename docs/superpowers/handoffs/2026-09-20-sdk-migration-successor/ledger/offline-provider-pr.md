@@ -1,0 +1,5 @@
+Wires native preferences to the shared raw draft backend and makes local corrupt-draft discard available without a connected hub. A compare-and-swap discard preserves a newer readable replacement, and a matching live model reclassifies through its existing recovery seam instead of mutating a snapshot copy.
+
+Stacked on #1950. This is the provider replacement for the second part of #1902. It preserves the previous round-five provider implementation byte-for-byte. The third piece will reconcile a retained same-hub snapshot after its client disappears or a replacement handshake fails; this stack stays held until that successor is concrete.
+
+Validation at f7e6a60452dbba99128edf6af27f68d46e527b07: 6 provider, 41 native draft, and 6 focused shared discard tests pass; native typecheck, package-import lint, and diff checks pass. Failing-first provider regressions are preserved. Independent review/simplification found no own must-fix. Local RoboRev2559 reports the explicitly planned retained-snapshot dependency, reproduced in the lane report. Own non-test scope: 195 changed lines. Follow-up coverage is #1948; broader native recovery simplification is #1941.

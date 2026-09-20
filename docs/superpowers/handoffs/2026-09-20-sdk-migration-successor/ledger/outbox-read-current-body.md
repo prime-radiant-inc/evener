@@ -1,0 +1,7 @@
+Completes the native SQLite mutation outbox adapter with ordered discovery/read methods, recovery transfer, and transactional restoration of records proven absent by an authoritative snapshot. Failed compound writes roll back without losing queued or recovery records, and the class now explicitly implements the shared storage port.
+
+Rebased onto the merged write-path #1916 at main commit 617b188c8221c92f8a4c117a1ee49aac572a3757. Current head: 54cd2591736f42c7a48d5663a5d21829b3d50f97. Only the read/conformance commits were replayed; original 73fff461 is preserved in codex/backup-sdk-d25d-1b-read-73fff4614. The adapter remains unused until D25d-2 submission wiring.
+
+Validation: 27 focused tests, native typecheck, package-import lint and diff checks passed. Independent spec/quality/simplify review and local RoboRev2551 passed the exact own patch. Restack preserves its full SHA-256 aea4b58127102b73bc161ee072dede792be3df5597c19dd4cfe8aa39b54febab and stable patch ID f1976c1a394ff3ee3f0b529b1fd278d538a54b96. The byte-identical refresh rule carries that review; new-head CI must settle before merge.
+
+The raw panel's note-supersession finding is tracked in #1938 as a prerequisite before native notes support; no current native producer or approved D25d-1 through D25d-4 piece submits notes/human/set. Cross-table UUID collision behavior matches the web oracle and is tracked as shared hardening in #1957. Other conformance and cleanup follow-ups are #1927, #1928 and #1929. Own non-test scope: 100 changed lines.

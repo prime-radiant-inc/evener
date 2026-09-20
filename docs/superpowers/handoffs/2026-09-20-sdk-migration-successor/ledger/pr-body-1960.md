@@ -1,0 +1,5 @@
+The web marketplace UI preserves cleanup warnings when removal succeeded but clone deletion failed. Duplicate removal remains guarded until the SDK accepts a subsequent authoritative list; successful publication releases the guard even when another client has already re-added the same name. Failed, held, or rejected snapshots cannot clear it. A removal already absent from the accepted list is not guarded again.
+
+Stacked on #1940, #1954, and publication-signal #1973. The publication-dependent guard repair is 39 changed production lines, with 131 test additions and 5 deletions. This PR and its required native/TUI consumer siblings remain held for settled current-head CI and complete remote raw reviews.
+
+Validation: 56 focused web tests, frontend typecheck, Biome, package-import lint, and diff checks passed. Independent spec/correctness/simplify review and local RoboRev2608 found no blocking issues at `07b00b456`. A late old-client typed outcome may still trigger a redundant, correctly fenced read on the current client; this is a separately tracked Low. Guard writes remain client-fenced and the cleanup warning remains a true business outcome.

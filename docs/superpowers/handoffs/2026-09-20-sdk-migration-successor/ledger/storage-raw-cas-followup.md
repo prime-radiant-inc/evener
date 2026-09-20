@@ -1,0 +1,3 @@
+The independent review of the native offline-draft storage replacement at 700b111a861b006b3d59c7535fc8a7f696b8384f found one Low test-coverage gap. Valid replaceIf and insertIfAbsent cases use the in-memory fake; directly exercise these contracts through rawStringDraftBackend with a fake string-storage port.
+
+Cover matching replacement, stale-marker rejection, absent insert, existing-value refusal, malformed/null storage, and canonical object identity without relying on property order. Assert persisted values and return behavior. Keep the existing provider recovery coverage in its own successor. This is a test-only follow-up after the storage replacement, not a reason to expand the storage PR.

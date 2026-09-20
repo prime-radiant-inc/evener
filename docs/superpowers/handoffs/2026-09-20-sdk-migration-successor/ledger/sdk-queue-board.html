@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SDK Landing Queue</title>
+  <style>
+    :root { --ground:#f6f7f5; --panel:#fff; --ink:#1c2422; --ink-2:#4c5955; --ink-3:#7c8985; --line:#d9dfdc; --accent:#0f6b62; --accent-soft:#dcefec; --ok:#2f7d3a; --ok-soft:#e1f1e3; --warn:#9a6a00; --warn-soft:#fbefd0; --hold:#5b4fa8; --hold-soft:#e7e3f7; }
+    * { box-sizing:border-box; } body { margin:0; padding:28px 20px 64px; background:var(--ground); color:var(--ink); font-family:"Helvetica Neue",Arial,sans-serif; font-size:16px; line-height:1.45; }
+    .wrap { max-width:1180px; margin:0 auto; display:grid; gap:24px; } h1 { margin:0; font-size:30px; } h2 { margin:0 0 12px; font-size:20px; } h3 { margin:0 0 6px; font-size:16px; } p { max-width:78ch; margin:0 0 10px; } a { color:var(--accent); text-decoration:none; } .eyebrow { margin-bottom:4px; color:var(--ink-3); font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; } .stamp { color:var(--ink-2); font-size:14px; }
+    .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; } .tile,.card,.callout { background:var(--panel); border:1px solid var(--line); border-radius:8px; } .tile { padding:13px 15px; } .tile .n { font-size:23px; font-weight:700; line-height:1.1; } .tile .l { color:var(--ink-2); font-size:13px; } .callout { padding:15px 18px; border-left:4px solid var(--warn); } .callout.rec { border-left-color:var(--accent); } .callout ul,.card ul { margin:7px 0 0; padding-left:20px; } .callout li,.card li { margin-bottom:5px; } .scroll { overflow-x:auto; border:1px solid var(--line); border-radius:8px; } table { width:100%; min-width:1050px; border-collapse:collapse; background:var(--panel); font-size:14px; } th,td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } th { position:sticky; top:0; background:var(--ground); color:var(--ink-3); font-size:12px; letter-spacing:.06em; text-transform:uppercase; } tr:last-child td { border-bottom:0; } td:first-child { min-width:150px; font-weight:700; } .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; } .hold { color:var(--hold); background:var(--hold-soft); } .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:16px; } .card { padding:15px 17px; } footer { border-top:1px solid var(--line); padding-top:14px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="eyebrow">prime-radiant-inc/evener · mobile landing queue + SDK migration</div>
+      <h1>SDK Landing Queue</h1>
+      <p class="stamp">Local snapshot refreshed 2026-09-19T23:13:22Z from live GitHub REST and targeted merge receipts. Latest takeover merge is #1982 -> <span class="mono">cbf6d80b</span>.</p>
+      <p class="stamp">#2024 is merged as <span class="mono">7b23fd08</span> and #1982 as <span class="mono">cbf6d80b</span>. Web-first follow-up work is explicit in the Low fast-follow map. The hosted artifact was not republished.</p>
+    </header>
+    <aside class="callout"><strong>Current update 2026-09-19T23:13:22Z:</strong> twenty-two takeover merges are recorded; #2024 and #1982 are merged. There are 50 repository-open PRs and 27 handoff rows. Web-first parents #2005 and #1940 remain open; Low follow-ups must become focused PRs rather than issue-only parking.</aside>
+    <section class="tiles" aria-label="Queue summary">
+      <div class="tile"><div class="n">22</div><div class="l">takeover merges recorded</div></div>
+      <div class="tile"><div class="n">cbf6d80b</div><div class="l">latest takeover merge</div></div>
+      <div class="tile"><div class="n">27</div><div class="l">current handoff arithmetic</div></div>
+      <div class="tile"><div class="n">14</div><div class="l">carried implementation PRs</div></div>
+      <div class="tile"><div class="n">11 + 2</div><div class="l">parked/dependent + reference/docs</div></div>
+    </section>
+    <section class="callout rec"><div class="eyebrow">Coordinator read</div><h2>Web-first completion with real Low follow-up PRs</h2><ul>
+      <li><strong>Merged receipts:</strong> #2014 -> <span class="mono">9c789aeda</span>, #1968 -> <span class="mono">4413c18e</span>, #2024 -> <span class="mono">7b23fd08</span>, and #1982 -> <span class="mono">cbf6d80b</span>. #2024's reviewed head <span class="mono">d521522b</span> follows #2014's reviewed merge; #1982's reviewed head is <span class="mono">7144d78f</span>.</li>
+      <li><strong>Accounting:</strong> 50 repository-open PRs; 27 handoff rows = 14 carried, 11 parked/dependent, and 2 reference/docs. The carried set excludes merged #1982 and #2024.</li>
+      <li><strong>Fast follows:</strong> merged-parent candidates are #2006, #2026, #1948, and #1946; #1941 needs a landed-code reread. Dependent candidates are #2015/#2016 on #2005, #2027/#1944/#1951 on #1940, and #1953/#1959 on marketplace consumers.</li>
+      <li><strong>Native secondary:</strong> #2008, #2020, and #1942 are separate focused follow-ups. Local qualification is not publication.</li>
+    </ul></section>
+    <section><h2>Queue lanes</h2><div class="scroll"><table><thead><tr><th>Lane</th><th>Current heads</th><th>Next action</th><th>Hold</th></tr></thead><tbody>
+      <tr><td>History / settings</td><td class="mono">#1982 7144d78f -> merged cbf6d80b<br>#2024 d521522b -> merged 7b23fd08<br>#1968 4413c18e · #2014 9c789aeda</td><td>Open #2006 provenance-cost coverage and #2026 raw-identity coverage as separate fast follows.</td><td>Private 1982 Medium plan and public coverage/export remain held where recorded.</td></tr>
+      <tr><td>Ask / carrier</td><td class="mono">#2005 755f6a1ecd<br><span class="pill hold">open / current head</span></td><td>Qualify the current head, then split #2015 timeline parity from #2016 TUI fixture quality.</td><td>Issue texts name stale predecessor head 74ef4039; rebase follow-ups to the final parent.</td></tr>
+      <tr><td>Marketplace server</td><td class="mono">#1940 96a2cc059c<br><span class="pill hold">open / current head</span></td><td>After the typed outcome contract settles, split #2027 behavior, #1944 wire coverage, and #1951 diagnostics.</td><td>Consumers #1954/#1960 and related native rows remain open.</td></tr>
+      <tr><td>Marketplace consumers</td><td class="mono">#1954 64db435f · #1960 07b00b45<br>#1972 6a525baf · #1978 f50f58e2<br>#1983 de951b7a</td><td>Keep #1953 row validation and #1959 late-lifecycle coverage separate.</td><td>Web-first qualification remains ahead of native follow-on work.</td></tr>
+      <tr><td>Reconnect</td><td class="mono">#1922 193b2e96 · #1952 709a65ca · #1955 1fa85357</td><td>Turn #1942 into a focused native UI/lifecycle follow-up after the stack settles.</td><td>Preserve identity, close-wall, and retained-screen contracts.</td></tr>
+      <tr><td>Offline</td><td class="mono">predecessor chain merged through #1904</td><td>Open #1948 raw backend conformance; remeasure #1941 before any cleanup.</td><td>Keep storage identity and provider recovery tests separate.</td></tr>
+      <tr><td>Native secondary</td><td class="mono">#1981 c8828ce2 · #1983 de951b7a</td><td>Make #2008 timer retry and #2020 recovery eligibility real focused PRs if retained.</td><td>Host B, durable rows, recovery, and TestFlight/device work remain held.</td></tr>
+    </tbody></table></div></section>
+    <section class="grid2"><article class="card"><h3>Unopened and held</h3><ul>
+      <li>Native Host B, durable rows, recovery, and TestFlight/device acceptance remain held behind web-first recovery.</li>
+      <li>D6 Stack A pieces 11-13 remain unopened: publish surface, local store, cross-tab sync, transitions, and hub half.</li>
+      <li>Public coverage/export and metadata remain held behind private history findings. P10a is locally qualified but blocked on its P7/chain; P10b/c are not started.</li>
+    </ul></article><article class="card"><h3>Qualification boundaries</h3><ul>
+      <li>Current-head CI and every configured substantive raw reviewer body are required before qualification.</li>
+      <li>Pending, empty, or errored raw members block; issue text and local qualification are not merge receipts.</li>
+      <li>Sources and exact dependency mapping are in low-fast-follow-audit-2026-09-19.md.</li>
+    </ul></article></section>
+    <section class="callout rec"><div class="eyebrow">Full handoff accounting</div><h2>Current 27-row accounting</h2><p>50 repository-open PRs: 14 carried implementations, 11 parked/dependent implementations, and 2 reference/docs rows. The complete list and live heads are in project-pr-accounting-current.json.</p><p><strong>Carried:</strong> #1922, #1940, #1952, #1954, #1955, #1960, #1966, #1972, #1973, #1976, #1978, #1981, #1983, #2005.</p><p><strong>Parked/dependent:</strong> #1480, #1737, #1738, #1740, #1841, #1844, #1845, #1897, #1919, #1920, #1947. <strong>Reference/docs:</strong> #1580, #1934.</p></section>
+    <footer class="stamp">Coordinator-local snapshot at 2026-09-19T23:13:22Z. No hosted artifact was republished.</footer>
+  </main>
+</body>
+</html>

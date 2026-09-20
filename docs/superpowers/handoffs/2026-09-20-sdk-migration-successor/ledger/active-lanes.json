@@ -1,0 +1,111 @@
+{
+  "observed_at": "2026-09-19T05:33:27.859773+00:00",
+  "lanes": [
+    {
+      "agent": "fixture_import_fix",
+      "worktree": "/Users/jesse/.codex/worktrees/offline-draft-recovery-screen/evener",
+      "branch": "codex/offline-draft-recovery-screen",
+      "head": "e82e1488751f33fb736063fb1f2a72a8f9614495",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "retirement_test_diagnosis",
+      "worktree": "/Users/jesse/.codex/worktrees/marketplace-tui-outcome/evener",
+      "branch": "codex/marketplace-tui-ordered-reconciliation",
+      "head": "2c45c69f2154a80f79fb55654c07e3bafb2deb3b",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "outbox_storage_fix",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d25c-pending-turns",
+      "branch": "codex/native-outbox-runtime",
+      "head": "c8828ce2d855cea89a2e90e4929d0fe614495081",
+      "working_tree_changed": true
+    },
+    {
+      "agent": "history_merge_fix",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-merge-piece1",
+      "branch": "codex/turn-history-result-precedence",
+      "head": "032c030251ac562b807f68ae700e4e36ee50f850",
+      "working_tree_changed": true
+    },
+    {
+      "agent": "offline_draft_fix",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d6-split",
+      "branch": "codex/offline-draft-retained-snapshot",
+      "head": "0674003fc26f3584a42fae7e229403f986d10c1b",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "reconnect_readiness_fix",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d14-navigation-store",
+      "branch": "codex/reconnect-recovery",
+      "head": "193b2e96ab347d06bc98775ee6d1999baabe86cb",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "ask_boundary_fix",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/hub-askpending-notify",
+      "branch": "codex/ask-boundary-carrier-panic",
+      "head": "14303886cfe3e3c504e93fa88b77ed16808d1b4b",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "marketplace_decomposition",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/hub-broadcast-after-apply",
+      "branch": "codex/marketplace-removal-warning",
+      "head": "1087e0d791103cd18246fe73149ebc0060b93b5d",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "marketplace_native_consumer",
+      "worktree": "/Users/jesse/.codex/worktrees/marketplace-native-outcome/evener",
+      "branch": "codex/marketplace-native-guard-recovery",
+      "head": "de951b7a044a1c796b678e0abe1ed71291ac5ef1",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "daemon_timer_diagnosis",
+      "worktree": "/Users/jesse/.codex/worktrees/retirement-clock-race/evener",
+      "branch": "codex/retirement-clock-race",
+      "head": "7b47dce34e93a44867141200174b2404b2ef2bb8",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "retirement_replay_test_fix",
+      "worktree": "/Users/jesse/.codex/worktrees/retirement-replay-test/evener",
+      "branch": "codex/retirement-replay-test",
+      "head": "7fbd9a7670e873654efd06c4ae326e2aa25531c3",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "marketplace_decomposition",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-publication-signal",
+      "branch": "codex/marketplace-publication-signal",
+      "head": "3921917998c3bd91e55bcede458aa97a9fb55d27",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "projection_stack_audit",
+      "worktree": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d21-native-model",
+      "branch": "claude/c2b-d-native-page-history-cutover",
+      "head": "55c6eab8b6fe04b09f5d692869651440019b7fbd",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "transcript_wire_contracts",
+      "worktree": "/Users/jesse/.codex/worktrees/transcript-display-wire-contracts/evener",
+      "branch": "codex/transcript-display-wire-contracts",
+      "head": "68244fb400d17c7d4fd72696d4a3117700227afa",
+      "working_tree_changed": false
+    },
+    {
+      "agent": "history_turn_metadata",
+      "worktree": "/Users/jesse/.codex/worktrees/turn-history-metadata/evener",
+      "branch": "codex/turn-history-metadata",
+      "head": "032c030251ac562b807f68ae700e4e36ee50f850",
+      "working_tree_changed": true
+    }
+  ],
+  "note": "Read-only git snapshot, not completion or qualification evidence; the outbox_followups lane for merged #1965 was removed on the coordinator merge receipt; remaining entries preserve the prior snapshot and writers may be active."
+}

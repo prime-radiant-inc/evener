@@ -1,0 +1,434 @@
+[
+  {
+    "path": "/private/tmp/evener-marketplace-1954-repro",
+    "branch": "codex/marketplace-accepted-cache-retirement",
+    "status": "?? L/marketplace-cache-retirement-fix.md\n",
+    "error": ""
+  },
+  {
+    "path": "/private/tmp/evener-marketplace-publication-low",
+    "branch": "codex/marketplace-publication-low",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/private/tmp/evener-marketplace-publication-restack",
+    "branch": "codex/marketplace-publication-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/checkpoint-identity-low/evener",
+    "branch": "codex/checkpoint-identity-low",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/interrupt-boundary-successor/evener",
+    "branch": "codex/interrupt-boundary-successor",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/marketplace-applied-unavailable",
+    "branch": "codex/marketplace-applied-unavailable",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/marketplace-applied-unavailable-1960",
+    "branch": "codex/marketplace-applied-unavailable-1960",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/marketplace-native-outcome/evener",
+    "branch": "codex/marketplace-native-guard-recovery",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/marketplace-tui-outcome/evener",
+    "branch": "codex/marketplace-tui-ordered-reconciliation",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/mobile-sdk-1934-pickup/evener",
+    "branch": "codex/mobile-sdk-1934-pickup",
+    "status": "?? docs/superpowers/handoffs/2026-09-18-mobile-landing-sdk-migration/ledger/label-receipt-2026-09-19.md\n",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/draft-restore",
+    "branch": "codex/native-outbox-draft-restore",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/evener",
+    "branch": "codex/native-outbox-followups",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/foundation",
+    "branch": "codex/native-outbox-foundation",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/foundation-correction2",
+    "branch": "codex/native-outbox-foundation-correction2",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/foundations-integration",
+    "branch": "codex/native-outbox-foundations-integration",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/hostb-send",
+    "branch": "codex/native-outbox-hostb-send",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/producer-metadata",
+    "branch": "codex/native-outbox-producer-metadata",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/recovery-action-conversion",
+    "branch": "codex/native-recovery-action-conversion",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/recovery-hook",
+    "branch": "codex/native-outbox-recovery-hook",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/recovery-status",
+    "branch": "codex/native-outbox-recovery-status",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/native-outbox-followups/runtime-read",
+    "branch": "codex/native-outbox-runtime-read",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/offline-draft-recovery-screen/evener",
+    "branch": "codex/offline-draft-recovery-screen",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/p8-generation-order-low-fix",
+    "branch": "codex/p8-generation-order-low-fix",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/p8-generation-order-low-fix-restacked",
+    "branch": "codex/p8-generation-order-low-fix-restacked",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p7-generation-fence/evener",
+    "branch": "codex/sdk-d6-p7-generation-fence",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p7-generation-reload-successor/evener",
+    "branch": "codex/sdk-d6-p7-generation-reload-successor",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p7-generation-reload/evener",
+    "branch": "codex/sdk-d6-p7-generation-reload",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p7-generation-stamp/evener",
+    "branch": "codex/sdk-d6-p7-generation-stamp",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p7-parent-qualification/evener",
+    "branch": "codex/sdk-d6-p7-parent-qualification",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p8-settings-hub-generation-restack/evener",
+    "branch": "codex/sdk-d6-p8-settings-hub-generation-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/sdk-d6-p9-checkpointed-draft-editor-restack/evener",
+    "branch": "codex/sdk-d6-p9-checkpointed-draft-editor-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/skillguard-continuation-failure/evener",
+    "branch": "codex/skillguard-continuation-failure",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-cross-tab",
+    "branch": "codex/transcript-cross-tab",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-display-patch-preview/evener",
+    "branch": "codex/transcript-display-patch-preview",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-display-read-generation-p10b-reentrancy-fix/evener",
+    "branch": "codex/p10b-reentrancy-fix",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-display-read-generation/evener",
+    "branch": "codex/transcript-display-read-generation",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-display-wire-contracts-restack/evener",
+    "branch": "codex/transcript-display-wire-contracts-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-display-wire-contracts/evener",
+    "branch": "codex/transcript-display-wire-contracts",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-generation-settlement/evener",
+    "branch": "codex/transcript-generation-settlement",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-local-store",
+    "branch": "codex/transcript-local-store",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-public-types-low/evener",
+    "branch": "codex/transcript-public-types-low",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-read-store",
+    "branch": "codex/transcript-read-store",
+    "status": "?? appwire-client/typescript/node_modules\n",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-transitions",
+    "branch": "codex/transcript-transitions",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/transcript-wire-comment-low",
+    "branch": "codex/transcript-wire-comment-low",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/turn-history-coverage-alias-successor/evener",
+    "branch": "codex/turn-history-coverage-alias-successor",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/turn-history-metadata-alias-refresh/evener",
+    "branch": "codex/turn-history-metadata-alias-refresh",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/turn-history-metadata-integration/evener",
+    "branch": "codex/turn-history-metadata-integration",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/turn-history-metadata/evener",
+    "branch": "codex/turn-history-metadata",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/.codex/worktrees/turn-history-result-precedence-refresh/evener",
+    "branch": "codex/turn-history-result-precedence",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener-issue-2006",
+    "branch": "codex/issue-2006-history-cost",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener-marketplace-web-restack",
+    "branch": "codex/marketplace-web-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/ask-boundary-2005-low",
+    "branch": "codex/ask-boundary-2005-low",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/ask-boundary-live-boundaries",
+    "branch": "codex/ask-boundary-live-boundaries",
+    "status": "M  agent/execenv/gitignore.go\nM  agent/execenv/glob_budget_test.go\nM  agent/execenv/search_patterns.go\nMM agent/session_ask_test.go\nM  agent/session_state.go\n M agent/session_tool_round.go\nM  appwire-client/typescript/index.ts\nM  appwire-client/typescript/keybindingsStore.test.ts\nM  appwire-client/typescript/keybindingsStore.ts\nD  mobile-native/src/NativePreferencesProvider.test.tsx\nM  mobile-native/src/NativePreferencesProvider.tsx\nM  mobile-native/src/mutationOutboxStorage.test.ts\nM  mobile-native/src/mutationOutboxStorage.ts\nM  mobile-native/src/nativePreferenceDrafts.test.ts\nM  mobile-native/src/nativePreferenceDrafts.ts\nM  mobile-native/src/nativePreferences.test.ts\nM  mobile-native/src/nativePreferences.ts\n",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/hub-askpending-notify",
+    "branch": "codex/interrupt-marker-persistence",
+    "status": "?? agent/zz_tmp_rejected_marker_phantom_test.go\n",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/hub-broadcast-after-apply",
+    "branch": "codex/marketplace-removal-warning",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-applied-reconciliation-refresh",
+    "branch": "codex/marketplace-applied-reconciliation",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-landing-prep",
+    "branch": "codex/marketplace-landing-prep",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-publication-signal",
+    "branch": "codex/marketplace-publication-signal",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-remove-outcome-refresh",
+    "branch": "codex/marketplace-remove-outcome",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-s3-recovery-errors",
+    "branch": "codex/marketplace-s3-recovery-errors",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-s3-replacement",
+    "branch": "codex/marketplace-s3-replacement",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/marketplace-sdk-1954-restack",
+    "branch": "codex/marketplace-applied-reconciliation-restack",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d14-navigation-store",
+    "branch": "codex/reconnect-banners",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d25c-pending-turns",
+    "branch": "codex/native-outbox-authoritative-replay",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-d6-split",
+    "branch": "codex/offline-draft-connection-recovery",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/sdk-followups-1862",
+    "branch": "codex/sdk-plan-pr-links",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-consumer-integration",
+    "branch": "codex/turn-history-consumer-integration",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-coverage-export-integration",
+    "branch": "codex/turn-history-coverage-export-integration",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-merge",
+    "branch": "codex/turn-history-merge",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-merge-piece1",
+    "branch": "codex/turn-history-merge-piece1",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/turn-history-retained-placement",
+    "branch": "codex/turn-history-retained-placement",
+    "status": "",
+    "error": ""
+  },
+  {
+    "path": "/Users/jesse/git/prime-radiant-inc/evener/.codex-transcript-patch-integration",
+    "branch": "codex/transcript-patch-integration",
+    "status": "",
+    "error": ""
+  }
+]

@@ -1,0 +1,23 @@
+Reviewing branch "codex/sdk-migration-handoff-2026-09-20": 1 commits since d55475199dbaa93a15ae4a720a7408f29e688126
+Enqueued job 2710 for d55475199dbaa93a1 (agent: codex)
+Waiting for review to complete... done!
+
+Review (by codex)
+------------------------------------------------------------
+## Review Findings
+
+- **Severity**: High
+- **Location**: `docs/superpowers/handoffs/2026-09-20-sdk-migration-successor/HANDOFF.md:170`
+- **Problem**: The referenced ledger, branch manifest, PR snapshot, preservation patches, and review evidence exist only as untracked files. This commit contains only `HANDOFF.md`, so a successor checking it out cannot recover the promised requirements, archive mapping, or uncommitted historical work.
+- **Fix**: Commit the referenced handoff artifacts alongside the memo.
+
+---
+
+- **Severity**: Medium
+- **Location**: `docs/superpowers/handoffs/2026-09-20-sdk-migration-successor/HANDOFF.md:189`
+- **Problem**: The documented raw-review command targets a nonexistent directory and script. The referenced September 18 handoff is also absent from this commit’s tree, preventing readers from following the required review procedure and recovering its original requirements.
+- **Fix**: Include those resources or document exact retrieval instructions and provide a working raw-review command.
+
+## Summary
+
+The change documents Jesse’s web-first SDK migration handoff, but omits the supporting artifacts needed to resume it reliably.

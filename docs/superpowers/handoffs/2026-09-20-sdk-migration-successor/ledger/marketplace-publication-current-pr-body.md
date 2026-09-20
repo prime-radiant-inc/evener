@@ -1,0 +1,5 @@
+Marketplace consumers need to distinguish a published authoritative snapshot from a request that merely finished. Expose a publication version that advances only when an accepted successful or applied-failure list writer actually publishes. Held, failed, and fenced answers do not advance it; a held answer advances if it later publishes. Reset preserves monotonicity.
+
+This is the small shared prerequisite for the web removal/retry consumer #1960. The restack is based on merged #1954 and preserves its accepted-list cache retirement in all three publication paths. Host consumer changes remain separate.
+
+Validation: 158 extension tests, AppWire build, frontend typecheck and package-test collection, Biome, package-import lint, and installed-package qualification passed. Root reviewed the range-diff and accepted-writer integration; exact-base RoboRev2687 found no issues. Current head: f947bba6b6d368fa6caea023cabdce3a2ebfd49d; base: 5c407b152cac4fa6b6a39debf8647a114f4f7ddc. Current-head CI and the remote review panel remain required before merge.

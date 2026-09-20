@@ -1,0 +1,5 @@
+Keybindings and transcript-display settings need the same ready-generation lifecycle. This change extracts notification wiring, payload retirement, and lost-hub write settlement into shared settings helpers, with keybindings using them immediately. Payload-specific revision and conflict state remains owned by each store.
+
+Follows merged #2024. The three P8 commits are restacked on main 7b23fd083416bb7944b652ed73116b4949da8a80; their changed and context lines match the original reviewed patch exactly. The generation-preserving recovery behavior is unchanged. Own scope is 151 production additions / 54 deletions and 218 test additions across five files.
+
+Validation: 113 focused tests, package TypeScript and qualification, frontend typecheck, scoped Biome, import lint, and diff checks passed. Independent correctness/simplification review and local RoboRev2659 passed at e8521d4db057821d3e51c83ab0c6c304b4140e8e. Fresh current-head CI and the complete raw remote panel are required before merge.

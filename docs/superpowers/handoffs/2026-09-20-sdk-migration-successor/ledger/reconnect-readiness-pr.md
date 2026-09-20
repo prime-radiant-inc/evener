@@ -1,0 +1,5 @@
+Deferred native mutations now recheck the current hub, client identity, and connection readiness at invocation time. A retained display client can keep a screen visible through a reconnect, but cannot authorize a request. The same gate covers plugin, marketplace, provider, keybinding, and upgrade confirmation paths.
+
+Stacked on #1952. This is the readiness replacement for the remaining part of #1915. #1922 is the required reconnect-refetch and replacement-client recovery successor; the stack is held until that successor is restacked and qualified.
+
+Validation at 4bf782b77e103c84864eedb8677520ff1de85c0c: 50 focused tests across six files, native typecheck, package-import lint, and diff checks pass. The original round-four implementation and real deferred upgrade-confirmation tests are preserved. Independent review/simplification found no C-owned must-fix. Local RoboRev2560 reports only the held #1922 recovery seams. Own non-test scope: 329 changed lines (238 additions, 91 deletions); B and C replace the oversized combined #1915. Low connection-wiring simplifications remain #1942. The parked test-deletion branch is preserved.

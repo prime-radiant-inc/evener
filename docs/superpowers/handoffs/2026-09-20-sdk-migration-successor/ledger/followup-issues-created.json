@@ -1,0 +1,32 @@
+[
+  {
+    "title": "native: simplify offline draft recovery after the migration stack lands",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1941",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-1.md"
+  },
+  {
+    "title": "mobile: consolidate repeated retained-screen connection wiring",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1942",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-2.md"
+  },
+  {
+    "title": "mobile: simplify session usage accounting without mixing token scopes",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1943",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-3.md"
+  },
+  {
+    "title": "test(plugins): cover applied removal payloads through the JSON-RPC boundary",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1944",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-4.md"
+  },
+  {
+    "title": "native: simplify mutation outbox dispatch and recovery queries",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1945",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-5.md"
+  },
+  {
+    "title": "agent: verify legacy steering text evidence parity and simplify ask-boundary helpers",
+    "url": "https://github.com/prime-radiant-inc/evener/issues/1946",
+    "body_file": ".superpowers/sdd/2026-09-12-mobile-landing-queue-cont/followup-issue-6.md"
+  }
+]

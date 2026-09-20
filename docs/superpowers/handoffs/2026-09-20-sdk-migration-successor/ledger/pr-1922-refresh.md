@@ -1,0 +1,5 @@
+Retained native screens automatically reload missed state when their connection becomes ready again. Fatal failures keep the connection wall until a replacement client is ready. Provider and marketplace form modals expose reconnect actions without losing their drafts, and disconnected writes are distinguished from a busy mutation gate.
+
+Stacked on #1952 and #1955. Refreshed head `590c9d62ea9a622b889f097ab51530a084351c43` preserves the complete reviewed recovery patch byte-for-byte, SHA-256 `105dd4c055de2abbf06c85c9a445c523054c80a10f565f9d2dccc14199603683`. The unrelated WIP test-deletion branch remains preserved and unapplied.
+
+Validation: 64 focused native tests, native typecheck, package import lint, and diff checks passed after refresh. Independent review/simplify and local RoboRev2569 are qualified with only separate Lows. Raw-panel AddMarketplace not-ready closure is unreachable through the synchronous outer/inner readiness guards; mount/selection read errors are transient and recover through the existing wanted/catalog lifecycle. Defensive handling and diagnostic improvements remain in #1942. New exact-head CI is required before landing.
