@@ -41,6 +41,7 @@ type runConfig struct {
 	reasoningEffort           string   // --reasoning-effort override (or EVENER_REASONING_EFFORT)
 	contextStrategy           string   // --context-strategy
 	observationPacking        bool     // --observation-packing
+	actionFusion              bool     // --action-fusion
 	exportATIF                string   // --export-atif path
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
@@ -322,6 +323,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
 		ObservationPacking:          cfg.observationPacking,
+		ActionFusion:                cfg.actionFusion,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		VisionModel:                 visionModel,
