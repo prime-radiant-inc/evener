@@ -3184,6 +3184,80 @@ test("mergeOlderItemPage keeps one-call provenance work linear as history grows"
   expect(larger).toBeLessThanOrEqual(smaller * 3 + 40);
 });
 
+function countActiveToolCandidateReads(callCount: number): { reads: number; items: ItemModel[] } {
+  let reads = 0;
+  const charged = (id: string, overrides: Partial<ItemModel>): ItemModel => {
+    const item: ItemModel = {
+      id,
+      turnId: "fresh",
+      type: "commandExecution",
+      text: "",
+      toolName: "shell",
+      ...overrides,
+    };
+    Object.defineProperty(item, "id", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return id;
+      },
+    });
+    return item;
+  };
+  const items: ItemModel[] = [];
+  for (let index = 0; index < callCount; index += 1) {
+    const callId = `cost-active-${index}`;
+    // The call carries a provisional output of its own; the result below
+    // supersedes it (fresh results precede fresh calls in preferredToolField),
+    // so the merged item's output is a real field-precedence assertion, not
+    // just a filled-in blank.
+    items.push(charged(`item_tool_${index}_0`, { callId, output: `call-output-${index}` }));
+    items.push(charged(`item_tool_result_${index}_0`, { callId, output: `output-${index}`, status: "completed" }));
+  }
+  const model = testHydrate();
+  model.turns = [{ id: "fresh", status: "completed", items }];
+  const merged = mergeOlderItemPage(model, { data: [] });
+  return { reads, items: merged.turns.flatMap((turn) => turn.items) };
+}
+
+// The sibling guards above instrument ordinary (agentMessage) item ids, so they
+// pin only work done BEFORE the `if (!item.callId) continue` guard: a regression
+// that scans the active call/result candidates themselves — the work after that
+// guard — never touches an ordinary item's id and would be invisible to them.
+// This fixture grows the active candidate set (N then 2N genuine call/result
+// pairs, the shape the live path produces) with every call and result id
+// instrumented, so a superlinear scan of those candidates shows up as a
+// superlinear read count.
+//
+// Measured on the linear collector: 20 active calls -> 180 reads, 40 -> 360
+// (9 reads per call: exactly 2x work for 2x the candidates). The pre-#1982
+// quadratic candidate collector (9747f949) measured 1820 -> 6840 on this same
+// fixture (3.76x). The 3x + 40 bound below therefore fails the quadratic scan
+// by a wide margin while leaving a linear collector ~1.5x of headroom; it is
+// deterministic, with no elapsed-time threshold.
+test("mergeOlderItemPage keeps growing active tool-call candidates linear, folding each result", () => {
+  const smaller = countActiveToolCandidateReads(20);
+  const larger = countActiveToolCandidateReads(40);
+
+  // The counter must actually observe candidate identity reads, not zero.
+  expect(smaller.reads).toBeGreaterThan(0);
+
+  // The fold is real, so the count above is taken over a merge that did the
+  // provenance work: one surviving item per call, each carrying its RESULT's
+  // output (precedence over the call's own) and status, and no standalone
+  // result left behind.
+  expect(larger.items).toHaveLength(40);
+  expect(larger.items.some((item) => item.id.startsWith("item_tool_result_"))).toBe(false);
+  for (const item of larger.items) {
+    expect(item.callId).toBeDefined();
+    expect(item.output).toBe(`output-${item.callId?.slice("cost-active-".length)}`);
+    expect(item.status).toBe("completed");
+  }
+
+  expect(larger.reads).toBeLessThanOrEqual(smaller.reads * 3 + 40);
+});
+
 test("mergeOlderItemPage preserves older fallback fields across distinct result fragments", () => {
   const model = testHydrate();
   model.turns = [
