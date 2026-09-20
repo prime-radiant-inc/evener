@@ -2044,6 +2044,18 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
 }
 
+// unlogPairPersistedLocked drops the most recently logged pair. The caller
+// has just learned that pair's write recorded nothing, and the pair log feeds
+// publishFoldTransaction's post-marker rewrite: a canceled round's unrecorded
+// results riding that rewrite would become durable state a restart derives
+// from. Callers hold s.mu inside the same attentionMu hold that logged the
+// pair, so the last entry is that pair's own.
+func (s *Session) unlogPairPersistedLocked() {
+	if n := len(s.persistedAppendLog); n > 0 {
+		s.persistedAppendLog = s.persistedAppendLog[:n-1]
+	}
+}
+
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
@@ -2090,6 +2102,16 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
+	if err != nil {
+		// The write recorded nothing (AppendDurable's clean failure rolls the
+		// entry back), so the pair just logged must not survive: the fold
+		// rewrite tail would re-append it after the markers and resurrect a
+		// turn the live side already settled. The live turn stays for the
+		// caller's own failure handling.
+		s.mu.Lock()
+		s.unlogPairPersistedLocked()
+		s.mu.Unlock()
+	}
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

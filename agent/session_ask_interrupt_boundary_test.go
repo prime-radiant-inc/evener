@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -86,45 +87,33 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 	}
 }
 
-// TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore
-// closes the concurrent window the #2057 review flagged: a failed ask pair
-// appended after a fold's snapshot riding the publication's rewrite tail.
-// The fold parks inside its scripted summarizer strictly after the
-// history/pair-log snapshot; the ask turn records its pair and settles the
-// rejected boundary inside that blocked interval. The settlement's state
-// publication is serialized against fold publications -- it consumes the
-// pending pair log and bumps the history revision atomically -- so the
-// released fold's first publish is fenced and its retry re-snapshots past
-// the pair, folding it away together with its opening user input. A cold
-// restore must still derive idle with no pending ask. The reviewer's other
-// interleaving (the fold publishing the pair through the tail ahead of the
-// settlement) is pinned impossible by the derivation rule the companion
-// test below covers.
-func TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore(t *testing.T) {
+// TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore pins the
+// #2057 review's Medium, confirmed by this test before the fix: a canceled
+// ask round records its pairs after a mid-flight fold's snapshot, and its
+// tool-results write fails cleanly. recordTurn used to keep that pair in
+// persistedAppendLog, so the released fold's rewrite tail re-appended the
+// persisted pair after its markers — including ask_user's non-error posted
+// ack — and a cold restore resurrected the canceled ask as pending (the
+// live/restore divergence the boundary work exists to eliminate). recordTurn
+// now drops a pair whose write recorded nothing, so the rewrite tail carries
+// only the round's successfully recorded pairs, and the restore stays idle.
+func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// TRIPWIRE: scripted in-process providers and local transcript I/O; 30s is
 	// far above the expected completion time and only guards a genuine hang.
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer parentCancel()
-	turnCtx, cancelTurn := context.WithCancel(parentCtx)
-	defer cancelTurn()
 
 	ask := askUserCall("ask1", askUserArgsValid())
-	cancelCall := llm.ToolCallData{ID: "cancel1", Name: "cancel_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	proceed := make(chan struct{})
 
 	// The parked summarizer response holds the fold between its snapshot and
-	// its publication until the canceled round's handler releases it.
+	// its publication until the canceled round's records are in place.
 	entered := make(chan struct{})
 	var summaryCalls atomic.Int32
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(ask, cancelCall) },
-		},
-	})
+	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&agenttest.ScriptedAdapter{Provider: "fold-tail-cheap", Responder: func(llm.Request) llm.Response {
 		if summaryCalls.Add(1) == 1 {
 			close(entered)
@@ -139,21 +128,6 @@ func TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore(t
 	}
 	defer sess.Close()
 
-	markerFailure := errors.New("interrupt marker rejected after clean rollback")
-	toolResultsFailure := errors.New("tool results record rejected")
-	var fs *environmentSyncFailureFS
-	sess.RegisterTool("cancel_tool", "cancels after ask_user posts",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) {
-			fs.mu.Lock()
-			fs.writeFailure = toolResultsFailure
-			fs.failure = markerFailure
-			fs.mu.Unlock()
-			cancelTurn()
-			return "canceling", nil
-		})
-	fs = attachEnvironmentFailureFS(t, sess)
-
 	seedNumberedSessionHistory(t, sess, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)
@@ -162,42 +136,52 @@ func TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore(t
 	}()
 	<-entered // the fold is mid-flight; nothing is locked
 
-	_, processErr := sess.ProcessInput(turnCtx, "which db should we use?", nil)
-	if !errors.Is(processErr, context.Canceled) || !errors.Is(processErr, markerFailure) {
-		t.Fatalf("ProcessInput error = %v, want cancellation and rejected marker", processErr)
-	}
-	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("live ask pending count after rejected marker = %d, want 0", got)
-	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("live state after rejected marker = %q, want %q", got, SessionIdle)
-	}
+	// The canceled ask round's records, all appended after the fold's
+	// snapshot: the round's opening user input and assistant ask turn (their
+	// writes succeed), then the canceled tool-results pair whose durable
+	// write fails cleanly. recordTurn keeps that pair in the pair log, which
+	// is exactly the state the review claims a stale fold re-appends.
+	userTurn := schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))
+	sess.recordTurn(userTurn, userTurn)
+	assistantTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &ask}},
+	})
+	sess.recordTurn(assistantTurn, assistantTurn)
 
+	toolResultsFailure := errors.New("tool results record rejected")
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.writeFailure = toolResultsFailure
+	fs.mu.Unlock()
+	askAck := tool.ExecResult{ToolName: "ask_user", CallID: "ask1", Output: "posted", FullOutput: "posted"}
+	sess.appendCanceledToolResults([]llm.ToolCallData{ask}, []tool.ExecResult{askAck}, context.Canceled)
+
+	sess.mu.Lock()
+	pairsAfterSnapshot := len(sess.persistedAppendLog) + sess.persistedAppendLogBase
+	sess.mu.Unlock()
+	if pairsAfterSnapshot != 2 {
+		t.Fatalf("pairs logged during the blocked fold = %d, want 2 (the failed results pair must leave the log with its write's clean failure)", pairsAfterSnapshot)
+	}
 	close(proceed)
 	if err := <-compactErr; err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	// Setup check: the concurrent scenario really happened -- the transcript
-	// carries both the fold's markers and the ask turn. Whether the pair
-	// landed inside the re-snapshot's fold (settlement won the publication
-	// race) or after the markers through the rewrite tail (fold won) varies
-	// by run; the restore contract below must hold for both.
+	// Setup checks: the tail still carries the round's successfully recorded
+	// pairs (the ask call rides with the assistant turn), but ask_user's
+	// posted ack must NOT ride -- a canceled pair whose write recorded
+	// nothing cannot re-enter the durable transcript through the rewrite.
 	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	var hasFold, hasAsk bool
-	for _, entry := range data.Entries {
-		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
-			hasFold = true
-		}
-		if resumedHistoryCarriesAsk([]schema.Turn{entry.Turn}, "ask1") {
-			hasAsk = true
-		}
+	resumed := ResumeHistory(data.Entries)
+	if !resumedHistoryCarriesAsk(resumed, "ask1") {
+		t.Fatal("test setup: the assistant ask turn is missing from the post-marker resumed history -- the rewrite tail stopped carrying recorded pairs")
 	}
-	if !hasFold || !hasAsk {
-		t.Fatalf("test setup: transcript carries fold=%v ask=%v, want both", hasFold, hasAsk)
+	if resumedHistoryCarriesPostedAskResult(resumed, "ask1") {
+		t.Fatal("ask_user's canceled ack rode the rewrite tail: the failed results pair re-entered the durable transcript after the fold markers")
 	}
 
 	meta := sess.Meta()
@@ -208,11 +192,26 @@ func TestAskUser_RejectedAskAppendedDuringFoldTailDoesNotResurrectAfterRestore(t
 	}
 	defer restored.Close()
 	if got := restored.askPendingCount(); got != 0 {
-		t.Fatalf("restored ask pending count after concurrent fold tail = %d, want 0 (the failed pair resurrected through the rewrite tail)", got)
+		t.Fatalf("restored ask pending count after fold tail = %d, want 0 (the canceled pair resurrected through the rewrite tail)", got)
 	}
 	if got := restored.State(); got != SessionIdle {
-		t.Fatalf("restored state after concurrent fold tail = %q, want %q", got, SessionIdle)
+		t.Fatalf("restored state after fold tail = %q, want %q", got, SessionIdle)
 	}
+}
+
+// resumedHistoryCarriesPostedAskResult reports whether any turn in the
+// resumed history carries a completed, non-error tool RESULT for the given
+// call ID. Resume-time orphan repair splices an all-error placeholder for a
+// call with no results, which is fine: the derivation rules skip those.
+func resumedHistoryCarriesPostedAskResult(turns []schema.Turn, callID string) bool {
+	for _, turn := range turns {
+		for _, part := range turn.Message.Content {
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID && !part.ToolResult.IsError {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resumedHistoryCarriesAsk reports whether any turn in the resumed history
