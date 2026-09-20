@@ -739,7 +739,7 @@ test("an applied clone cleanup failure warns and closes the completed removal", 
   expect(removeCalls(fake)).toBe(1);
 });
 
-test("an applied cleanup failure that still lists the target refreshes and blocks retry", async () => {
+test("an applied cleanup failure that still lists the target refreshes and re-enables Remove", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   fake.on("evener/marketplace/remove", () => {
     throw cloneLitterError([ACME]);
@@ -757,7 +757,7 @@ test("an applied cleanup failure that still lists the target refreshes and block
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("an applied but unavailable cleanup failure closes confirmation, refreshes, and blocks retry", async () => {
+test("an applied but unavailable cleanup failure closes confirmation, refreshes, and re-enables Remove", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   fake.on("evener/marketplace/remove", () => {
     throw cloneLitterError(null);
