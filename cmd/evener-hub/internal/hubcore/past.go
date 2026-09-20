@@ -1113,19 +1113,20 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 // last activity moment), not directory mtime. Entries with a blank WorkingDir
 // are skipped, as are entries whose WorkingDir no longer exists on disk
 // (issue #50) — a deleted project directory would otherwise linger in the
-// dropdown until it failed later at spawn/submit validation. Sessions in an
-// evener-managed worktree lane (WorktreeManaged — the delegate isolation and
-// manage_worktree task lanes) are skipped too: their WorkingDir is session
-// machinery under the state root, not a project the user would spawn into;
-// a worktree entered by path but not managed stays, since that one is the
-// user's own checkout. That policy deliberately diverges from
-// EffectiveWorkingDir (tree.go), the spec §7 shared mechanism that maps any
-// worktree session — managed or path-entered — back to its restore root for
-// grouping, spawn prefill, and resume: recents answers "which dirs would you
-// spawn into next", where a path-entered worktree is a deliberate user
-// location, and a managed lane is dropped rather than remapped because the
-// project it was entered from is already surfaced by that project's own root
-// sessions. Deduped on the dir's first (most recent) occurrence.
+// dropdown until it failed later at spawn/submit validation. Session
+// machinery is excluded: an evener-managed worktree lane (WorktreeManaged —
+// the delegate isolation and manage_worktree task lanes) has its WorkingDir
+// replaced by the project it was entered from (WorktreeRestoreRoot, following
+// EffectiveWorkingDir in tree.go, the spec §7 shared mechanism) when that is
+// known, and is skipped when it is not; a delegate session (IsSubagent) is
+// skipped too, because its dir is either its parent's project — which the
+// parent session's own row already surfaces — or an isolation lane. That
+// leaves one deliberate divergence from EffectiveWorkingDir: a worktree
+// entered by path but not managed (WorktreePath set, WorktreeManaged false)
+// keeps its raw path here, since recents answers "which dirs would you spawn
+// into next" and that worktree is the user's own checkout, while §7's
+// grouping/resume remaps it to its restore root. Deduped on the dir's first
+// (most recent) occurrence.
 func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	if limit <= 0 {
 		return nil
@@ -1139,10 +1140,12 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	seen := make(map[string]bool, len(i.all))
 	candidates := make([]string, 0, len(i.all))
 	for _, e := range i.all {
+		dir := strings.TrimSpace(e.Meta.EnvInfo.WorkingDir)
 		if e.Meta.WorktreeManaged {
+			dir = strings.TrimSpace(e.Meta.WorktreeRestoreRoot)
+		} else if e.Meta.IsSubagent {
 			continue
 		}
-		dir := strings.TrimSpace(e.Meta.EnvInfo.WorkingDir)
 		if dir == "" || seen[dir] {
 			continue
 		}

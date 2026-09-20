@@ -134,29 +134,38 @@ func TestPastIndex_RecentProjectDirs_FiltersDeletedDirs(t *testing.T) {
 	}
 }
 
-// TestPastIndex_RecentProjectDirs_SkipsManagedWorktreeLanes pins the recents
-// contract: a session whose meta records an evener-managed worktree lane
-// (WorktreeManaged, set by the native worktree tools' create/switch and by
-// delegate isolation lanes) is session machinery, not a user project — its
-// WorkingDir must not surface as a recent project. A worktree entered by path
-// but not managed (WorktreePath set, WorktreeManaged false) is the user's own
-// checkout and stays.
-func TestPastIndex_RecentProjectDirs_SkipsManagedWorktreeLanes(t *testing.T) {
+// TestPastIndex_RecentProjectDirs_ExcludesSessionMachinery pins the recents
+// contract: recents are spawn destinations, so session machinery never
+// surfaces as a project. A managed worktree lane's WorkingDir is machinery
+// under the state root (WorktreeManaged, set by the native worktree tools'
+// create/switch and by delegate isolation lanes): the project it was entered
+// from (WorktreeRestoreRoot) carries its recency instead, when known. A
+// delegate session (IsSubagent) is machinery too — an isolation lane's meta
+// can predate the worktree fields or share its parent's dir, and either way
+// the parent session's own dir already carries the signal. A worktree entered
+// by path but not managed (WorktreePath set, WorktreeManaged false) is the
+// user's own checkout and stays.
+func TestPastIndex_RecentProjectDirs_ExcludesSessionMachinery(t *testing.T) {
 	root := t.TempDir()
 	project := mkExistingDir(t, root, "project")
-	lane := mkExistingDir(t, root, "lane")           // managed lane — skipped
-	unmanaged := mkExistingDir(t, root, "unmanaged") // path-entered worktree — kept
+	restoree := mkExistingDir(t, root, "restoree")          // the rooted lane's restore root — surfaces
+	laneRooted := mkExistingDir(t, root, "lane-rooted")     // managed lane, restore root known
+	lane := mkExistingDir(t, root, "lane")                  // managed lane, no restore root — skipped
+	delegateLane := mkExistingDir(t, root, "delegate-lane") // isolated delegate lane — skipped
+	unmanaged := mkExistingDir(t, root, "unmanaged")        // path-entered worktree — kept
 
 	idx := NewPastIndex("")
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
-		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
-		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: unmanaged}, WorktreePath: unmanaged},
-		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: project}},
+		{ID: "02wMz5Txv0RootedLaneWt", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: laneRooted}, WorktreePath: laneRooted, WorktreeManaged: true, WorktreeRestoreRoot: restoree},
+		{ID: "02wMz5TxvDelegateLaneW1", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: delegateLane}, IsSubagent: true},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: unmanaged}, WorktreePath: unmanaged},
+		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-4 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: project}},
 	})
 	got := idx.RecentProjectDirs(15)
-	want := []string{unmanaged, project}
+	want := []string{restoree, unmanaged, project}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("RecentProjectDirs(15) = %v, want %v (managed lane %q must be dropped)", got, want, lane)
+		t.Fatalf("RecentProjectDirs(15) = %v, want %v (machinery dirs %q, %q must be dropped; the rooted lane must surface its restore root %q)", got, want, lane, delegateLane, restoree)
 	}
 }
