@@ -129,8 +129,8 @@ export function threadFingerprintForItem(
   // catch-all (reducer.ts's mergeStableDelegate replaces a stable snapshot
   // only when it or latestActivityAt advances), so a snapshot field the row
   // starts consuming later cannot silently go stale. NeedsAttention and the
-  // resumability fields are wake-delivery plumbing the row never renders, so
-  // they carry no entry of their own.
+  // resumability fields no longer render (see delegateLifecycleLabel), so
+  // they carry no entry.
   return JSON.stringify({
     cwd: thread.cwd,
     delegates: thread.delegates?.map((delegate) => [

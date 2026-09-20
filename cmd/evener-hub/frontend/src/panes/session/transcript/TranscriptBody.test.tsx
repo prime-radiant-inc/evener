@@ -604,18 +604,18 @@ describe("TranscriptBody", () => {
 
   test("refreshes delegate exhaustion, reason, usage, and run timing without status or outcome changes", async () => {
     const delegateItem = {
-      id: "attention_delegate",
-      turnId: "attention_turn",
+      id: "refresh_delegate",
+      turnId: "refresh_turn",
       type: "commandExecution",
       text: "",
       toolName: "delegate",
       description: "Inspect a settled child",
       argumentsJSON: '{"prompt":"inspect"}',
-      output: JSON.stringify({ delegate_id: "dlg_attention", status: "done", transcript_ref: "local:child" }),
+      output: JSON.stringify({ delegate_id: "dlg_refresh", status: "done", transcript_ref: "local:child" }),
       status: "completed",
     };
     const settledDelegate = {
-      delegateId: "dlg_attention",
+      delegateId: "dlg_refresh",
       status: "done",
       outcome: "done",
       terminal: true,
@@ -625,15 +625,15 @@ describe("TranscriptBody", () => {
     const rowBefore = {
       ...ordinaryToolFixture,
       delegates: [settledDelegate],
-      turns: [{ id: "attention_turn", status: "completed", items: [delegateItem] }],
+      turns: [{ id: "refresh_turn", status: "completed", items: [delegateItem] }],
     } as unknown as ThreadModel;
     const { rerender } = render(
       <TranscriptBody
         model={rowBefore}
         config={preset("tools")}
         surface="preview"
-        disclosureScope="ordinary:attention"
-        sessionRef="ordinary:attention"
+        disclosureScope="ordinary:refresh"
+        sessionRef="ordinary:refresh"
       />,
     );
     const settledLifecycle = screen.getByTestId("subagent-stats");
@@ -642,10 +642,7 @@ describe("TranscriptBody", () => {
 
     // Every field the memoized delegate row renders but the old fingerprint
     // omitted: exhaustion evidence, failure reason, usage, run timing, and
-    // the reducer's own revision. Attention and resumability left the card's
-    // render surface - they are wake-delivery plumbing - so they carry no
-    // fingerprint entry of their own; the reducer's projectionRevision
-    // catch-all still covers any field the row starts consuming later.
+    // the reducer's own revision.
     const onlyChange = (changes: Record<string, unknown>): ThreadModel =>
       ({
         ...rowBefore,
@@ -661,23 +658,29 @@ describe("TranscriptBody", () => {
       expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
     }
 
+    // The dead plumbing fields left the tuple with the card's attention
+    // marker: a snapshot change limited to them never re-renders the row.
+    for (const change of [{ needsAttention: true }, { resumable: false }]) {
+      expect(threadFingerprintForItem(delegateItem, onlyChange(change))).toBe(before);
+    }
+
     // A needsAttention flip re-renders nothing the reader can see: the word
     // stays the lifecycle's own.
-    const attentionAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
+    const rowAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
     rerender(
       <TranscriptBody
-        model={attentionAfter}
+        model={rowAfter}
         config={preset("tools")}
         surface="preview"
-        disclosureScope="ordinary:attention"
-        sessionRef="ordinary:attention"
+        disclosureScope="ordinary:refresh"
+        sessionRef="ordinary:refresh"
       />,
     );
     await waitFor(() => {
-      const alertedLifecycle = screen.getByTestId("subagent-stats");
-      expect(alertedLifecycle.getAttribute("data-attention")).toBeNull();
-      expect(alertedLifecycle.textContent).toContain("Idle · reported");
-      expect(alertedLifecycle.textContent).not.toContain("Needs attention");
+      const statsLine = screen.getByTestId("subagent-stats");
+      expect(statsLine.getAttribute("data-attention")).toBeNull();
+      expect(statsLine.textContent).toContain("Idle · reported");
+      expect(statsLine.textContent).not.toContain("Needs attention");
     });
   });
 

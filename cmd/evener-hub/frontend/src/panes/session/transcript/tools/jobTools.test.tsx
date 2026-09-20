@@ -217,9 +217,8 @@ test("job_status: needs_attention stays plumbing - the lifecycle status leads th
   const { container } = render(
     <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
   );
-  // A pending wake is delivery machinery the owner driver consumes, not a
-  // reader-facing status: the chip reports the lifecycle ("running"), never
-  // the flag.
+  // The chip reports the lifecycle ("running"), never the pending-wake flag
+  // (rationale at delegateLifecycleLabel).
   const chip = container.querySelector("[class*='chip']");
   expect(chip?.textContent).toContain("running");
   expect(screen.queryByText("Needs attention")).toBeNull();

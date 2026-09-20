@@ -109,26 +109,15 @@ const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
   unknown: "Status unavailable",
 };
 
-function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
-  const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
-  return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
-}
-
-// The status word both delegate status surfaces render: the lifecycle label
-// from the stable projection's display status. The standalone lifecycle line
-// (ToolCallItem, collapsed rows) and the card's merged first line (expanded
-// rows) share it, so the wording stays identical on either surface. The
-// stable projection's NeedsAttention flag is deliberately absent: it is
+// Both delegate status surfaces (the card's merged first line and the
+// collapsed standalone line) derive their word here, so the wording stays
+// identical on either surface. The stable projection's NeedsAttention flag is
+// deliberately absent from every surface a delegate renders on: it is
 // wake-delivery plumbing the owner driver consumes on its own, never a
 // reader-facing status.
-export function DelegateStatusWord({
-  kind,
-  stable,
-}: {
-  kind: SubagentRowKind;
-  stable: EvenerDelegateInfo | undefined;
-}) {
-  return <>{delegateLifecycleLabel(kind, stable)}</>;
+export function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+  const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
+  return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
 }
 
 // True when a delegate call's parsed output still yields a card row - the
@@ -176,14 +165,12 @@ function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDel
   if (exhaustionBudget === undefined && exhaustionLimit === undefined) {
     return null;
   }
-  const exhaustion =
-    exhaustionBudget !== undefined || exhaustionLimit !== undefined
-      ? `${exhaustionBudget ?? "?"} of ${exhaustionLimit ?? "?"}`
-      : undefined;
   return (
     <section className={CLASS.section} data-testid="subagent-job-detail">
       <div className={CLASS.sectionLabel}>Job</div>
-      <div className={CLASS.mandate}>{exhaustion && <div>Exhaustion budget: {exhaustion}</div>}</div>
+      <div className={CLASS.mandate}>
+        Exhaustion budget: {exhaustionBudget ?? "?"} of {exhaustionLimit ?? "?"}
+      </div>
     </section>
   );
 }
@@ -276,7 +263,7 @@ function SubagentCard({
           {STATUS_GLYPH[displayKind]}
         </span>
         <span className={CLASS.statusWord} data-testid="subagent-status-word">
-          <DelegateStatusWord kind={displayKind} stable={stable} />
+          {delegateLifecycleLabel(displayKind, stable)}
         </span>
         {/* Each segment rides behind the word, behind its own separator -
             never a dangling "·" advertising a segment that has no data. */}

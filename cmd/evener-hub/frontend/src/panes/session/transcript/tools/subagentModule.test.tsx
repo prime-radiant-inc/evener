@@ -60,6 +60,13 @@ function delegateItem(overrides: Partial<ItemModel> = {}): ItemModel {
   return item({ toolName: "delegate", ...overrides });
 }
 
+// Several tests read the expanded recent-activity region; one helper keeps
+// the click-through in step with the button's label.
+async function openRecentActivity(user: ReturnType<typeof userEvent.setup>, row: HTMLElement) {
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  await within(row).findByTestId("subagent-quotes");
+}
+
 // --- classifyJobStatus / resolveRowKey (pure, unit-level) -----------------
 
 test("classifyJobStatus: failed family", () => {
@@ -790,21 +797,19 @@ test("dr7e: no Job detail section renders when no exhaustion fields are set", as
   render(<Body item={settled} live={false} />);
 
   const row = screen.getByTestId("subagent-row");
-  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
-  await within(row).findByTestId("subagent-quotes");
+  await openRecentActivity(user, row);
   expect(screen.queryByTestId("subagent-job-detail")).toBeNull();
 });
 
-// "Job resumable" is gone: resumability is wake-delivery plumbing the owner
-// driver acts on, not a reader-facing fact. The exhaustion evidence that
-// explains an "Exhausted" lifecycle is the one job detail worth showing.
+// Pins the dropped "Job resumable" line staying dropped, and the exhaustion
+// evidence that explains an "Exhausted" lifecycle staying visible.
 test("a resumable delegate renders no Job section; exhaustion evidence still renders alone", async () => {
   const Body = toolRendererFor("delegate").body!;
   const user = userEvent.setup();
 
   // Resumable on the stable projection: the dropped section rendered
   // "Resumable" from exactly this shape.
-  seedCurrentDelegate("ref_job", "dlg_job", "running");
+  seedCurrentDelegate("ref_job", "dlg_job", "running", undefined, { resumable: true });
   const resumable = delegateItem({
     id: "d_job_resumable",
     callId: "call_job_resumable",
@@ -813,8 +818,7 @@ test("a resumable delegate renders no Job section; exhaustion evidence still ren
   });
   const { unmount } = render(<Body item={resumable} live={false} sessionRef="ref_job" />);
   let row = screen.getByTestId("subagent-row");
-  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
-  await within(row).findByTestId("subagent-quotes");
+  await openRecentActivity(user, row);
   expect(screen.queryByTestId("subagent-job-detail")).toBeNull();
   unmount();
 
@@ -834,8 +838,8 @@ test("a resumable delegate renders no Job section; exhaustion evidence still ren
   });
   render(<Body item={exhausted} live={false} />);
   row = screen.getByTestId("subagent-row");
-  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
-  const detail = await within(row).findByTestId("subagent-job-detail");
+  await openRecentActivity(user, row);
+  const detail = within(row).getByTestId("subagent-job-detail");
   expect(within(detail).getByText("Exhaustion budget: 3 of 3")).toBeTruthy();
   expect(within(detail).queryByText("Resumable")).toBeNull();
   expect(within(detail).queryByText("Not resumable")).toBeNull();
@@ -1102,10 +1106,9 @@ test("an activation-only receipt keeps the standalone lifecycle line even while 
   expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
 });
 
-// The stable projection's NeedsAttention flag is wake-delivery plumbing the
-// owner driver consumes on its own - it is not a reader-facing status, so the
-// card surfaces only the lifecycle word. That word still owns the row while
-// the child's own content status flaps underneath.
+// needsAttention is wake-delivery plumbing (rationale at delegateLifecycleLabel)
+// and must never surface. The lifecycle word still owns the row while the
+// child's own content status flaps underneath.
 test("the stable lifecycle owns the card while child content status changes, and attention never surfaces", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => childThreadRead(params, "active"));

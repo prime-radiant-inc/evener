@@ -70,7 +70,15 @@ export async function measureEditorialTranscript() {
             return r.left < box.left - 1 || r.right > box.right + 1;
           })
           .map((element) => element.outerHTML.slice(0, 180));
-        const anchor = required(statusLines.find((element) => element.dataset.kind === "running"));
+        // Anchor on the fixture-owned delegate identity rather than a status
+        // kind a future case could share, so fixture growth cannot silently
+        // re-target the guard.
+        const anchorCard = required(
+          Array.from(host.querySelectorAll<HTMLElement>('[data-testid="subagent-row"]')).find((card) =>
+            card.textContent?.startsWith("Delegate dlg_editorial_running"),
+          ),
+        );
+        const anchor = required(anchorCard.querySelector<HTMLElement>('[data-testid="subagent-stats"]'));
         const anchorVisible = visibleWithin(anchor, box);
         const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
         const userText = required(user.firstElementChild);

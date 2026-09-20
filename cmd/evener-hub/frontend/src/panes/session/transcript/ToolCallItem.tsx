@@ -26,7 +26,7 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { DelegateStatusWord, delegateOutputHasCard, rowFromDelegateItem } from "./tools/subagentModule";
+import { delegateLifecycleLabel, delegateOutputHasCard, rowFromDelegateItem } from "./tools/subagentModule";
 import {
   effectiveRowKind,
   removeSubagentRow,
@@ -276,7 +276,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const lifecycle =
     isDelegate && showStandaloneLifecycle ? (
       <div className={CLASS.lifecycle} data-testid="delegate-lifecycle" data-kind={delegateKind}>
-        <DelegateStatusWord kind={delegateKind} stable={stableDelegate} />
+        {delegateLifecycleLabel(delegateKind, stableDelegate)}
       </div>
     ) : null;
 
