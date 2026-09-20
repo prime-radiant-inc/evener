@@ -236,17 +236,23 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold still in flight must re-snapshot to publish after this
 	// one (its revision check fails otherwise), so no older snapshot can
 	// need the pruned entries — and snapAppends >= persistedAppendLogBase
-	// for the same reason, since only publications advance the base. The
-	// opposite bound no longer holds: a pair whose write failed cleanly is
-	// dropped from the log (unlogPairPersistedLocked) even between this
-	// fold's snapshot and its publication, so the slice start clamps to the
-	// log's current length — a shrunk tail means dropped pairs, never a
-	// stale entry shifted into the rewrite.
+	// for the same reason, since only publications advance the base. A pair
+	// whose write failed cleanly becomes a tombstone in place
+	// (tombstoneLastPairPersistedLocked) precisely so these positions stay
+	// stable across a snapshot taken mid-write; the empty marker turns are
+	// filtered out below and never reach the transcript. The start clamp is
+	// invariant armor, not an expected path.
 	tailStart := snapAppends - s.persistedAppendLogBase
 	if tailStart > len(s.persistedAppendLog) {
 		tailStart = len(s.persistedAppendLog)
 	}
-	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[tailStart:]...)
+	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
+	for _, persisted := range s.persistedAppendLog[tailStart:] {
+		if persisted.Kind == "" {
+			continue // a tombstone: its write recorded nothing, so nothing re-appends
+		}
+		rewriteTail = append(rewriteTail, persisted)
+	}
 	s.persistedAppendLogBase += len(s.persistedAppendLog)
 	s.persistedAppendLog = nil
 	if onPublishLocked != nil {

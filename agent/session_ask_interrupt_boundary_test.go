@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +108,9 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 
 	ask := askUserCall("ask1", askUserArgsValid())
 	proceed := make(chan struct{})
+	var proceedOnce sync.Once
+	closeProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
+	t.Cleanup(closeProceed)
 
 	// The parked summarizer response holds the fold between its snapshot and
 	// its publication until the canceled round's records are in place.
@@ -134,7 +138,11 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	go func() {
 		compactErr <- sess.Compact(parentCtx) // parks inside the summarizer, past its snapshot
 	}()
-	<-entered // the fold is mid-flight; nothing is locked
+	select {
+	case <-entered: // the fold is mid-flight; nothing is locked
+	case <-parentCtx.Done():
+		t.Fatal("the fold never reached its parked summarizer")
+	}
 
 	// The canceled ask round's records, all appended after the fold's
 	// snapshot: the round's opening user input and assistant ask turn (their
@@ -157,13 +165,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	askAck := tool.ExecResult{ToolName: "ask_user", CallID: "ask1", Output: "posted", FullOutput: "posted"}
 	sess.appendCanceledToolResults([]llm.ToolCallData{ask}, []tool.ExecResult{askAck}, context.Canceled)
 
-	sess.mu.Lock()
-	pairsAfterSnapshot := len(sess.persistedAppendLog) + sess.persistedAppendLogBase
-	sess.mu.Unlock()
-	if pairsAfterSnapshot != 2 {
-		t.Fatalf("pairs logged during the blocked fold = %d, want 2 (the failed results pair must leave the log with its write's clean failure)", pairsAfterSnapshot)
-	}
-	close(proceed)
+	closeProceed()
 	if err := <-compactErr; err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -193,6 +195,137 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	defer restored.Close()
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored ask pending count after fold tail = %d, want 0 (the canceled pair resurrected through the rewrite tail)", got)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state after fold tail = %q, want %q", got, SessionIdle)
+	}
+}
+
+// TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions pins the High the
+// local review raised against a removal-based fix: a fold can snapshot the
+// pair log while a recordTurn write is still in flight, because the write runs
+// with s.mu released. If a failing write REMOVED its pair, every later pair
+// would shift into the dropped position, and a fold holding that snapshot
+// would slice a successfully recorded turn out of its rewrite tail -- that
+// turn's only post-marker representation, silently lost on restart. The
+// tombstone holds the position instead and the publication filters it, so a
+// pair recorded after the failed one still rides the tail of a fold
+// snapshotted mid-write.
+func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// TRIPWIRE: scripted in-process providers and local transcript I/O; 30s is
+	// far above the expected completion time and only guards a genuine hang.
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer parentCancel()
+
+	ask := askUserCall("ask1", askUserArgsValid())
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var proceedOnce sync.Once
+	closeProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
+	t.Cleanup(closeProceed)
+	var summaryCalls atomic.Int32
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	c.Register(&agenttest.ScriptedAdapter{Provider: "fold-tail-cheap", Responder: func(llm.Request) llm.Response {
+		if summaryCalls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}})
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "fold-tail-cheap/model")
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	seedNumberedSessionHistory(t, sess, 12)
+
+	userTurn := schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?"))
+	sess.recordTurn(userTurn, userTurn)
+	assistantTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &ask}},
+	})
+	sess.recordTurn(assistantTurn, assistantTurn)
+
+	// The canceled results record parks inside its failed write -- s.mu
+	// released, attentionMu held -- which is exactly where a fold's snapshot
+	// can observe the logged pair mid-write.
+	writeFailed := make(chan struct{})
+	resumeWrite := make(chan struct{})
+	var resumeOnce sync.Once
+	resumeTheWrite := func() { resumeOnce.Do(func() { close(resumeWrite) }) }
+	t.Cleanup(resumeTheWrite)
+	toolResultsFailure := errors.New("tool results record rejected")
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.writeFailure = toolResultsFailure
+	fs.onWriteFailure = func() {
+		close(writeFailed)
+		<-resumeWrite
+	}
+	fs.mu.Unlock()
+	resultsDone := make(chan struct{})
+	askAck := tool.ExecResult{ToolName: "ask_user", CallID: "ask1", Output: "posted", FullOutput: "posted"}
+	go func() {
+		defer close(resultsDone)
+		sess.appendCanceledToolResults([]llm.ToolCallData{ask}, []tool.ExecResult{askAck}, context.Canceled)
+	}()
+	select {
+	case <-writeFailed:
+	case <-parentCtx.Done():
+		t.Fatal("the canceled results write never reached its failure hook")
+	}
+
+	// The fold snapshots now: the pair log holds the user, assistant, and
+	// mid-write results pairs, so this snapshot's rewrite boundary is that
+	// results pair's position.
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- sess.Compact(parentCtx)
+	}()
+	select {
+	case <-entered:
+	case <-parentCtx.Done():
+		t.Fatal("the fold never reached its parked summarizer")
+	}
+
+	// Release the write: it fails cleanly, the results pair becomes a
+	// tombstone in place, and a successful pair then logs after it.
+	resumeTheWrite()
+	<-resultsDone
+	recoveryTurn := schema.NewTurn(schema.TurnUserInput, llm.User("recovery after failed write"))
+	sess.recordTurn(recoveryTurn, recoveryTurn)
+
+	closeProceed()
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	if indexOfTurnText(resumed, "recovery after failed write") < 0 {
+		t.Fatal("the pair recorded after the failed one is missing from the post-marker resumed history: its position shifted below the mid-write snapshot's rewrite boundary")
+	}
+	if resumedHistoryCarriesPostedAskResult(resumed, "ask1") {
+		t.Fatal("ask_user's canceled ack rode the rewrite tail: the failed results pair re-entered the durable transcript after the fold markers")
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.askPendingCount(); got != 0 {
+		t.Fatalf("restored ask pending count after fold tail = %d, want 0", got)
 	}
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored state after fold tail = %q, want %q", got, SessionIdle)
