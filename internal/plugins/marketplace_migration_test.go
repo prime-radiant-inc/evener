@@ -2658,8 +2658,11 @@ func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *test
 		t.Fatal("expected the cache move to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+	}
+	if !errors.Is(err, errRenameRollbackIncomplete) {
+		t.Fatalf("error = %v, want errors.Is(err, errRenameRollbackIncomplete)", err)
 	}
 }
 
@@ -2810,8 +2813,11 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		t.Fatal("expected the save to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+	}
+	if !errors.Is(err, errStoreBetweenNames) {
+		t.Fatalf("error = %v, want errors.Is(err, errStoreBetweenNames)", err)
 	}
 
 	mk, err := m.ListMarketplaces(context.Background())
@@ -3211,10 +3217,13 @@ func TestMarketplaceNameMigration_RefusesAMarkerWhoseDestinationIsTaken(t *testi
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the taken name")
 	}
-	for _, want := range []string{`"` + recorded + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + recorded + `"`, `"a-b"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
@@ -3597,10 +3606,13 @@ func TestMarketplaceNameMigration_RefusesAMergeMarkerWithNoDestination(t *testin
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the destination nothing records")
 	}
-	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 }

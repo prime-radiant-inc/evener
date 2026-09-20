@@ -1765,8 +1765,11 @@ func TestEditMarketplace_RestoresDirectoriesWhenARenameStepFails(t *testing.T) {
 	}
 }
 
-// A rollback that fails leaves a directory under a name nothing records, and
-// the only place that can say which one is the error the edit returns.
+// A rollback that fails leaves a directory under a name nothing records, so
+// the store is left changed and the edit has to say so. What the caller gets
+// is the marketplace whose change could not be rolled back; the absolute
+// plugin-store paths the rollback renames carried go to the hub's log, as
+// saveFailed's already do (#1854).
 func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
@@ -1799,11 +1802,14 @@ func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the rename to fail")
 	}
-	if !strings.Contains(err.Error(), "renaming plugin cache") || !strings.Contains(err.Error(), "rename 2 refused") {
-		t.Fatalf("error = %v, want the original failure reported", err)
+	if !errors.Is(err, errRenameRollbackIncomplete) {
+		t.Fatalf("error = %v, want errors.Is(err, errRenameRollbackIncomplete)", err)
 	}
-	if !strings.Contains(err.Error(), m.marketplaceDir("beta")) || !strings.Contains(err.Error(), "rename 3 refused") {
-		t.Fatalf("error = %v, want the clone the undo could not move back named", err)
+	if !strings.Contains(err.Error(), name) {
+		t.Fatalf("error = %v, want the marketplace named", err)
+	}
+	if strings.Contains(err.Error(), m.marketplaceDir("beta")) || strings.Contains(err.Error(), m.marketplaceDir(name)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 }
 
@@ -2089,9 +2095,13 @@ func TestEditMarketplace_RefusesALeftoverPluginCache(t *testing.T) {
 	if !errors.Is(err, ErrMarketplaceExists) {
 		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
 	}
-	// Where an os.Rename LinkError said only "directory not empty".
-	if want := fmt.Sprintf("plugin cache %s already exists", leftover); !strings.Contains(err.Error(), want) {
+	// Where an os.Rename LinkError said only "directory not empty" - and
+	// without naming the absolute store path the leftover sits at (#1854).
+	if want := `plugin cache for "beta" already exists`; !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), leftover) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	if _, err := os.Stat(m.marketplaceDir(name)); err != nil {
 		t.Fatalf("the clone was not restored: %v", err)
@@ -2192,8 +2202,11 @@ func TestEditMarketplace_RenameRefusesADanglingLinkUnderTheNewName(t *testing.T)
 	if !errors.Is(err, ErrMarketplaceExists) {
 		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
 	}
-	if want := fmt.Sprintf("plugin cache %s already exists", leftover); !strings.Contains(err.Error(), want) {
+	if want := `plugin cache for "beta" already exists`; !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), leftover) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list["acme"]; !ok || len(list) != 1 {
@@ -2305,8 +2318,11 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected the rename to be refused")
 		}
-		if !strings.Contains(err.Error(), clone) {
-			t.Fatalf("error = %v, want it to name %s", err, clone)
+		if strings.Contains(err.Error(), clone) {
+			t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+		}
+		if !strings.Contains(err.Error(), "acme") {
+			t.Fatalf("error = %v, want the marketplace named", err)
 		}
 		if _, err := os.Lstat(clone); err != nil {
 			t.Fatalf("the clone path changed: %v", err)
@@ -2335,8 +2351,11 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected the rename to be refused")
 		}
-		if !strings.Contains(err.Error(), cache) {
-			t.Fatalf("error = %v, want it to name %s", err, cache)
+		if strings.Contains(err.Error(), cache) {
+			t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+		}
+		if !strings.Contains(err.Error(), "acme") {
+			t.Fatalf("error = %v, want the marketplace named", err)
 		}
 		if _, err := os.Stat(m.marketplaceDir("acme")); err != nil {
 			t.Fatalf("the clone was not carried back: %v", err)
@@ -2370,8 +2389,11 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected the rename to be refused")
 		}
-		if !strings.Contains(err.Error(), leftover) {
-			t.Fatalf("error = %v, want it to name %s", err, leftover)
+		if strings.Contains(err.Error(), leftover) {
+			t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+		}
+		if !strings.Contains(err.Error(), "beta") {
+			t.Fatalf("error = %v, want the new name named", err)
 		}
 		if _, err := os.Lstat(leftover); err != nil {
 			t.Fatalf("the leftover path changed: %v", err)
@@ -2395,9 +2417,14 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 			t.Fatal("expected the re-source to be refused")
 		}
 		// The swap's own refusal, not the complaint of a rename it should
-		// never have reached.
-		if want := "checking " + dest; !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %v, want it to contain %q", err, want)
+		// never have reached: a rename would have moved dest away, so the
+		// null state below is what pins the refusal to the swap. The message
+		// names the marketplace and no store path.
+		if strings.Contains(err.Error(), dest) {
+			t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+		}
+		if !strings.Contains(err.Error(), "acme") {
+			t.Fatalf("error = %v, want the marketplace named", err)
 		}
 		if _, err := os.Lstat(dest); err != nil {
 			t.Fatalf("the install location changed: %v", err)
@@ -2436,8 +2463,12 @@ func TestEditMarketplace_RefusesADirectorySourceInsideItsOwnClone(t *testing.T) 
 
 	clone := m.marketplaceDir(name)
 	for _, path := range []string{clone, filepath.Join(clone, ".claude-plugin")} {
-		if _, err := m.EditMarketplace(ctx, name, "", &Source{Kind: SourceDirectory, Path: path}); !errors.Is(err, ErrMarketplaceSourceInStore) {
+		_, err := m.EditMarketplace(ctx, name, "", &Source{Kind: SourceDirectory, Path: path})
+		if !errors.Is(err, ErrMarketplaceSourceInStore) {
 			t.Fatalf("source %s = %v, want ErrMarketplaceSourceInStore", path, err)
+		}
+		if strings.Contains(err.Error(), m.marketplacesDir()) || strings.Contains(err.Error(), m.cacheDir()) {
+			t.Fatalf("source %s: err = %v, want no absolute store path in the client-facing error", path, err)
 		}
 		if _, err := os.Stat(filepath.Join(clone, ".claude-plugin", "marketplace.json")); err != nil {
 			t.Fatalf("the clone did not survive the refusal: %v", err)
