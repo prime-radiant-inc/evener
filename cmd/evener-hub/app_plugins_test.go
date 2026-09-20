@@ -743,3 +743,86 @@ func TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFail
 		t.Fatalf("data.Applied = %+v, want the zero value when unavailable", data.Applied)
 	}
 }
+
+// TestPlugins_Marketplace_RemoveSuccessListReadFailureStaysApplied verifies the
+// other post-apply removal outcome: RemoveMarketplace's unregister save has
+// landed and its clone cleanup (none here) completed, so the removal APPLIED,
+// but the fresh read that builds the response fails. The handler must not drop
+// back to a plain error indistinguishable from an ordinary refusal - a client
+// would report the removal failed, and a retry would land on ErrMarketplaceNotFound
+// - so it keeps a typed post-apply WireError with the snapshot marked unavailable.
+func TestPlugins_Marketplace_RemoveSuccessListReadFailureStaysApplied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to force a real read failure")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	ctl := newTestPluginsController(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	addTestMarketplace(t, ctl, dir)
+
+	store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
+	registryFile := filepath.Join(store, "known_marketplaces.json")
+
+	original := hubPluginsReconcileAfterAppliedRemove
+	hubPluginsReconcileAfterAppliedRemove = func() {
+		// RemoveMarketplace's own unregister read and write of this file
+		// already succeeded; this breaks only the read that builds the
+		// response, after the removal has applied.
+		_ = os.Chmod(registryFile, 0o000)
+	}
+	t.Cleanup(func() {
+		hubPluginsReconcileAfterAppliedRemove = original
+		_ = os.Chmod(registryFile, 0o644)
+	})
+
+	_, err := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed list read reported")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("RemoveMarketplace = %v, want a WireError classifying the applied removal", err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("wire.Code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.MarketplaceRemoveAppliedData)
+	if !ok {
+		t.Fatalf("wire.Data = %#v (%T), want appwire.MarketplaceRemoveAppliedData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMarketplaceRemoveApplied {
+		t.Fatalf("data.EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMarketplaceRemoveApplied)
+	}
+	if !data.AppliedUnavailable {
+		t.Fatal("data.AppliedUnavailable = false, want true: the list read failed, so there is no snapshot to hand back")
+	}
+	if strings.Contains(wire.Message, registryFile) || strings.Contains(wire.Message, store) {
+		t.Fatalf("wire.Message = %q, want no absolute store path", wire.Message)
+	}
+	if !strings.Contains(wire.Message, "acme") {
+		t.Fatalf("wire.Message = %q, want the marketplace named", wire.Message)
+	}
+
+	// The removal itself applied: once the read is restored the marketplace is
+	// gone, and a retry reports not-found instead of repeating the removal.
+	if chmodErr := os.Chmod(registryFile, 0o644); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	listResp, listErr := ctl.ListMarketplaces(ctx)
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if len(listResp.Marketplaces) != 0 {
+		t.Fatalf("ListMarketplaces = %+v, want acme gone: the reported failure must not un-apply the removal", listResp.Marketplaces)
+	}
+	_, retryErr := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	var retryWire appwire.WireError
+	if !errors.As(retryErr, &retryWire) || retryWire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("retry RemoveMarketplace = %v, want an InvalidParams not-found wire error", retryErr)
+	}
+}
