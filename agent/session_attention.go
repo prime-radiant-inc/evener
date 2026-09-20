@@ -152,6 +152,15 @@ func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[dele
 		if err != nil {
 			return delegateAttentionFoldMemo{}, 0, err
 		}
+		// readDelegateAttentionFold is missing-as-empty for historical
+		// callers; this boundary is strict, including a removal racing the
+		// fold, so a transcript that vanished between the size stat above and
+		// the fold's open errors here instead of serving (and caching) an
+		// empty fold. The bypass in delegate_tree_attention.go carries the
+		// same check for the sessions it serves directly.
+		if _, err := os.Stat(path); err != nil {
+			return delegateAttentionFoldMemo{}, 0, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+		}
 		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, info.Size(), nil
 	}
 }

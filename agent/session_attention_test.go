@@ -303,6 +303,50 @@ func TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible(t *testing.T)
 	}
 }
 
+// TestReadExistingDelegateAttentionFoldRemovalRacingTheFoldErrors pins the
+// strict side of the same boundary: readDelegateAttentionFold is
+// missing-as-empty for historical callers, so when a transcript is removed
+// between the reader's size stat and the fold's open, the compute returns a
+// successful empty fold. A fresh fold served without a post-read stat would
+// read as "no pending attention" for a transcript that no longer exists —
+// the strict boundary must error instead.
+func TestReadExistingDelegateAttentionFoldRemovalRacingTheFoldErrors(t *testing.T) {
+	const sessionID = "child-memo-fold-removal"
+	stateDir := t.TempDir()
+	path := transcriptPath(stateDir, sessionID)
+	now := time.Unix(1700000000, 0).UTC()
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("attention on a transcript that will vanish"))
+	steering.AttentionID = "delegate:delivery-fold-removal"
+	if err := writer.AppendDurable(steering); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The compute seam removes the transcript inside the fold's own window —
+	// after the reader's size stat, before the fold's open — and then runs
+	// the real reader, which returns missing-as-empty.
+	compute := readExistingDelegateAttentionFoldCompute
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, error) {
+		if err := os.Remove(path); err != nil {
+			return delegateAttentionFold{}, err
+		}
+		return compute(path, sessionID)
+	}
+	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
+
+	if _, err := readExistingDelegateAttentionFold(path, sessionID); err == nil {
+		t.Fatal("a removal racing the fold read as an empty fold instead of erroring")
+	}
+}
+
 func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 	t.Run("stop wins before acceptance", func(t *testing.T) {
 		const (
