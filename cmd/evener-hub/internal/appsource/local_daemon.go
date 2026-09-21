@@ -1185,42 +1185,43 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 	if item.CapabilitiesKnown {
 		return item.Capabilities
 	}
+	// Spell the daemon's own status gates once, positive, the way
+	// appCapabilitiesLocked does.
+	active := status == appwire.ThreadStatusActive
+	closed := status == appwire.ThreadStatusClosed
 	return appwire.ThreadCapabilities{
 		// The daemon refuses a plain send while a turn runs and once the
 		// session is closed; a session awaiting a user answer keeps it.
-		Send: status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed,
+		Send: !active && !closed,
 		// Steer, Interrupt and Queue advertise harness support and are
 		// withheld the way the daemon withholds them: closed removes all
 		// three (appCapabilitiesLocked's `!closed`), while `active` moves
 		// none of them (#1363, #1375). Gating only Queue left a closed
 		// entry advertising two actions the daemon it mirrors refuses.
-		// The rest of this literal is the daemon's `!closed` family: it stays
-		// advertised while a turn runs, and closed removes it the way closed
-		// removes the turn actions above.
-		Steer:     status != appwire.ThreadStatusClosed,
-		Interrupt: status != appwire.ThreadStatusClosed,
-		Compact:   status != appwire.ThreadStatusClosed,
+		Steer:     !closed,
+		Interrupt: !closed,
+		Compact:   !closed,
 		// Clear is the one !closed bit that also folds activity — the daemon
 		// gates it on !active for the same reason as Send — and folds
 		// unresolved approval work (clearBlockedReasonLocked): the roster
 		// carries the ask and escalation flags, so an unprobed row withholds
 		// Clear while either is pending. Queued work stays beyond the
 		// roster's view, the approximation's honest limit.
-		Clear:       !item.ReadOnlyAlias && status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed && !item.PendingAsk && !item.PendingEscalation,
+		Clear:       !item.ReadOnlyAlias && !active && !closed && !item.PendingAsk && !item.PendingEscalation,
 		Shutdown:    true,
-		ChangeModel: status != appwire.ThreadStatusClosed,
+		ChangeModel: !closed,
 		// The daemon advertises this whenever its vision-model seam is wired
 		// (every current daemon wires it at startup) and withholds it when
 		// closed, like its siblings here; the live-hub probe showed list rows
 		// understating it while the same session's read advertised it, the
 		// same drift class SkillInput had.
-		ChangeVisionModel: status != appwire.ThreadStatusClosed,
+		ChangeVisionModel: !closed,
 		// Folding `active` into Queue made ListThreads disagree with
 		// ThreadRead and the status frames for the same session.
-		Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
-		Goal:        status != appwire.ThreadStatusClosed,
-		SharedNotes: !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
-		Rename:      status != appwire.ThreadStatusClosed,
+		Queue:       !item.ReadOnlyAlias && !closed,
+		Goal:        !closed,
+		SharedNotes: !item.ReadOnlyAlias && !closed,
+		Rename:      !closed,
 		// SkillInput follows the harness-support rule Steer, Interrupt
 		// and Queue follow (#1375, #1840): every current daemon wires all
 		// four input-bearing turn mutations, so a live local session's

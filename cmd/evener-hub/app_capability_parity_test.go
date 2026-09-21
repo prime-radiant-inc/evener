@@ -118,15 +118,11 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 
 	// List rows answer exactly what the daemon would: a probed row mirrors
 	// the probe's captured set verbatim, and the fallback for an unprobed row
-	// approximates the daemon's answer at the row's status. Both fold what
-	// the daemon folds — Send and Clear on activity, the whole `!closed`
-	// family on closed — and keep what it keeps: Shutdown and skillInput are
-	// not close-gated, and Steer/Interrupt/Queue are harness support
-	// (#1375). Fork differs from the daemon in no row and in no way: the
-	// daemon hardwires it false, rows mirror that, and
-	// applyHubForkCapability is the single owner that turns it on. These
-	// assertions are the pin against status-gating creeping into either
-	// path (the pre-#1375 Queue-folding regression).
+	// approximates the daemon's answer at the row's status. Fork differs from
+	// the daemon in no row and in no way: the daemon hardwires it false,
+	// rows mirror that, and applyHubForkCapability is the single owner that
+	// turns it on. These assertions are the pin against status-gating
+	// creeping into either path (the pre-#1375 Queue-folding regression).
 	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)
 		// Guard the fixture, not the projection: the mirror assertions below
@@ -161,9 +157,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			if !ok {
 				t.Fatalf("list rows = %+v, want the %s fixture row for %s", rows, projection, state)
 			}
-			if caps != daemonAt {
-				t.Fatalf("%s at %s = %+v, want the daemon's %s answer exactly %+v", projection, state, caps, state, daemonAt)
-			}
+			assertCapabilityParity(t, projection+" at "+state, daemonAt, caps, nil, nil)
 		}
 	}
 
