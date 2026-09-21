@@ -629,12 +629,13 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
-	// Once a removal has landed, an untagged read is a straggler issued
-	// before it landed: its snapshot predates the removal, so accepting it
-	// - even after the fence has settled - would resurrect the removed
-	// marketplace's row. The boundary outlives the fence, however late the
-	// stale response arrives.
-	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration == 0 {
+	// Once a removal has landed, a read issued before that landing - a
+	// generation at or below the floor - is stale however late it arrives:
+	// its snapshot predates the removal, so accepting it, even after the
+	// fence has settled, would resurrect the removed marketplace's row.
+	// The boundary outlives the fence, and every removal outcome advances
+	// it, so only reads issued after the latest removal can ever land.
+	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListFloor {
 		return m, nil
 	}
 	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
@@ -655,11 +656,10 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 
 // marketplaceListRead returns the marketplace-list read this model should
 // issue for a user- or notification-driven refetch. Once a removal has
-// landed it must carry the next reconciliation generation - so each read's
-// response stays orderable against the boundary - because
-// handleMarketplaceListResult rejects untagged reads from that point on,
-// and an ordinary read could then neither recover a failed reconciliation,
-// nor settle the fence, nor populate a reopened panel. Before any removal
+// landed it must carry the next reconciliation generation, because the
+// read boundary rejects every read issued before the latest landing and
+// an older read could then neither recover a failed reconciliation, nor
+// settle the fence, nor populate a reopened panel. Before any removal
 // lands there is nothing to order against and the ordinary read is used.
 // The duplicate-remove fence is untouched here; only a successful read
 // clears it.
@@ -679,6 +679,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
 				m.marketplaceRemovePending = ""
 				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = false
 				if m.pluginsPanel != nil {
 					updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: applied})
@@ -690,6 +691,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			case marketplaceRemovalUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
 				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
@@ -704,6 +706,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				// never claim litter - nothing was left on disk.
 				m.err = marketplaceRemovedWarning(msg.Err)
 				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
@@ -723,6 +726,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
 		m.marketplaceRemovePending = ""
 		m.marketplaceListReadsOrdered = true
+		m.marketplaceListFloor = m.marketplaceReconcileGeneration
 		m.marketplaceReconcilePending = false
 	}
 	if m.pluginsPanel != nil {

@@ -173,14 +173,20 @@ type hubModel struct {
 	marketplaceReconcilePending    bool
 	marketplaceReconcileGeneration uint64
 	// marketplaceListReadsOrdered turns on the first time a marketplace
-	// removal lands on the hub, whatever the outcome carried: every list
-	// read issued before that moment is untagged and can never describe
-	// the post-removal state, so the model rejects untagged reads from then
-	// on - however late they arrive - and issues only generation-tagged
-	// reads, which the reconcile generation can order against the boundary.
+	// removal lands on the hub, whatever the outcome carried. From then on
+	// the model issues only generation-tagged reads, and rejects every read
+	// whose generation predates the latest landed removal: such a read was
+	// issued before that removal stood and can never describe the
+	// post-removal state, so accepting it - however late it arrives - would
+	// resurrect the removed marketplace's row.
 	marketplaceListReadsOrdered bool
-	followupModal               *tuipick.TextInputModal
-	launchOverridesModal        *launchconfig.LaunchOverridesModal
+	// marketplaceListFloor is the read generation at the moment the latest
+	// marketplace removal landed. Reads at or below it were issued before
+	// that landing and are stale by construction; reads above it were issued
+	// after and carry post-removal truth.
+	marketplaceListFloor uint64
+	followupModal        *tuipick.TextInputModal
+	launchOverridesModal *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress

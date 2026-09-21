@@ -171,6 +171,20 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	if remove.Name != kept.Name {
 		t.Fatalf("panel selected marketplace after applied snapshot = %q, want %q", remove.Name, kept.Name)
 	}
+
+	// The snapshot also arms the read boundary: a straggler read issued
+	// before the removal landed cannot land afterward and revert it.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed, kept}},
+	})
+	straggler := got.(hubModel)
+	updated, cmd = straggler.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("straggler read should leave the surviving marketplace selectable")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("straggler read resurrected marketplace %q; the applied snapshot must survive", remove.Name)
+	}
 }
 
 func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
@@ -504,5 +518,70 @@ func TestMarketplaceMutateResultSuccessAlsoRejectsLaterStaleReads(t *testing.T) 
 	}
 	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
 		t.Fatalf("stale read resurrected marketplace %q; the successful removal must survive", remove.Name)
+	}
+}
+
+func TestMarketplaceListResultDiscardsTaggedReadsOlderThanTheLatestRemoval(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	latest := appwire.MarketplaceEntry{Name: "latest"}
+	// Two removals have landed and settled; the model's read sequence
+	// stands at 3, so the read tagged 2 was issued before the latest
+	// removal landed - it still carries that marketplace.
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       "",
+		marketplaceReconcilePending:    false,
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           2,
+	}
+
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{latest, kept}},
+		ReconcileGeneration: 2,
+	})
+	after := got.(hubModel)
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("delayed read should leave the surviving marketplace selectable")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("delayed pre-removal read resurrected marketplace %q; the latest removal must survive", remove.Name)
+	}
+}
+
+func TestMarketplaceMutateResultSuccessAdvancesTheRemovalBoundary(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removing := appwire.MarketplaceEntry{Name: "removing"}
+	// A removal is in flight on a model whose reads are already ordered:
+	// the read tagged 2 was issued before the removal landed.
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, removing),
+		marketplaceRemovePending:       removing.Name,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+	}
+
+	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action: "remove",
+		Name:   removing.Name,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" {
+		t.Fatalf("successful remove left the fence at %q, want cleared", after.marketplaceRemovePending)
+	}
+
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removing, kept}},
+		ReconcileGeneration: 2,
+	})
+	recovered := got.(hubModel)
+	updated, cmd := recovered.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("delayed read should leave the surviving marketplace selectable")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("delayed pre-removal read resurrected marketplace %q; the successful removal must survive", remove.Name)
 	}
 }

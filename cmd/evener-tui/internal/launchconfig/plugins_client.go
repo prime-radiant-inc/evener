@@ -23,8 +23,13 @@ const (
 // fetch (including one forwarded from a successful mutation). The panel
 // understands only this type for populating its marketplace list.
 type MarketplaceListResultMsg struct {
-	List                appwire.MarketplaceListResponse
-	Err                 error
+	List appwire.MarketplaceListResponse
+	Err  error
+	// ReconcileGeneration tags the model read this response answers: 0 for
+	// reads issued outside the model's ordering, the model's read sequence
+	// otherwise. The hub model matches it against its boundary state so a
+	// read issued before a removal that landed can never land after it as
+	// authoritative.
 	ReconcileGeneration uint64
 }
 
@@ -121,10 +126,12 @@ func CmdMarketplaceList(client *appwire.Client) tea.Cmd {
 	return cmdMarketplaceList(client, 0)
 }
 
-// CmdMarketplaceReconcileList requests the fresh list used to settle an
-// applied-but-unconfirmed removal. Its generation belongs only to that
-// reconciliation; ordinary list reads remain untagged until the ordered-read
-// consumer adds the broader generation contract.
+// CmdMarketplaceReconcileList requests a generation-tagged list read. The hub
+// model issues one to settle an applied-but-unconfirmed removal, and - once
+// any removal has landed, arming the boundary that rejects untagged reads -
+// for every later refetch too, so each response stays orderable against the
+// boundary. Ordinary untagged reads (CmdMarketplaceList) remain for callers
+// without a removal to order against, and for the launchconfig-level tests.
 func CmdMarketplaceReconcileList(client *appwire.Client, generation uint64) tea.Cmd {
 	return cmdMarketplaceList(client, generation)
 }
