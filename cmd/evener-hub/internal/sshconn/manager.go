@@ -1208,6 +1208,56 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 	return m.reg.Add(entry)
 }
 
+// UpdateHost replaces name's registry entry with entry and tears the host's
+// channel down as one atomic step, under the per-host gate: the swap and the
+// teardown of the identity it retires happen inside the same hold, so a
+// concurrent Ensure cannot publish a channel for the captured pre-update entry
+// after the swap, and the host's live resources never straddle two identities.
+//
+// Every update tears the channel down, whether or not the edit changed a field
+// the dial reads. The reason is the fence, not the dial: a supervisor captures
+// the entry it supervises when it starts, and reconnectOnce refuses to publish a
+// replacement once SameRegistration no longer matches that capture — so a
+// channel kept across an update that advanced the generation could never be
+// reconnected by the supervisor that owns it, and the host would go dark on the
+// next link drop with nothing to bring it back. Retiring the channel with the
+// identity keeps one rule instead of a rebind path.
+//
+// It never dials, deploys, or attaches. An unknown name is hostreg's own
+// ErrUnknownHost, and a nil registry is an error rather than a silent no-op,
+// mirroring AddHost and RemoveHost: an update that committed nothing must not
+// report success.
+func (m *Manager) UpdateHost(entry hostreg.Host) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHost with no registry")
+	}
+	// Trimmed for the lock key exactly as AddHost trims, so a padded spelling
+	// takes the same host gate as its canonical name.
+	name := strings.TrimSpace(entry.Name)
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
+	lock.Lock()
+	// The identity this call retires is resolved under the gate, and so is the
+	// swap: a remove/re-add that took the name while this call waited is not
+	// this call's to tear down, and the teardown below is scoped to the entry
+	// the update actually replaced. Update refuses an unknown name, so the
+	// capture is present whenever the swap succeeded; hadCaptured keeps
+	// teardownHostChannel's own contract explicit.
+	before, hadCaptured := m.reg.Get(name)
+	if err := m.reg.Update(entry); err != nil {
+		lock.Unlock()
+		return err
+	}
+	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's and
+	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
 // clearHostCaches drops every per-host record that must not survive a detach or
 // removal: the at-most-once dev-deploy marker, the resolved executable path,
 // and any pending restart. A re-added host starts clean instead of inheriting
