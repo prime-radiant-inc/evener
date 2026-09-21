@@ -10,7 +10,7 @@ import (
 var scanErrors = map[string]bool{
 	"unterminated ${ in value": true,
 	"invalid environment variable name in ${...} reference: must start with a letter or underscore, then only letters, digits, or underscores": true,
-	"unterminated $( in value": true,
+	"unterminated $( in value":  true,
 	"empty $( command in value": true,
 }
 

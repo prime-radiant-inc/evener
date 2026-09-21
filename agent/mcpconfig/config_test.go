@@ -163,7 +163,7 @@ func TestExpandEnvVars(t *testing.T) {
 		{"${UNSET_VAR_12345:-$LITERAL_NOT_A_REF}", "$LITERAL_NOT_A_REF", false},
 		{"${TEST_MCP_EMPTY_VAR}", "", true},
 		{"${TEST_MCP_EMPTY_VAR:-filled}", "filled", false},
-		{"${UNCLOSED", "", true}, // was literal text; an unterminated ${ is an error now
+		{"${UNCLOSED", "", true},              // was literal text; an unterminated ${ is an error now
 		{"$(printf minted)", "minted", false}, // command expression, real local exec
 		{"$(unterminated", "", true},
 		{"$()", "", true},

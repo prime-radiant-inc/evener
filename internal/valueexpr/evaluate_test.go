@@ -222,4 +222,3 @@ func TestRealRunCommand(t *testing.T) {
 		}
 	})
 }
-

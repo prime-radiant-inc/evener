@@ -163,7 +163,9 @@ func Scan(value string) (Inventory, error) {
 	var lit strings.Builder
 	err := scan(value, sink{
 		lit: func(s string) { lit.WriteString(s) },
-		ref: func(name, def string, hasDef bool) { out.Refs = append(out.Refs, Ref{Name: name, Default: def, HasDefault: hasDef}) },
+		ref: func(name, def string, hasDef bool) {
+			out.Refs = append(out.Refs, Ref{Name: name, Default: def, HasDefault: hasDef})
+		},
 		cmd: func(command string) { out.Commands = append(out.Commands, command) },
 	})
 	out.Literal = lit.String()
