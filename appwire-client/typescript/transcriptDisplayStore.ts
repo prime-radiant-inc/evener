@@ -353,6 +353,20 @@ function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout, cur
   return confirmed !== undefined && confirmed.revision !== draft.revision;
 }
 
+/** Whether an authoritative read of `hub` confirms the draft: the layout's
+ * confirmed revision is the draft's own base revision, so the read proves the
+ * draft composed against current state. A read that lands nothing new has
+ * still earned stamping the live generation onto a null-generation draft when
+ * this holds - without it, a draft an adoption restored mid-generation could
+ * sit through unchanged reads unstamped, and the next generation's first
+ * payload would stamp the NEW generation onto a coincidentally equal
+ * revision. */
+function confirmsDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout): boolean {
+  if (draft === null) return false;
+  const confirmed = hub[draft.layout];
+  return confirmed !== undefined && confirmed.revision === draft.revision;
+}
+
 export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): TranscriptDisplayStore {
   const { client } = deps;
   const draftRepository = createDraftRepository(deps.drafts ?? memoryDraftStorage(), draftCheckpoint);
@@ -523,7 +537,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   function applyHubDefault(
     layout: ViewportClass,
     value: HubTranscriptDisplayDefault,
-    extra: Partial<TranscriptDisplayStoreFields> = {},
+    extra:
+      | Partial<TranscriptDisplayStoreFields>
+      | ((hub: HubDefaultsByLayout) => Partial<TranscriptDisplayStoreFields>) = {},
   ): boolean {
     const state = getState();
     const calculation = calculateHubDefault(layout, value, {
@@ -532,8 +548,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       previewBases,
       fence,
     });
+    // A callback extra runs BEFORE the publication, handed the hub that
+    // publication is about to carry (the unchanged one on a rejected
+    // payload), so a caller can settle storage or judge an adoption against
+    // the final state before the unblocked state reaches subscribers.
+    const settledExtra = (hub: HubDefaultsByLayout): Partial<TranscriptDisplayStoreFields> =>
+      typeof extra === "function" ? extra(hub) : extra;
     if (!calculation.accepted) {
-      if (Object.keys(extra).length > 0) setState(extra);
+      const settled = settledExtra(state.hub);
+      if (Object.keys(settled).length > 0) setState(settled);
       return false;
     }
     const draft = stampedDraft(state.draft);
@@ -547,7 +570,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       draft,
       draftConflict: staleDraft(draft, hub, fence.generation),
       ...layoutError(layout, undefined),
-      ...extra,
+      ...settledExtra(hub),
     });
     return true;
   }
@@ -581,12 +604,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // leaving it for the host.
     for (const layout of strandedPreviews) dropPreview(layout, drafts);
     strandedPreviews.clear();
-    // The stamp runs only for a read that landed at least one payload: a
-    // payload rejected by the stale guard confirmed nothing new. `settle`
+    // The stamp runs for a read that landed at least one payload (a payload
+    // rejected by the stale guard confirmed nothing new) or one that
+    // CONFIRMS the draft - see confirmsDraft. `settle`
     // (the uncertain-write settlement below) is spread LAST so an adoption
     // it returns overrides this publish's own draft fields - the restore
     // already judged the replacement against this same final hub.
-    const draft = anyAccepted ? stampedDraft(state.draft) : state.draft;
+    const draft = anyAccepted || confirmsDraft(state.draft, hub) ? stampedDraft(state.draft) : state.draft;
     const settled = settle?.(hub) ?? {};
     setState({
       hub,
@@ -967,7 +991,17 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // A newer write on this layout owns the preview from here on, so a
     // support flap stranding an older write must not reach this one.
     strandedPreviews.delete(layout);
-    setState({ saving: true, draft: { layout, revision, config, generation: currentGeneration() }, draftError: null });
+    // The takeover also clears the layout's direct-write preview: the token
+    // claim just superseded that write, so its reply will be discarded by
+    // the token check and nothing else would ever clear the preview - not
+    // the discarded settlement, and not an unchanged refresh, which
+    // contradicts nothing.
+    setState({
+      saving: true,
+      draft: { layout, revision, config, generation: currentGeneration() },
+      draftError: null,
+      ...clearPreview(layout),
+    });
     let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
@@ -988,16 +1022,28 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (canonical !== undefined) {
         // A revision conflict is not a lost reply: the hub REFUSED this write
         // and said what the current value is, so the outcome is known. The
-        // canonical lands and the proposal stays for review against it, and
-        // the checkpoint is re-marked settled rather than left claiming an
-        // unknown outcome.
-        applyHubDefault(layout, canonical, { saving: false, writeUncertain: false, draftConflict: true });
-        try {
-          if (!draftRepository.replaceClassified({ ...checkpoint, writeUncertain: false }))
-            setState(restoreDraft(getState()));
-        } catch {
-          setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
-        }
+        // canonical lands and the proposal stays for review against it. The
+        // checkpoint settles inside the settle callback, which runs BEFORE
+        // the publication: after it, a synchronous subscriber may already
+        // have written a newer draft, and the repository's identity tracks
+        // every write, so a re-mark settling later would reach past this
+        // write's own record and overwrite that newer edit on disk. A
+        // refused compare-and-swap adopts the replacement instead, judged
+        // against the final hub the callback is handed.
+        applyHubDefault(layout, canonical, (hub): Partial<TranscriptDisplayStoreFields> => {
+          const extra: Partial<TranscriptDisplayStoreFields> = {
+            saving: false,
+            writeUncertain: false,
+            draftConflict: true,
+          };
+          try {
+            if (!draftRepository.replaceClassified({ ...checkpoint, writeUncertain: false }))
+              return { ...extra, ...restoreDraft({ loaded: true, hub }) };
+          } catch {
+            return { ...extra, storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE };
+          }
+          return extra;
+        });
         throw error;
       }
       const applied = postApplyDefault(error, layout);
@@ -1046,8 +1092,19 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   /** The confirmed-save settlement the reply and post-apply paths share:
    * land the value (or keep the proposal for review when a newer external
-   * revision beat it), settle the in-flight flags, clean the checkpoint up,
-   * and clear any superseded direct-write preview on the layout. */
+   * revision beat it), settle the in-flight flags, and clean the checkpoint
+   * up. The cleanup runs inside the settle callback - before the
+   * publication that unblocks edits and while `saving` still holds every
+   * subscriber away from the port - because the repository's identity
+   * tracks every write: a re-mark or removal settling after that
+   * publication would reach past this write's own record once a
+   * subscriber's edit re-classified it. A refused compare-and-swap adopts
+   * the replacement instead, judged against the final hub the callback is
+   * handed; a cleanup failure keeps the proposal in view with the port
+   * marked unavailable, and never turns a confirmed write back into an
+   * unknown outcome. The layout's direct-write preview was cleared at this
+   * write's takeover, so nothing preview-shaped survives to this
+   * settlement. */
   function settleConfirmedSave(
     value: HubTranscriptDisplayDefault,
     checkpoint: TranscriptDraftCheckpoint,
@@ -1059,35 +1116,36 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       writeUncertain: false,
       draftConflict: newerExternal,
     };
-    if (newerExternal) setState(settled);
-    else applyHubDefault(layout, value, settled);
-    let storageError: string | null = null;
-    let refused: Partial<TranscriptDisplayStoreFields> | null = null;
-    try {
-      if (newerExternal) {
-        if (!draftRepository.replaceClassified({ ...checkpoint, writeUncertain: false }))
-          refused = restoreDraft(getState());
-      } else if (!draftRepository.removeIf(checkpoint)) {
-        // The checkpoint this write settled is gone, replaced by another
-        // writer while the PATCH was out: the replacement survives on disk
-        // (removeIf's own compare refused to touch it) and must not be hidden
-        // behind a "no draft" report.
-        refused = restoreDraft(getState());
+    const settleStorage = (hub: HubDefaultsByLayout): Partial<TranscriptDisplayStoreFields> => {
+      let settledStorage: Partial<TranscriptDisplayStoreFields>;
+      try {
+        if (newerExternal) {
+          // The proposal stays for review; its checkpoint is re-marked
+          // settled unless another writer replaced it, in which case the
+          // replacement is adopted rather than overwritten.
+          settledStorage = draftRepository.replaceClassified({ ...checkpoint, writeUncertain: false })
+            ? settled
+            : restoreDraft({ loaded: true, hub });
+        } else if (draftRepository.removeIf(checkpoint)) {
+          // The write landed and settled its own checkpoint: the draft it
+          // described is gone with it.
+          settledStorage = { ...settled, draft: null };
+        } else {
+          // The checkpoint this write settled is gone, replaced by another
+          // writer while the PATCH was out: the replacement survives on disk
+          // (removeIf's own compare refused to touch it) and must not be
+          // hidden behind a "no draft" report.
+          settledStorage = restoreDraft({ loaded: true, hub });
+        }
+      } catch {
+        // A cleanup failure keeps the proposal in view with the port marked
+        // unavailable.
+        settledStorage = { ...settled, storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE };
       }
-    } catch {
-      storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
-    }
-    // This write took the layer, so any direct write's preview on it belongs
-    // to a superseded write and must not outlive the value that replaced it -
-    // whether this write's own value landed or a newer external one did.
-    setState({
-      ...(refused ?? {
-        draft: newerExternal || storageError !== null ? getState().draft : null,
-        storageUnavailable: storageError !== null,
-        draftError: storageError,
-      }),
-      ...clearPreview(layout),
-    });
+      return settledStorage;
+    };
+    if (newerExternal) setState(settleStorage(getState().hub));
+    else applyHubDefault(layout, value, settleStorage);
     return value;
   }
 

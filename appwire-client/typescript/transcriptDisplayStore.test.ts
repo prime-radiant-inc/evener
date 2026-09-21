@@ -1333,6 +1333,58 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toMatchObject({ writeUncertain: false });
   });
 
+  test("a conflict settles its checkpoint before edits unblock, so a subscriber's newer edit survives", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw conflictError("mobile", hubDefault(5, desktopConfig));
+    });
+    // A synchronous subscriber edits the moment the conflict publication
+    // unblocks the editor.
+    let edited = false;
+    const unsubscribe = store.subscribe((state) => {
+      if (edited || state.saving || !state.draftConflict) return;
+      edited = true;
+      store.getState().editDraft("mobile", mobileConfig);
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    unsubscribe();
+    // The re-mark must settle this write's own record before edits unblock -
+    // not reach past the subscriber's newer edit once their save has
+    // re-classified the repository.
+    expect(drafts.stored()).toMatchObject({ layout: "mobile", config: mobileConfig });
+  });
+
+  test("a checkpointed takeover clears the superseded direct write's preview even when both writes fail", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<TranscriptDisplayPatchResponse>();
+    const second = deferred<TranscriptDisplayPatchResponse>();
+    let patchCount = 0;
+    client.on(patchMethod, () => {
+      patchCount += 1;
+      return patchCount === 1 ? first.promise : second.promise;
+    });
+    const direct = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    // The checkpointed editor takes the layer over while the direct write's
+    // reply is still outstanding.
+    store.getState().editDraft("mobile", desktopConfig);
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    first.reject(new Error("connection lost"));
+    second.reject(new Error("connection lost"));
+    // The direct write's discarded reply settles nothing of its own.
+    expect(await direct).toEqual(hubDefault(2, mobileConfig));
+    await expect(save).rejects.toThrow("connection lost");
+    // An unchanged refresh contradicts nothing, so it cannot clear the
+    // preview either: only the takeover can.
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().drafts).toEqual({});
+  });
+
   test("a post-apply rejection is a confirmed save, not an uncertain one", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
@@ -1403,6 +1455,46 @@ describe("the checkpointed draft editor", () => {
     // Reviewing the replacement hub's current value is what clears it.
     store.getState().rebaseDraft(2);
     expect(store.getState().draftConflict).toBe(false);
+  });
+
+  test("a read that confirms an adopted draft stamps its generation, so an equal-revision reconnect stays in review", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // An uncertain write whose checkpoint another window replaced
+    // mid-flight: the settling read adopts the replacement, which by design
+    // carries no generation (a replacement record knows nothing about this
+    // store's).
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: false,
+    });
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: mobileConfig,
+      generation: null,
+    });
+
+    // An unchanged refresh confirms the adopted draft's base revision is
+    // still the current state: that read has earned the generation stamp.
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draft?.generation).toBe(1);
+
+    // A reconnect whose numbering restarts on the same revision must leave
+    // the draft in review, not stamp the new generation onto it.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
   });
 
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
