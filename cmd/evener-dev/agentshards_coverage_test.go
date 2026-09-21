@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,46 +184,135 @@ func TestCopyFileToNonEmpty(t *testing.T) {
 	}
 }
 
-// TestReplayMatchingMissingFile covers the read-error path.
-func TestReplayMatchingMissingFile(t *testing.T) {
-	var sb strings.Builder
-	// Should not panic or write anything for a missing file.
-	replayMatching(&sb, filepath.Join(t.TempDir(), "nonexistent"), surveyRedLine, 10)
-	if sb.Len() != 0 {
-		t.Fatalf("replayMatching on missing file should write nothing, got %q", sb.String())
-	}
-}
-
-// TestReplayMatchingWithMatches covers the positive path.
-func TestReplayMatchingWithMatches(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "log")
-	content := "--- FAIL: TestX\nok\npanic: something\n--- PASS: TestY\n"
+// writeSurveyLog writes content to a fresh file and returns its path.
+func writeSurveyLog(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "survey.log")
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return p
+}
+
+// replayLines is replaySurveyFailures' output as lines, nil when it wrote
+// nothing.
+func replayLines(t *testing.T, path string, blocks int) []string {
+	t.Helper()
 	var sb strings.Builder
-	replayMatching(&sb, p, surveyRedLine, 10)
-	lines := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("replayMatching wrote %d lines, want 2: %q", len(lines), sb.String())
+	replaySurveyFailures(&sb, path, blocks)
+	if sb.Len() == 0 {
+		return nil
 	}
-	if lines[0] != "--- FAIL: TestX" || lines[1] != "panic: something" {
-		t.Fatalf("replayMatching wrote wrong lines: %q", sb.String())
+	return strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
+}
+
+// TestReplaySurveyFailuresMissingFile covers the read-error path: a log that
+// is not there writes nothing at all rather than a stray error.
+func TestReplaySurveyFailuresMissingFile(t *testing.T) {
+	if got := replayLines(t, filepath.Join(t.TempDir(), "nonexistent"), 10); got != nil {
+		t.Fatalf("a missing survey log should write nothing, got %q", got)
 	}
 }
 
-// TestReplayMatchingLimit covers the limit parameter.
-func TestReplayMatchingLimit(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "log")
-	content := "--- FAIL: TestA\n--- FAIL: TestB\n--- FAIL: TestC\n"
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+// TestReplaySurveyFailuresShowsAssertionContext is the issue #2121 contract:
+// the excerpt carries the failing test's own output, not just its name. The
+// assertion lines sit above the verdict (that is where t.Fatal writes them),
+// a subtest's verdict is indented output of its parent, and a green test's
+// logged noise stays out of the block entirely.
+func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestWrong\n"+
+			"    thing_test.go:9: first line of the failure\n"+
+			"    thing_test.go:10: the assertion that matters\n"+
+			"--- FAIL: TestWrong (0.01s)\n"+
+			"    --- FAIL: TestWrong/sub (0.01s)\n"+
+			"=== RUN   TestGreen\n"+
+			"    thing_test.go:30: green noise\n"+
+			"--- PASS: TestGreen (0.00s)\n"+
+			"ok  \tpkg\t0.01s\n")
+	want := []string{
+		"    thing_test.go:9: first line of the failure",
+		"    thing_test.go:10: the assertion that matters",
+		"--- FAIL: TestWrong (0.01s)",
+		"    --- FAIL: TestWrong/sub (0.01s)",
 	}
-	var sb strings.Builder
-	replayMatching(&sb, p, surveyRedLine, 2)
-	lines := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("replayMatching with limit 2 wrote %d lines, want 2", len(lines))
+	got := replayLines(t, path, 10)
+	if len(got) != len(want) {
+		t.Fatalf("replayed %d lines, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q; whole excerpt:\n%s", i, got[i], want[i], strings.Join(got, "\n"))
+		}
+	}
+	if strings.Contains(strings.Join(got, "\n"), "green noise") {
+		t.Fatalf("a green test's output reached the failure excerpt:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+// TestReplaySurveyFailuresPassingLogSaysNothing pins the other direction: a
+// green survey log yields no excerpt, so a passing run's summary gains no
+// empty failure block.
+func TestReplaySurveyFailuresPassingLogSaysNothing(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestGreen\n"+
+			"    thing_test.go:5: green noise\n"+
+			"--- PASS: TestGreen (0.00s)\n"+
+			"PASS\n"+
+			"ok  \tpkg\t0.01s\n")
+	if got := replayLines(t, path, 10); got != nil {
+		t.Fatalf("a green survey log should produce no excerpt, got %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresShowsPanic covers the other marker: a panic's
+// message is on its own line, so the marker replays legibly without the stack.
+func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestPanics\n"+
+			"--- FAIL: TestPanics (0.00s)\n"+
+			"panic: boom as instructed\n"+
+			"\n"+
+			"goroutine 1 [running]:\n"+
+			"\tpkg.TestPanics(0x0)\n"+
+			"\t\tthing_test.go:21 +0x25\n")
+	want := []string{"--- FAIL: TestPanics (0.00s)", "panic: boom as instructed"}
+	got := replayLines(t, path, 10)
+	if len(got) != len(want) {
+		t.Fatalf("replayed %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestReplaySurveyFailuresBoundsOutput pins the two bounds. A failing test
+// that logs without limit must not carry its whole log into the worktree's
+// summary, and a suite with many failures must not either: the excerpt is a
+// failure block, not the suite log it is an excerpt of.
+func TestReplaySurveyFailuresBoundsOutput(t *testing.T) {
+	var spam strings.Builder
+	spam.WriteString("=== RUN   TestSpam\n")
+	for i := range surveyContextBefore + 5 {
+		_, _ = fmt.Fprintf(&spam, "    thing_test.go:%d: line %d\n", i, i)
+	}
+	spam.WriteString("--- FAIL: TestSpam (0.00s)\n")
+	got := replayLines(t, writeSurveyLog(t, spam.String()), 10)
+	if len(got) != surveyContextBefore+1 {
+		t.Fatalf("replayed %d lines of a noisy failure, want %d:\n%s",
+			len(got), surveyContextBefore+1, strings.Join(got, "\n"))
+	}
+	wantFirst := fmt.Sprintf("    thing_test.go:%d: line %d", 5, 5)
+	if got[0] != wantFirst {
+		t.Fatalf("excerpt starts at %q, want the last %d output lines (%q)", got[0], surveyContextBefore, wantFirst)
+	}
+
+	// The block count, and not the suite, is the other bound.
+	got = replayLines(t, writeSurveyLog(t, "--- FAIL: TestA\n--- FAIL: TestB\n--- FAIL: TestC\n"), 2)
+	if len(got) != 2 {
+		t.Fatalf("replaySurveyFailures with 2 blocks wrote %d lines, want 2", len(got))
 	}
 }
 
