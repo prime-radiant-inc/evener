@@ -237,7 +237,12 @@ export function QueueStrip({
     });
   }
 
-  async function handlePromote(index: number, entryId: string): Promise<void> {
+  async function handlePromote(
+    index: number,
+    entryId: string,
+    displayText: string,
+    skillNames?: readonly string[],
+  ): Promise<void> {
     // The recovery fence, re-read live at the press (the same render-vs-press
     // rule as pressRefusal below): the hub refuses turn/promoteQueuedAsSteer
     // for the obligation's whole window, so an offered press could only mint
@@ -255,7 +260,10 @@ export function QueueStrip({
     }
     setRowBusy(entryId, true);
     try {
-      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
+      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
+        text: displayText,
+        skillNames,
+      });
       // Success is entirely rendered by the daemon's own thread/queueChanged
       // (row removed) + evener/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
@@ -515,7 +523,13 @@ export function QueueStrip({
                         : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
-                    if (entryId !== undefined) void handlePromote(index, entryId);
+                    if (entryId !== undefined) {
+                      // The ghost's display text: the row's full text, or the daemon's own
+                      // preview placeholder when the row is image-only (its whole content).
+                      const rowText = fullText ?? "";
+                      const displayText = rowText.trim() !== "" ? rowText : (preview?.[index] ?? "");
+                      void handlePromote(index, entryId, displayText, entrySkillNames);
+                    }
                   }}
                 />
                 <ActionButton
