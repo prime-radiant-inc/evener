@@ -21,6 +21,7 @@ import { afterEach, test, vi } from "vitest";
 
 import {
   applyViewport,
+  BOOT_RETRY_LIMIT,
   clearViewportOverride,
   collectFontStatusInPage,
   createStartupDeadline,
@@ -261,7 +262,10 @@ test("a poll with no caller deadline arms one of its own", async () => {
   await rejected;
   // The fallback is a timer this module armed itself; leaving it behind would
   // hold a guard's event loop open for the rest of its budget.
-  assert.ok(liveTimers() <= before, `live timers went from ${before} to ${liveTimers()}: the fallback deadline outlived its poll`);
+  assert.ok(
+    liveTimers() <= before,
+    `live timers went from ${before} to ${liveTimers()}: the fallback deadline outlived its poll`,
+  );
 });
 
 const cdpModuleUrl = new URL("./browserGuardCdp.mjs", import.meta.url).href;
@@ -303,8 +307,7 @@ function fakeSocket() {
  * navigate itself fail.
  */
 function fakeSend(socket, { onNavigate } = {}) {
-  const fireLoadEvent = () =>
-    socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+  const fireLoadEvent = () => socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
   const navigated = onNavigate ?? fireLoadEvent;
   return async (method) => {
     switch (method) {
@@ -446,8 +449,12 @@ test("a load timeout rejects navigation while Page.navigate is still pending", a
   };
   let outcome;
   const observed = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/").then(
-    () => { outcome = { loaded: true }; },
-    (error) => { outcome = { error }; },
+    () => {
+      outcome = { loaded: true };
+    },
+    (error) => {
+      outcome = { error };
+    },
   );
   try {
     await navigateIssued;
@@ -487,7 +494,9 @@ for (const first of ["load", "reply"]) {
     const load = () => socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
     const completeReply = () => resolveNavigate({ result: { frameId: "fixture-frame" } });
     let completed = false;
-    const navigation = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/").then(() => { completed = true; });
+    const navigation = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/").then(() => {
+      completed = true;
+    });
     await navigateIssued;
     try {
       (first === "load" ? load : completeReply)();
@@ -513,7 +522,7 @@ test("a failed navigate takes the load wait down with it", async () => {
   const socket = fakeSocket();
   const send = fakeSend(socket, {
     onNavigate: () => {
-      throw new Error("Page.navigate: {\"code\":-32000,\"message\":\"Cannot navigate to invalid URL\"}");
+      throw new Error('Page.navigate: {"code":-32000,"message":"Cannot navigate to invalid URL"}');
     },
   });
   const before = liveTimers();
@@ -522,6 +531,158 @@ test("a failed navigate takes the load wait down with it", async () => {
 
   assert.equal(socket.listenerCount("message"), 0);
   assert.equal(liveTimers(), before);
+});
+
+// The unbooted-page seam. A transient network change on the host (observed:
+// bursts of net::ERR_NETWORK_CHANGED, including on 127.0.0.1, when a
+// Tailscale interface flaps) kills the Vite dev-server module burst mid-boot.
+// The page still parses and fires its load event - readyState complete, both
+// script tags in the DOM - but the harness entry module never runs, so its
+// boot marker is missing and no injected stylesheet arrives. The guards used
+// to walk straight into waitForFonts on that dead page and misreport the
+// environment flake as "declares no web fonts".
+//
+// navigateTo's boot options are the seam every guard shares: a page whose
+// harness never booted is re-navigated a bounded number of times, and a page
+// that never recovers fails with the boot cause instead of the fonts check.
+// No test here needs a real browser, a real network, or a real flap: the fakes
+// decide per call whether the page booted.
+
+test("navigateTo re-navigates an unbooted harness page and recovers when the retry boots", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  let bootChecks = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        bootChecks++;
+        // The first navigation lands on the dead page (the entry module never
+        // ran); the re-navigation boots.
+        return { result: { result: { value: bootChecks > 1 } } };
+      default:
+        return {};
+    }
+  };
+  const retryNotes = [];
+  const noteError = vi.spyOn(console, "error").mockImplementation((...args) => {
+    retryNotes.push(args.join(" "));
+  });
+
+  const before = liveTimers();
+  try {
+    await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+      bootExpression: "typeof window.settledShell !== 'undefined'",
+      bootLabel: "the shellguard entry global window.settledShell",
+      retryDelayMs: 0,
+    });
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 2, "a page whose harness never booted must be re-navigated");
+  assert.equal(bootChecks, 2, "every navigation must be followed by exactly one boot check");
+  assert.ok(
+    retryNotes.some((note) => note.includes("never booted")),
+    "a recovered flake must leave a line in the guard log, not pass silently",
+  );
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before, "the recovery must not leave a timer holding the event loop");
+});
+
+test("navigateTo fails with the boot cause - never the font check - when the retries are exhausted", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1) {
+          // The burst dies on the first navigation: the page still loads, but
+          // the module and stylesheet requests fail with the network error.
+          for (const type of ["Script", "Stylesheet"]) {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+          }
+        }
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  const before = liveTimers();
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /overflowharness\.html/);
+        assert.match(error.message, /window\.settled/);
+        // The captured network failures must reach the diagnosis.
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        // The dead page used to misreport as an empty font set; that
+        // diagnostic must never be the terminal error for an unbooted page.
+        assert.doesNotMatch(error.message, /font/i);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT, "the retry budget must be bounded");
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before, "the exhausted retries must not leave a timer holding the event loop");
+});
+
+test("a booted page is not re-navigated and its empty font set still fails the fonts check", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const evaluateResults = [
+    { result: { result: { value: true } } }, // the boot check: the harness ran
+    { result: { result: { value: { stalled: false, documents: [{ label: "the top document", faces: [] }] } } } },
+  ];
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return evaluateResults.shift();
+      default:
+        return {};
+    }
+  };
+
+  await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/generated/editorial-transcript-360/harness.html", {
+    bootExpression: "typeof window.measure !== 'undefined'",
+    bootLabel: "the case harness global window.measure",
+    retryDelayMs: 0,
+  });
+  assert.equal(navigations, 1, "a booted page must not be re-navigated");
+
+  // kata e4sh stands: an empty font set on a page that DID boot is still a
+  // failure, and still the fonts check's own diagnostic.
+  await assert.rejects(waitForFonts(send), /declares no web fonts/);
+  assert.equal(socket.listenerCount("message"), 0);
 });
 
 // waitForFonts runs on one coordinated in-page deadline: the registration
@@ -629,10 +790,7 @@ test("waitForFonts reports a stalled font load as an environment problem", async
       result: { value: { stalled: true, documents: [{ label: "the top document", faces: [] }] } },
     },
   });
-  await assert.rejects(
-    waitForFonts(send),
-    /environment problem, not a test case failure.*font load is stalled/s,
-  );
+  await assert.rejects(waitForFonts(send), /environment problem, not a test case failure.*font load is stalled/s);
 });
 
 test("waitForFonts passes settled fonts and still names a fontless document", async () => {

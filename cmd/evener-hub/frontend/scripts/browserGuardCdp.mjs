@@ -282,6 +282,29 @@ export async function connectPage(endpoint) {
   return { ws, send, close: () => ws.close() };
 }
 
+// The bounded re-navigation budget navigateTo's boot options use: a harness
+// page that loaded but never booted is re-navigated at most this many times.
+export const BOOT_RETRY_LIMIT = 2;
+
+// The pause between those re-navigations, giving a transient network change
+// time to settle before the burst is asked for again.
+export const BOOT_RETRY_DELAY_MS = 250;
+
+/**
+ * Group the Network.loadingFailed events captured during one boot window by
+ * what failed and how often, so the terminal error reports the burst
+ * ("Script net::ERR_NETWORK_CHANGED x3") instead of 40 near-identical lines.
+ */
+function summarizeLoadingFailures(failures) {
+  if (failures.length === 0) return null;
+  const counts = new Map();
+  for (const failure of failures) {
+    const kind = `${failure.type ?? "Unknown"} ${failure.errorText ?? "(no error text)"}`;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([kind, count]) => (count === 1 ? kind : `${kind} x${count}`)).join("; ");
+}
+
 /**
  * Page.enable, navigate, and await the load event - the triple every guard
  * re-wrote.
@@ -290,7 +313,7 @@ export async function connectPage(endpoint) {
  * timeout path the load never fires, and a handler left behind keeps parsing
  * every later CDP message on a socket the guards reuse across cases.
  */
-export async function navigateTo({ ws, send }, url) {
+async function navigateToOnce({ ws, send }, url) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
@@ -314,6 +337,98 @@ export async function navigateTo({ ws, send }, url) {
     // its listener/timer) without replacing the error Promise.all observed.
     abandonLoad();
     await Promise.allSettled([loaded]);
+  }
+}
+
+/**
+ * Navigate, and on a boot-checked harness page prove the harness actually ran.
+ *
+ * THE UNBOOTED-PAGE FLAKE THIS ABSORBS: a transient network change on the
+ * host (measured on this machine: bursts of net::ERR_NETWORK_CHANGED, on
+ * 127.0.0.1 loopback requests too, whenever a Tailscale interface flaps)
+ * kills the Vite dev-server module burst mid-boot. The page still parses and
+ * fires its load event - document.readyState "complete", both script tags in
+ * the DOM - but the harness entry module never runs: its boot global is
+ * missing and no injected stylesheet arrives. Every guard then walked into
+ * waitForFonts on that dead page and reported the environment flake as "the
+ * top document declares no web fonts".
+ *
+ * THE SEAM: callers pass `bootExpression`, an in-page expression that is
+ * truthy exactly when the harness booted - for the tsx-entry harnesses, the
+ * module-scope global their entry assigns (window.settled and friends); for
+ * layoutguard's static case pages, that every stylesheet link actually loaded
+ * (a dead burst leaves link.sheet null). It is evaluated AFTER the load event:
+ * module scripts block the load event until their whole static import tree
+ * has evaluated, so at load time a marker that will ever exist already does.
+ * An unbooted page is re-navigated, bounded by BOOT_RETRY_LIMIT, and one that
+ * never recovers fails with the boot cause - never the fonts error - plus the
+ * Network.loadingFailed evidence captured inside the window.
+ *
+ * The legacy two-argument call is unchanged: no boot options, no Network
+ * domain, no extra evaluate - skillguard's driver and editorial-preview keep
+ * exactly the behavior they had.
+ *
+ * @param {{ws: object, send: Function}} page - the connected CDP page
+ * @param {string} url - where to navigate
+ * @param {object} [options]
+ * @param {string} [options.bootExpression] - in-page expression, truthy when booted
+ * @param {string} [options.bootLabel] - human name of the marker for errors and logs
+ * @param {number} [options.retryDelayMs] - pause before each re-navigation
+ */
+export async function navigateTo(
+  page,
+  url,
+  { bootExpression = null, bootLabel = null, retryDelayMs = BOOT_RETRY_DELAY_MS } = {},
+) {
+  if (!bootExpression) return navigateToOnce(page, url);
+  const { ws, send } = page;
+  const loadingFailures = [];
+  const onLoadingFailed = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.method === "Network.loadingFailed") loadingFailures.push(message.params);
+  };
+  ws.addEventListener("message", onLoadingFailed);
+  let attempts = 0;
+  try {
+    // Network events only flow while the domain is enabled, and only this
+    // window needs them: the captured failures are what names the real cause
+    // when the retries run out.
+    await withTimeout(send("Network.enable"), 30000, "Network.enable");
+    try {
+      for (;;) {
+        attempts++;
+        await navigateToOnce(page, url);
+        if (await evaluate(send, bootExpression)) return;
+        if (attempts > BOOT_RETRY_LIMIT) {
+          const evidence = summarizeLoadingFailures(loadingFailures);
+          throw new Error(
+            `environment problem, not a test case failure: the harness page at ${url} never booted after ` +
+              `${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
+              `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed): ${bootLabel ?? bootExpression} did not hold ` +
+              `even though the page's load event fired, so the harness entry module never ran and the page is a dead ` +
+              `document no measurement can read. The usual cause on the affected host is a transient network change ` +
+              `(net::ERR_NETWORK_CHANGED) killing the Vite dev-server module burst mid-boot - an environment flake, ` +
+              `not a test case regression. ` +
+              (evidence
+                ? `Chrome reported these failed requests during the boot window: ${evidence}.`
+                : "No request failures were captured during the boot window, so the burst died without reporting a " +
+                  "Network.loadingFailed event."),
+          );
+        }
+        const captured = loadingFailures.length;
+        console.error(
+          `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
+            `${bootLabel ?? bootExpression} is missing` +
+            (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
+            ") - re-navigating",
+        );
+        await delay(retryDelayMs);
+      }
+    } finally {
+      await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});
+    }
+  } finally {
+    ws.removeEventListener("message", onLoadingFailed);
   }
 }
 
@@ -420,7 +535,7 @@ export async function collectFontStatusInPage({ pollMs, readyMs }) {
   for (let index = 0; index < frames.length; index++) {
     try {
       const doc = frames[index].contentDocument;
-      if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
+      if (doc) found.push({ label: `iframe #${index} (${frames[index].className || "no class"})`, doc });
     } catch {
       // Cross-origin: not reachable, and not something a guard builds.
     }
@@ -445,7 +560,9 @@ export async function collectFontStatusInPage({ pollMs, readyMs }) {
     stalled: !settled,
     documents: found.map(({ label, doc }) => {
       const faces = [];
-      doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
+      doc.fonts.forEach((face) => {
+        faces.push({ family: face.family, status: face.status });
+      });
       return { label, faces };
     }),
   };

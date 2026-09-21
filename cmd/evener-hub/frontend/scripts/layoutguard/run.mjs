@@ -71,11 +71,11 @@ import {
   assertGuardOrigin,
   clearViewportOverride,
   connectPage,
+  createStartupDeadline,
   evaluate,
   forcePseudoStates,
   navigateTo,
   realizedViewport,
-  createStartupDeadline,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -96,6 +96,31 @@ const SRC_DIR = path.join(FRONTEND, "src");
 // same way the old temp-dir copy did. The run dir is removed in finally;
 // PID-scoped so concurrent runs never collide on a shared checkout.
 const GENERATED_ROOT = path.join(FRONTEND, `layoutguard-generated-${process.pid}`);
+
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server burst mid-boot while the page still fires its
+// load event. A layoutguard case has no entry module that could leave a boot
+// global: harness.html is static and window.measure comes from an inline
+// script that always runs. The case's boot contract is that every stylesheet
+// link actually loaded - tokens.css and resolved.css in the top document, plus
+// whatever any srcdoc fixture iframe links for itself, one document at a time
+// for the same reason waitForFonts checks fonts that way. A request the burst
+// died on leaves link.sheet null, and a page whose stylesheets died measures
+// a fontless, unstyled page - exactly the "declares no web fonts" misfire.
+const BOOT = {
+  bootExpression: `(() => {
+    const docs = [document];
+    for (const frame of document.querySelectorAll("iframe")) {
+      try {
+        if (frame.contentDocument) docs.push(frame.contentDocument);
+      } catch {}
+    }
+    return docs.every((doc) =>
+      Array.from(doc.querySelectorAll('link[rel="stylesheet"]')).every((link) => link.sheet !== null),
+    );
+  })()`,
+  bootLabel: "every stylesheet link loaded (tokens.css/resolved.css, plus fixture frames)",
+};
 
 // kata eevs (docs/developing-evener/testing.md: "a guard that has never failed is a
 // decoration"): every case here was mutation-tested once by hand - its
@@ -159,7 +184,7 @@ async function runCase(page, vitePort, caseDir, emulation) {
     emulation.viewportApplied = true;
   }
 
-  await navigateTo(page, url);
+  await navigateTo(page, url, BOOT);
   await assertGuardOrigin(page.send, `127.0.0.1:${vitePort}`);
   await waitForFonts(page.send);
 
