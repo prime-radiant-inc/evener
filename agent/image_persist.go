@@ -67,7 +67,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		name := sanitizeAttachmentName(out[i])
 		sum := sha256.Sum256(out[i].Data)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
-		if err := s.writeAttachmentFile(path, out[i].Data); err != nil {
+		if err := writeAttachmentFile(path, out[i].Data, writeAttachmentContents); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
@@ -79,20 +79,37 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 	return out
 }
 
+// writeAttachmentContents is the production content-write step; the parameter
+// exists so tests can inject its failure without a process-global seam racing
+// parallel tests.
+func writeAttachmentContents(f *os.File, data []byte) error {
+	_, err := f.Write(data)
+	return err
+}
+
 // writeAttachmentFile stores data at the content-addressed path without
 // following a symlink at the leaf or overwriting an existing entry: the
 // O_CREAT|O_EXCL create is atomic against the directory entry, and when the
 // path already holds anything — a file, a symlink pointing anywhere — the
 // open fails with EEXIST without ever dereferencing it, so a planted symlink
 // is refused, not written through. An existing entry is the same attachment
-// from an earlier paste exactly when its bytes match, which dedupes to a
-// no-op; anything else there — a planted file, a symlink — is a write failure
-// the caller reports like any other.
-func (s *Session) writeAttachmentFile(path string, data []byte) error {
+// from an earlier paste exactly when it is a regular file whose bytes match,
+// which dedupes to a no-op; anything else there — a planted file, a symlink,
+// a non-regular entry — is a write failure the caller reports like any
+// other. A failed content write removes the partial file so the
+// content-addressed name is never poisoned for a retry.
+func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) error) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if !errors.Is(err, os.ErrExist) {
 			return err
+		}
+		info, lerr := os.Lstat(path)
+		if lerr != nil || !info.Mode().IsRegular() {
+			// A symlink must not satisfy the dedupe even when its target holds
+			// the same bytes, and a non-regular entry (a FIFO) must never be
+			// opened — reading one can block the turn.
+			return fmt.Errorf("existing entry at %q is not a regular file", path)
 		}
 		existing, rerr := os.ReadFile(path)
 		if rerr != nil {
@@ -103,11 +120,16 @@ func (s *Session) writeAttachmentFile(path string, data []byte) error {
 		}
 		return nil
 	}
-	if _, werr := f.Write(data); werr != nil {
+	if err := write(f, data); err != nil {
 		_ = f.Close()
-		return werr
+		_ = os.Remove(path) // a partial file must not poison the content-addressed name for retries
+		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // fileToolsCanRead reports whether the session's in-process file tools — the

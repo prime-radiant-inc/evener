@@ -654,3 +654,82 @@ func TestProcessInput_WithoutReadFileTool_OmitsAttachmentNote(t *testing.T) {
 		t.Errorf("a session without the read_file tool must not be promised a read_file path: %+v", turn.Message.Content)
 	}
 }
+
+// TestExtractOriginalPromptExcludesMachineryNote pins the metadata half of
+// the note-handling contract: OriginalPrompt feeds session titles and search,
+// so the first user input's extraction must be the user's prose, never the
+// raw machinery block recorded alongside the image.
+func TestExtractOriginalPromptExcludesMachineryNote(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this picture", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got, want := sess.extractOriginalPrompt(), "look at this picture"; got != want {
+		t.Fatalf("extractOriginalPrompt()=%q, want %q (the machinery note must not reach session metadata)", got, want)
+	}
+}
+
+// TestProcessInput_SameBytesSymlink_NotAnnounced pins the dedupe half of the
+// refusal: a symlink at the content-addressed leaf whose target holds the
+// SAME bytes must not satisfy the dedupe compare — os.ReadFile follows the
+// link, so without an lstat gate the symlinked path is announced as if the
+// attachment were stored there, contradicting the refuse-symlinks guarantee.
+func TestProcessInput_SameBytesSymlink_NotAnnounced(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	if err := os.MkdirAll(filepath.Dir(wantPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "twin.png")
+	if err := os.WriteFile(target, png, 0o600); err != nil {
+		t.Fatalf("write twin: %v", err)
+	}
+	if err := os.Symlink(target, wantPath); err != nil {
+		t.Fatalf("plant same-bytes symlink: %v", err)
+	}
+	warnCh := collectWarnings(sess)
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("a same-bytes symlink must not satisfy the dedupe compare: %+v", turn.Message.Content)
+	}
+	awaitWarningNaming(t, warnCh, "shot.png")
+}
+
+// TestWriteAttachmentFileRemovesPartialWriteOnFailure pins the retry
+// contract: a failed content write must not leave a partial file at the
+// content-addressed name, where it would permanently poison dedupe for those
+// bytes (EEXIST with different content refuses forever). writeAttachmentFile
+// takes the content-write step as a parameter so the failure is injected
+// without a process-global seam racing parallel tests.
+func TestWriteAttachmentFileRemovesPartialWriteOnFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	png := validPNGFixture(t)
+
+	err := writeAttachmentFile(path, png, func(*os.File, []byte) error {
+		return errors.New("injected write failure")
+	})
+	if err == nil {
+		t.Fatal("writeAttachmentFile must propagate the content-write error")
+	}
+	if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("partial file left at %q after a failed write (a retry of the same bytes must find the name free)", path)
+	}
+}
