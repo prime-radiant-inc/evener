@@ -80,8 +80,11 @@ type hostManagerConfig struct {
 	// is nothing to forget.
 	forgetLastGoodThreads func(sourceID string)
 	// manager owns every live SSH channel; removal goes through its atomic
-	// RemoveHost so a concurrent attach cannot publish past deregistration.
-	// Nil in tests that only exercise validation.
+	// RemoveHost so a concurrent attach cannot publish past deregistration, and
+	// the row path resolves the entry's attached client through its
+	// ChannelIfAttached so a row can pair the channel with the very
+	// registration it renders (attachedClient). Nil in tests that only
+	// exercise validation.
 	manager *sshconn.Manager
 	// client is the Ensure-backed dialing seam a new source's client func
 	// uses (cfg.RemoteHostClient). Nil (tests, embedders) leaves the source
@@ -92,7 +95,10 @@ type hostManagerConfig struct {
 	// Online (tests).
 	online func(host string) bool
 	// clientIfAttached is the non-dialing attached-only client lookup list
-	// and status resolve through. Nil leaves rows without live facts.
+	// and status fall back to when no manager owns the channels (tests,
+	// embedders): it answers by name alone, with no channel registration to
+	// pair against the entry the row renders. Nil leaves rows without live
+	// facts.
 	clientIfAttached func(host string) (*appwire.Client, bool)
 	// handshake returns the attach handshake facts for the channel behind
 	// client, or false when no live channel backs it. Nil leaves rows
@@ -855,7 +861,9 @@ func hostEntryRow(host hostreg.Host, origin string) appwire.HostRow {
 
 // hostRow renders one host's list row: the effective entry fields plus live
 // state. Attached rows read the live channel's handshake and preflight facts
-// through the attached-only lookups and record them as last-known; a failed
+// through the attached-only lookups and record them as last-known — but only
+// the channel paired with this row's entry, never one built from another
+// generation of the name (attachedClient); a failed
 // lookup keeps the previously retained fields instead of blanking them, so a
 // transient probe failure cannot cost a later offline row its facts. Offline
 // and in-progress rows render the retained attach state (midAttach,
@@ -870,8 +878,10 @@ func hostEntryRow(host hostreg.Host, origin string) appwire.HostRow {
 // commit.
 func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin string) appwire.HostRow {
 	row := hostEntryRow(host, origin)
-	// Attached is reported only when the attached-only client lookup
-	// confirms a live channel. The online
+	// Attached is reported only when attachedClient confirms a live channel
+	// built from the very entry this row renders — a channel under the same
+	// name but another registration leaves the row offline rather than
+	// borrowing its attached state. The online
 	// signal alone is not sufficient: with no signal wired a hub.toml source
 	// fails open (Online() true), and trusting that would render every
 	// configured host Attached with no facts behind it — an online row the
@@ -884,9 +894,8 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 	// whose lookup failed instead of blanking them with the failed read's
 	// empties.
 	var validity hostFactsValidity
-	if m.hostOnline(host.Name) && m.cfg.clientIfAttached != nil {
-		client, ok := m.cfg.clientIfAttached(host.Name)
-		if ok && client != nil {
+	if m.hostOnline(host.Name) {
+		if client, ok := m.attachedClient(host); ok && client != nil {
 			row.Attached = true
 			if m.cfg.handshake != nil {
 				if hs, ok := m.cfg.handshake(host.Name, client); ok {
@@ -962,6 +971,55 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 // identity rechecks cannot drift apart. Callers hold the mutation mutex.
 func (m *hubHostManager) hostEntryCurrent(host hostreg.Host) bool {
 	return m.cfg.hosts.SameRegistration(host.Name, host)
+}
+
+// attachedClient resolves the live client one row may use for entry, pairing
+// the channel with the entry the row renders.
+//
+// A host's live state is keyed by name, and the name outlives the identity it
+// names: an edit advances the registry generation and retires the channel under
+// it (§3.3), and a remove/re-add swaps in a fresh one, so at any instant the
+// channel mapped under a name may have been built from a different
+// registration than the entry a row is rendering. hostRow snapshots its entry
+// without the mutation mutex (so a parked facts read holds up no commit), which
+// leaves exactly that window: a stale row could otherwise pair the old
+// configuration with the new channel's attached state and server facts, and
+// the reverse pairing — a new entry reading a still-mapped retired channel —
+// is equally possible. The channel's own registration (sshconn.Channel.Host,
+// the value the supervisor's generation fence and sshconn's rechecks compare)
+// is the identity, so the client is handed out only while that registration is
+// the very entry being rendered: content and generation both, the same
+// captured-registration predicate hostreg.Registry.SameRegistration implements
+// and hostEntryCurrent applies to the retained-state fold. It is compared here
+// between the two captures rather than through the registry, so a swap cannot
+// slip between a registry read of the entry and one of the channel and let a
+// mismatched pair pass. A mismatch renders the row offline — the honest state
+// for an entry whose channel belongs to another identity — and the next poll
+// rebuilds it against the registration that is live by then.
+//
+// The lookup is the manager's ChannelIfAttached, read once and used for both
+// the registration and the client, so a supervisor reconnect between two
+// separate lookups cannot pair one generation's registration with another's
+// client — the one-lookup-one-generation rule remoteHostFactsForChannel keeps
+// at the facts seam (main.go). With no manager wired (tests, embedders) there
+// is no channel identity to compare, so the row falls back to the name-only
+// clientIfAttached seam, whose callers own whatever pairing they built.
+func (m *hubHostManager) attachedClient(entry hostreg.Host) (*appwire.Client, bool) {
+	if m.cfg.manager != nil {
+		ch, ok := m.cfg.manager.ChannelIfAttached(entry.Name)
+		if !ok || ch == nil {
+			return nil, false
+		}
+		chHost := ch.Host()
+		if chHost.Generation != entry.Generation || !chHost.Equal(entry) {
+			return nil, false
+		}
+		return ch.Client(), true
+	}
+	if m.cfg.clientIfAttached != nil {
+		return m.cfg.clientIfAttached(entry.Name)
+	}
+	return nil, false
 }
 
 // registerSource wires entry's appsource source exactly the way startup does

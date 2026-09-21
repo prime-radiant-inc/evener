@@ -294,6 +294,43 @@ and the compensation paths in one shape:
   `configPath`, `addr` or `roots` is swallowed by the post-mutation quiet
   re-read and the pane keeps rendering the old row.
 
+### 3.6 The generation-aware attached-client lookup (`cmd/evener-hub/app_host_manage.go`)
+
+`hostRow` snapshots an entry and then resolves the host's attached client and
+live facts; the lookup pairs the channel with the entry the row is rendering,
+not merely with the name. The hub-side `attachedClient` helper reads the
+manager's `ChannelIfAttached` once — one lookup, one generation, the
+`remoteHostFactsForChannel` idiom at `main.go` — and hands back the channel's
+client only while the channel's own registration (`sshconn.Channel.Host`) is
+the entry being rendered: content and generation both, the same
+captured-registration predicate `hostreg.Registry.SameRegistration` implements
+and `hostEntryCurrent` applies to the retained-state fold, compared between the
+two captures rather than through the registry, so a swap cannot slip between a
+read of the entry and a read of the channel and let a mismatched pair pass. A
+mismatch renders the row offline; with no manager wired (tests, embedders)
+there is no channel registration to compare, and the row falls back to the
+name-only `RemoteHostClientIfAttached` seam whose callers own their pairing.
+
+The update path's fences close every window where a mismatch could *persist* —
+the channel is unmapped before the swap becomes visible, and a name with a
+mutation in flight folds no retained state — but one window remained: a row
+that snapshots the pre-swap entry can still resolve the channel a later attach
+published for the new generation, so without the pairing that one render would
+pair the old configuration with the new channel's attached state and server
+facts, and the reverse pairing — a new entry reading a still-mapped retired
+channel — was equally possible. Nothing persisted (the generation fence still
+refuses the retained-state write, and the next poll rebuilds the row), which is
+why the review that raised it — one of three reviewers, describing the finding
+as a race window rather than a reproducible defect — did not hold the slice,
+but the render was wrong. The guard closes it: `hostRow` reaches its live
+lookups outside the mutation mutex, so it now checks the channel's registration
+against the entry it holds before adopting the channel. Pinned by
+`TestHostRowPairsTheChannelWithTheEntryItRenders` (a matching registration is
+still adopted; an advanced generation or changed content is not) and
+`TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel` (the
+pre-swap-entry row renders offline while the new generation's channel is
+installed, and the new identity's own row still adopts it).
+
 ## 4. Semantics, precisely
 
 - Update targets a live sidecar entry. `name` is immutable. The entry's
@@ -482,25 +519,6 @@ lost. The same work owns the build signal §13 wants on the row: the verified
 post-operation facts refresh is what makes "the host is running the build I
 deployed" a fact rather than a restatement of the controller's own version
 (§6.11).
-
-**Pinned: a generation-aware attached-client lookup.** `hostRow` snapshots a
-host entry and only then resolves the host's attached client and live facts, by
-name, and neither lookup compares the channel's registration with the entry the
-row is rendering. The update path's edits and this slice's fences close every
-window where that mismatch could *persist* — the channel is unmapped before the
-swap becomes visible, and a name with a mutation in flight folds no retained
-state — but one window remains: a row that snapshots the pre-swap entry can
-still resolve the channel a later attach published for the new generation, so
-that one render can pair the old configuration with the new channel's attached
-state and server facts. Nothing persists (the generation fence still refuses the
-retained-state write, and the next poll rebuilds the row), which is why the
-review that raised it — one of three reviewers, and it described the finding as
-a race window rather than a reproducible defect — did not hold this slice.
-Closing it properly means making the attached-client lookup generation-aware:
-return the client only while the channel's registration matches the entry being
-rendered, the same predicate `hostEntryCurrent` applies to the retained-state
-fold. That touches the hub/manager seam and its wiring rather than one function,
-so it is its own change rather than another round here.
 
 ## 9. Files touched
 
