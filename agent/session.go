@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -1802,7 +1803,10 @@ func (s *Session) extractOriginalPrompt() string {
 	}
 	for _, t := range s.history {
 		if t.Kind == schema.TurnUserInput {
-			return t.Message.Text()
+			// The first user input may carry machinery note parts (the
+			// attachment persistence note); OriginalPrompt feeds titles and
+			// search, so project the user's own words only.
+			return apptranscript.UserFacingText(t.Message)
 		}
 	}
 	return s.cfg.spawn.subagentTask
