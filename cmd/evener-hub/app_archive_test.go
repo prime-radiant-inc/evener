@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -386,6 +388,102 @@ func TestArchiveSetBoundedWhenDaemonNudgeWedges(t *testing.T) {
 		t.Fatal("archive response wedged behind the unresponsive daemon nudge")
 	}
 	assertSessionArchived(t, archive, entry.SessionID, true)
+}
+
+// TestArchiveSetSerializesConcurrentDecisions proves the durable decision and
+// its daemon nudge are serialized per session: two connections racing archive
+// and unarchive land their nudges in the order the decisions persisted, so the
+// last durable decision is also the last deadline the daemon applied.
+func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
+	entry := residentEntryForTest(t, 4506)
+	entered := make(chan appwire.DaemonIdleTimeoutSetParams, 1)
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	t.Cleanup(release)
+	var mu sync.Mutex
+	var landed []int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		// The first request parks until released; later ones answer at once.
+		select {
+		case entered <- params:
+			<-releaseFirst
+		default:
+		}
+		mu.Lock()
+		landed = append(landed, params.TimeoutMillis)
+		mu.Unlock()
+		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: *residentLifecycleForTest()}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+	dispatch := func(params appwire.ArchiveParams) (appwire.ArchiveResponse, error) {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
+		result, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{
+			ID:     appwire.NewIntID(1),
+			Method: appwire.MethodEvenerArchiveSet,
+			Params: raw,
+		})
+		if err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
+		resp, _ := result.(appwire.ArchiveResponse)
+		return resp, nil
+	}
+
+	type outcome struct {
+		resp appwire.ArchiveResponse
+		err  error
+	}
+	archiveDone := make(chan outcome, 1)
+	go func() {
+		resp, err := dispatch(appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true})
+		archiveDone <- outcome{resp: resp, err: err}
+	}()
+	// The archive decision has persisted and its nudge is parked in the daemon.
+	if parked := <-entered; parked.TimeoutMillis != 60000 {
+		t.Fatalf("first nudge = %d ms, want the archived 60000", parked.TimeoutMillis)
+	}
+	unarchiveDone := make(chan outcome, 1)
+	go func() {
+		resp, err := dispatch(appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: false})
+		unarchiveDone <- outcome{resp: resp, err: err}
+	}()
+	select {
+	case <-unarchiveDone:
+		t.Fatal("unarchive completed while the archive decision still held the session")
+	case <-time.After(200 * time.Millisecond): // TRIPWIRE: the archive holds the session's alias; the unarchive must queue behind it.
+	}
+	release()
+
+	for name, done := range map[string]chan outcome{"archive": archiveDone, "unarchive": unarchiveDone} {
+		select {
+		case out := <-done:
+			if out.err != nil {
+				t.Fatalf("%s: %v", name, out.err)
+			}
+			if !out.resp.OK {
+				t.Fatalf("%s response = %+v, want OK", name, out.resp)
+			}
+		case <-time.After(10 * time.Second): // TRIPWIRE: both dispatches are released by close(releaseFirst).
+			t.Fatalf("%s never completed after release", name)
+		}
+	}
+	assertSessionArchived(t, archive, entry.SessionID, false)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []int64{60000, (5 * time.Minute).Milliseconds()}
+	if !slices.Equal(landed, want) {
+		t.Fatalf("daemon applied deadlines %v, want persist order %v", landed, want)
+	}
 }
 
 // A remote project's working directory does not exist on the controller, so the

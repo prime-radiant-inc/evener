@@ -73,6 +73,18 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
+	if params.Kind == appwire.ArchiveTargetSession && cfg.ResumeLocks != nil {
+		// Serialize the decision and its daemon nudge behind the session's
+		// ownership alias: requests on different connections run handlers
+		// concurrently, and two archive toggles racing on one session must land
+		// their nudges in the order the decisions persisted, so the last durable
+		// decision is also the last deadline the daemon applied.
+		lock := cfg.ResumeLocks.For(decisionID)
+		if err := lock.LockContext(ctx); err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
+		defer lock.Unlock()
+	}
 	if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
 	}

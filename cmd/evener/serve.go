@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -1034,6 +1035,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		if params.TimeoutMillis < 0 {
 			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
+		}
+		// maxIdleTimeoutMillis is the largest value whose nanosecond conversion
+		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
+		// lands on exactly zero, a success response that silently disabled
+		// automatic retirement.
+		const maxIdleTimeoutMillis = int64(math.MaxInt64 / int64(time.Millisecond))
+		if params.TimeoutMillis > maxIdleTimeoutMillis {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
 		}
 		if err := retirement.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
 			return appwire.DaemonIdleTimeoutSetResponse{}, err

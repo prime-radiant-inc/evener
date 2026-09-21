@@ -589,6 +589,25 @@ func TestServeIdleTimeoutSetRefusesBadIdentityAndNegativeDeadline(t *testing.T) 
 		}
 		assertUnretargeted(t, state.srv)
 	})
+	t.Run("overflowing deadline is invalid params", func(t *testing.T) {
+		deps, state, args := newClearServeDeps(t)
+		deps.retirementClock = newServeRetireClock()
+		args = append(args, "--daemon-idle-timeout", "1h")
+		runRetireServe(t, deps, state, args)
+		entry := awaitRendezvousEntry(t, serveArgValue(args, "--run-dir"))
+		awaitRetirementSettled(t, state.srv)
+
+		// 1<<58 millis is positive, so it passes the negative check today, but
+		// its nanosecond conversion wraps to exactly zero: a success response
+		// that silently disables automatic retirement.
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(entry), TimeoutMillis: 1 << 58})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Fatalf("overflowing idle-timeout set = %v, want invalid params", err)
+		}
+		assertUnretargeted(t, state.srv)
+	})
 }
 
 // TestServeManualRetirementResponseSurvivesServeCancel proves the accepted
