@@ -163,36 +163,49 @@ function currentSupport(): "unknown" | "supported" | "unsupported" {
 // free store publishes its full state on every write, but object fields keep
 // their identity across publications that do not touch them, so a reference
 // comparison identifies exactly the fields this publication changed.
-function mirrorPackageState(next: PackageStoreState, previous: PackageStoreState): void {
-  // A synchronous web subscriber can replace or detach the store mid-loop -
-  // the same re-entrant window the restore's fence closes - and every
-  // remaining publication of this loop would then write the outgoing
-  // store's values into the replacement's freshly anchored state. The
-  // epoch is rechecked before each publication: whatever bumped it owns
-  // the mirror now.
+function mirrorPackageState(store: TranscriptDisplayStore, next: PackageStoreState, previous: PackageStoreState): void {
+  // Two re-entrant hazards shape this loop, and the epoch is rechecked
+  // before every publication for both. A synchronous web subscriber can
+  // replace or detach the store mid-loop (a rewire, detach, or
+  // ready-generation change bumps the epoch - whatever bumped it owns the
+  // mirror now), and a subscriber can also drive the SAME store to publish
+  // again mid-loop (an error subscriber starting a retry), which does not
+  // bump anything. The deltas below are only triggers; every published
+  // value is sourced from the store's live state, so a resuming outer call
+  // can at worst re-publish what the nested call already made current -
+  // never the stale values its own publication carried.
   const epoch = lifecycleEpoch;
   if (next.hub !== previous.hub) {
     for (const layout of ["desktop", "mobile"] as const) {
       if (epoch !== lifecycleEpoch) return;
-      if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, next.hub[layout]);
+      if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, store.getState().hub[layout]);
     }
   }
   if (epoch !== lifecycleEpoch) return;
-  if (next.hubSupport !== previous.hubSupport) transcriptDisplayStore.setState({ hubSupport: next.hubSupport });
+  if (next.hubSupport !== previous.hubSupport) {
+    transcriptDisplayStore.setState({ hubSupport: store.getState().hubSupport });
+  }
   if (epoch !== lifecycleEpoch) return;
-  if (next.hubLoading !== previous.hubLoading) transcriptDisplayStore.setState({ hubLoading: next.hubLoading });
+  if (next.hubLoading !== previous.hubLoading) {
+    transcriptDisplayStore.setState({ hubLoading: store.getState().hubLoading });
+  }
   if (epoch !== lifecycleEpoch) return;
-  if (next.hubError !== previous.hubError) transcriptDisplayStore.setState({ hubError: next.hubError });
+  if (next.hubError !== previous.hubError) {
+    transcriptDisplayStore.setState({ hubError: store.getState().hubError });
+  }
   if (epoch !== lifecycleEpoch) return;
-  if (next.hubErrors !== previous.hubErrors) transcriptDisplayStore.setState({ hubErrors: next.hubErrors });
+  if (next.hubErrors !== previous.hubErrors) {
+    transcriptDisplayStore.setState({ hubErrors: store.getState().hubErrors });
+  }
   if (epoch !== lifecycleEpoch) return;
   if (next.drafts !== previous.drafts) {
     // A newer package write on a layout owns that layout's preview again,
     // superseding any malformed-reply preview the adapter restored for it.
+    const liveDrafts = store.getState().drafts;
     for (const layout of ["desktop", "mobile"] as const) {
-      if (next.drafts[layout] !== undefined) delete restoredPreviews[layout];
+      if (liveDrafts[layout] !== undefined) delete restoredPreviews[layout];
     }
-    transcriptDisplayStore.setState({ drafts: { ...next.drafts, ...restoredPreviews } });
+    transcriptDisplayStore.setState({ drafts: { ...liveDrafts, ...restoredPreviews } });
   }
 }
 
@@ -308,17 +321,31 @@ function beginPackageGeneration(client: AppwireClientLike): void {
 // and in-flight work can never land, and the web mirrors initial hub fields.
 function detachPackageStore(): void {
   const store = packageStore;
+  const stopMirror = unsubscribeMirror;
   packageStore = null;
+  // The retirement publication below runs while the outgoing mirror is
+  // still subscribed (so the cleared fields land through the normal path),
+  // and a synchronous web subscriber can use that window to connect a
+  // replacement - which then owns these module globals. Clearing the
+  // mirror slot first means the replacement's subscription is never
+  // clobbered by this frame, and everything after the publication touches
+  // only the captured outgoing handles.
+  unsubscribeMirror = null;
   lifecycleEpoch += 1;
+  const epoch = lifecycleEpoch;
   restoredPreviews = {};
   unwireReady?.();
   unwireReady = null;
   wiredClient = null;
   store?.detachHub();
-  unsubscribeMirror?.();
-  unsubscribeMirror = null;
+  stopMirror?.();
   store?.dispose();
-  transcriptDisplayStore.setState({ hub: {}, drafts: {}, hubLoading: false, hubError: null, hubErrors: {} });
+  // The reset only belongs to this detach when no replacement took the
+  // publication window: the replacement's anchor already owns the web
+  // store in that case.
+  if (epoch === lifecycleEpoch) {
+    transcriptDisplayStore.setState({ hub: {}, drafts: {}, hubLoading: false, hubError: null, hubErrors: {} });
+  }
 }
 
 function rewireClient(client: AppwireClientLike): void {
@@ -329,9 +356,10 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
-  packageStore = createTranscriptDisplayStore({ client: strictPatchReplyClient(client) });
-  unsubscribeMirror = packageStore.subscribe(mirrorPackageState);
-  syncMirrorToStore(packageStore);
+  const store = createTranscriptDisplayStore({ client: strictPatchReplyClient(client) });
+  packageStore = store;
+  unsubscribeMirror = store.subscribe((next, previous) => mirrorPackageState(store, next, previous));
+  syncMirrorToStore(store);
   unwireReady = client.onReady(
     readyGenerationCallback(
       client,

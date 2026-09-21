@@ -301,4 +301,97 @@ describe("transcript display adapter (package store delegation)", () => {
       mobile: { revision: 7, config: shippedMobileConfig },
     });
   });
+
+  test("a replacement connected during the detach publication keeps its mirror", async () => {
+    const first = new FakeClient("ready");
+    first.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(first);
+    connectionStore.setState({
+      features: { ...(await first.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1);
+
+    const second = new FakeClient("ready");
+    second.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    }));
+
+    // A synchronous web subscriber connects the replacement during the
+    // detach publication itself: the detach must unsubscribe only the
+    // outgoing mirror and must not reset the replacement's anchored state.
+    let stopSwapping: (() => void) | undefined;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hub.desktop !== undefined) return;
+      stopSwapping?.();
+      connectionStore.getState().connect(second);
+    });
+    stopSwapping = stop;
+
+    connectionStore.setState({ client: null });
+    // The replacement was wired inside the publication window: complete its
+    // handshake and read - its mirror must still be subscribed.
+    connectionStore.setState({
+      features: { ...(await second.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub).toEqual({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    });
+  });
+
+  test("a retry started by an error subscriber keeps its preview against the outer mirror", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    }));
+    let patchAttempt = 0;
+    let resolveRetry: ((value: TranscriptDisplayPatchResponse) => void) | undefined;
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      patchAttempt += 1;
+      if (patchAttempt === 1) throw new Error("write failed");
+      let resolve!: (value: TranscriptDisplayPatchResponse) => void;
+      const promise = new Promise<TranscriptDisplayPatchResponse>((res) => {
+        resolve = res;
+      });
+      resolveRetry = resolve;
+      return promise;
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    let retry: Promise<unknown> | undefined;
+    let retryStarted = false;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hubError !== "write failed" || retryStarted) return;
+      // The in-flight flag flips BEFORE the call: the retry's own start
+      // publication runs synchronously inside it, and this subscriber must
+      // not fire again for the still-present error during that publication.
+      retryStarted = true;
+      retry = transcriptDisplayStore.getState().patchHubDefault("desktop", preset("full"));
+    });
+
+    const write = transcriptDisplayStore.getState().patchHubDefault("desktop", preset("activity"));
+    await expect(write).rejects.toThrow("write failed");
+    stop();
+    // The retry write owns the layout now: its preview survived the outer
+    // mirror loop, and the failure's stale per-layout error never landed
+    // back over the retry's cleared slot.
+    expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(preset("full"));
+    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
+    expect(transcriptDisplayStore.getState().hubError).toBe("write failed");
+    resolveRetry?.({ layout: "desktop", revision: 2, config: toWireConfig(preset("full")) });
+    await retry;
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+  });
 });
