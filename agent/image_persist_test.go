@@ -625,6 +625,36 @@ func TestProcessInput_PlantedAttachmentFile_NotReplaced(t *testing.T) {
 	awaitWarningNaming(t, warnCh, "shot.png")
 }
 
+// TestProcessInput_TightensPreexistingAttachmentsDirMode pins the mode half
+// of the storage contract: MkdirAll's 0700 applies only at creation, so an
+// attachments directory that already exists with a wider mode (a buggy
+// predecessor, a restore) is tightened when the session writes into it —
+// the attachments are private to the session's user.
+func TestProcessInput_TightensPreexistingAttachmentsDirMode(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	dir := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatalf("MkdirAll pre-existing attachments dir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if info, err := os.Stat(dir); err != nil {
+		t.Fatalf("stat attachments dir: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("pre-existing attachments dir mode = %o, want 700 after a write into it", perm)
+	}
+}
+
 // TestProcessInput_WithoutReadFileTool_OmitsAttachmentNote pins the tool
 // half of the announcement contract: the note promises read_file, so a
 // session whose registry does not carry that tool (role toolsets are

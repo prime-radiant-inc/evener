@@ -56,6 +56,15 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
+	// MkdirAll's mode applies only at creation: an attachments directory
+	// that already exists (a buggy predecessor, a restore) keeps whatever
+	// mode it landed with, and the attachments are private to the session's
+	// user. A mode that cannot be enforced is a write failure, not a
+	// best-effort shrug.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		return images
+	}
 	out := slices.Clone(images)
 	// The note promises read_file; a session whose registry does not carry the
 	// tool (role toolsets are plugin-configurable) must not hear that promise.
