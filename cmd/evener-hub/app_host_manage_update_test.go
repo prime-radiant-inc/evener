@@ -1037,7 +1037,13 @@ func TestHostManageUpdateDropsAnAttachedChannel(t *testing.T) {
 func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
 	f := newUpdateFixture(t)
 	// Retain state the way the manager's lifecycle events and attached rows do.
+	// The failure carries the error the row renders; the state event that follows
+	// it is what marks the host in-progress without clearing that error, so the
+	// record carries both halves the edit must retire. Seeding the failure alone
+	// would leave midAttach false, and the post-edit mid-attach assertion below
+	// could then never fail.
 	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
 	live, _ := f.hosts.Get("side")
 	f.m.cfg.mu.Lock()
 	f.m.cfg.state.recordKnown(appwire.HostRow{
@@ -1050,8 +1056,8 @@ func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if before.Host.LastAttachErr != "dial refused" || before.Host.HubVersion != "9.9.9" {
-		t.Fatalf("row before the edit = %+v, want the retained attach state", before.Host)
+	if !before.Host.MidAttach || before.Host.LastAttachErr != "dial refused" || before.Host.HubVersion != "9.9.9" {
+		t.Fatalf("row before the edit = %+v, want the retained attach state: in-progress, its error, and its facts", before.Host)
 	}
 
 	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
