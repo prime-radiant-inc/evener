@@ -595,7 +595,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
-	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)

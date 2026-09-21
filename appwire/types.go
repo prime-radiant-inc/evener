@@ -65,6 +65,7 @@ const (
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
