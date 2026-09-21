@@ -1142,6 +1142,80 @@ test("the same read_file row at tools level still shows Open beside on its summa
   expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
 });
 
+// --- The intent-only density hook (toolcallitem.module.css's
+// [data-intent-only] override): the row sits at the tight half-step rhythm
+// exactly while it shows its stated rationale line and nothing else. Any
+// state that adds a line - the summary line, an expanded body, a status
+// line below the row - drops the hook, so opening a row restores the full
+// item rhythm. ---------------------------------
+
+registerToolRenderer({
+  match: "tci_density",
+  summary: () => "Ran npm test",
+  body: () => <div data-testid="tci-density-body" />,
+});
+registerToolRenderer({ match: "tci_bodyless", summary: () => "did a thing" });
+
+const densityRow = item({
+  toolName: "tci_density",
+  description: "Running the density tests",
+  output: "done",
+});
+
+test("a collapsed intent row at intent level carries the density hook; opening either disclosure drops it", () => {
+  renderIntentLevel(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  // Collapsed: one rationale line, so the row takes the half-step rhythm.
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBe("true");
+  // Opening the summary line (the intent trigger's disclosure at this
+  // level) gives the row its second line: the full rhythm returns.
+  toggleRow();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Opening the body adds the body: still the full rhythm.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("the same row at tools level never carries the hook - its summary line is open by default", () => {
+  renderTools(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("an intent-less row never carries the hook: its summary line cannot collapse behind an intent", () => {
+  renderIntentLevel(<ToolCallItem item={item({ toolName: "tci_density", output: "done" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a body-less row showing intent over its summary never carries the hook", () => {
+  renderIntentLevel(
+    <ToolCallItem
+      item={item({ toolName: "tci_bodyless", description: "Why it ran", output: "done" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a delegate card never carries the hook: its lifecycle line or open card always adds a second line", () => {
+  resetThreadsStoreForTests();
+  const card = item({
+    toolName: "delegate",
+    description: "Inspect the independent child",
+    output: JSON.stringify({ delegate_id: "dlg_abc123", status: "running", transcript_ref: "local:child1" }),
+  });
+  // Settled: the card auto-expands at settle, so the row shows more than
+  // its intent.
+  renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Collapsed by hand: the standalone lifecycle line below the intent is
+  // the row's second line, so the tight rhythm still does not apply.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("delegate-lifecycle")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
 // A delegate card is intent-only by design - its descriptor deliberately puts
 // the Open transcript control on the intent line ("visible folded or not"), so
 // the intent-level gate must not swallow it (the phone editorial gate needs it).

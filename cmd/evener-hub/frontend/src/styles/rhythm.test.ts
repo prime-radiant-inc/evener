@@ -41,6 +41,22 @@ test("exchange boundaries, runs and pane bodies use the rhythm and space tokens"
   expect(rule(separator, ".row")).toMatch(/padding: var\(--rhythm-group\) 0 var\(--rhythm-line\)/);
 });
 
+// The intent-level density (Jesse's Tufte call, 2026-09-20): a row showing
+// only its intent line is one line of ink in a two-line slot, and a run of
+// them at the "intent" detail level read as one airy list. The collapsed
+// intent-only row halves the item rhythm; every open state drops the
+// hook and keeps the full rhythm, so a reader's own expansion is the
+// boundary cue between rows with more to show and rows without.
+test("intent-only tool rows take half the item rhythm; open states keep the full one", () => {
+  const tool = read("panes/session/transcript/toolcallitem.module.css");
+  expect(rule(tool, '.call[data-intent-only="true"]')).toMatch(/padding: var\(--space-1\) 0/);
+  // A folded run's collapsed summary is the same single quiet line and takes
+  // the same half step; opening the run restores the full item rhythm.
+  const run = read("panes/session/transcript/toolrungroup.module.css");
+  expect(rule(run, ".summary")).toMatch(/padding: var\(--space-1\) 0/);
+  expect(rule(run, ".group[open] > .summary")).toMatch(/padding: var\(--rhythm-item\) 0/);
+});
+
 test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
   const think = read("panes/session/transcript/messages/thinkblock.module.css");
   expect(rule(think, ".summary")).toMatch(/color: var\(--ink-mid\)/);

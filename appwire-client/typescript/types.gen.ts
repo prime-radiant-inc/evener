@@ -940,6 +940,12 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostAddParams {
+  name: string;
+  address: string;
+  keyPath?: string;
+}
+
 export interface HostAttachParams {
   host: string;
 }
@@ -959,16 +965,52 @@ export interface HostAttachResponse {
 export interface HostForwardedResult {
 }
 
+export interface HostListResponse {
+  hosts: HostRow[];
+}
+
 export interface HostNotificationParams {
   host: string;
   method: string;
   params?: unknown;
 }
 
+export interface HostRemoveParams {
+  name: string;
+}
+
+export interface HostRemoveResponse {
+  host: HostRow;
+}
+
 export interface HostRequestParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostRow {
+  name: string;
+  address?: string;
+  keyPath?: string;
+  origin: string;
+  attached: boolean;
+  serverName?: string;
+  serverVersion?: string;
+  hubVersion?: string;
+  os?: string;
+  arch?: string;
+  lastAttachError?: string;
+  midAttach: boolean;
+  removed: boolean;
+}
+
+export interface HostStatusParams {
+  name: string;
+}
+
+export interface HostStatusResponse {
+  host: HostRow;
 }
 
 export interface InitializeParams {
@@ -3426,6 +3468,10 @@ export const METHOD_NAMES = [
   "evener/sandbox/escalation/resolve",
   "evener/host/request",
   "evener/host/attach",
+  "evener/host/add",
+  "evener/host/list",
+  "evener/host/status",
+  "evener/host/remove",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3631,6 +3677,10 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
+  "evener/host/add": { params: HostAddParams; result: HostRow };
+  "evener/host/list": { params: EmptyParams; result: HostListResponse };
+  "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
+  "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
 }
 
 export interface NotificationTypes {

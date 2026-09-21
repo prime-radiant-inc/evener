@@ -21,6 +21,12 @@ func scratchRetentionBase(t *testing.T) (base, workspace string) {
 	sessionScratchTempDir = func() string { return base }
 	sessionScratchUserCacheDir = func() (string, error) { return base, nil }
 	t.Cleanup(func() { sessionScratchTempDir, sessionScratchUserCacheDir = oldTemp, oldCache })
+	// SweepCrashedSessionScratch also walks every world-usable host temp base a
+	// session temp container may live in. These tests assert that an aged fixture
+	// is (or is not) collected, so letting the sweep reach the machine's real /tmp
+	// would make them depend on ambient state — and a stale container this process
+	// cannot remove would turn "err == nil" assertions into flakes. Confine it.
+	t.Cleanup(SetWorldTempBasesForTesting(nil))
 	return base, workspace
 }
 

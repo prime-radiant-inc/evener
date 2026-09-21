@@ -41,20 +41,47 @@ func delegateAttentionProjectionEligible(state delegatestore.State, delegateID s
 }
 
 func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
+	// The pre-stat is this boundary's strict shape: a transcript missing here
+	// is an error, where readDelegateAttentionFold keeps missing-as-empty for
+	// its historical callers, and foldcache reports a missing path as an
+	// ordinary absent result rather than an error.
 	if _, err := os.Stat(path); err != nil {
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
 	}
-	fold, err := readDelegateAttentionFold(path, expectedSessionID)
+	// The fold cache serves an unchanged transcript's fold without re-reading
+	// it: the status sweeps this function backs run per thread/read, and
+	// folding every eligible child's full transcript each time made a click on
+	// a delegate-heavy session cost that session's total delegate transcript
+	// bytes (session_attention.go's delegateAttentionFoldCache). A cache hit
+	// skips the re-read and the post-read stat: a hit proves identical bytes
+	// were fully read and folded in this process already, which is the same
+	// readiness the retirement-prepare call below relies on (its
+	// EstablishDurability flush changes the identity, so flushed-but-unread
+	// bytes still recompute).
+	result, err := delegateAttentionFoldCache.Get(context.Background(), path, extendDelegateAttentionFold(expectedSessionID))
 	if err != nil {
 		return delegateAttentionFold{}, err
 	}
-	// readDelegateAttentionFold retains missing-as-empty semantics for historical
-	// callers. This projection boundary is strict, including a removal racing the
-	// fold above.
-	if _, err := os.Stat(path); err != nil {
-		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+	// The memo is keyed to the expected session id as well as the path: a hit
+	// computed for a different session (a transcript path reused across
+	// sessions) or an absent result (the transcript removed between the
+	// pre-stat and the cache's stat) must not serve the cached fold. Both
+	// bypass the cache: read, fold, and post-read stat exactly like the
+	// uncached path, leaving the memo untouched.
+	if result.Value.sessionID != expectedSessionID {
+		fold, _, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		if err != nil {
+			return delegateAttentionFold{}, err
+		}
+		// readDelegateAttentionFold retains missing-as-empty semantics for historical
+		// callers. This projection boundary is strict, including a removal racing the
+		// fold above.
+		if _, err := os.Stat(path); err != nil {
+			return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+		}
+		return fold, nil
 	}
-	return fold, nil
+	return result.Value.fold, nil
 }
 
 // reconcileDelegateAttentionFromTranscripts is the final bootstrap boundary.

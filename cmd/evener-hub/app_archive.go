@@ -205,10 +205,15 @@ func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	if cfg.RemoteHostClient == nil {
 		return appwire.InvalidParams("unknown source: " + source)
 	}
-	for _, host := range cfg.RemoteHosts {
-		if host.Name == source {
-			return nil
-		}
+	// The live registry is the authority for hosts that exist past boot: it
+	// carries every host the management surface added at runtime, so an
+	// archive or favorite decision may name a UI-added host. The configured
+	// entries stay accepted alongside it, so without a registry (tests,
+	// embedders), or for a name only the config carries, the configured set
+	// decides — remoteHostKnown (app_threadlist.go) is the one membership
+	// rule this and the fan-out's remote gates share.
+	if !remoteHostKnown(cfg, source) {
+		return appwire.InvalidParams("unknown source: " + source)
 	}
-	return appwire.InvalidParams("unknown source: " + source)
+	return nil
 }
