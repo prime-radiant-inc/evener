@@ -81,8 +81,10 @@ The message never moves.
 simply visibly queued behind the running step. Weakest: it reverses a
 recorded presentation decision, and an optimistic element in the reading
 surface must be unmistakably provisional (dashed + caption) or it reads as
-already-delivered. Reload is a non-issue: hydrate carries the real item, and
-the ghost settles on reflection.
+already-delivered. Reload is a non-issue: the hydrate re-reports the held
+steer in `pendingMutations`, so the ghost re-renders — without its held
+timer (the timer lives only within a page session) — and settles on
+reflection.
 
 ## Idea B — Held at the boundary (an explicit steering queue)
 
