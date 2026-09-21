@@ -5,25 +5,47 @@
 // restores. The package's repository owns every identity and classification
 // decision; this port only stores, reads, and compares, by the same canonical
 // JSON a byte-aware port would.
+//
+// Multi-tab note: every mutation reads the record and compares against what
+// the storage holds at decision time, then mutates in the adjacent
+// statement. A competing tab's write landing inside that inter-statement gap
+// cannot be fenced away: localStorage has no test-and-set, IndexedDB's
+// transactions are async-only, and the Web Locks API is async while the
+// package's port contract is synchronous throughout. Every replacement
+// visible at call time is handled the protocol's way - the compare refuses
+// and the package adopts the replacement - so the residual window can only
+// lose one in-progress draft record to a same-microsecond collision between
+// tabs of the same user, which is the pre-A9 status quo (the web had no
+// draft persistence at all).
 import { canonicalJson, type TranscriptDraftCheckpoint, type TranscriptDraftStorage } from "@evener/appwire-client";
 import { makeSourceId } from "./crossTabSync";
 
 const DRAFT_KEY = "evener.prefs.transcriptDisplay.draft";
 
+// The tagged identity of a present-but-unreadable record: the raw bytes are
+// preserved inside it, so a stale compare can never mistake one record for
+// another that happens to decode to the same value (the invalid bytes
+// `broken` and the valid JSON string `"broken"` are different records), and
+// a stored `null` stays a present record instead of reading as absent.
+const UNPARSEABLE_TAG = "evener.transcriptDisplay.draft.unreadable";
+
 /** A record this build cannot even parse is still a record: handed back raw
- * so the package's decoder classifies it unreadable, keeping the one
- * recovery (discard) available rather than reporting the port itself
- * failed. A missing record is null; a blocked storage is a throw, which is
- * the port-failure signal the package's recovery machinery keys on. */
+ * inside a tagged identity so the package's decoder classifies it
+ * unreadable, keeping the one recovery (discard) available rather than
+ * reporting the port itself failed. Only a MISSING record is null; a blocked
+ * storage is a throw, which is the port-failure signal the package's
+ * recovery machinery keys on. */
 function readRecord(): unknown {
   if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
   const raw = localStorage.getItem(DRAFT_KEY);
   if (raw === null) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
-    return raw;
+    parsed = null;
   }
+  return parsed === null ? { [UNPARSEABLE_TAG]: raw } : parsed;
 }
 
 function writeRecord(value: TranscriptDraftCheckpoint): void {

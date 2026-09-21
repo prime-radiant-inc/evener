@@ -673,4 +673,30 @@ describe("transcript display adapter (package store delegation)", () => {
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().writeUncertain).toBe(false);
   });
+
+  test("a seeded unreadable draft record stays discardable through the adapter", async () => {
+    // A record some other build or a corrupted profile wrote - bytes the
+    // port cannot parse: present, tagged, and handed to the package, which
+    // classifies it unreadable rather than reporting the port failed.
+    storage.setItem("evener.prefs.transcriptDisplay.draft", "not a draft");
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(client);
+    expect(transcriptDisplayStore.getState().draftUnreadable).toBe(true);
+    expect(transcriptDisplayStore.getState().storageUnavailable).toBe(true);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().draft).toBeNull();
+
+    // The one recovery an unreadable record allows forwards and clears it.
+    transcriptDisplayStore.getState().discardDraft();
+    expect(transcriptDisplayStore.getState().draftUnreadable).toBe(false);
+    expect(transcriptDisplayStore.getState().storageUnavailable).toBe(false);
+    expect(storage.getItem("evener.prefs.transcriptDisplay.draft")).toBeNull();
+  });
 });
