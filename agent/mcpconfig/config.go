@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 // ServerConfig describes a single MCP server connection.
@@ -146,51 +147,27 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (ServerConfig, error) {
 	}, nil
 }
 
-// expandEnvVars expands ${VAR} and ${VAR:-default} in s.
-// Missing ${VAR} with no default is an error.
+// expandEnvVars expands a config value's $ expressions through the shared
+// parser: $NAME, ${NAME}, ${NAME:-default}, $$, and $(command), whose
+// whitespace-trimmed stdout is the value. MCP config now shares the union
+// grammar (spec §10) with providers.toml: a bare $NAME and an unterminated ${
+// were literal text here before and are expressions now, and a :- default
+// fills an unset or empty variable, where it filled only an unset one.
+//
+// Any unresolved expression is an error, matching how MCP config treats a
+// missing variable today; the caller names the field it was expanding.
 func expandEnvVars(s string) (string, error) {
-	var b strings.Builder
-	i := 0
-	for i < len(s) {
-		// Find next ${
-		idx := strings.Index(s[i:], "${")
-		if idx < 0 {
-			b.WriteString(s[i:])
-			break
-		}
-		b.WriteString(s[i : i+idx])
-		i += idx + 2 // skip past ${
-
-		// Find closing }
-		end := strings.Index(s[i:], "}")
-		if end < 0 {
-			// No closing brace — treat literally.
-			b.WriteString("${")
-			continue
-		}
-
-		expr := s[i : i+end]
-		i += end + 1 // skip past }
-
-		varName := expr
-		defaultVal := ""
-		hasDefault := false
-		if before, after, ok := strings.Cut(expr, ":-"); ok {
-			varName = before
-			defaultVal = after
-			hasDefault = true
-		}
-
-		val, ok := os.LookupEnv(varName)
-		if !ok {
-			if !hasDefault {
-				return "", fmt.Errorf("environment variable %q is not set (use ${%s:-default} to provide a default)", varName, varName)
-			}
-			val = defaultVal
-		}
-		b.WriteString(val)
+	expanded, unresolved, err := valueexpr.Expand(s, os.LookupEnv)
+	if err != nil {
+		return "", fmt.Errorf("invalid $ expression: %w", err)
 	}
-	return b.String(), nil
+	for _, u := range unresolved {
+		if u.Command != "" {
+			return "", fmt.Errorf("command expression failed: %w", u.Err)
+		}
+		return "", fmt.Errorf("environment variable %q is not set (use ${%s:-default} to provide a default)", u.Name, u.Name)
+	}
+	return expanded, nil
 }
 
 // ParseInline parses a "name:command args..." inline spec into an ServerConfig.
