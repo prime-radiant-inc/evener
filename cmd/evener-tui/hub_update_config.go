@@ -638,12 +638,21 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListFloor {
 		return m, nil
 	}
-	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
-		return m, nil
-	}
+	// A successful read above the floor was issued after the removal
+	// landed, so it confirms the post-removal state whichever refresh
+	// issued it: an outstanding reconciliation must not be invalidated by
+	// a newer refresh merely having been issued, and discarding its
+	// success would leave the fence standing when the newer read fails.
 	if msg.Err == nil && m.marketplaceReconcilePending {
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
+	}
+	// While the fence is still standing, hold back failed reads older
+	// than the newest issued - the newest failure is the news - and let a
+	// successful read through to the panel: it has already settled the
+	// fence above.
+	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
+		return m, nil
 	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(msg)

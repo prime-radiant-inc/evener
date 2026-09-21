@@ -243,6 +243,7 @@ func TestMarketplaceListResultDoesNotSettleReconciliationWithoutItsGeneration(t 
 		marketplaceRemovePending:       removed.Name,
 		marketplaceReconcilePending:    true,
 		marketplaceReconcileGeneration: 1,
+		marketplaceListReadsOrdered:    true,
 	}
 
 	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
@@ -583,6 +584,59 @@ func TestMarketplaceMutateResultSuccessAdvancesTheRemovalBoundary(t *testing.T) 
 	}
 	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
 		t.Fatalf("delayed pre-removal read resurrected marketplace %q; the successful removal must survive", remove.Name)
+	}
+}
+
+func TestMarketplaceListResultOverlappingReadsSettleDespiteNewerFailure(t *testing.T) {
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	stale := appwire.MarketplaceEntry{Name: "removed"}
+	// A marked-but-unconfirmed removal issued its settle read (generation
+	// 1, above the floor) and a notification refetch has since issued a
+	// newer read (generation 2); both are in flight, and the panel still
+	// shows the stale row.
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, stale),
+		marketplaceRemovePending:       stale.Name,
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           0,
+	}
+
+	// The older reconciliation read succeeds: it was issued after the
+	// removal landed, so it confirms the post-removal state whichever
+	// refresh was issued last.
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}},
+		ReconcileGeneration: 1,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("older successful read left the fence at %q/%v, want settled", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("older successful read should settle the panel on its list")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != confirmed.Name {
+		t.Fatalf("panel row after older successful read = %q, want %q", remove.Name, confirmed.Name)
+	}
+
+	// The newer notification read then fails: the settlement must stand.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		Err:                 errors.New("list read failed"),
+		ReconcileGeneration: 2,
+	})
+	settled := got.(hubModel)
+	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
+		t.Fatalf("newer failed read rearmed the fence to %q/%v, want the settlement kept", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
+	}
+	updated, panelCmd = settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("newer failed read should keep the settled marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != confirmed.Name {
+		t.Fatalf("panel row after newer failed read = %q, want the settled %q", remove.Name, confirmed.Name)
 	}
 }
 
