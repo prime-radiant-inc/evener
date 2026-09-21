@@ -43,6 +43,7 @@ type runConfig struct {
 	observationPacking        bool     // --observation-packing
 	actionFusion              bool     // --action-fusion
 	checkpointReminder        bool     // --checkpoint-reminder
+	logReducer                bool     // --log-reducer
 	exportATIF                string   // --export-atif path
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
@@ -326,6 +327,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ObservationPacking:          cfg.observationPacking,
 		ActionFusion:                cfg.actionFusion,
 		CheckpointReminder:          cfg.checkpointReminder,
+		LogReducer:                  cfg.logReducer,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		VisionModel:                 visionModel,

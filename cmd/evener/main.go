@@ -50,6 +50,7 @@ type runCLIFlags struct {
 	observationPacking          *bool
 	actionFusion                *bool
 	checkpointReminder          *bool
+	logReducer                  *bool
 	outputSchema                *string
 	verbose                     *bool
 	noProjectPrompts            *bool
@@ -224,6 +225,7 @@ func mainWithDeps(deps mainDeps) {
 		observationPacking:          *flags.observationPacking,
 		actionFusion:                *flags.actionFusion,
 		checkpointReminder:          *flags.checkpointReminder,
+		logReducer:                  *flags.logReducer,
 		exportATIF:                  *flags.exportATIF,
 		exportATIFProviderHandles:   *flags.exportATIFProviderHandles,
 		outputSchema:                *flags.outputSchema,
@@ -286,6 +288,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.observationPacking = fs.Bool("observation-packing", false, "archive tool results over 10 KiB and pack them into artifact handles after two full request looks (default: off)")
 	flags.actionFusion = fs.Bool("action-fusion", false, "give edit_file/write_file/apply_patch an optional run_after command that runs inside the same tool call (default: off)")
 	flags.checkpointReminder = fs.Bool("checkpoint-reminder", false, "inject a cost-gated steering reminder that compaction is available and cheap at task step completion boundaries (default: off)")
+	flags.logReducer = fs.Bool("log-reducer", false, "archive build/test shell logs of 4 KiB and up and replace the observation with a verified receipt extracted by the cheap model (default: off; requires --fast-cheap-model)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading (match container behavior)")
