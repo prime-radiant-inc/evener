@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -751,10 +752,15 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // commit.
 func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin string) appwire.HostRow {
 	row := appwire.HostRow{
-		Name:    host.Name,
-		Address: host.SSH,
-		KeyPath: host.KeyPath,
-		Origin:  origin,
+		Name:       host.Name,
+		Address:    host.SSH,
+		User:       host.User,
+		KeyPath:    host.KeyPath,
+		EvenerPath: host.EvenerPath,
+		ConfigPath: host.ConfigPath,
+		Addr:       host.Addr,
+		Roots:      slices.Clone(host.Roots),
+		Origin:     origin,
 	}
 	// Attached is reported only when the attached-only client lookup
 	// confirms a live channel. The online
@@ -931,16 +937,26 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostRow{}, err
 	}
-	name := strings.TrimSpace(params.Name)
-	address := strings.TrimSpace(params.Address)
-	keyPath := strings.TrimSpace(params.KeyPath)
-	entry := hostreg.Normalize(hostreg.Host{Name: name, SSH: address, KeyPath: keyPath})
+	// The wire's entry is the whole configured host, so the add path stores what
+	// the dialog collected instead of the three fields slice 1 carried: the
+	// entry is normalized and validated as one record, exactly as hub.toml
+	// loading does.
+	entry := hostreg.Normalize(hostreg.Host{
+		Name:       params.Entry.Name,
+		SSH:        params.Entry.Address,
+		User:       params.Entry.User,
+		KeyPath:    params.Entry.KeyPath,
+		EvenerPath: params.Entry.EvenerPath,
+		ConfigPath: params.Entry.ConfigPath,
+		Addr:       params.Entry.Addr,
+		Roots:      params.Entry.Roots,
+	})
 	// Validate without inserting: hostreg's own entry validation runs the
-	// exact add-time checks (name grammar, reserved name, ssh destination)
-	// over this one entry without touching live state, so nothing is exposed
-	// before the durable save below.
+	// exact add-time checks (name grammar, reserved name, ssh destination,
+	// user/ssh agreement, non-empty roots) over this one entry without touching
+	// live state, so nothing is exposed before the durable save below.
 	if err := hostreg.ValidateEntry(entry); err != nil {
-		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, err))
+		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", entry.Name, err))
 	}
 	// The commit below is the read-modify-write cycle the mutation mutex
 	// exists for; the mutex is released before the response row's facts read,
@@ -958,7 +974,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	}
 	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
 		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", name, hostreg.ErrDuplicateHost))
+		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", entry.Name, hostreg.ErrDuplicateHost))
 	}
 	// A re-added name starts with no stale record, and the reset has to run
 	// HERE — before the save and the registry insert expose anything: the

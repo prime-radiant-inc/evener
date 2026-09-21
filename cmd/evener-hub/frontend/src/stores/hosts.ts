@@ -1,4 +1,4 @@
-import type { HostRow } from "@evener/appwire-client";
+import type { HostEntry, HostRow } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort } from "./connection";
@@ -27,7 +27,7 @@ interface HostsStoreState {
    * converges instead of sitting on "connecting" forever.
    */
   refresh: () => Promise<void>;
-  add: (params: { name: string; address: string; keyPath?: string }) => Promise<HostRow>;
+  add: (entry: HostEntry) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;
@@ -193,12 +193,11 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     });
   },
 
-  add: async (params) => {
-    const row = await requireClient().request("evener/host/add", {
-      name: params.name,
-      address: params.address,
-      ...(params.keyPath ? { keyPath: params.keyPath } : {}),
-    });
+  add: async (entry) => {
+    // The wire carries one entry object (component 08 slice 2's shape, the
+    // design record's own), so the store passes what the dialog collected
+    // straight through rather than picking three fields out of it.
+    const row = await requireClient().request("evener/host/add", { entry });
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
     await reReadAfterMutation();

@@ -86,9 +86,7 @@ test("add dialog submits name, address, and key", async () => {
     expect(fake.calls.filter((c) => c.method === "evener/host/add")).toHaveLength(1);
   });
   expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
-    name: "gamma",
-    address: "g.example",
-    keyPath: "/keys/g",
+    entry: { name: "gamma", address: "g.example", keyPath: "/keys/g" },
   });
 });
 

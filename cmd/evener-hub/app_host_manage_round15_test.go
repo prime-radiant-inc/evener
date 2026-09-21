@@ -58,7 +58,7 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	}
 	addDone := make(chan addResult, 1)
 	go func() {
-		row, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"})
+		row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}})
 		addDone <- addResult{row: row, err: err}
 	}()
 

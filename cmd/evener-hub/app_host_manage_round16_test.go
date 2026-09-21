@@ -71,7 +71,7 @@ func TestHostManageAddSaveFailureAfterRenameCommitsNothing(t *testing.T) {
 	// The add's own save fails behind its rename; the compensation save that
 	// follows runs the real sync.
 	flakySidecarDirSync(t, func(call int) bool { return call == 1 })
-	_, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"})
+	_, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}})
 	if err == nil {
 		t.Fatal("Add over a failing directory sync succeeded, want refusal")
 	}
@@ -109,7 +109,7 @@ func TestHostManageRemoveSaveFailureAfterRenameKeepsTheHost(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "keep", Address: "k.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "keep", Address: "k.example"}}); err != nil {
 		t.Fatalf("Add(keep) = %v, want success", err)
 	}
 
@@ -165,7 +165,7 @@ func TestHostManageSidecarRollbackLandsWhenItsOwnSyncFails(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "keep", Address: "k.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "keep", Address: "k.example"}}); err != nil {
 		t.Fatalf("Add(keep) = %v, want success", err)
 	}
 

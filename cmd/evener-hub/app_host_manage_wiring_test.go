@@ -95,7 +95,7 @@ func TestHostManageConfiguredHostThroughRealServer(t *testing.T) {
 
 	// evener/host/add of the configured name is refused: hub.toml is
 	// authoritative for its own names.
-	addErr := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "m4", Address: "other.example"}, nil)
+	addErr := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "m4", Address: "other.example"}}, nil)
 	assertWireCode(t, addErr, appwire.CodeInvalidParams)
 
 	// evener/host/remove of the configured name is refused the same way.
@@ -149,7 +149,7 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 
 	// Add through the real server: the row renders sidecar + offline.
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example", KeyPath: "/keys/ws"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example", KeyPath: "/keys/ws"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	if added.Name != "web-side" || added.Origin != hostOriginSidecar || added.Attached {
@@ -255,7 +255,7 @@ func TestHostManageNilRegistryAddAttachThroughRealServer(t *testing.T) {
 	}
 
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	if added.Origin != hostOriginSidecar {
@@ -358,7 +358,7 @@ func TestHostManageRuntimeHostClassifiedRemoteThroughRealServer(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 
@@ -464,7 +464,7 @@ func TestHostManageManagerWithoutRegistrySharesTheManagers(t *testing.T) {
 
 	// A runtime Add goes through the manager's AddHost; host/list must show it.
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	var list appwire.HostListResponse
@@ -526,7 +526,7 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 	// A UI-added host, then the cache the background refresher would have
 	// populated for it: one live session row it owns.
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
@@ -628,7 +628,7 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	// background refresher captures them, before it reads anything — then one
 	// live session row the host owns.
 	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
@@ -673,7 +673,7 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	// rejected instead of putting the old host's sessions under the re-added
 	// identity (round-7 M1).
 	var readded appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &readded); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &readded); err != nil {
 		t.Fatalf("evener/host/add (re-add): %v", err)
 	}
 	cache.StoreWalkSnapshot(inFlight, walkGenerations)
@@ -712,7 +712,7 @@ func TestHostManageRemoveDropsLastGoodThreads(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	// What the background walk retains for each host after a successful
@@ -764,7 +764,7 @@ func TestHostManageRemoveChurnBoundedLastGoodThreads(t *testing.T) {
 	const churn = 3
 	for i := range churn {
 		name := fmt.Sprintf("churn-%d", i)
-		if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: name, Address: "ws.example"}, nil); err != nil {
+		if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: name, Address: "ws.example"}}, nil); err != nil {
 			t.Fatalf("evener/host/add %s: %v", name, err)
 		}
 		web.storeLastGoodThreads(name, []appwire.Thread{{ID: "t1", Source: name, CWD: "/srv/ws", Name: "session"}})
@@ -814,7 +814,7 @@ func TestHostManageRemoveDuringInFlightListSkipsLastGoodStore(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 
@@ -941,7 +941,7 @@ func TestHostManageRemoveBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 	walkGenerations := cache.SourceGenerations()
 	// The host is added mid-walk and the walk reads its one session row
 	// before the remove commits.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	walk := hubcore.RemoteThreadSnapshot{
@@ -1026,7 +1026,7 @@ func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testin
 	walkGenerations := cache.SourceGenerations()
 	// The host is added mid-walk and the walk reads its one session row under
 	// that registration.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	walk := hubcore.RemoteThreadSnapshot{
@@ -1043,7 +1043,7 @@ func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testin
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add (re-add): %v", err)
 	}
 
@@ -1093,7 +1093,7 @@ func TestHostManageStillLiveHostAddedMidWalkPublishes(t *testing.T) {
 	// The host registers mid-walk; the walk enumerates it and captures its
 	// generation immediately before reading its row — the read-time capture
 	// the background walk has performed since round 10.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 	readGeneration, ok := cache.SourceGeneration("web-side")

@@ -167,6 +167,12 @@ const (
 	// until re-added. hub.toml-declared names cannot be removed here. See
 	// HostRemoveParams.
 	MethodEvenerHostRemove = "evener/host/remove"
+	// MethodEvenerHostUpdate edits one live sidecar host entry in place: every
+	// field except the name is mutable, the name is the request's target, and
+	// the entry's advancement of the registry generation retires the host's
+	// channel. hub.toml-declared names are refused (edit the file). See
+	// HostUpdateParams.
+	MethodEvenerHostUpdate = "evener/host/update"
 )
 
 const (
@@ -3971,39 +3977,82 @@ type HostAttachResponse struct {
 	Features        *FeatureSet `json:"features,omitempty"`
 }
 
-// HostAddParams is the evener/host/add payload (component 08 slice 1): one
-// sidecar host entry. Name is the component-03 source ID; Address is the SSH
-// destination (user@host or host, as hostreg accepts); KeyPath is the SSH
-// private-key path the dial uses, resolved the way the operator's ssh_config
-// resolves it when empty. The handler validates exactly like hub.toml loading
-// (component-03 rules) and refuses a name hub.toml or the live set already
-// holds.
+// HostEntry is one host's effective configuration as a mutation carries it
+// (component 08 slice 2): the six mutable HostConfig fields under slice 1's
+// wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the one
+// field slice 1 added that hub.toml's schema has no spelling for (the dial needs
+// a key path, and hostreg's Host says a file-declared host never sets one).
+//
+// Name is carried by the ADD entry, which has no other place to put the new
+// host's name. The update entry omits it: a rename is not a thing this wire
+// offers, and the update's target is HostUpdateParams.Name. Both paths accept
+// the same field set, so the dialog's inputs and a refusal's field name are the
+// same strings on both sides.
+type HostEntry struct {
+	Name       string   `json:"name,omitempty"`
+	Address    string   `json:"address"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+}
+
+// HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
+// by slice 2): one sidecar host entry. The nested entry is the design record's
+// own shape, so the guard fields the pipeline slice adds land on a wire this
+// slice already matches instead of reshaping it a second time. The handler
+// validates exactly like hub.toml loading and refuses a name hub.toml or the
+// live set already holds.
 type HostAddParams struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	KeyPath string `json:"keyPath,omitempty"`
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
+// name of the live sidecar entry to edit, and the entry that replaces it. Name
+// is the immutable target — it identifies which host to edit, and nothing in the
+// request can rename one. hub.toml-declared names are refused (edit the file);
+// unknown names are InvalidParams.
+type HostUpdateParams struct {
+	Name  string    `json:"name"`
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateResponse is evener/host/update's result: the updated row, which the
+// dialog's caller re-reads like every other mutation's result. An edit never
+// dials, so the row's live state is whatever the teardown left it.
+type HostUpdateResponse struct {
+	Host HostRow `json:"host"`
 }
 
 // HostRow is one host as evener/host/list and evener/host/status render it
-// (component 08 slice 1): the effective entry fields plus live state. Origin
-// names the entry's source: "hub.toml" for file-declared entries, "sidecar"
-// for UI-added ones. Attached reports a live channel right now; offline rows
-// carry the last-known facts below when any were recorded. Optional facts
-// stay absent — never null — when unknown.
+// (component 08 slice 2): the effective entry plus live state. A dialog prefills
+// from this row, and list/status remain the one source of truth for what a host
+// currently is. Origin names the entry's source: "hub.toml" for file-declared
+// entries, "sidecar" for UI-added ones. Attached reports a live channel right
+// now; offline rows carry the last-known facts below when any were recorded.
+// Optional entry fields and facts stay absent — never null — when unknown.
 type HostRow struct {
-	Name          string `json:"name"`
-	Address       string `json:"address,omitempty"`
-	KeyPath       string `json:"keyPath,omitempty"`
-	Origin        string `json:"origin"`
-	Attached      bool   `json:"attached"`
-	ServerName    string `json:"serverName,omitempty"`
-	ServerVersion string `json:"serverVersion,omitempty"`
-	HubVersion    string `json:"hubVersion,omitempty"`
-	OS            string `json:"os,omitempty"`
-	Arch          string `json:"arch,omitempty"`
-	LastAttachErr string `json:"lastAttachError,omitempty"`
-	MidAttach     bool   `json:"midAttach"`
-	Removed       bool   `json:"removed"`
+	Name          string   `json:"name"`
+	Address       string   `json:"address,omitempty"`
+	User          string   `json:"user,omitempty"`
+	KeyPath       string   `json:"keyPath,omitempty"`
+	EvenerPath    string   `json:"evenerPath,omitempty"`
+	ConfigPath    string   `json:"configPath,omitempty"`
+	Addr          string   `json:"addr,omitempty"`
+	Roots         []string `json:"roots,omitempty"`
+	Origin        string   `json:"origin"`
+	Attached      bool     `json:"attached"`
+	ServerName    string   `json:"serverName,omitempty"`
+	ServerVersion string   `json:"serverVersion,omitempty"`
+	HubVersion    string   `json:"hubVersion,omitempty"`
+	OS            string   `json:"os,omitempty"`
+	Arch          string   `json:"arch,omitempty"`
+	LastAttachErr string   `json:"lastAttachError,omitempty"`
+	MidAttach     bool     `json:"midAttach"`
+	Removed       bool     `json:"removed"`
 }
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
