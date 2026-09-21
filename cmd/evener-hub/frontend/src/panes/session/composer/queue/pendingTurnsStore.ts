@@ -414,7 +414,7 @@ export function resetPendingTurnsStoreForTests(): void {
     optimistic: new Map(),
     recovery: new Map(),
     submittingRefs: new Set(),
-    submittedHere: new Set(),
+    submittedHere: new Map(),
   });
 }
 

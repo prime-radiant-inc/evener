@@ -171,6 +171,7 @@ function authoritativeEntry(
   ref: string,
   mutation: PendingMutation,
   fromThisClient: boolean,
+  submittedHere: ReadonlyMap<string, number>,
 ): PendingTurnEntry | undefined {
   const method = pendingMethod(mutation.method);
   if (!method) return undefined;
@@ -179,6 +180,10 @@ function authoritativeEntry(
     ref,
     method,
     ...inputPreview(mutation.input),
+    // The wire's PendingMutation carries no timestamp: this client's own
+    // createdAt survives the settle only through the submittedHere map
+    // (page-session scope, spec §4); another client's entry stays unknown.
+    createdAt: submittedHere.get(mutation.clientMutationId),
     state: mutation.executionState === "claimed" ? "claimed" : "accepted",
     source: "authoritative",
     fromThisClient,
@@ -190,12 +195,14 @@ function authoritativeEntry(
 // not-yet-reflected input until pendingMutations, queue, or transcript state
 // replaces it.
 //
-// submittedHere is the set of client mutation ids this client itself submitted
-// (the host's pending-turns store owns it). The durable records answer that
-// for as long as they exist, and they do not outlast the hydrate that reports
-// the same id: publishing a read settles every authoritative identity out of
-// durable storage (the host's own reconcileIdentities). This set is what
-// carries provenance past that settlement.
+// submittedHere is the id -> createdAt map of the mutations this client
+// itself submitted (the host's pending-turns store owns it). The durable
+// records answer that for as long as they exist, and they do not outlast the
+// hydrate that reports the same id: publishing a read settles every
+// authoritative identity out of durable storage (the host's own
+// reconcileIdentities). This map is what carries provenance past that
+// settlement - the `fromThisClient` carrier, widened to also carry
+// `createdAt` across the settle.
 //
 // isOwnMutationRecord is the host's ClientIdentity capability
 // (createClientIdentity's own method in records.ts) - required, not
@@ -206,7 +213,7 @@ export function reconcilePendingEntries(
   ref: string,
   outbox: PendingRecord[],
   model: ThreadModel | undefined,
-  submittedHere: ReadonlySet<string>,
+  submittedHere: ReadonlyMap<string, number>,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
@@ -227,9 +234,21 @@ export function reconcilePendingEntries(
     // is the only provenance carrier for the id.
     const existing = entries.get(mutation.clientMutationId);
     const fromThisClient = existing ? existing.fromThisClient : submittedHere.has(mutation.clientMutationId);
-    const entry = authoritativeEntry(ref, mutation, fromThisClient);
+    const entry = authoritativeEntry(ref, mutation, fromThisClient, submittedHere);
     if (entry) entries.set(entry.id, entry);
   }
 
-  return [...entries.values()].sort((left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0));
+  // Known-createdAt first, ascending; entries without one after them (the
+  // daemon sorts pendingMutations lexicographically by id, so their
+  // relative order is stable within a snapshot only). The stable sort keeps
+  // array order for equal createdAt - a same-millisecond double-submit
+  // keeps submission order in-session, a corner the spec accepts. This is
+  // the ONE home of the rule: queue rows, chips, and the held-steer ghost
+  // stack all render this order.
+  return [...entries.values()].sort((left, right) => {
+    if (left.createdAt === undefined && right.createdAt === undefined) return 0;
+    if (left.createdAt === undefined) return 1;
+    if (right.createdAt === undefined) return -1;
+    return left.createdAt - right.createdAt;
+  });
 }

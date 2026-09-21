@@ -33,7 +33,7 @@ function outbox(
 
 // The ids this client's own durable projection has held. Empty unless a test
 // is specifically about a submission whose local record is already gone.
-const NOTHING_SUBMITTED_HERE: ReadonlySet<string> = new Set();
+const NOTHING_SUBMITTED_HERE: ReadonlyMap<string, number> = new Map();
 
 // The safe unattributed-only answer a caller with no ClientIdentity instance
 // handy still gets. Every outbox() fixture below leaves originClientId unset,
@@ -120,7 +120,7 @@ test("a locally submitted mutation stays this client's own once the authoritativ
       "ref_a",
       [outbox("mutation_1")],
       model({ pendingMutations: [pending] }),
-      new Set(),
+      new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
   ).toEqual([expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })]);
@@ -143,7 +143,7 @@ test("a mutation this client submitted stays its own after its durable record is
       "ref_a",
       [],
       model({ pendingMutations: [pending] }),
-      new Set(["mutation_1"]),
+      new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
   ).toEqual([expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })]);
@@ -162,7 +162,7 @@ test("a pending mutation this client never submitted is not its own", () => {
       "ref_a",
       [],
       model({ pendingMutations: [pending] }),
-      new Set(["mutation_1"]),
+      new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
   ).toEqual([expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false })]);
@@ -262,7 +262,47 @@ test("a promote's display input previews in the entry", () => {
     ...outbox("mutation_1", "turn/promoteQueuedAsSteer", ""),
     optimisticDisplay: { method: "turn/promoteQueuedAsSteer", input: [{ type: "text", text: "promoted body" }] },
   };
+  expect(reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY)).toEqual([
+    expect.objectContaining({ id: "mutation_1", method: "promote", text: "promoted body" }),
+  ]);
+});
+
+test("sorts known-createdAt entries first, ascending, with unknown-createdAt after them", () => {
+  const late = { ...outbox("mutation_30", "turn/steer", "late"), createdAt: 30 };
+  const early = { ...outbox("mutation_10", "turn/steer", "early"), createdAt: 10 };
+  const mid = { ...outbox("mutation_20", "turn/steer", "mid"), createdAt: 20 };
+  const unknown: PendingMutation = {
+    clientMutationId: "mutation_remote",
+    method: "turn/steer",
+    input: [{ type: "text", text: "remote client's steer" }],
+    executionState: "accepted",
+    projectionState: "pending",
+  };
+  const entries = reconcilePendingEntries(
+    "ref_a",
+    [late, early, mid],
+    model({ pendingMutations: [unknown] }),
+    NOTHING_SUBMITTED_HERE,
+    UNATTRIBUTED_ONLY,
+  );
+  expect(entries.map((entry) => entry.id)).toEqual(["mutation_10", "mutation_20", "mutation_30", "mutation_remote"]);
+});
+
+test("the map carrier hands an authoritative entry its createdAt after the settle removed the record", () => {
+  const pending: PendingMutation = {
+    clientMutationId: "mutation_1",
+    method: "turn/steer",
+    input: [{ type: "text", text: "hello" }],
+    executionState: "accepted",
+    projectionState: "pending",
+  };
   expect(
-    reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
-  ).toEqual([expect.objectContaining({ id: "mutation_1", method: "promote", text: "promoted body" })]);
+    reconcilePendingEntries(
+      "ref_a",
+      [],
+      model({ pendingMutations: [pending] }),
+      new Map([["mutation_1", 42]]),
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toEqual([expect.objectContaining({ id: "mutation_1", createdAt: 42, fromThisClient: true })]);
 });
