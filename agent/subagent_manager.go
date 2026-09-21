@@ -269,15 +269,32 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
-// hasRunningChildren reports whether any tracked child's runner has not
-// finished. An opportunistic release of the owning runtime must refuse while
-// a child is still executing instead of abandoning it.
+// hasRunningChildren reports whether any tracked child has unfinished work:
+// a run still executing, a drive or committed start in flight, a finalization
+// still draining, a restoration still reconstructing, or a runner whose done
+// channel has not closed. An opportunistic release of the owning runtime
+// must refuse while any of these hold instead of abandoning the child.
 func (m *subagentManager) hasRunningChildren() bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	if len(m.reconstructing) != 0 {
+		m.mu.Unlock()
+		return true
+	}
+	subs := make([]*subagent, 0, len(m.subs))
 	for _, sub := range m.subs {
+		subs = append(subs, sub)
+	}
+	m.mu.Unlock()
+	for _, sub := range subs {
+		sub.mu.Lock()
+		busy := sub.running || sub.driving || sub.finalizing
+		done := sub.done
+		sub.mu.Unlock()
+		if busy {
+			return true
+		}
 		select {
-		case <-sub.done:
+		case <-done:
 		default:
 			return true
 		}

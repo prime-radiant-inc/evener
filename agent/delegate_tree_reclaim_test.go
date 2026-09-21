@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
@@ -634,24 +635,26 @@ func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
 // TestDelegateIdleRelease_RetriesAfterPregateRefusal: a grace timer that
 // fires into residue must not lose the release to a one-shot refusal — the
 // refusal re-arms one more grace window, and the retry, not any caller,
-// releases the runtime once the residue settles.
+// releases the runtime once the residue settles. The session clock is the
+// package's fake, so the grace timers fire only when the test advances
+// virtual time: the residue plant can never race the first timer.
 func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
-	grace := 1 * time.Second
+	fake := agenttest.NewFakeClock()
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 		ForceRealIO:      true,
+		clock:            fake,
 		testOnly: testConfig{
-			skipGitSnapshot:          true,
-			minimalSystemPrompt:      true,
-			sandboxProber:            bwrapCapableProber(workspace),
-			delegateIdleReleaseDelay: &grace,
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
 		},
 	})
 	if err != nil {
@@ -678,10 +681,8 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	tree := sess.delegateController
 
 	// Plant the residue, then force the refusal through the same entrypoint
-	// the timer fires into: the refusal itself re-arms the retry, so the
-	// test never races the first timer's fire — under a loaded suite the
-	// auto-armed grace may fire into the residue or after the clear, and the
-	// re-arm machinery under test is identical either way.
+	// the timer fires into: the refusal itself re-arms the retry. Virtual
+	// time has not moved, so no grace timer can fire behind the plant.
 	runtime := sub.sess
 	runtime.pendingJobNotifsMu.Lock()
 	runtime.pendingJobNotifs = append(runtime.pendingJobNotifs, jobNotification{
@@ -701,13 +702,16 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	}
 
 	// The residue settles; the re-armed retry — not this test — must do the
-	// release.
+	// release. One advance past the grace fires both the original timer and
+	// the re-armed retry in deadline order; either may release, and the
+	// other stands down on the already-released runtime.
 	runtime.pendingJobNotifsMu.Lock()
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
+	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
 	// TRIPWIRE: the retry re-arms with the same 1s grace, so the release
-	// normally lands about a second after the refusal; 15s only bounds a
-	// genuine hang.
+	// fires here in real time only as a goroutine handoff; 15s only bounds
+	// a genuine hang.
 	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after residue settled", func() bool {
 		tree.mu.Lock()
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
