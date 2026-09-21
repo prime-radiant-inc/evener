@@ -1333,6 +1333,33 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toMatchObject({ writeUncertain: false });
   });
 
+  test("a post-apply rejection is a confirmed save, not an uncertain one", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new WireError("post-apply failure", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "mobile",
+        applied: hubDefault(5, proposed),
+      });
+    });
+    // The hub applied the write before a follow-up durable step failed and
+    // reported what it applied: the save resolves, the flags settle, and the
+    // editor stays usable - unlike a lost reply, nothing is uncertain.
+    expect(await store.getState().saveDraft()).toEqual(hubDefault(5, proposed));
+    expect(store.getState()).toMatchObject({
+      saving: false,
+      writeUncertain: false,
+      draftConflict: false,
+      draft: null,
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, proposed));
+    expect(drafts.stored()).toBeNull();
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+  });
+
   test("a generation change flags the draft stale even when the next hub reports the same revision", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
@@ -1348,6 +1375,34 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.mobile?.revision).toBe(2);
     expect(store.getState().draftConflict).toBe(true);
+  });
+
+  test("an edit continuing the draft keeps its generation stale across a reconnect with equal revisions", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
+
+    // An ordinary edit continues the draft: it must keep the generation the
+    // draft was composed under and stay in review, not re-stamp itself
+    // current against the replacement hub's coincidentally equal revision.
+    store.getState().editDraft("mobile", desktopConfig);
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: desktopConfig,
+      generation: 1,
+    });
+    expect(store.getState().draftConflict).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/before saving your changes/);
+
+    // Reviewing the replacement hub's current value is what clears it.
+    store.getState().rebaseDraft(2);
+    expect(store.getState().draftConflict).toBe(false);
   });
 
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {

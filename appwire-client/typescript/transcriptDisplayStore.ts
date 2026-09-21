@@ -928,7 +928,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // switching layouts composes against that layout's confirmed revision.
     const revision = existing?.layout === layout ? existing.revision : confirmedFor(hub, layout).revision;
     persistDraft({ layout, baseRevision: revision, config, writeUncertain: false });
-    const draft: TranscriptDraft = { layout, revision, config, generation: currentGeneration() };
+    // The generation follows the same rule as the revision: an edit
+    // continuing the same layout's draft keeps BOTH, because re-stamping the
+    // current generation here would launder a draft that went stale across a
+    // reconnect - a hub replacement whose numbering reuses the same revision
+    // would let an ordinary edit clear draftConflict and save settings
+    // composed against the old hub without the review the generation guard
+    // exists to force. Only a fresh draft or an explicit rebase composes
+    // against the current generation.
+    const generation = existing?.layout === layout ? existing.generation : currentGeneration();
+    const draft: TranscriptDraft = { layout, revision, config, generation };
     setState({ draft, draftConflict: staleDraft(draft, hub, fence.generation), draftError: null });
   }
 
@@ -991,6 +1000,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         }
         throw error;
       }
+      const applied = postApplyDefault(error, layout);
+      if (applied !== undefined) {
+        // The hub applied this write before a follow-up durable step failed
+        // and said what it applied: the outcome is KNOWN, not uncertain. The
+        // direct write reconciles the same response the same way; leaving
+        // writeUncertain here would block edits and even discard on an
+        // outcome the hub already reported.
+        return settleConfirmedSave(applied, checkpoint, layout);
+      }
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
       setState({ saving: false, draftConflict: true, writeUncertain: true });
@@ -1023,6 +1041,18 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_PATCH_MESSAGE });
       throw error;
     }
+    return settleConfirmedSave(value, checkpoint, layout);
+  }
+
+  /** The confirmed-save settlement the reply and post-apply paths share:
+   * land the value (or keep the proposal for review when a newer external
+   * revision beat it), settle the in-flight flags, clean the checkpoint up,
+   * and clear any superseded direct-write preview on the layout. */
+  function settleConfirmedSave(
+    value: HubTranscriptDisplayDefault,
+    checkpoint: TranscriptDraftCheckpoint,
+    layout: ViewportClass,
+  ): HubTranscriptDisplayDefault {
     const newerExternal = (getState().hub[layout]?.revision ?? -1) > value.revision;
     const settled: Partial<TranscriptDisplayStoreFields> = {
       saving: false,
