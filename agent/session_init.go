@@ -98,23 +98,65 @@ func canonicalStateDir(dir string) string {
 			return abs
 		}
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return dir
-	}
-	// Walk upward to the deepest ancestor that exists, resolving it, and join
-	// the missing tail back unchanged. The walk always terminates: the
-	// filesystem root resolves.
-	var tail []string
-	for cur := abs; ; cur = filepath.Dir(cur) {
-		if resolved, rerr := filepath.EvalSymlinks(cur); rerr == nil {
-			return filepath.Join(resolved, filepath.Join(tail...))
+	// filepath.Abs Cleans ".." lexically, which is wrong across a symlink:
+	// the kernel resolves `link/../state` against the physical parent of
+	// link's target, while Clean folds it to link's lexical parent. Anchor
+	// without cleaning and walk the components top-down instead, resolving
+	// symlinks as they accumulate so ".." pops the resolved parent. The walk
+	// ends at the first component that does not exist, joining the missing
+	// tail back unchanged, and always terminates: the root resolves.
+	anchored := dir
+	if !filepath.IsAbs(anchored) {
+		cwd, gerr := os.Getwd()
+		if gerr != nil {
+			// No faithful anchor is available; the cleaning Abs is the
+			// best remaining answer.
+			abs, aerr := filepath.Abs(dir)
+			if aerr != nil {
+				return dir
+			}
+			return resolveStatePathComponents(abs)
 		}
-		if parent := filepath.Dir(cur); parent == cur {
-			return abs // the filesystem root itself did not resolve
-		}
-		tail = append([]string{filepath.Base(cur)}, tail...)
+		anchored = cwd + string(filepath.Separator) + dir
 	}
+	return resolveStatePathComponents(anchored)
+}
+
+// resolveStatePathComponents walks an absolute path component by component,
+// resolving each existing component's symlinks before the next is applied,
+// so ".." pops the physical parent the kernel would choose. The first
+// component that does not exist ends the walk with the remaining tail joined
+// back unchanged; a component that exists but will not resolve (e.g. a
+// permission failure mid-walk) stays lexical and the walk continues.
+func resolveStatePathComponents(abs string) string {
+	sep := string(filepath.Separator)
+	vol := filepath.VolumeName(abs)
+	root := filepath.Join(vol, sep)
+	rest := strings.TrimPrefix(strings.TrimPrefix(abs, vol), sep)
+	if rest == "" {
+		return root
+	}
+	resolved := root
+	parts := strings.Split(rest, sep)
+	for i, comp := range parts {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		candidate := filepath.Join(resolved, comp)
+		if target, lerr := filepath.EvalSymlinks(candidate); lerr == nil {
+			resolved = target
+			continue
+		}
+		if _, serr := os.Lstat(candidate); serr != nil {
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+		}
+		resolved = candidate
+	}
+	return resolved
 }
 
 // escapeHistoryWithSessionProvenance escapes a restored history for the model

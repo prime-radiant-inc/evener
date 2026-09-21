@@ -190,8 +190,49 @@ func TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath(t *testing.T) {
 	}
 	// The same branch without any symlink must keep the anchored absolute form.
 	plain := filepath.Join(work, "plain-missing", "state")
-	if got := canonicalStateDir(plain); got != plain {
-		t.Fatalf("canonicalStateDir(%q) = %q, want the anchored absolute form unchanged", plain, got)
+	// On hosts whose temp root is itself a symlink (macOS /var →
+	// /private/var), the anchored form resolves through it, so the want
+	// must be built from the resolved work dir, not the lexical one.
+	wantPlain := filepath.Join(resolvedPath(t, work), "plain-missing", "state")
+	if got := canonicalStateDir(plain); got != wantPlain {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (the anchored absolute form)", plain, got, wantPlain)
+	}
+}
+
+// TestCanonicalStateDirResolvesDotDotThroughSymlink pins the
+// kernel-equivalent half of the same contract: filepath.Abs cleans `..`
+// lexically, which is wrong across a symlink. `link/../state` addresses the
+// physical parent of link's target, exactly as the kernel resolves it, not
+// link's lexical parent. A state dir built that way must canonicalize to the
+// physical path, so attachment paths announced from the session point where
+// the kernel will actually look.
+func TestCanonicalStateDirResolvesDotDotThroughSymlink(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	target := filepath.Join(work, "target", "sub")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(work, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Raw string, not filepath.Join: Join would Clean the ".." away before
+	// canonicalStateDir ever sees it, and the CLI delivers a raw
+	// --state-dir value with its dots intact.
+	sep := string(filepath.Separator)
+	through := link + sep + ".." + sep + "state"
+	want := filepath.Join(resolvedPath(t, filepath.Dir(target)), "state")
+	if got := canonicalStateDir(through); got != want {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (.. must pop the symlink target's physical parent, not the lexical one)", through, got, want)
+	}
+	// Without a symlink in play the lexical and physical answers agree; the
+	// plain form must keep resolving to the anchored path.
+	plainDots := work + sep + "a" + sep + ".." + sep + "b"
+	wantPlainDots := filepath.Join(resolvedPath(t, work), "b")
+	if got := canonicalStateDir(plainDots); got != wantPlainDots {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (no-symlink .. keeps the anchored form)", plainDots, got, wantPlainDots)
 	}
 }
 
