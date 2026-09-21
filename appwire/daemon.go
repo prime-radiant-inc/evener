@@ -58,6 +58,15 @@ type DaemonRetireResponse struct {
 	Lifecycle DaemonLifecycle `json:"lifecycle"`
 }
 
+type DaemonIdleTimeoutSetParams struct {
+	Identity      DaemonIdentity `json:"identity"`
+	TimeoutMillis int64          `json:"timeoutMillis"` // 0 disables automatic retirement
+}
+
+type DaemonIdleTimeoutSetResponse struct {
+	Lifecycle DaemonLifecycle `json:"lifecycle"`
+}
+
 type DaemonStatusParams struct{}
 
 type DaemonStatusResponse struct {
@@ -109,6 +118,12 @@ func (c *Client) DaemonList(ctx context.Context, params DaemonListParams) (Daemo
 func (c *Client) DaemonRetire(ctx context.Context, params DaemonRetireParams) (DaemonRetireResponse, error) {
 	var out DaemonRetireResponse
 	err := c.request(ctx, MethodEvenerDaemonRetire, params, &out)
+	return out, err
+}
+
+func (c *Client) DaemonIdleTimeoutSet(ctx context.Context, params DaemonIdleTimeoutSetParams) (DaemonIdleTimeoutSetResponse, error) {
+	var out DaemonIdleTimeoutSetResponse
+	err := c.request(ctx, MethodEvenerDaemonIdleTimeoutSet, params, &out)
 	return out, err
 }
 

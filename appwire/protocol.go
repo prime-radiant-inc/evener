@@ -144,6 +144,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerDaemonList, DaemonListParams{}, DaemonListResponse{}, ScopeHub, "Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes."},
 	{MethodEvenerDaemonRetire, DaemonRetireParams{}, DaemonRetireResponse{}, ScopeBoth, "Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle."},
 	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},
+	{MethodEvenerDaemonIdleTimeoutSet, DaemonIdleTimeoutSetParams{}, DaemonIdleTimeoutSetResponse{}, ScopeDaemon, "Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
