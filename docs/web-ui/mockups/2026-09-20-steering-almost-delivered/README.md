@@ -17,12 +17,15 @@ What the UI shows during that window has real gaps:
   the composer (`PendingChips`, optimistic record state `accepted`). It exists,
   but reads as "sending in progress," not "waiting for a boundary," and is easy
   to miss when the eye is on the transcript.
-- **Promote / drain** (`turn/promoteQueuedAsSteer`, `turn/drainAsSteer` on
-  queued rows): the queue row vanishes (`thread/queueChanged`), and — because
-  `turn/promoteQueuedAsSteer` produces no pending artifact this client owns, and
-  the daemon's authoritative `pendingMutations` snapshot is only written at
-  hydrate — *nothing* shows the message again until
-  `evener/steering/injected` fires. Total vanish, potentially minutes.
+- **Promote** (`turn/promoteQueuedAsSteer` on a queued row): the queue row
+  vanishes (`thread/queueChanged`) and — while the client does own the
+  durable record, `pendingMethod` has no promote mapping, so the record
+  renders nothing, and the daemon's authoritative `pendingMutations`
+  snapshot is only written at hydrate — *nothing* shows the message again
+  until `evener/steering/injected` fires. Total vanish, potentially minutes.
+- **Drain** (`turn/drainAsSteer`): a dim "Draining" chip with the composer
+  text only — the drained rows' content never shows, and the chip says
+  nothing about what it waits for.
 - **Handoff races**: the injected notification settles the chip and appends the
   transcript item in the same frame, but the reducer drops the item when
   `activeTurnId` is already gone (comment in `appwire-client/typescript/reducer.ts`),
@@ -84,9 +87,9 @@ recorded presentation decision, and an optimistic element in the reading
 surface must be unmistakably provisional (dashed + caption) or it reads as
 already-delivered. Reload is a non-issue: the hydrate re-reports the held
 steer in `pendingMutations`, so the ghost re-renders — with its held timer if
-the durable record is still in storage (before the first hydrate settled
-it), without it once the in-memory carrier is all that remains — and settles
-on reflection.
+the reload landed before the first hydrate settled the durable record;
+without it only after a post-settle reload (which wipes the in-memory
+carrier along with everything else). It settles on reflection.
 
 ## Idea B — Held at the boundary (an explicit steering queue)
 

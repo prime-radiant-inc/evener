@@ -12,11 +12,13 @@ A steer accepted mid-run is delivered to the model only at the next injection
 boundary (end of the current stream + tool round:
 `injectPostToolSteering` → `injectDrainedSteering` →
 `consumeSteeringMessage`, which emits `evener/steering/injected`). During that
-window — potentially minutes — the web UI shows either a dim "Steering…" chip
-that does not say what it waits for (direct steers), or nothing at all
-(promote/drain: the queue row vanishes on `thread/queueChanged` and no pending
-artifact this client owns exists for the promoted message). This spec makes
-the held message visible, in place, until it is delivered.
+window — potentially minutes — the web UI shows a dim chip that does not say
+what it waits for (direct steers read "Steering…", drains read "Draining…"
+with the composer text only — never the drained rows' content), or nothing
+at all (promote: the queue row vanishes on `thread/queueChanged`; the client
+does own a durable record, but `pendingMethod` has no promote mapping, so
+that record renders nothing). This spec makes the held message visible, in
+place, until it is delivered.
 
 ## Decision
 
@@ -116,10 +118,13 @@ array order:
   brings the daemon's combined text). HeldSteerStack owns that fallback
   label — `queueEntryPreviewText` itself stays untouched (it is a matching
   key between queue rows and pending rows, and must keep returning "" for
-  contentless input). Stated limitation: a ghost cannot render images —
-  the wire's `pendingMutations` entry and the client's durable record carry
-  an image count, not image data — so an image-bearing steer shows its text
-  or placeholder plus the count, and the image itself first appears on
+  contentless input). Stated limitation: a ghost cannot render images — not
+  because the data is missing (the durable record and the wire's
+  `pendingMutations` entry both carry the staged image bytes) but because
+  the entry the stack renders is a preview: `inputPreview` keeps only text,
+  image count, and skill names. Widening the entry model to carry image
+  data is out of scope here, so an image-bearing steer shows its text or
+  placeholder plus the count, and the image itself first appears on
   delivery.
 - **Non-visual register.** The caption is real text in the row, read in flow
   by assistive tech; the dashed edge and opacity are decoration only.
@@ -301,10 +306,11 @@ for real recovery regressions.
 The chip strip keeps `send` only. Steer/drain/promote chips are removed — the
 ghost is the single surface for held steering (one surface, no double-read).
 Blocked/canceled durable rows keep their QueueStrip homes, unchanged. Known
-window, accepted: on a not-yet-live surface (app boot before the first
-hydrate) neither the removed chips nor the live-gated ghost render, so a
-durable held steer is invisible for the seconds until the first hydrate loads
-the session — the same window in which the chips were the only surface today.
+window, accepted: on a `notLoaded` surface the removed chips leave nothing —
+today the strip is the only held-steer surface there, and the ghost is
+live-gated. (Before the first hydrate there is no footer at all, so nothing
+renders today either; the coverage this change gives up is the
+notLoaded-model window.) The window ends when the session loads.
 
 ## Non-goals
 
@@ -351,8 +357,9 @@ provider). Component and unit tests, all vitest:
   the durable record.
 - `QueueStrip.test.tsx` — promote passes the row's text into the display
   (preview placeholder when the row's text is empty).
-- `PendingChips.test.tsx` — steer/drain/promote no longer chip; send still
-  does.
+- `PendingChips.test.tsx` — steer/drain no longer chip; promote chips
+  nothing today (`pendingMethod` has no promote mapping) and must stay
+  chip-free once §3's mapping lands; send still does.
 - `Session`/transcript integration — trailing row composition when
   `askPending`, when held steers exist, and when neither; `renderedRowCount`
   counts the ghost-only row so end-targeted scrolls land on it
@@ -373,7 +380,9 @@ Chrome-capable hosts for geometry, `make lint`, `make vet`.
 - `appwire-client/typescript/state/mutation/pendingEntries.ts` — promote map;
   `queueEntryPreviewText`/`skillMarkers` reuse for the ghost body;
   `PendingTurnEntry` gains `intentSequence?` (populated in `outboxEntry`) for
-  the §4 tie-break
+  the §4 tie-break; `reconcilePendingEntries` reads the id → `createdAt`
+  carrier into authoritative entries (the post-settle §4 join), and its
+  `submittedHere` parameter widens from a set to the map
 - `appwire-client/typescript/state/mutation/pendingTurns.ts` —
   `submittedHere` set becomes the never-pruned id → `createdAt` map, written
   at `recordSubmittedHere`
@@ -390,7 +399,10 @@ Chrome-capable hosts for geometry, `make lint`, `make vet`.
 - `cmd/evener-hub/frontend/src/panes/session/transcript/messages/HeldSteerStack.tsx`
   + `.module.css` — new; owns the `[queued messages]` fallback label
 - `cmd/evener-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.tsx`
-  — `provisionalMeta` prop
+  — `provisionalMeta` prop + `variant="provisional"` styling prop
+- `cmd/evener-hub/frontend/src/panes/session/transcript/messages/HeldSteerAnnouncements.tsx`
+  — new; the announce-once live region outside the virtual list
+  (AskDockAnnouncements pattern; §2)
 - `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx` —
   send-only
 - the matching test files
