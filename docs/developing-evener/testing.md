@@ -297,8 +297,15 @@ ssh -T -o BatchMode=yes paradise-park 'mkdir -p ~/.local/bin'
 scp /tmp/evener-host paradise-park:~/.local/bin/evener
 ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.local/bin/evener'
 
+# EVENER_SSH_E2E_REMOTE_DIR must name a directory that exists on the host and NOT
+# on the machine running the test, holding at least one visible child entry. A
+# path both machines share (like /opt/homebrew when the controller is also a Mac)
+# answers the direct half of the provenance check too, so the test then fails
+# with "entries here would mean the forwarded answer above was served locally
+# too" even though the forwarding is fine. On a macOS host its own home
+# directory is the natural choice.
 EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
-  EVENER_SSH_E2E_REMOTE_DIR=/opt/homebrew \
+  EVENER_SSH_E2E_REMOTE_DIR=/Users/jesse \
   go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 
