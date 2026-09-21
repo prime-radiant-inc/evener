@@ -1,4 +1,4 @@
-import type { HostRow } from "@evener/appwire-client";
+import { type HostRow, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -88,6 +88,102 @@ test("add dialog submits name, address, and key", async () => {
   expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
     entry: { name: "gamma", address: "g.example", keyPath: "/keys/g" },
   });
+});
+
+test("the add dialog submits every entry field", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [] }));
+  fake.on("evener/host/add", () => row({ name: "gamma", address: "g.example" }));
+  render(<HostsSection sectionId="hosts" />);
+  await user.click(await screen.findByRole("button", { name: "Add host" }));
+  await user.type(screen.getByLabelText("Name"), "gamma");
+  await user.type(screen.getByLabelText("SSH address"), "g.example");
+  await user.type(screen.getByLabelText("User"), "operator");
+  await user.type(screen.getByLabelText("Key path"), "/keys/g");
+  await user.type(screen.getByLabelText("Evener path"), "/opt/evener");
+  await user.type(screen.getByLabelText("Hub config path"), "/etc/evener/hub.toml");
+  await user.type(screen.getByLabelText("Hub address"), "127.0.0.1:9180");
+  await user.type(screen.getByLabelText("Roots"), "/srv/one{enter}/srv/two");
+  const dialog = screen.getByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: "Add host" }));
+  await waitFor(() => {
+    expect(fake.calls.filter((c) => c.method === "evener/host/add")).toHaveLength(1);
+  });
+  expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
+    entry: {
+      name: "gamma",
+      address: "g.example",
+      user: "operator",
+      keyPath: "/keys/g",
+      evenerPath: "/opt/evener",
+      configPath: "/etc/evener/hub.toml",
+      addr: "127.0.0.1:9180",
+      roots: ["/srv/one", "/srv/two"],
+    },
+  });
+});
+
+test("a sidecar row offers Edit, prefills the whole entry, and sends no name input", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", address: "b.example", user: "bob", roots: ["/srv/b"] })],
+  }));
+  fake.on("evener/host/update", () => ({ host: row({ name: "beta", address: "b2.example" }) }));
+  render(<HostsSection sectionId="hosts" />);
+  const rowEl = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("Edit beta")).toBeTruthy();
+  // The prefilled entry, and no name input: the name is the dialog's title.
+  expect((within(dialog).getByLabelText("SSH address") as HTMLInputElement).value).toBe("b.example");
+  expect((within(dialog).getByLabelText("User") as HTMLInputElement).value).toBe("bob");
+  expect((within(dialog).getByLabelText("Roots") as HTMLTextAreaElement).value).toBe("/srv/b");
+  expect(within(dialog).queryByLabelText("Name")).toBeNull();
+
+  await user.clear(within(dialog).getByLabelText("SSH address"));
+  await user.type(within(dialog).getByLabelText("SSH address"), "b2.example");
+  await user.click(within(dialog).getByRole("button", { name: "Save" }));
+  await waitFor(() => {
+    expect(fake.calls.filter((c) => c.method === "evener/host/update")).toHaveLength(1);
+  });
+  expect(fake.calls.find((c) => c.method === "evener/host/update")?.params).toMatchObject({
+    name: "beta",
+    entry: { address: "b2.example" },
+  });
+});
+
+test("a hub.toml row offers no Edit action", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "alpha", address: "a.example", origin: "hub.toml" })] }));
+  render(<HostsSection sectionId="hosts" />);
+  const rowEl = (await screen.findByText("alpha")).closest("li")!;
+  expect(within(rowEl).queryByRole("button", { name: "Edit" })).toBeNull();
+});
+
+test("a validation refusal lands on the input the hub blamed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/update", () => {
+    throw new WireError('host "beta": missing ssh destination', -32602, {
+      evenerErrorInfo: "invalidHostField",
+      field: "address",
+    });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const rowEl = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.clear(within(dialog).getByLabelText("SSH address"));
+  await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+  // The message is the address row's own: the refusal named the wire field the
+  // input is labelled for, so the operator sees it where the fix belongs.
+  expect(await within(dialog).findByText(/missing ssh destination/)).toBeTruthy();
+  expect(within(dialog).queryByText(/Something went wrong/)).toBeNull();
 });
 
 test("add validation error renders inline", async () => {

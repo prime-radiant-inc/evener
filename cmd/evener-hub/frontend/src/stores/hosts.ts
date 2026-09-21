@@ -28,6 +28,7 @@ interface HostsStoreState {
    */
   refresh: () => Promise<void>;
   add: (entry: HostEntry) => Promise<HostRow>;
+  update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;
@@ -65,6 +66,16 @@ async function listHosts(): Promise<HostRow[]> {
   return res.hosts;
 }
 
+// sameRoots compares two rows' roots as lists, treating an absent value and an
+// empty one as the same: the wire omits empty optional arrays, so the two
+// spellings describe the same host, and neither may make the comparator report a
+// change the publish guard would re-render for.
+function sameRoots(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
 // hostRowEqual compares two rows on every field the wire contract carries;
 // an absent row counts as different, so the poll's skip test can pass a
 // possibly-undefined index result straight through.
@@ -73,7 +84,12 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
     b !== undefined &&
     a.name === b.name &&
     a.address === b.address &&
+    a.user === b.user &&
     a.keyPath === b.keyPath &&
+    a.evenerPath === b.evenerPath &&
+    a.configPath === b.configPath &&
+    a.addr === b.addr &&
+    sameRoots(a.roots, b.roots) &&
     a.origin === b.origin &&
     a.attached === b.attached &&
     a.serverName === b.serverName &&
@@ -200,6 +216,17 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     const row = await requireClient().request("evener/host/add", { entry });
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
+    await reReadAfterMutation();
+    return row;
+  },
+
+  update: async (params) => {
+    // The host being edited is named by the request's own field: name is
+    // immutable, so it is the target rather than a value here (spec §3.1).
+    const { host: row } = await requireClient().request("evener/host/update", {
+      name: params.name,
+      entry: params.entry,
+    });
     await reReadAfterMutation();
     return row;
   },

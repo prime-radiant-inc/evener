@@ -108,6 +108,70 @@ describe("fetch", () => {
 });
 
 describe("mutations", () => {
+  test("update sends the target name and the entry, then re-reads quietly", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/update", () => ({ host: { ...row("alpha"), address: "a2.example" } }));
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), address: "a2.example" }] }));
+    const updated = await hostsStore.getState().update({
+      name: "alpha",
+      entry: { address: "a2.example", user: "operator" },
+    });
+
+    expect(updated.address).toBe("a2.example");
+    expect(fake.calls.find((c) => c.method === "evener/host/update")?.params).toEqual({
+      name: "alpha",
+      entry: { address: "a2.example", user: "operator" },
+    });
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts[0]?.address).toBe("a2.example");
+  });
+
+  test("a rejected update reaches the caller and keeps the rows", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/update", () => Promise.reject(new Error('host "alpha": missing ssh destination')));
+    await expect(hostsStore.getState().update({ name: "alpha", entry: { address: "" } })).rejects.toThrowError(
+      /missing ssh destination/,
+    );
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([row("alpha")]);
+  });
+
+  test("the publish guard does not swallow an edit that changes an entry field only", async () => {
+    // hostRowEqual's field list is what decides whether the quiet re-read's rows
+    // replace the rendered ones; a comparator that ignores user/evenerPath/
+    // configPath/addr/roots would leave the pane rendering the pre-edit row.
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    const changes: Partial<HostRow>[] = [
+      { user: "operator" },
+      { evenerPath: "/opt/evener" },
+      { configPath: "/etc/evener/hub.toml" },
+      { addr: "127.0.0.1:9180" },
+      { roots: ["/srv/one"] },
+    ];
+    for (const change of changes) {
+      fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), ...change }] }));
+      await hostsStore.getState().refresh();
+      const load = hostsStore.getState().load;
+      expect(load.phase).toBe("ready");
+      if (load.phase !== "ready") throw new Error("unreachable");
+      expect(load.hosts[0]).toMatchObject(change);
+    }
+  });
+
   test("a successful add whose list re-read fails keeps the rows and does not error the section", async () => {
     // The mutation's own response already proved the add landed, so the
     // re-read behind it must stay quiet: a failed list read flips neither
