@@ -27,9 +27,11 @@ test("status reads color-by-meaning: failure is danger, live work is alive, ever
   expect(topRuleBlock(CSS, '.status[data-state="running"]')).toMatch(/color:\s*var\(--alive-ink\)/);
   // The complete set of hue-carrying states, exhaustively: done is NOT alive (a
   // completed job is a neutral fact), and no future state can sneak a hue in
-  // unreviewed (design-system §1 "Color is meaning").
+  // unreviewed (design-system §1 "Color is meaning"). Order-insensitive: the
+  // two rules' file order carries no CSS meaning (equal specificity, distinct
+  // attribute values), so the test must not fail on a reorder.
   const hueStates = [...CSS.matchAll(/\.status\[data-state="([^"]+)"\]/g)].map((match) => match[1]);
-  expect(hueStates).toEqual(["failed", "running"]);
+  expect([...hueStates].sort()).toEqual(["failed", "running"]);
 });
 
 test("the card's hierarchy comes from the ink ramp", () => {

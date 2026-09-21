@@ -131,9 +131,29 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
   expect(tail.textContent?.length).toBeGreaterThan(0);
   expect(tail.textContent).toBe(summary.slice(-(tail.textContent?.length ?? 0)));
   expect(summary.endsWith(tail.textContent ?? "")).toBe(true);
-  // The clamp drops text, but no native title carries the full string: the
-  // summary disclosure shows it in place, and entity hover cards inside the
-  // line must not compete with an OS-styled tooltip.
+  // The clamp visually clips under CSS pressure, but drops nothing from the
+  // DOM (the assert above pins the head+tail pair to the whole string), so
+  // screen-reader and copy access stay complete - and no native title carries
+  // a second copy: the summary disclosure shows it in place, and entity
+  // hover cards inside the line must not compete with an OS-styled tooltip.
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
+});
+
+// A non-expandable clamped row (a summary-only rendering: no body, no images,
+// no error - job_watch clears and terminal catch-ups) has no disclosure that
+// could reveal its full summary in place - so the clamp's DOM completeness
+// is the one thing keeping screen-reader and copy access complete, and the
+// test above's disclosure rationale does not apply. No native title rides
+// this line either: these rows' summaries embed exactly the entity ids whose
+// hover cards are the one floating surface the row may show.
+test("a non-expandable clamped row keeps its whole summary in the DOM with no native title", () => {
+  const summary = "Watch on job_034RuaCB8iWz0J1XBOUm1A_mftMIW5WFX2e fired on terminal scan - completed";
+  render(
+    <ToolRow summary={summary} intent="Confirming the watch landed" failed={false} expandable={false} expanded={false} />,
+  );
+  const head = screen.getByTestId("tool-row-summary-head");
+  const tail = screen.getByTestId("tool-row-summary-tail");
+  expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
   expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
 });
 
