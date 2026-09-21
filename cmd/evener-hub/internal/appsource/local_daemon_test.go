@@ -696,6 +696,63 @@ func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListFallbackFoldsDaemonStatus pins the unprobed
+// fallback's folding against the daemon's own derivations
+// (appCapabilitiesLocked, clearBlockedReasonLocked): activity withholds
+// Send and Clear but no turn action (#1363, #1375), closed withholds
+// every mutating bit while Shutdown and skillInput — the two the daemon
+// does not close-gate — stay advertised, and unresolved approval work (an
+// unanswered ask, a blocked escalation) withholds Clear the way the
+// daemon's clear gate does. A fallback that overstated these offered the
+// same offer-then-refuse drift the probed path was fixed for.
+func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/ask", ThreadID: "th_ask", SessionID: "sess_ask"}, Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/escalation", ThreadID: "th_escalation", SessionID: "sess_escalation"}, Status: appwire.ThreadStatusIdle, PendingEscalation: true},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Evener.Capabilities
+	}
+
+	// Every expected literal is the daemon's whole answer at that row's
+	// status, so no bit — present or added later — goes unpinned. Awaiting
+	// keeps Send (only activity and closure move it) but withholds Clear on
+	// the unanswered ask, and the escalation row folds Clear on the
+	// roster's escalation flag alone.
+	wantActive := appwire.ThreadCapabilities{
+		Steer: true, Interrupt: true, Compact: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Queue: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+	}
+	wantClearWithheld := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Compact: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Queue: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+	}
+	if got := capsByID["th_processing"]; got != wantActive {
+		t.Fatalf("active row = %+v, want the daemon's active answer (Send and Clear folded): %+v", got, wantActive)
+	}
+	if got := capsByID["th_ask"]; got != wantClearWithheld {
+		t.Fatalf("awaiting row with an unanswered ask = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
+	}
+	if got := capsByID["th_escalation"]; got != wantClearWithheld {
+		t.Fatalf("idle row with a blocked escalation = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
+	}
+	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true}) {
+		t.Fatalf("closed row = %+v, want only Shutdown and SkillInput, the bits the daemon does not close-gate", got)
+	}
+}
+
 // TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
 // when the roster's probe captured the daemon's own capability set, the list
 // row mirrors it rather than the fallback approximation — the same one-answer

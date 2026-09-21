@@ -8,13 +8,17 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// TestLocalDaemonEntriesFromRosterCarriesProbeCapabilities pins the last hop
-// of the probe plumbing: a LiveEntry whose probe captured the daemon's own
-// capabilities must carry them into the LocalDaemonEntry the hub's list rows
-// render from. In-process children inherit the copy too; threadFromEntry's
-// alias branch zeroes the rendered set, so inheritance is harmless there,
-// but this hand-off must not be where the set goes missing.
-func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilities(t *testing.T) {
+// TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags
+// pins the last hop of the probe plumbing: a LiveEntry whose probe captured
+// the daemon's own capabilities must carry them into the LocalDaemonEntry
+// the hub's list rows render from, and the approval flags must survive the
+// same hand-off — the fallback folds them out of Clear, so a roster entry
+// with pending approval work must reach the row builder flagged, or prod
+// rows overstate Clear. In-process children inherit the copy too;
+// threadFromEntry's alias branch zeroes the rendered set, so inheritance is
+// harmless there, but this hand-off must not be where the state goes
+// missing.
+func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t *testing.T) {
 	caps := appwire.ThreadCapabilities{Send: true, ChangeVisionModel: true}
 	live := hubcore.LiveEntry{
 		Entry:              rendezvous.Entry{ThreadID: "sess_caps", SessionID: "sess_caps"},
@@ -23,6 +27,8 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilities(t *testing.T) {
 		RunningSubagentIDs: []string{"sess_child"},
 		Capabilities:       caps,
 		CapabilitiesKnown:  true,
+		PendingAsk:         true,
+		PendingEscalation:  true,
 	}
 
 	entries := localDaemonEntriesFromRoster([]hubcore.LiveEntry{live})
@@ -36,11 +42,17 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilities(t *testing.T) {
 	if !root.CapabilitiesKnown || root.Capabilities != caps {
 		t.Fatalf("root entry = %+v, want the probe's capabilities %+v (known)", root, caps)
 	}
+	if !root.PendingAsk || !root.PendingEscalation {
+		t.Fatalf("root entry = %+v, want the roster's ask and escalation flags carried", root)
+	}
 	// The child inherits the pair through the same struct copy that carries
 	// its other root fields; threadFromEntry's alias branch zeroes the
 	// rendered set (pinned in appsource), so this hand-off must not be where
 	// the set goes missing even though the child's own row never renders it.
 	if !child.CapabilitiesKnown || child.Capabilities != caps {
 		t.Fatalf("child entry = %+v, want the inherited capabilities %+v (known)", child, caps)
+	}
+	if !child.PendingAsk || !child.PendingEscalation {
+		t.Fatalf("child entry = %+v, want the inherited ask and escalation flags", child)
 	}
 }

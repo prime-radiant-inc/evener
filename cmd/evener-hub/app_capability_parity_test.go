@@ -116,43 +116,14 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	}
 	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), pastDiffer, nil)
 
-	// List rows mirror the daemon (probed) or approximate its idle answer
-	// (unprobed), fork included: the daemon hardwires the bit false, and the
-	// hub's applyHubForkCapability is the single owner that turns it on.
-	rowAgreeOnFalse := map[string]string{
-		"ForkFromTurn": "the daemon hardwires fork false, and applyHubForkCapability owns turning it on",
-	}
-	rows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed", SessionID: "sess_unprobed"},
-				Status: "idle"},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed", SessionID: "sess_probed"},
-				Status: "idle", Capabilities: daemon, CapabilitiesKnown: true},
-		}
-	})
-	capsBySession := map[string]appwire.ThreadCapabilities{}
-	for _, thread := range rows {
-		capsBySession[thread.SessionID] = thread.Evener.Capabilities
-	}
-	for projection, session := range map[string]string{
-		"unprobed list row": "sess_unprobed",
-		"probed list row":   "sess_probed",
-	} {
-		caps, ok := capsBySession[session]
-		if !ok {
-			t.Fatalf("list rows = %+v, want the %s fixture row", rows, projection)
-		}
-		assertCapabilityParity(t, projection, daemon, caps, nil, rowAgreeOnFalse)
-	}
-
-	// Probed rows mirror the daemon verbatim at every status, not just idle:
-	// the set rides the same probe cut as the row's status, so the bits the
-	// daemon folds out of state — Send folds activity, Clear folds its
-	// blocked reason, and closed withholds the whole `!closed` family —
-	// must read exactly as the daemon answered. This is the pin against
-	// status-gating creeping back into the probed path (the pre-#1375
-	// Queue-folding regression).
-	for _, state := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
+	// List rows answer exactly what the daemon would: a probed row mirrors
+	// the probe's captured set verbatim, and the fallback for an unprobed row
+	// approximates the daemon's answer at the row's status. Fork differs from
+	// the daemon in no row and in no way: the daemon hardwires it false,
+	// rows mirror that, and applyHubForkCapability is the single owner that
+	// turns it on. These assertions are the pin against status-gating
+	// creeping into either path (the pre-#1375 Queue-folding regression).
+	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)
 		// Guard the fixture, not the projection: the mirror assertions below
 		// compare against whatever the daemon answered, so a state that did
@@ -164,18 +135,29 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			t.Fatalf("closed daemon fixture = %+v, want Send withheld by closed while skillInput stays advertised", daemonAt)
 		}
 		rows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
-			return []appsource.LocalDaemonEntry{{
-				Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed_" + state, SessionID: "sess_probed_" + state},
-				Status:            state,
-				Capabilities:      daemonAt,
-				CapabilitiesKnown: true,
-			}}
+			return []appsource.LocalDaemonEntry{
+				{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed_" + state, SessionID: "sess_probed_" + state},
+					Status: state, Capabilities: daemonAt, CapabilitiesKnown: true},
+				{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed_" + state, SessionID: "sess_unprobed_" + state},
+					Status: state},
+			}
 		})
-		if len(rows) != 1 {
-			t.Fatalf("list rows = %+v, want the probed %s fixture row", rows, state)
+		if len(rows) != 2 {
+			t.Fatalf("list rows = %+v, want the probed and unprobed %s fixture rows", rows, state)
 		}
-		if rows[0].Evener.Capabilities != daemonAt {
-			t.Fatalf("probed %s row = %+v, want the daemon's %s answer mirrored verbatim %+v", state, rows[0].Evener.Capabilities, state, daemonAt)
+		capsBySession := map[string]appwire.ThreadCapabilities{}
+		for _, thread := range rows {
+			capsBySession[thread.SessionID] = thread.Evener.Capabilities
+		}
+		for projection, session := range map[string]string{
+			"probed list row":   "sess_probed_" + state,
+			"unprobed list row": "sess_unprobed_" + state,
+		} {
+			caps, ok := capsBySession[session]
+			if !ok {
+				t.Fatalf("list rows = %+v, want the %s fixture row for %s", rows, projection, state)
+			}
+			assertCapabilityParity(t, projection+" at "+state, daemonAt, caps, nil, nil)
 		}
 	}
 
@@ -191,9 +173,6 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			continue
 		}
 		if _, listed := pastDiffer[name]; listed {
-			continue
-		}
-		if _, listed := rowAgreeOnFalse[name]; listed {
 			continue
 		}
 		t.Errorf("daemon oracle answers %s = false with no ledger entry anywhere — wire its seam in hubtest.WireCapabilitySeams, or record why every projection legitimately answers false", name)
