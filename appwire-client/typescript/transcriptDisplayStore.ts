@@ -11,7 +11,7 @@
 
 import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
-import { createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
+import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
@@ -287,23 +287,38 @@ export function fromWireChange(value: unknown): TranscriptDisplayChange | undefi
   return config === undefined ? undefined : { layout: value.layout, revision: value.revision, config };
 }
 
-/** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. There is no real
- * backing store here - only this one repository instance ever touches it -
- * so there is no concurrent writer a compare-and-swap could actually lose to;
- * removeIf/replaceIf report success unconditionally rather than the refusal a
- * byte-aware port reports when a record it named is gone: reporting false
- * there reads as "someone else replaced it" and adopts a restoreDraft that
- * reads null right back from this same fallback, silently dropping the
- * in-memory draft over a race that cannot happen without real storage. */
+/** The draft port a store without one runs on: the proposal is held in this
+ * closure - in memory, per instance, never touching a real backing store.
+ * Retention keeps the draft machinery coherent within the instance: a reset
+ * re-reads what the editor wrote instead of wiping the draft and any
+ * unresolved write's uncertainty. Only this one repository instance ever
+ * touches the value, so its compare-and-swaps can never actually lose a
+ * race - they still compare against what the closure holds, the same
+ * contract a byte-aware port runs, so a refusal continues to read as
+ * "someone else replaced it" only when something really did. */
 function memoryDraftStorage(): TranscriptDraftStorage {
+  let stored: unknown = null;
   return {
     createId: () => "memory",
-    load: () => null,
-    save() {},
-    insertIfAbsent: () => true,
-    removeIf: () => true,
-    replaceIf: () => true,
+    load: () => stored,
+    save(checkpoint) {
+      stored = checkpoint;
+    },
+    insertIfAbsent(checkpoint) {
+      if (stored !== null) return false;
+      stored = checkpoint;
+      return true;
+    },
+    removeIf(identity) {
+      if (stored === null || canonicalJson(identity) !== canonicalJson(stored)) return false;
+      stored = null;
+      return true;
+    },
+    replaceIf(expected, next) {
+      if (stored === null || canonicalJson(expected) !== canonicalJson(stored)) return false;
+      stored = next;
+      return true;
+    },
   };
 }
 

@@ -2029,10 +2029,10 @@ describe("the checkpointed draft editor", () => {
 
   test("without a draft port the ephemeral fallback does not manufacture a concurrent replacement", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    // No drafts port: the documented in-memory fallback, whose removeIf and
-    // replaceIf report success unconditionally because only this one
-    // repository instance ever touches it - there is no concurrent writer a
-    // compare-and-swap could actually lose to.
+    // No drafts port: the documented in-memory fallback, which retains its
+    // checkpoint for the instance and compares its swaps against that value
+    // - only this one repository instance ever touches it, so a refusal can
+    // only mean something in this instance really did replace the record.
     const store = await readyStore(client);
     client.on(patchMethod, () => {
       throw conflictError("mobile", hubDefault(5, desktopConfig));
@@ -2043,6 +2043,31 @@ describe("the checkpointed draft editor", () => {
     // by a phantom concurrent writer only real storage could have.
     expect(store.getState().draft).not.toBeNull();
     expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
+  test("the in-memory fallback keeps drafts and their uncertainty coherent across reset", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The fallback retains its checkpoint for the instance: reset re-reads
+    // the proposal with its unresolved outcome instead of wiping both.
+    store.reset();
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/unavailable/);
+
+    // A refresh settles the retained uncertainty the ordinary way.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
   });
 
   test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
