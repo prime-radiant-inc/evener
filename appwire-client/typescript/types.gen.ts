@@ -2634,9 +2634,12 @@ export interface ThreadCapabilities {
   rename: boolean;
   /**
    * SkillInput advertises support for canonical {type:"skill", name} input
-   * items on the input-bearing turn mutations. False everywhere until
-   * runtime consumption is wired per endpoint; ValidateSkillInputSupport
-   * keeps skill items rejected wherever this capability is false.
+   * items on the input-bearing turn mutations. A live daemon advertises it
+   * when all of those endpoints are wired; the hub's cold projections
+   * (past reads, close and gave-up frames, and list rows) advertise the same
+   * current-daemon floor, since each input-bearing mutation re-verifies
+   * against the live daemon. ValidateSkillInputSupport keeps skill items
+   * rejected wherever this capability is false.
    */
   skillInput?: boolean;
 }

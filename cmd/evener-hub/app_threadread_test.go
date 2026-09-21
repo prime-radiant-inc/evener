@@ -128,14 +128,10 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 
 // TestPastThreadReadAdvertisesSkillInputAlongsideCatalog pins the pair the
 // composer's skill gate reads: a past read that attaches the session's skill
-// catalog must also advertise skillInput. The set already promises Send (a
-// send resumes the session), and a resumed daemon runs current code that
-// consumes skill selections; the hub re-verifies the capability against the
-// live daemon on every input-bearing mutation (ensureSkillInputSupport and
-// the relay's prepareRelay recheck), so the advertisement is harness-support
-// truth while each mutation stays fail-closed. Withholding it made the web
-// composer offer the catalog's skills and then refuse them for sessions that
-// support skills the moment they are live again.
+// catalog must also advertise skillInput. Withholding it made the web
+// composer offer those skills and then refuse them for sessions that support
+// skills the moment they are live again; why the advertisement is safe lives
+// at pastThreadCapabilities.
 func TestPastThreadReadAdvertisesSkillInputAlongsideCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})

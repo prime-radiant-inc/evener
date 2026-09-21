@@ -567,14 +567,19 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
+// harnessSupportRosterEntries is the idle/active/closed roster the
+// harness-support list tests share: one entry per status the capability
+// derivation keys on.
+func harnessSupportRosterEntries() []LocalDaemonEntry {
+	return []LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+	}
+}
+
 func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing.T) {
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		return []LocalDaemonEntry{
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
-		}
-	}, nil)
+	source := NewLocalDaemonSourceWithEntries("local", harnessSupportRosterEntries, nil)
 
 	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
 	if err != nil {
@@ -657,20 +662,11 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 }
 
 // TestLocalDaemonSourceListAdvertisesSkillInput guards the roster path the
-// same way the shared-notes pin does: every current daemon wires all four
-// input-bearing turn mutations, so a live local session's harness supports
-// skill selections and ListThreads must advertise the capability instead of
-// making list-derived models report it unsupported until hydration. The
-// hub's own mutation gates re-verify against the live daemon, so a daemon
-// that genuinely lacks the support still refuses each selection honestly.
+// same way the shared-notes pin does: a live local session's harness supports
+// skill selections, so ListThreads must advertise the capability instead of
+// making list-derived models report it unsupported until hydration.
 func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		return []LocalDaemonEntry{
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
-		}
-	}, nil)
+	source := NewLocalDaemonSourceWithEntries("local", harnessSupportRosterEntries, nil)
 
 	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
 	if err != nil {
