@@ -22,12 +22,22 @@ import { makeSourceId } from "./crossTabSync";
 
 const DRAFT_KEY = "evener.prefs.transcriptDisplay.draft";
 
-// The tagged identity of a present-but-unreadable record: the raw bytes are
-// preserved inside it, so a stale compare can never mistake one record for
-// another that happens to decode to the same value (the invalid bytes
-// `broken` and the valid JSON string `"broken"` are different records), and
-// a stored `null` stays a present record instead of reading as absent.
-const UNPARSEABLE_TAG = "evener.transcriptDisplay.draft.unreadable";
+/** The identity of a present-but-unreadable record, preserving the exact
+ * bytes it was read from. A class instance, not a plain object: JSON can
+ * produce an object with any shape, but never an instance of this class, so
+ * a record another writer stored can never impersonate an unreadable
+ * record's identity and be deleted by a stale discard - and the raw bytes it
+ * names make one record distinct from another that happens to decode to the
+ * same value (the invalid bytes `broken` and the valid JSON string
+ * `"broken"` are different records). A stored `null` stays a present record
+ * instead of reading as absent. */
+class UnreadableRecord {
+  constructor(readonly raw: string) {}
+}
+
+function isUnreadableRecord(value: unknown): value is UnreadableRecord {
+  return value instanceof UnreadableRecord;
+}
 
 /** A record this build cannot even parse is still a record: handed back raw
  * inside a tagged identity so the package's decoder classifies it
@@ -45,7 +55,7 @@ function readRecord(): unknown {
   } catch {
     parsed = null;
   }
-  return parsed === null ? { [UNPARSEABLE_TAG]: raw } : parsed;
+  return parsed === null ? new UnreadableRecord(raw) : parsed;
 }
 
 function writeRecord(value: TranscriptDraftCheckpoint): void {
@@ -71,14 +81,25 @@ export function browserDraftStorage(): TranscriptDraftStorage {
     },
     removeIf(identity) {
       const stored = readRecord();
-      if (stored === null || canonicalJson(identity) !== canonicalJson(stored)) return false;
+      if (isUnreadableRecord(identity)) {
+        // An unreadable identity names the exact bytes it was read from: it
+        // matches only a record those bytes still back, never a replacement
+        // that merely parses to a similar value.
+        if (!isUnreadableRecord(stored) || stored.raw !== identity.raw) return false;
+      } else if (stored === null || isUnreadableRecord(stored) || canonicalJson(identity) !== canonicalJson(stored)) {
+        return false;
+      }
       localStorage.removeItem(DRAFT_KEY);
       if (localStorage.getItem(DRAFT_KEY) !== null) throw new Error("localStorage retained the value");
       return true;
     },
     replaceIf(expected, next) {
       const stored = readRecord();
-      if (stored === null || canonicalJson(expected) !== canonicalJson(stored)) return false;
+      if (isUnreadableRecord(expected)) {
+        if (!isUnreadableRecord(stored) || stored.raw !== expected.raw) return false;
+      } else if (stored === null || isUnreadableRecord(stored) || canonicalJson(expected) !== canonicalJson(stored)) {
+        return false;
+      }
       writeRecord(next);
       return true;
     },

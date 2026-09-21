@@ -52,12 +52,30 @@ describe("the browser transcript draft storage port", () => {
     storage.setItem(DRAFT_KEY, JSON.stringify(checkpoint));
     expect(port.load()).toEqual(checkpoint);
     // Unparseable bytes, and bytes that parse to null, are still PRESENT
-    // records: tagged with their raw identity, never reading as absent.
+    // records: identities carrying their raw bytes, never reading as
+    // absent.
     storage.setItem(DRAFT_KEY, "not json");
     const unparseable = port.load();
-    expect(unparseable).toEqual({ "evener.transcriptDisplay.draft.unreadable": "not json" });
+    expect(unparseable).toMatchObject({ raw: "not json" });
     storage.setItem(DRAFT_KEY, "null");
-    expect(port.load()).toEqual({ "evener.transcriptDisplay.draft.unreadable": "null" });
+    expect(port.load()).toMatchObject({ raw: "null" });
+  });
+
+  test("a stored record cannot impersonate an unreadable record's identity", () => {
+    storage.setItem(DRAFT_KEY, "not json");
+    const port = browserDraftStorage();
+    const stale = port.load();
+    // Another writer replaces the record with the JSON object carrying the
+    // same raw bytes: no stored value can forge the unreadable identity, so
+    // a stale discard must refuse.
+    storage.setItem(DRAFT_KEY, JSON.stringify({ raw: "not json" }));
+    expect(port.removeIf(stale)).toBe(false);
+    expect(port.replaceIf(stale, checkpoint)).toBe(false);
+    expect(storage.getItem(DRAFT_KEY)).toBe(JSON.stringify({ raw: "not json" }));
+    // The same bytes back, and the stale identity matches again.
+    storage.setItem(DRAFT_KEY, "not json");
+    expect(port.removeIf(stale)).toBe(true);
+    expect(storage.getItem(DRAFT_KEY)).toBeNull();
   });
 
   test("a stored null is a present record insertIfAbsent refuses to overwrite", () => {
