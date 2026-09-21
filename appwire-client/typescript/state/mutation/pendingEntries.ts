@@ -79,6 +79,22 @@ export function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
+// The one entry-body composition every in-flight surface renders - the
+// chips for sends, the held-steer ghost stack for steer/drain/promote
+// (steering-ghost spec §2): the matching text-plus-markers preview
+// PendingChips used to compose inline, extracted so the ghost is not a
+// second copy of the chip's composition. Contentless input still composes
+// to "" - the matching-key contract queueEntryPreviewText carries above.
+export function pendingEntryPreview(entry: {
+  text: string;
+  imageCount: number;
+  skillNames: readonly string[];
+}): string {
+  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+    .filter((part) => part !== "")
+    .join(" ");
+}
+
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line

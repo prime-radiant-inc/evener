@@ -30,6 +30,7 @@ export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendin
 export {
   imagePlaceholder,
   normalizeText,
+  pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
   skillMarkers,

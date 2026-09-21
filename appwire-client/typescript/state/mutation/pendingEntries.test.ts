@@ -1,8 +1,13 @@
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
-import { reconcilePendingEntries } from "./pendingEntries";
+import { queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
+
+test("queueEntryPreviewText still returns the empty string for contentless input", () => {
+  expect(queueEntryPreviewText("", 0)).toBe("");
+  expect(queueEntryPreviewText("   ", 0)).toBe("");
+});
 
 function outbox(
   clientMutationId: string,

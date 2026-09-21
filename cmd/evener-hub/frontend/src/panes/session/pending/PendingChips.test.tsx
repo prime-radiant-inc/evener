@@ -86,15 +86,15 @@ test("renders a compact chip for a pending send, showing its preview text", asyn
   expect(screen.getByText("hello there")).toBeTruthy();
 });
 
-test("chips the send/steer/drain methods but not queue (QueueStrip already chips queue)", async () => {
+test("chips send only: steer/drain are the ghost stack's surface, never a chip", async () => {
   await seedPending("send", "a send");
   await seedPending("steer", "a steer");
   await seedPending("drain", "a drain");
   await seedPending("queue", "a queued one");
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("a send")).toBeTruthy();
-  expect(screen.getByText("a steer")).toBeTruthy();
-  expect(screen.getByText("a drain")).toBeTruthy();
+  expect(screen.queryByText("a steer")).toBeNull();
+  expect(screen.queryByText("a drain")).toBeNull();
   expect(screen.queryByText("a queued one")).toBeNull();
 });
 
@@ -157,7 +157,7 @@ test("an image-only pending entry shows the image placeholder rather than blank 
 // A slash-completed skill submission carries no typed prose, so the marker IS
 // the only thing there is to show - the same [skill: …] the queue strip renders
 // for the identical selection. Without it the in-flight chip reads as a bare
-// "Sending"/"Steering"/"Draining" with an empty body.
+// "Sending" with an empty body.
 test("a skill-only pending chip shows its skill marker rather than an empty body", async () => {
   await seedPending("send", "", "ref_a", undefined, ["pkg:probe"]);
   render(<PendingChips sessionRef="ref_a" />);
@@ -165,13 +165,13 @@ test("a skill-only pending chip shows its skill marker rather than an empty body
 });
 
 test("a pending chip renders its preview text and skill marker together", async () => {
-  await seedPending("steer", "nudge", "ref_a", undefined, ["pkg:probe"]);
+  await seedPending("send", "nudge", "ref_a", undefined, ["pkg:probe"]);
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("nudge [skill: pkg:probe]")).toBeTruthy();
 });
 
-test("labels each chip with its method so send/steer/drain read apart", async () => {
-  await seedPending("steer", "nudge");
+test("labels a send chip as Sending", async () => {
+  await seedPending("send", "nudge");
   render(<PendingChips sessionRef="ref_a" />);
-  expect(screen.getByText(/steering/i)).toBeTruthy();
+  expect(screen.getByText(/sending/i)).toBeTruthy();
 });
