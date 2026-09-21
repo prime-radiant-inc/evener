@@ -1586,6 +1586,51 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
   });
 
+  test("a draft-port failure after the hub loaded keeps direct writes gated until the uncertainty is settled", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // Another window's UNCERTAIN write lands on the port behind this
+    // store's back, and the port fails before this store ever reads it: the
+    // record is unknown here, and its outcome is unresolved.
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: true,
+    });
+    drafts.failSave();
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/save the transcript draft/);
+    expect(store.getState()).toMatchObject({
+      loaded: true,
+      storageUnavailable: true,
+      writeUncertain: false,
+    });
+    // The direct write composes against the same confirmed hub an edit
+    // would, so it must not send past an unreadable checkpoint either.
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
+    await expect(store.getState().patchHubDefault("mobile", desktopConfig)).rejects.toThrow(/unavailable/);
+    expect(store.getState().hubErrors.mobile).toBe("Hub transcript display settings are unavailable.");
+
+    // Recovery re-reads the checkpoint: the uncertain write is revealed and
+    // immediately settled by the same authoritative read (the hub still
+    // holds revision 2, so that write never landed), leaving the other
+    // window's proposal as a clean current draft - and the direct path
+    // reopens.
+    drafts.failSave(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: mobileConfig,
+      generation: 1,
+    });
+    expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
+  });
+
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",

@@ -825,7 +825,20 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   ): Promise<HubTranscriptDisplayDefault> {
     const state = getState();
     const generation = fence.generation;
-    if (!fence.liveHub(generation) || !state.loaded || state.hubLoading || state.saving || state.writeUncertain) {
+    // A direct write composes against the same confirmed hub an edit does,
+    // so it waits on the same draft-port recovery: a checkpoint this store
+    // cannot read may be another window's uncertain write, and sending past
+    // it would change settings that unresolved outcome is holding still. An
+    // unreadable RECORD is usable state, not a port failure - the draft is
+    // simply absent - so it does not block (see restoreDraft).
+    if (
+      !fence.liveHub(generation) ||
+      !state.loaded ||
+      state.hubLoading ||
+      state.saving ||
+      state.writeUncertain ||
+      (state.storageUnavailable && !state.draftUnreadable)
+    ) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
       throw new Error(UNAVAILABLE_MESSAGE);
     }
