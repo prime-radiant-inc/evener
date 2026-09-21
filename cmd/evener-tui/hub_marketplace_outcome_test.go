@@ -585,3 +585,138 @@ func TestMarketplaceMutateResultSuccessAdvancesTheRemovalBoundary(t *testing.T) 
 		t.Fatalf("delayed pre-removal read resurrected marketplace %q; the successful removal must survive", remove.Name)
 	}
 }
+
+func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removing := appwire.MarketplaceEntry{Name: "removing"}
+	added := appwire.MarketplaceEntry{Name: "added"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{added, kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	// A remove is in flight on an ordered model; a notification read the
+	// hub answered after the removal landed - carrying a NEWER change than
+	// the removal's own snapshot - was issued as generation 2.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removing, kept),
+		marketplaceRemovePending:       removing.Name,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+	}
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action: "remove",
+		Name:   removing.Name,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" {
+		t.Fatalf("successful remove left the fence at %q, want cleared", after.marketplaceRemovePending)
+	}
+	// The snapshot settles the panel, and the branch must schedule the
+	// replacement read for the reads its floor advance just invalidated.
+	if cmd == nil {
+		t.Fatal("successful remove should schedule the replacement read past the advancing floor")
+	}
+
+	// The invalidated notification read is discarded, snapshot and all.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{added, kept}},
+		ReconcileGeneration: 2,
+	})
+	discarded := got.(hubModel)
+	updated, panelCmd := discarded.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("invalidated read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after invalidated read = %q, want the snapshot's %q", remove.Name, kept.Name)
+	}
+
+	// The scheduled replacement read carries a post-floor generation and
+	// settles the panel on the newer truth.
+	list := cmd().(launchconfig.MarketplaceListResultMsg)
+	if list.Err != nil || list.ReconcileGeneration <= after.marketplaceListFloor {
+		t.Fatalf("replacement read = %+v, want a post-floor generation", list)
+	}
+	got, _ = after.handleMarketplaceListResult(list)
+	recovered := got.(hubModel)
+	updated, panelCmd = recovered.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("replacement read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != added.Name {
+		t.Fatalf("panel row after replacement read = %q, want the newer %q", remove.Name, added.Name)
+	}
+}
+
+func TestMarketplaceMutateResultAppliedSnapshotRefetchesPastTheAdvancingFloor(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removing := appwire.MarketplaceEntry{Name: "removing"}
+	added := appwire.MarketplaceEntry{Name: "added"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{added, kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removing, kept),
+		marketplaceRemovePending:       removing.Name,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+	}
+	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		Applied: appwire.MarketplaceListResponse{
+			Marketplaces: []appwire.MarketplaceEntry{kept},
+		},
+	})
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removing.Name})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" {
+		t.Fatalf("applied-with-litter outcome left the fence at %q, want cleared", after.marketplaceRemovePending)
+	}
+	if cmd == nil {
+		t.Fatal("applied snapshot should schedule the replacement read past the advancing floor")
+	}
+
+	// The invalidated notification read is discarded in favor of the
+	// applied snapshot, and the scheduled replacement settles the panel
+	// on the newer truth the snapshot lacks.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{added, kept}},
+		ReconcileGeneration: 2,
+	})
+	discarded := got.(hubModel)
+	updated, panelCmd := discarded.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("invalidated read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after invalidated read = %q, want the snapshot's %q", remove.Name, kept.Name)
+	}
+
+	list := cmd().(launchconfig.MarketplaceListResultMsg)
+	if list.Err != nil || list.ReconcileGeneration <= after.marketplaceListFloor {
+		t.Fatalf("replacement read = %+v, want a post-floor generation", list)
+	}
+	got, _ = after.handleMarketplaceListResult(list)
+	recovered := got.(hubModel)
+	updated, panelCmd = recovered.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("replacement read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != added.Name {
+		t.Fatalf("panel row after replacement read = %q, want the newer %q", remove.Name, added.Name)
+	}
+}

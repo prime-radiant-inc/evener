@@ -681,13 +681,28 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				m.marketplaceListReadsOrdered = true
 				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = false
+				// Reads issued after the hub landed this removal but
+				// before its result was handled - a notification refetch
+				// is typical - are stale to the floor this branch just
+				// set, although they can be newer than the snapshot:
+				// another client's change can have landed in between.
+				// Schedule the replacement read that settles the panel
+				// on it.
+				var replacement tea.Cmd
+				if m.client != nil {
+					m.marketplaceReconcileGeneration++
+					replacement = launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+				}
 				if m.pluginsPanel != nil {
 					updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: applied})
 					panel := updated.(launchconfig.PluginsPanel)
 					m.pluginsPanel = &panel
-					return m, cmd
+					if cmd == nil {
+						return m, replacement
+					}
+					return m, tea.Batch(cmd, replacement)
 				}
-				return m, nil
+				return m, replacement
 			case marketplaceRemovalUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
 				m.marketplaceListReadsOrdered = true
@@ -728,6 +743,25 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		m.marketplaceListReadsOrdered = true
 		m.marketplaceListFloor = m.marketplaceReconcileGeneration
 		m.marketplaceReconcilePending = false
+		if m.client != nil {
+			// The same replacement the applied-snapshot branch schedules:
+			// the floor this branch just set invalidates reads issued
+			// after the hub landed the removal but before this response
+			// was handled, and they can be newer than the response's own
+			// snapshot.
+			m.marketplaceReconcileGeneration++
+			replacement := launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+			if m.pluginsPanel != nil {
+				updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
+				panel := updated.(launchconfig.PluginsPanel)
+				m.pluginsPanel = &panel
+				if cmd == nil {
+					return m, replacement
+				}
+				return m, tea.Batch(cmd, replacement)
+			}
+			return m, replacement
+		}
 	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
