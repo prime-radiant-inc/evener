@@ -44,7 +44,9 @@ test("summary: leads with the command, no result suffix on a clean run", () => {
 });
 
 // A2: the exit code stops being the summary's headline. The failure glyph
-// (failed()) announces a nonzero exit; the number itself moves to detail().
+// (failed()) announces a nonzero exit; the number's one home is the real
+// text at the tail of the expanded body (the captured output's own
+// "[exit N]" footer, per agent/session_tools_shell.go's formatShellResult).
 
 test("summary: a nonzero exit is NOT in the summary text - the glyph carries that signal", () => {
   const d = toolRendererFor("shell");
@@ -67,34 +69,18 @@ test("failed: false when no exit code is detectable at all (still running/backgr
   expect(d.failed?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
 });
 
-test("detail: the exit code stays reachable as the row's hover title", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe("exit 1");
-});
-
-test("detail: a clean exit still reports its code (0 is a fact, not an absence)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("true", { exitCode: 0 }))).toBe("exit 0");
-});
-
-test("detail: undefined when no exit code exists at all", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("sleep 10", { output: "still going" }))).toBeUndefined();
-});
-
 test("summary: no footer at all (still running, or backgrounded) shows no exit suffix", () => {
   const d = toolRendererFor("shell");
   expect(d.summary(withCommand("sleep 10", { output: "partial output so far" }))).toBe("Ran sleep 10");
 });
 
-test("detail: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
+test("failed: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
   // agent/session_tools_shell.go's runBufferedShell path (used when the
   // execution environment doesn't support streaming) has no StateResult/
   // bracketed footer at all - it ends in a bare
   // "exit_code=N duration_ms=N timed_out=bool" line instead.
   const d = toolRendererFor("shell");
   const out = "stdout here\nexit_code=2 duration_ms=15 timed_out=false";
-  expect(d.detail?.(withCommand("false", { output: out }))).toBe("exit 2");
   expect(d.failed?.(withCommand("false", { output: out }))).toBe(true);
 });
 
@@ -162,17 +148,11 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
 // output-footer text heuristic above stays only as the old-daemon fallback
 // (every test above carries no exitCode, so those now exercise that fallback).
 
-test("detail: uses the typed exitCode directly, with no output footer to parse", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe("exit 2");
-});
-
-test("detail/failed: the typed exitCode wins over a conflicting output footer", () => {
+test("failed: the typed exitCode wins over a conflicting output footer", () => {
   const d = toolRendererFor("shell");
   // Typed 0 (clean) must not be overridden by a stray bracketed "[exit 5]" in
   // the command's own output text — the structured field is authoritative.
   const clean = withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" });
-  expect(d.detail?.(clean)).toBe("exit 0");
   expect(d.failed?.(clean)).toBe(false);
 });
 
@@ -440,14 +420,14 @@ test("body renders a LONG command in full - the command block never folds", () =
   expect(screen.queryByRole("button", { name: /earlier lines/ })).toBeNull();
 });
 
-// detail() carries the exit code ONLY - never the command as well: the
-// expanded body already shows the command pretty-printed, so a second copy
-// in detail() would duplicate the call on an open row.
-test("detail does NOT repeat the command", () => {
+// The summary carries the command, and only the command - the exit code lives
+// in the expanded body's captured output, never duplicated into the summary
+// (which would put a second copy of the call on an open row).
+test("summary does NOT repeat the exit code", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
   expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
-  expect(d.detail?.(withCommand(longCmd, { exitCode: 0 }))).toBe("exit 0");
+  expect(d.summary(withCommand(longCmd, { exitCode: 0 }))).toBe(`Ran ${"x".repeat(100)}`);
 });
 
 describe("stripRedundantCd", () => {

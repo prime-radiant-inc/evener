@@ -521,6 +521,17 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // failed outcome reason. Error text is the danger hue's canonical, ungateable
 // job, the same as railDialog.module.css's .pickerError above.
 //
+// hover-card-glow-up: panes/session/transcript/entityref.module.css earns the
+// same exception for the same structural reason - it lives under
+// panes/session/transcript/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its two semantic reaches are the entity hover
+// card's status word: .status[data-state="failed"] in --danger-ink and
+// .status[data-state="running"] in --alive-ink. Color-by-meaning on a
+// lifecycle status is exactly the hue law's job (failure / agent working),
+// the same meaning-per-hue split RailRow.module.css's signal-row family and
+// the subagent row's data-state treatment already established; every terminal
+// or neutral state stays on the ink ramp.
+//
 // webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
 // earns the same exception for the same structural reason - it lives under
 // panes/settings/sections/, not widgets/<name>/, so it can never match
@@ -567,6 +578,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/settings/sections/keybindings.module.css",
   "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
   "panes/settings/sections/hosts.module.css",
+  "panes/session/transcript/entityref.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -612,6 +624,14 @@ test("the sandboxescalation.module.css semantic-var exception is scoped to its e
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/sandboxescalation.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("sandboxescalation.module.css")).toBe(false);
+});
+
+test("the entityref.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/transcript/entityref.module.css")).toBe(true);
+  // A same-named decoy anywhere else must still go through the normal
+  // widget-allowlist check, exactly like the dockview-theme.css precedent.
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/entityref.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("entityref.module.css")).toBe(false);
 });
 
 // --- (c) dark and light blocks declare the same color tokens -----------

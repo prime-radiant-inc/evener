@@ -143,24 +143,16 @@ registerToolRenderer({
   fold: "consequential",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
   // row's failure glyph instead (A2 - "exit 1" as the headline made every
-  // failure look like a footnote). The number itself stays reachable via
-  // detail() below, which the row shows both as a hover title and as real text
-  // in the expanded body.
+  // failure look like a footnote). The number's one home is the real text at
+  // the tail of the expanded body: formatShellResult bakes "[exit N]" into the
+  // captured output itself (agent/session_tools_shell.go), so no
+  // client-synthesized copy exists anywhere else.
   summary(item: ItemModel, ctx?: ToolSummaryContext) {
     const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
     return `Ran ${command}`;
   },
   body: ShellBody,
   failed: nonzeroExit,
-  // The exit code, and ONLY the exit code. It deliberately does not carry the
-  // command as well: detail() renders as the row's hover title, and folding
-  // the command in would put a second copy of the call under the row. The
-  // expanded body already shows the command pretty-printed
-  // (ShellCommandBlock), so nothing is lost.
-  detail(item: ItemModel) {
-    const exitCode = shellExitCode(item);
-    return exitCode === undefined ? undefined : `exit ${exitCode}`;
-  },
   // The row summary IS the raw one-line command; the expanded body renders
   // that same command pretty-printed. Showing both on an open row duplicated
   // the call, so while expanded the summary text swaps to this placeholder:
