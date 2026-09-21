@@ -38,8 +38,7 @@ const attachmentPathPrefixLen = 16
 // inline and its Path stays empty, so nothing is announced that a reader
 // could not fetch. Each failure is reported as a warning on the general
 // channel — firing the Notification hook like every other session file
-// I/O failure — instead of failing the turn: the inline copy is
-// unaffected and the turn's own acceptance must not hinge on disk writes.
+// I/O failure — instead of failing the turn.
 func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment {
 	if s == nil || len(images) == 0 || s.stateDir == "" {
 		return images

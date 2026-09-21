@@ -131,24 +131,27 @@ func collectWarnings(sess *Session) <-chan events.SessionEvent {
 	return warnCh
 }
 
-// awaitWarningNaming blocks until a warning naming want arrives on ch.
-// The channel receive is the await; the bound is a tripwire for a genuine
-// hang, never the mechanism.
+// awaitWarningNaming blocks until a warning naming want arrives on ch,
+// tolerating unrelated warnings emitted while the turn runs. The channel
+// receives are the await; the bound is a tripwire for a genuine hang,
+// never the mechanism.
 func awaitWarningNaming(t *testing.T, ch <-chan events.SessionEvent, want string) {
 	t.Helper()
-	select {
-	case event := <-ch:
-		data, ok := event.Data.(events.WarningData)
-		if !ok {
-			t.Fatalf("EventWarning data is %T, want events.WarningData", event.Data)
+	// TRIPWIRE: the matching warning is emitted synchronously during the
+	// turn, so the receives are the await; 30s only fires on a hang.
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case event := <-ch:
+			data, ok := event.Data.(events.WarningData)
+			if !ok || !strings.Contains(data.Message, want) {
+				continue // unrelated warning; keep waiting for the match
+			}
+			return
+		case <-deadline.C:
+			t.Fatalf("no warning naming %q was emitted", want)
 		}
-		if !strings.Contains(data.Message, want) {
-			t.Errorf("warning does not name %q: %q", want, data.Message)
-		}
-	// TRIPWIRE: warnings are emitted synchronously during the turn, so the
-	// receive above is the await; 30s only fires on a hang.
-	case <-time.After(30 * time.Second):
-		t.Fatalf("no warning naming %q was emitted", want)
 	}
 }
 
