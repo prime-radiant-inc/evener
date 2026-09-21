@@ -240,6 +240,41 @@ func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 	}
 }
 
+// TestArchiveSetNeverLengthensShorterConfiguredDeadline proves the archived
+// deadline is an upper bound, never an extension: a Hub configured with a
+// sub-minute daemon idle timeout archives to that shorter timeout, not to the
+// one-minute constant.
+func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
+	entry := residentEntryForTest(t, 4507)
+	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		RunDir:            runDir,
+		Roster:            roster,
+		Archive:           archive,
+		HubStateRoot:      t.TempDir(),
+		Past:              hubcore.NewPastIndex(""),
+		DaemonIdleTimeout: 30 * time.Second,
+	})
+	t.Cleanup(hub.Close)
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
+	if len(*got) != 1 || (*got)[0].TimeoutMillis != (30*time.Second).Milliseconds() {
+		t.Fatalf("daemon received %+v, want the configured 30000 — archiving must never lengthen the deadline", *got)
+	}
+}
+
 // TestArchiveSetWithoutResidentDaemonPersistsDecision proves the nudge is
 // best-effort: a session with no resident daemon archives fine, because the
 // common archived session has nothing running to retarget.

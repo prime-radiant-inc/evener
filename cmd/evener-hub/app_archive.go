@@ -74,24 +74,33 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
 	if params.Kind == appwire.ArchiveTargetSession && cfg.ResumeLocks != nil {
-		// Serialize the decision and its daemon nudge behind the session's
-		// ownership alias: requests on different connections run handlers
-		// concurrently, and two archive toggles racing on one session must land
-		// their nudges in the order the decisions persisted, so the last durable
-		// decision is also the last deadline the daemon applied.
+		// The session lock covers exactly the durable write and its daemon
+		// nudge: requests on different connections run handlers concurrently,
+		// and two archive toggles racing on one session must land their nudges
+		// in the order the decisions persisted, so the last durable decision is
+		// also the last deadline the daemon applied. The navigation refresh and
+		// attention poke below run outside it, so a wedged nudge delays only
+		// this session's decisions and fences, never the tree rebuild.
 		lock := cfg.ResumeLocks.For(decisionID)
 		if err := lock.LockContext(ctx); err != nil {
 			return appwire.ArchiveResponse{}, err
 		}
-		defer lock.Unlock()
-	}
-	if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
-		return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
-	}
-
-	if params.Kind == appwire.ArchiveTargetSession {
-		// The decision is durable; the daemon deadline beneath it is best-effort.
-		nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+		err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now())
+		if err == nil {
+			// The decision is durable; the daemon deadline beneath it is best-effort.
+			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+		}
+		lock.Unlock()
+		if err != nil {
+			return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
+		}
+	} else {
+		if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
+			return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
+		}
+		if params.Kind == appwire.ArchiveTargetSession {
+			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+		}
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
@@ -153,7 +162,15 @@ func nudgeResidentDaemonIdleTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	timeout := cfg.DaemonIdleTimeout
 	if archived {
+		// The archived deadline is an upper bound, never an extension: a Hub
+		// configured with a shorter idle timeout must not have its daemon's
+		// retirement DELAYED by archiving. A disabled (zero) configuration
+		// still shortens — the explicit archive decision outlives a Hub-wide
+		// automatic-retirement disable.
 		timeout = archivedSessionIdleTimeout
+		if cfg.DaemonIdleTimeout > 0 && cfg.DaemonIdleTimeout < archivedSessionIdleTimeout {
+			timeout = cfg.DaemonIdleTimeout
+		}
 	}
 	_, _ = local.SetDaemonIdleTimeoutAtEntry(ctx, entry.Entry, appwire.DaemonIdleTimeoutSetParams{
 		Identity:      daemonIdentity(entry.Entry),
