@@ -555,20 +555,19 @@ test("the kind icon is decorative - the row's text already names the action", ()
   expect(icon.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("the rail icon is 50% opacity in the speaker-avatar column, pulled into the gutter only above the breakpoint", () => {
+test("the rail icon seats via the shared rail-seat module - composed, not restated", () => {
   const css = rowCss();
   const iconRule = css.match(/\.rowIcon\s*\{([^}]*)\}/);
   expect(iconRule).not.toBe(null);
-  expect(iconRule?.[1]).toContain("opacity: 0.5");
-  expect(iconRule?.[1]).toContain("width: var(--speaker-avatar-size)");
-  // slot + margin + the row's own column-gap = one speaker-gutter, so the
-  // rationale lands exactly on the content edge (aligned with its summary).
-  expect(iconRule?.[1]).toContain("margin-right: calc(var(--speaker-gap) - var(--space-2))");
-  // The gutter pull shares the runContent indent's media query (the negative
-  // margin is only safe when the wrapper's reserved padding exists).
-  const mediaRule = css.match(/@media \(min-width: 700px\) \{\s*\.rowIcon\s*\{([^}]*)\}/);
-  expect(mediaRule).not.toBe(null);
-  expect(mediaRule?.[1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  // The avatar-column slot geometry (50% opacity, --speaker-avatar-size wide,
+  // margin-right net of the row's own column-gap so the rationale lands on the
+  // content edge) and the breakpoint-gated gutter pull now live in the shared
+  // icon-rail seat (styles/railseat.module.css), pinned there by
+  // railseat.contract.test.ts. This row composes both and restates no
+  // geometry of its own, so its seat cannot drift from the notification
+  // head's status glyph or the Loader's rail row.
+  expect(iconRule?.[1]).toContain('composes: seat from "../../../styles/railseat.module.css"');
+  expect(iconRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
