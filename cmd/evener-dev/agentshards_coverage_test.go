@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -236,17 +237,8 @@ func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
 		"--- FAIL: TestWrong (0.01s)",
 		"    --- FAIL: TestWrong/sub (0.01s)",
 	}
-	got := replayLines(t, path, 10)
-	if len(got) != len(want) {
-		t.Fatalf("replayed %d lines, want %d: %q", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("line %d = %q, want %q; whole excerpt:\n%s", i, got[i], want[i], strings.Join(got, "\n"))
-		}
-	}
-	if strings.Contains(strings.Join(got, "\n"), "green noise") {
-		t.Fatalf("a green test's output reached the failure excerpt:\n%s", strings.Join(got, "\n"))
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want %q", got, want)
 	}
 }
 
@@ -265,6 +257,59 @@ func TestReplaySurveyFailuresPassingLogSaysNothing(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresMarkerlessFailureShowsTail covers the red log with no
+// marker at all: a survey that dies with a fatal error, an os.Exit, or a kill
+// leaves no `--- FAIL`/`panic:` block behind, and the excerpt must not be left
+// empty. A bounded tail of the log stands in.
+func TestReplaySurveyFailuresMarkerlessFailureShowsTail(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestExits\n"+
+			"dying hard, with no verdict and no marker\n")
+	want := []string{
+		"=== RUN   TestExits",
+		"dying hard, with no verdict and no marker",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a markerless red log replayed %q, want its bounded tail %q", got, want)
+	}
+
+	// The tail is bounded like a block: a crash dump must not carry its whole
+	// stack into the summary. The excerpt keeps the last surveyTailLines lines.
+	var crash strings.Builder
+	crash.WriteString("=== RUN   TestCrashes\n")
+	for i := range surveyTailLines + surveyContextAfter {
+		_, _ = fmt.Fprintf(&crash, "    crash frame %d\n", i)
+	}
+	got := replayLines(t, writeSurveyLog(t, crash.String()), 10)
+	if len(got) != surveyTailLines {
+		t.Fatalf("a markerless crash replayed %d lines, want the bounded tail of %d:\n%s",
+			len(got), surveyTailLines, strings.Join(got, "\n"))
+	}
+	if wantFirst := fmt.Sprintf("    crash frame %d", surveyContextAfter); got[0] != wantFirst {
+		t.Fatalf("tail starts at %q, want %q: the excerpt is the END of the log", got[0], wantFirst)
+	}
+}
+
+// TestReplaySurveyFailuresAdjacentFailuresDoNotOverlap pins block boundaries:
+// two failures close enough that their context windows would overlap print each
+// line once, not twice.
+func TestReplaySurveyFailuresAdjacentFailuresDoNotOverlap(t *testing.T) {
+	path := writeSurveyLog(t,
+		"--- FAIL: TestFirst (0.00s)\n"+
+			"    thing_test.go:1: first assertion\n"+
+			"--- FAIL: TestSecond (0.00s)\n"+
+			"    thing_test.go:2: second assertion\n")
+	want := []string{
+		"--- FAIL: TestFirst (0.00s)",
+		"    thing_test.go:1: first assertion",
+		"--- FAIL: TestSecond (0.00s)",
+		"    thing_test.go:2: second assertion",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("adjacent failures replayed %q, want each line once %q", got, want)
+	}
+}
+
 // TestReplaySurveyFailuresShowsPanic covers the other marker: a panic's
 // message is on its own line, so the marker replays legibly without the stack.
 func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
@@ -277,14 +322,8 @@ func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
 			"\tpkg.TestPanics(0x0)\n"+
 			"\t\tthing_test.go:21 +0x25\n")
 	want := []string{"--- FAIL: TestPanics (0.00s)", "panic: boom as instructed"}
-	got := replayLines(t, path, 10)
-	if len(got) != len(want) {
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
 		t.Fatalf("replayed %q, want %q", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("line %d = %q, want %q", i, got[i], want[i])
-		}
 	}
 }
 
@@ -293,9 +332,12 @@ func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
 // summary, and a suite with many failures must not either: the excerpt is a
 // failure block, not the suite log it is an excerpt of.
 func TestReplaySurveyFailuresBoundsOutput(t *testing.T) {
+	// More output ahead of the marker than a block keeps: the block starts
+	// surveyContextBefore lines above the verdict, dropping the
+	// surveyContextAfter lines that sit ahead of those.
 	var spam strings.Builder
 	spam.WriteString("=== RUN   TestSpam\n")
-	for i := range surveyContextBefore + 5 {
+	for i := range surveyContextBefore + surveyContextAfter {
 		_, _ = fmt.Fprintf(&spam, "    thing_test.go:%d: line %d\n", i, i)
 	}
 	spam.WriteString("--- FAIL: TestSpam (0.00s)\n")
@@ -304,7 +346,7 @@ func TestReplaySurveyFailuresBoundsOutput(t *testing.T) {
 		t.Fatalf("replayed %d lines of a noisy failure, want %d:\n%s",
 			len(got), surveyContextBefore+1, strings.Join(got, "\n"))
 	}
-	wantFirst := fmt.Sprintf("    thing_test.go:%d: line %d", 5, 5)
+	wantFirst := fmt.Sprintf("    thing_test.go:%d: line %d", surveyContextAfter, surveyContextAfter)
 	if got[0] != wantFirst {
 		t.Fatalf("excerpt starts at %q, want the last %d output lines (%q)", got[0], surveyContextBefore, wantFirst)
 	}

@@ -49,6 +49,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -560,15 +561,20 @@ func effectiveGoflags() (string, error) {
 // so the excerpt is built around these markers.
 var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 
+// surveyGreenLine is the verdict a `go test -v` log carries when the run
+// passed: the test binary prints PASS, and `go test` prints `ok  pkg`.
+var surveyGreenLine = regexp.MustCompile(`^(PASS|ok[\t ])`)
+
 // The red survey's excerpt is one failure block per marker, never the suite
 // log: these bound how much of the failing test's own output a block carries,
-// and how many blocks print at all. The CI job summary shows the excerpt in
-// full, so an unbounded dump here would drown the job it exists to make
-// readable.
+// how many blocks print at all, and how much of the log a markerless run's
+// tail fallback carries. The CI job summary shows the excerpt in full, so an
+// unbounded dump here would drown the job it exists to make readable.
 const (
 	surveyContextBefore = 10
 	surveyContextAfter  = 6
 	maxSurveyFailures   = 20
+	surveyTailLines     = surveyContextBefore + surveyContextAfter
 )
 
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
@@ -692,39 +698,42 @@ func fileHasContent(path string) bool {
 	return err == nil && info.Size() > 0
 }
 
-// replaySurveyFailures writes the failing tests' own output from a `go test -v`
-// log: each failure marker with the assertion lines around it, bounded per
-// block and in the number of blocks.
+// replaySurveyFailures writes the excerpt a red survey prints: the failing
+// tests' own output from a `go test -v` log, one failure block per marker,
+// bounded per block by surveyContextBefore/surveyContextAfter lines and in the
+// number of blocks by maxBlocks. Those bounds are what keep the excerpt an
+// excerpt — a CI job summary shows it in full.
 //
-// This used to be a bare grep for the marker lines, and a marker names the
-// test without ever saying why it failed: the t.Fatal/t.Errorf message and its
-// file:line are written on the lines above the verdict, and the grep dropped
-// exactly those. A CI job summary sees only what this prints — the log it
-// points at is runner-local and dies with the runner — so the missing
-// assertion turned a one-line diagnosis into guesswork and a re-run (issue
-// #2121).
+// A block is the marker with the test's own output around it: the framework
+// writes t.Log/t.Error output with a file:line prefix and indents a subtest's
+// verdict, while its own framing (`=== RUN`, an enclosing verdict) is
+// unindented and ends the run. A panic carries its message on the marker line
+// itself, so the failure stays legible even with the stack left out.
 //
-// A test's own output is the run of indented lines around its marker: the
-// framework writes t.Log/t.Error output with a file:line prefix and indents a
-// subtest's verdict, while its own framing (`=== RUN`, an enclosing verdict)
-// is unindented and ends the run. A panic carries its message on the marker
-// line itself, so the failure stays legible even with the stack left out.
+// A survey that died with no marker at all — a fatal error, an os.Exit, a
+// killed binary — has no block to show, so a bounded tail of the log stands in
+// and the excerpt is never empty on a failure.
 func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	for i, line := range lines {
-		if maxBlocks <= 0 {
-			return
-		}
-		if !surveyRedLine.MatchString(line) {
+	trimmed := strings.TrimRight(string(data), "\n")
+	if trimmed == "" {
+		return
+	}
+	lines := strings.Split(trimmed, "\n")
+	matched := false
+	emitted := 0 // exclusive end of the last block written
+	for i := 0; i < len(lines) && maxBlocks > 0; {
+		if !surveyRedLine.MatchString(lines[i]) {
+			i++
 			continue
 		}
 		maxBlocks--
+		matched = true
 		start := i
-		for n := 0; n < surveyContextBefore && start > 0 && surveyOutputLine(lines[start-1]); n++ {
+		for n := 0; n < surveyContextBefore && start > emitted && surveyOutputLine(lines[start-1]); n++ {
 			start--
 		}
 		end := i + 1
@@ -734,7 +743,31 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for _, excerpt := range lines[start:end] {
 			_, _ = fmt.Fprintln(w, excerpt)
 		}
+		// Scanning resumes past this block and the next block cannot reach
+		// back into it: adjacent failures would otherwise print the lines
+		// between them twice.
+		emitted = end
+		i = end
 	}
+	if !matched && maxBlocks > 0 && !surveyLogGreen(lines) {
+		for _, line := range lines[max(len(lines)-surveyTailLines, 0):] {
+			_, _ = fmt.Fprintln(w, line)
+		}
+	}
+}
+
+// surveyLogGreen reports whether a log ends with the toolchain's green
+// verdict. A red run's log does not: it either printed a failure marker or died
+// before reaching a verdict, and the latter is the case the tail fallback above
+// exists for.
+func surveyLogGreen(lines []string) bool {
+	for _, line := range slices.Backward(lines) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		return surveyGreenLine.MatchString(line)
+	}
+	return false
 }
 
 // surveyOutputLine reports whether a `go test -v` log line is a test's own
