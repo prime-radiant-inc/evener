@@ -1078,7 +1078,11 @@ func (i *PastIndex) AllMetas() []schema.SessionMeta {
 // (session_order.go's sessionMetaLess) — not scoped to any one project or
 // harness. ProfileID is the provider instance name (mirrors
 // appwire.ModelDescriptor.Provider); entries with a blank ProfileID or Model
-// are skipped. Deduped on the pair's first (most recent) occurrence.
+// are skipped, as are delegate sessions (IsSubagent): a delegate's model is
+// inherited or overridden at spawn, never chosen in the picker, so its pair
+// is machinery noise rather than a recents signal — the same delegate
+// exclusion RecentProjectDirs applies. Deduped on the pair's first (most
+// recent) occurrence.
 func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 	if limit <= 0 {
 		return nil
@@ -1088,6 +1092,9 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 	seen := make(map[string]bool, limit)
 	var out []appwire.ModelDescriptor
 	for _, e := range i.all {
+		if e.Meta.IsSubagent {
+			continue
+		}
 		provider := strings.TrimSpace(e.Meta.ProfileID)
 		model := strings.TrimSpace(e.Meta.Model)
 		if provider == "" || model == "" {
