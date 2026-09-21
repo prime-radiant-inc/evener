@@ -65,9 +65,14 @@ deviation and what the pipeline slice inherits.
 - `add`'s entry also carries `name`, which is required there and absent from
   the update entry because the update's target name is the request's own
   field.
-- The dialog therefore carries the record's seven inputs — `name`, `ssh`,
-  `user`, `evener_path`, `config_path`, `addr`, `roots` — plus the Key path
-  control slice 1 shipped: eight inputs in all, with `name` read-only on edit.
+- The dialog carries the record's seven inputs plus the Key path control slice
+  1 shipped — `name`, `address` (the schema's `ssh`), `user`, `keyPath`,
+  `evenerPath`, `configPath`, `addr`, `roots` — eight on **add**, seven on
+  **edit**: per §13 the edit dialog offers no `name` input, and the host being
+  edited is named in the dialog's title instead. The dialog's inputs and a
+  refusal's `field` use these wire spellings, so mapping a refusal to an input
+  is the same string on both sides (§5), and the schema spelling appears only
+  where it is the schema's.
 - `HostUpdateParams.name` is the immutable target: it identifies which host to
   edit, and nothing in the request can rename one.
 - `HostUpdateResponse` is `{host: HostRow}`, mirroring remove's shape: the
@@ -141,27 +146,30 @@ and the compensation paths in one shape:
   `hostreg.ValidateEntry` call the add flow runs for exactly this reason — so a
   refusal commits nothing and an entry the registry would reject never reaches
   the file. Then persist durable-first with one atomic sidecar write that
-  replaces the entry **in place**, through a store-level replace: the sidecar
-  keeps its add order, and composing `without(name)` with an append would
-  silently move the edited host to the end of every later list. A failure whose
+  replaces the entry **in place**, through a store-level replace: the file
+  keeps the order it already had, so an edit is a minimal change to it rather
+  than a reordering nothing asked for. (The rendered list is name-sorted
+  regardless — this is about the file's own order, not the list's.) A failure whose
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
-- **Live, mutex-free, in this order.** When any of the dial-relevant fields
-  changed — `address`, `user`, `keyPath`, `evenerPath`, `configPath`, `addr`
-  compared old against new — drop the name's attach record **before** the
-  teardown: the record describes the identity being retired, and resetting
-  ahead of the teardown means everything recorded afterwards belongs to the new
-  identity, including a record an attach that lands during this phase writes.
-  Resetting after the teardown would erase exactly that. The comparison is on
-  the fields, not on whether a channel happened to exist: an offline host whose
-  address changed is the motivating case, and its stale attach error and
-  last-known facts must go too. Then `manager.UpdateHost(entry)` when a manager
-  is wired; otherwise the registry's own `Update`, mirroring how remove falls
-  back when no manager is wired (tests, embedders). The registry re-runs the
-  same validation under its own lock; the commit phase's check is what keeps an
-  invalid or unnormalized entry out of the file, and is not a substitute for
-  it.
+- **Live, mutex-free, in this order.** Clear the name's attach record on every
+  update — §4 requires an update to clear the name-keyed resolved state
+  wholesale, and the record is exactly that: the retiring identity's last-known
+  facts and attach error, which an edit otherwise leaves lying about an entry
+  that no longer exists (most visibly on an offline host whose address changed,
+  where no channel exists to tear down). It is derived state, not a fence:
+  clearing it here, before the manager call, is best-effort by construction —
+  an attach that was already in flight can legitimately record again
+  afterwards, and the authority for what the row shows is that attach's outcome
+  and the events the teardown emits, not this write. Then
+  `manager.UpdateHost(entry)` when a manager is wired; otherwise the registry's
+  own `Update`, mirroring how remove falls back when no manager is wired
+  (tests, embedders). The registry re-runs the same validation under its own
+  lock; the commit phase's check is what keeps an invalid or unnormalized entry
+  out of the file, and is not a substitute for it. The manager's swap is atomic
+  under the host gate — the registry entry is replaced and the channel retired,
+  or neither — so an error from it means nothing live changed.
 - **Finish, under the mutex.** Clear the mark. On success:
   - when `roots` changed, drop the host's derived rows **first** — the
     remote-thread cache's source entry and the last-good retention, the two
@@ -173,10 +181,15 @@ and the compensation paths in one shape:
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
-  On failure, roll the sidecar back to the live set and return the error, so a
-  host is never durable-but-unlive. The attach record is not touched here: it
-  was reset in the live phase, ahead of the teardown, for the reason given
-  there.
+  On failure, roll the sidecar back to the live set — the file **and** the
+  in-memory sidecar store together, in one write, so a later save cannot
+  resurrect the entry the refusal was supposed to leave in place — clear the
+  mark, and return the error. The host ends the call as it started apart from
+  its attach record, which stays cleared: derived state the next attach
+  repopulates, and the only part of the call deliberately not compensated. The
+  caller may retry, because nothing is half-applied: the entry, the file, the
+  store row and the live registry all agree on the old entry, or on the new
+  one.
 
 ### 3.5 Frontend
 
@@ -185,9 +198,9 @@ and the compensation paths in one shape:
   same entry. Errors keep remove's posture — thrown to the caller, shown by the
   dialog, never silently swallowed.
 - One `HostEntryDialog` serves Add and Edit: the record's seven fields plus
-  slice 1's Key path control, `name` rendered read-only on edit (per §13, Edit
-  does not offer it), submit disabled while in flight, and each field's message
-  placed inline (§5).
+  slice 1's Key path control, on edit without the `name` input (the host's name
+  is in the dialog's title, per §13), submit disabled while in flight, and each
+  field's message placed inline (§5).
 - Row actions: **Edit** for sidecar, non-removed rows. `hub.toml` rows keep the
   read-only explanation the pane's help text already gives; removed rows keep
   their removed posture.
@@ -295,6 +308,12 @@ reversal.
     the controller's own build, so the installed-versus-controller comparison
     §13 implies cannot be built from it. It belongs with the pipeline slice's
     verified post-operation facts refresh.
+12. **The wire says `address` where the schema and the record's dialog say
+    `ssh`.** Slice 1 shipped that spelling and the refusal mapping follows the
+    wire, so the dialog's inputs and the refusals agree with each other; the
+    record's §13 names the field after the config schema instead. Nothing
+    depends on the label but the generated client, and aligning it later is a
+    rename, not a shape change.
 
 ## 7. Tests and acceptance criteria
 
@@ -307,8 +326,8 @@ Every item is pinned by a test in this slice's PR.
 2. The sidecar is the durable record: after an edit and a sidecar reload, the
    edited values are the effective entry, and no `hub.toml` entry was written.
 3. `name` cannot change: the update request carries `name` only as the target
-   it addresses, the dialog renders it read-only, and no mutable field can
-   rename a host.
+   it addresses, the edit dialog offers no name input (it names the host in its
+   title), and no mutable field can rename a host.
 4. A `hub.toml`-declared name is refused with the edit-the-file message;
    nothing changes on disk or live.
 5. An unknown name is refused as not found and nothing is written. (The
@@ -337,9 +356,20 @@ Every item is pinned by a test in this slice's PR.
 12. An invalid entry never reaches the sidecar: the refusal leaves the file
     bytes unchanged, a reload of the sidecar is clean, and a padded input is
     stored trimmed — the file and the live set cannot drift.
-13. No regression to slice 1: the existing add/Connect/remove tests pass
-    unchanged, `list`/`status` still never dial, and an edit round-trips a
-    stored `keyPath` rather than clearing it.
+13. No regression to slice 1: `list`/`status` still never dial, Connect and
+    remove behave as they did, an edit round-trips a stored `keyPath` rather
+    than clearing it, and the add handler's own tests move with the params
+    reshape instead of being left asserting the old flat shape.
+14. A name mid-update refuses `add`, `remove` and a second `update` with the
+    same conflict a removal in flight produces today — the mark's add arm
+    included, since the mark now guards every mutation on the name.
+15. An edit neither dials, deploys nor attaches: no new SSH dial appears during
+    an update, and the row changes only as the teardown's own events describe.
+16. A failed live phase leaves the file, the in-memory store row, the live
+    registry and the rendered row all describing the old entry, and a retry of
+    the same edit then succeeds.
+17. `Registry.Update` preserves the name's upstream edges, and the file's order
+    is unchanged: the edit replaced one entry rather than moving it.
 
 **Verification, not new code:** adding a host, connecting it, and starting a
 session on it makes no discovery call that bypasses `evener/host/request`.
