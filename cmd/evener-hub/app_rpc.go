@@ -123,6 +123,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			SessionID:         item.SessionID,
 			Status:            item.Status,
 			PendingAsk:        item.PendingAsk,
+			PendingEscalation: item.PendingEscalation,
 			RunningJobs:       item.RunningJobs,
 			CompletedJobs:     item.CompletedJobs,
 			Watches:           item.Watches,

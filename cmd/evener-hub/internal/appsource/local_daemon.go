@@ -62,6 +62,11 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// PendingEscalation mirrors hubcore.LiveEntry.PendingEscalation — true
+	// while the daemon reports a blocked sandbox-exemption escalation. The
+	// unprobed fallback folds it out of Clear, matching the daemon's own
+	// clear gate (clearBlockedReasonLocked's unresolved-approval-work branch).
+	PendingEscalation bool
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -1196,8 +1201,12 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		Interrupt: status != appwire.ThreadStatusClosed,
 		Compact:   status != appwire.ThreadStatusClosed,
 		// Clear is the one !closed bit that also folds activity — the daemon
-		// gates it on !active for the same reason as Send.
-		Clear:       !item.ReadOnlyAlias && status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed,
+		// gates it on !active for the same reason as Send — and folds
+		// unresolved approval work (clearBlockedReasonLocked): the roster
+		// carries the ask and escalation flags, so an unprobed row withholds
+		// Clear while either is pending. Queued work stays beyond the
+		// roster's view, the approximation's honest limit.
+		Clear:       !item.ReadOnlyAlias && status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed && !item.PendingAsk && !item.PendingEscalation,
 		Shutdown:    true,
 		ChangeModel: status != appwire.ThreadStatusClosed,
 		// The daemon advertises this whenever its vision-model seam is wired
