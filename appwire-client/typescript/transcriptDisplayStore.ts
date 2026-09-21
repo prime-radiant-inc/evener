@@ -1223,8 +1223,26 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // Wiping the draft fields would leave the record still classified on
       // the port while the memory said nothing was there, so the next edit's
       // compare-and-swap would succeed against it and overwrite an
-      // unresolved write the flags no longer carried.
-      setState({ ...initialState(), ...restoreDraft({ loaded: false, hub: {} }) });
+      // unresolved write the flags no longer carried. The restore also
+      // merges onto the PRIOR draft state, the same merge recoverDraftPort
+      // runs: its catch omits the fields a plain port failure knows nothing
+      // about so they keep their pre-reset values, and spreading
+      // initialState() here would have set them to their cleared values
+      // first - wiping (for one) the unreadable classification that lets
+      // discard keep naming the record it holds. `saving` is not the
+      // restore's to clear, and a reset always ends the editor's in-flight
+      // bookkeeping.
+      const {
+        draft: _draft,
+        saving: _saving,
+        writeUncertain: _writeUncertain,
+        storageUnavailable: _storageUnavailable,
+        draftUnreadable: _draftUnreadable,
+        draftConflict: _draftConflict,
+        draftError: _draftError,
+        ...lifecycle
+      } = initialState();
+      setState({ ...lifecycle, saving: false, ...restoreDraft({ loaded: false, hub: {} }) });
     },
     dispose() {
       if (fence.disposed) return;

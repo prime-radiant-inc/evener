@@ -1752,6 +1752,27 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
   });
 
+  test("reset keeps an unreadable classification discardable through a port failure", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().draftUnreadable).toBe(true);
+
+    // A temporary load failure strikes. The reset's re-read fails plainly,
+    // so the unreadable classification must survive it exactly as a
+    // recovery reload's would: discard is the one fix for an unreadable
+    // record, and the repository still holds its identity.
+    drafts.failLoad();
+    store.reset();
+    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState().draftUnreadable).toBe(true);
+    expect(() => store.getState().discardDraft()).not.toThrow(/unavailable/);
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+  });
+
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
