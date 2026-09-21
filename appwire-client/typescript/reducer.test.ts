@@ -3636,6 +3636,108 @@ test("mergeTurnHistory does not count a result a fresh call in another turn supe
   expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "fresh output" });
 });
 
+test("mergeTurnHistory does not count turn usage a fold-dropped result turn carried", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-older-result",
+        status: "completed",
+        usage: { inputTokens: 30, outputTokens: 4 },
+        items: [
+          {
+            id: "item_tool_result_0_0",
+            turnId: "turn-older-result",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-cross-turn",
+            text: "",
+            output: "older output",
+            status: "completed",
+            completedAt: new Date(10).toISOString(),
+          },
+        ],
+      },
+    ],
+    [
+      toolModelTurn("turn-fresh-call", {
+        id: "item_tool_1_0",
+        callId: "call-cross-turn",
+        output: "fresh output",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-fresh-call");
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "fresh output" });
+  expect(merged.turns[0]?.usage).toBeUndefined();
+});
+
+test("mergeTurnHistory does not count fallback fields on a fold-discarded matched result", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-matched",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_result_1",
+            turnId: "turn-matched",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-matched",
+            text: "",
+            output: "older output",
+            startedAt: "2026-09-19T10:00:00.000Z",
+            status: "completed",
+            completedAt: new Date(10).toISOString(),
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "turn-matched",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_1",
+            turnId: "turn-matched",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-matched",
+            text: "",
+            output: "fresh output",
+            status: "completed",
+            completedAt: new Date(20).toISOString(),
+          },
+          {
+            id: "item_tool_result_1",
+            turnId: "turn-matched",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-matched",
+            text: "",
+            status: "completed",
+            completedAt: new Date(20).toISOString(),
+          },
+        ],
+      },
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns).toHaveLength(1);
+  const items = merged.turns[0]?.items ?? [];
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ id: "item_tool_1", output: "fresh output" });
+  expect(items[0]?.startedAt).toBeUndefined();
+  expect(items.map((item) => item.id)).not.toContain("item_tool_result_1");
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [

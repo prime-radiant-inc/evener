@@ -544,6 +544,36 @@ function collectDirectToolCandidates(turns: TurnModel[]): Map<string, ToolCandid
   return candidates;
 }
 
+// The fold's own view of a turn list, factored out of mergeToolCallsByCallId
+// so the coverage walk can ask exactly what the fold will do instead of
+// re-deriving it: which call ids exist, the candidates each call id draws
+// fields from (per source, through the merge provenance), and which call ids
+// have results to fold in.
+type ToolFoldView = {
+  callIds: Set<string>;
+  fresh: Map<string, ToolCandidates>;
+  older: Map<string, ToolCandidates>;
+  resultCallIds: Set<string>;
+  // The fold rewrites calls and drops emptied turns only when some call id
+  // has a result to fold in; otherwise it returns the turns unchanged.
+  noOp: boolean;
+};
+
+function toolFoldView(turns: TurnModel[], context?: ToolItemMergeContext): ToolFoldView {
+  const callIds = new Set<string>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
+    }
+  }
+  const fresh = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
+  const older = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
+  const resultCallIds = new Set(
+    [...fresh, ...older].flatMap(([callId, candidates]) => (candidates.results.length > 0 ? [callId] : [])),
+  );
+  return { callIds, fresh, older, resultCallIds, noOp: resultCallIds.size === 0 };
+}
+
 function preferredToolField<K extends ToolResultField>(
   item: ItemModel,
   field: K,
@@ -558,30 +588,18 @@ function preferredToolField<K extends ToolResultField>(
   return item[field];
 }
 
-function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel[] {
-  const callIds = new Set<string>();
-  for (const turn of turns) {
-    for (const item of turn.items) {
-      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
-    }
-  }
-  const freshCandidates = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
-  const olderCandidates = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
-  const resultCallIds = new Set(
-    [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
-      candidates.results.length > 0 ? [callId] : [],
-    ),
-  );
-  if (resultCallIds.size === 0) return turns;
+function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext, view?: ToolFoldView): TurnModel[] {
+  const fold = view ?? toolFoldView(turns, context);
+  if (fold.noOp) return turns;
 
   const merged: TurnModel[] = [];
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
-      if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
-      if (item.callId && isToolCallId(item.id) && resultCallIds.has(item.callId)) {
-        const fresh = freshCandidates.get(item.callId) ?? { calls: [], results: [] };
-        const older = olderCandidates.get(item.callId) ?? { calls: [], results: [] };
+      if (item.callId && isToolResultId(item.id) && fold.callIds.has(item.callId)) continue; // folded into its call
+      if (item.callId && isToolCallId(item.id) && fold.resultCallIds.has(item.callId)) {
+        const fresh = fold.fresh.get(item.callId) ?? { calls: [], results: [] };
+        const older = fold.older.get(item.callId) ?? { calls: [], results: [] };
         if (fresh.results.length > 0 || older.results.length > 0) {
           const field = <K extends ToolResultField>(name: K) =>
             preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
@@ -1145,15 +1163,77 @@ function fullySupersededToolResult(
   return true;
 }
 
+// Coverage reports persisted transcript history the returned turns actually
+// keep, and the fold runs after the claims do. Each gated claim therefore
+// proves its older data survives the fold, through the fold's own view of
+// the placed turns:
+// - Turn fields only ever land on the merged group turn, never on another
+//   turn, and the fold drops a turn it has emptied of items — a claim riding
+//   a dropped turn reports history the merge throws away.
+// - The fold removes a tool RESULT whose call survives elsewhere, carrying
+//   only its toolResultFields onto the surviving call by fresh-first
+//   precedence. A claimed fallback field outside toolResultFields dies with
+//   the removed result; a toolResultField survives only while no fresh
+//   candidate for that call id supplies a value of its own.
+function turnSurvivesFold(turn: TurnModel, view: ToolFoldView): boolean {
+  return view.noOp || turn.items.some((item) => !isFoldedResult(item, view));
+}
+
+function isFoldedResult(item: ItemModel, view: ToolFoldView): boolean {
+  return !view.noOp && item.callId !== undefined && isToolResultId(item.id) && view.callIds.has(item.callId);
+}
+
+function foldRewritesCall(item: ItemModel, view: ToolFoldView): boolean {
+  return !view.noOp && item.callId !== undefined && isToolCallId(item.id) && view.resultCallIds.has(item.callId);
+}
+
+function isToolResultField(field: string): boolean {
+  return (toolResultFields as readonly string[]).includes(field);
+}
+
+function freshSuppliesToolField(callId: string, field: string, view: ToolFoldView): boolean {
+  const candidates = view.fresh.get(callId);
+  if (candidates === undefined) return false;
+  return [...candidates.results, ...candidates.calls].some(
+    (item) => (item as unknown as Record<string, unknown>)[field] !== undefined,
+  );
+}
+
+// The merged item in the group turn hosting the older item's data — the page
+// merge replaces the older item in place, so the first group item matching
+// its identity is where the claimed fields live.
+function matchedItemHost(older: ItemModel, groupTurn: TurnModel): ItemModel {
+  return groupTurn.items.find((item) => item === older || itemIdentityMatches(item, older)) ?? older;
+}
+
+// Whether a claimed field on a matched item outlives the fold. The host keeps
+// every field when the fold neither removes it nor rewrites it as a call; a
+// rewritten call keeps non-toolResultFields through the spread and takes
+// toolResultFields from the candidates (fresh first); a removed result keeps
+// only toolResultFields, and again only while the fresh side supplies none.
+function matchedFieldSurvivesFold(older: ItemModel, field: string, groupTurn: TurnModel, view: ToolFoldView): boolean {
+  const host = matchedItemHost(older, groupTurn);
+  if (host.callId === undefined) return true;
+  if (isFoldedResult(host, view)) {
+    return isToolResultField(field) && !freshSuppliesToolField(host.callId, field, view);
+  }
+  if (!isToolResultField(field)) return true;
+  return !foldRewritesCall(host, view) || !freshSuppliesToolField(host.callId, field, view);
+}
+
 function olderItemAddsCoverage(
   older: ItemModel,
   matches: ItemModel[],
+  groupTurn: TurnModel,
+  view: ToolFoldView,
   freshToolCandidates?: Map<string, ToolCandidates>,
   toolCallCallIds?: Set<string>,
 ): boolean {
   if (matches.length === 0) return !fullySupersededToolResult(older, freshToolCandidates, toolCallCallIds);
   if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
-    return true;
+    // The fold carries no text onto a surviving call: the older text only
+    // counts while the merged item hosting it survives.
+    return matchedFieldSurvivesFold(older, "text", groupTurn, view);
   }
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
@@ -1168,26 +1248,35 @@ function olderItemAddsCoverage(
     const presenceMerged = !nullishMerged && field !== "status";
     const olderValue = (older as unknown as Record<string, unknown>)[field];
     if (absentForCoverage(olderValue, nullishMerged)) return false;
-    return matches.every((item) => {
+    const freshLacks = matches.every((item) => {
       if (presenceMerged) return !Object.hasOwn(item, field);
       return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
     });
+    return freshLacks && matchedFieldSurvivesFold(older, field, groupTurn, view);
   });
 }
 
 function olderTurnAddsCoverage(
   older: TurnModel,
   matches: TurnModel[],
+  groupTurn: TurnModel,
+  view: ToolFoldView,
   freshToolCandidates?: Map<string, ToolCandidates>,
   toolCallCallIds?: Set<string>,
 ): boolean {
   if (
+    // The canonical-fields check stays ahead of the unmatched early return:
+    // an unmatched turn carrying persisted fields still claims even when its
+    // items cannot (naming-trap regression: a warning-only turn with usage).
     turnCoverageFields.some(
       (field) =>
         !absentForCoverage(older[field], true) && matches.every((turn) => absentForCoverage(turn[field], true)),
     )
   ) {
-    return true;
+    // The claimed turn fields ride the merged group turn, and the fold drops
+    // that turn once it has folded every item away — usage on a turn the
+    // fold drops never reaches the returned history.
+    return turnSurvivesFold(groupTurn, view);
   }
   // The fold is global across turns: an older result in a turn that matches
   // nothing can still be superseded by a fresh call living in another turn,
@@ -1195,16 +1284,18 @@ function olderTurnAddsCoverage(
   // taking every non-warning item on faith.
   if (matches.length === 0) {
     return (
-      older.items.length === 0 ||
+      (older.items.length === 0 && turnSurvivesFold(groupTurn, view)) ||
       older.items.some(
-        (item) => item.type !== "warning" && olderItemAddsCoverage(item, [], freshToolCandidates, toolCallCallIds),
+        (item) =>
+          item.type !== "warning" &&
+          olderItemAddsCoverage(item, [], groupTurn, view, freshToolCandidates, toolCallCallIds),
       )
     );
   }
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
     const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
-    return olderItemAddsCoverage(olderItem, matchingItems, freshToolCandidates, toolCallCallIds);
+    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view, freshToolCandidates, toolCallCallIds);
   });
 }
 
@@ -1243,6 +1334,10 @@ function mergeTurnHistoryWithContext(
       if (item.callId && isToolCallId(item.id)) toolCallCallIds.add(item.callId);
     }
   }
+  // Coverage must only report older history the fold keeps, so the claims
+  // below read the fold's own view of the turns they will return.
+  const placed = placeCoalescedTurns(groups, older.length);
+  const view = toolFoldView(placed, context);
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
@@ -1258,7 +1353,9 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns, freshToolCandidates, toolCallCallIds)) olderCoverage = true;
+      if (olderTurnAddsCoverage(turn, freshTurns, group.turn, view, freshToolCandidates, toolCallCallIds)) {
+        olderCoverage = true;
+      }
     }
 
     if (group.olderIndexes.length === 0) continue;
@@ -1271,7 +1368,7 @@ function mergeTurnHistoryWithContext(
   }
 
   return {
-    turns: olderContributed ? mergeToolCallsByCallId(placeCoalescedTurns(groups, older.length), context) : newer,
+    turns: olderContributed ? mergeToolCallsByCallId(placed, context, view) : newer,
     olderCoverage,
     transcriptOverlap,
   };
