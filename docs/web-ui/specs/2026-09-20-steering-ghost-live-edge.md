@@ -64,34 +64,43 @@ never sees a trailing row appear. Session.tsx therefore feeds the pill two
 explicit signals — a `heldCount` and a `heldEpoch` — mirroring `askDockPending`
 / `askDockActivationEpoch`. As with that epoch, arrival is the only edge:
 `heldEpoch` bumps when held steering appears (a new id joins the stack, or the
-count leaves zero) and never on removal — a delivered, canceled, or failed
-ghost's departure is surfaced by the content-changed pill effect and the
-announce-once region below, not by a "new content" bump. This matters most for
-another client's steer, which appears with no local action to draw the eye.
+count leaves zero) and never on removal — departures are surfaced by the
+announce-once region below, not by a "new content" bump. (The content-changed
+pill effect keys on item-count/first-turn/failed-turn primitives, so a
+canceled or rejected departure — which moves none of them — reaches a
+scrolled-away reader through the announcement alone; a failed delivery does
+flip the failed-turn primitive, firing the pill for the turn's failure.) This
+matters most for another client's steer, which appears with no local action
+to draw the eye.
 
 ### 2. HeldSteerStack component
 
 New `panes/session/transcript/messages/HeldSteerStack.tsx` (+ module.css).
-Reads `usePendingTurnEntries(ref)` and renders every entry whose method is
-`steer`, `drain`, or `promote` (see §3), one per row, each reusing the
-user-message structure via `UserMessageView`. Stack order (§4): entries with a
-known `createdAt` first, ascending; entries without one after them, keeping
-the hydrate's array order:
+Reads `usePendingTurnEntries(ref)` and renders every steer-family entry —
+method `steer`, `drain`, or `promote` (see §3) — except the terminal states
+that own QueueStrip rows (`blockedUnknown`, `canceled`; PendingChips filters
+the same states today), one per row, each reusing the user-message structure
+via `UserMessageView`. Stack order (§4): entries with a known `createdAt`
+first, ascending; entries without one after them, keeping the hydrate's
+array order:
 
 - **`UserMessageView` gains one optional prop**: `provisionalMeta?: string`,
   rendered in the timestamp slot instead of the item time. No other change to
   that component; delivered messages render exactly as today.
 - The ghost's provisional styling is a `variant="provisional"` of
   `UserMessageView` (one more optional prop, applying a class from
-  `UserMessageItem.module.css`): dashed `--accent` bubble edge, the stack at
+  `usermessageitem.module.css`): dashed `--accent` bubble edge, the stack at
   `opacity: 0.78`, and the dashed left railmark from mockup A. Tokens only —
   no new colors, so no token-contract allowlist work.
 - `opensExchange` is always false: a held steer joins work under way.
 - **Scope — every client's held steering renders.** All of it lands in this
   shared transcript, so the stack shows `pendingTurnEntries` for the session,
-  not only this client's own. Known asymmetry, accepted: this client's ghosts
-  appear instantly (its own durable record), while another client's entry
-  surfaces only when a hydrate reports it through `pendingMutations`.
+  not only this client's own. Known asymmetry, honestly scoped: this client's
+  ghosts appear instantly (its own durable record), and — because the durable
+  outbox is shared per origin while the client identity is per tab — so does
+  another tab's, carrying its `createdAt` from the shared record. A remote
+  client's entry (no shared storage) surfaces only when a hydrate reports it
+  through `pendingMutations`, timestampless.
 - **Ghost body, all methods — the chips' own composition.** The body is
   what the pending chips it replaces showed: the
   `queueEntryPreviewText(entry.text, entry.imageCount)` preview line plus
@@ -115,10 +124,13 @@ the hydrate's array order:
 - **Non-visual register.** The caption is real text in the row, read in flow
   by assistive tech; the dashed edge and opacity are decoration only.
   Appearance, delivery, and a departure without delivery (rejected, canceled,
-  or failed — §5) are announced exactly once each through a live region
-  outside the virtual list (the `AskDockAnnouncements` pattern), never on the
-  held-timer's cadence. The QueueStrip row is the departure's follow-up
-  surface.
+  blockedUnknown, or failed — §5) are announced exactly once each through a
+  live region outside the virtual list (the `AskDockAnnouncements` pattern),
+  never on the held-timer's cadence. Follow-up surfaces, honestly: the
+  departures that move the record to a terminal row (rejected → recovery,
+  canceled, blockedUnknown) point at that QueueStrip row; the failed-at-
+  delivery departure leaves no row anywhere (§5) — the announcement is the
+  ghost's only trace, and the failed turn's error is the explanation.
 
 ### 3. Foundation — a pending artifact for every steering path
 
@@ -153,17 +165,24 @@ the hydrate's array order:
 
 | Entry state | Session state | Caption |
 |---|---|---|
-| `submitting` | any | `Joining this turn · 0:00` |
-| `accepted` | active turn running | `Delivers when this step finishes · held m:ss` |
-| `accepted` | no active turn (turn ended while held; the daemon opens the steering-carrier turn on the next run — a Stop parks steering behind the `SteeringHeld` gate until a user-initiated run clears it) | `Delivers with the next turn · held m:ss` |
+| `submitting` | turn running | `Joining this turn · 0:00` |
+| `submitting` | no turn (dispatch straddled the turn boundary, stalled, or an idle drain of a parked queue) | `Delivers with the next turn · 0:00` |
+| `accepted` | turn running | `Delivers when this step finishes · held m:ss` |
+| `accepted` | no turn (turn ended while held; the daemon opens the steering-carrier turn on the next run — a Stop parks steering behind the `SteeringHeld` gate until a user-initiated run clears it) | `Delivers with the next turn · held m:ss` |
 
 Steering entries never enter the `claimed` state: the daemon keeps a client
 steer `accepted` until its transcript append lands
 (`TestClientMutation_SteerStaysAcceptedUntilDurableAppend` pins it, and a
-legacy normalizer rewrites historical "claimed" steers back to "accepted"), so
-the no-turn arm keys off `accepted` + `!model.activeTurnId`, never off the
-entry state. The turn-running arm likewise keys off `model.activeTurnId`, not
-status type.
+legacy normalizer rewrites historical "claimed" steers back to "accepted"),
+so the arms key off the entry's method family and the session's turn
+liveness, never off a `claimed` state. Both arms read the thread status type,
+never `model.activeTurnId`: the projector closes one turn row before opening
+the next, so the id goes false between inline turns while the run (and the
+status) continues — a caption keyed off the id would flip to "Delivers with
+the next turn" at exactly the inline boundary where a drained steering
+carrier delivers (#1330, the same rule `submitRouting`'s predicate already
+follows: status alone, never the id). The turn-running arm is status
+`active`; the no-turn arms are everything else.
 
 `m:ss` is computed from `createdAt` against the transcript's existing
 `SessionNowContext` cadence — 3 s granularity, accepted: the caption reads
@@ -190,19 +209,23 @@ and the entry falls into the unknown-`createdAt` bucket below.
 
 Stack order: entries with a known `createdAt` sort first, ascending; entries
 without one render after them. This client's entries carry one while the
-record or the map holds it (above) — not after a post-settle reload.
-Another client's entries arrive only through `pendingMutations`, keep no
-client-side timestamp, and take the array order of the current hydrate —
-the daemon sorts `pendingMutations` lexicographically by mutation id, which
-is itself no submission order, so their relative order is stable within a
-snapshot and not guaranteed across snapshots. Same-millisecond submissions
-tie-break by the durable record's `intentSequence` while the record
-exists; a tie between settled entries degrades to that same hydrate order
-(only a sub-millisecond double-submit is affected). A wire timestamp (or
-sequence) on `PendingMutation` would pin cross-client order and is a
-non-goal here. A reload-mid-hold test pins the degraded caption (no
-`held m:ss` after a post-settle reload), the unknown-`createdAt`-last
-rule, and the pre-settle reload's re-discovered `createdAt`.
+record or the map holds it (above) — not after a post-settle reload. Another
+tab of this origin shares the durable outbox, so its entries carry their
+`createdAt` too and sort with the known bucket; a remote client's entries
+arrive only through `pendingMutations`, keep no client-side timestamp, and
+take the array order of the current hydrate — the daemon sorts
+`pendingMutations` lexicographically by mutation id, which is itself no
+submission order, so their relative order is stable within a snapshot and
+not guaranteed across snapshots. Same-millisecond submissions tie-break by
+`intentSequence`: `PendingTurnEntry` gains `intentSequence?: number`,
+populated in `outboxEntry` from the durable record (authoritative entries
+have none and degrade to the hydrate order above — only a sub-millisecond
+double-submit is affected). This entry-model change is listed in Files; a
+wire timestamp (or sequence) on `PendingMutation` would pin cross-client
+order and is a non-goal here. A reload-mid-hold test pins the degraded
+caption (no `held m:ss` after a post-settle reload), the
+unknown-`createdAt`-last rule, and the pre-settle reload's re-discovered
+`createdAt`.
 
 ### 5. Settle semantics — unchanged, and the race, documented
 
@@ -211,8 +234,8 @@ delivered path settles it two ways at once: reflection in the transcript
 (reconcilePendingEntries' `reflectedMutationIds`) and the identity settle
 (`handleNotification` → `dispatcher.reconcileIdentities`) on
 `evener/steering/injected`, which fires with the same `clientMutationId` in
-the same frame the reducer appends the item. Three non-delivery departures
-also end a ghost, none of them through those paths:
+the same frame the reducer appends the item. Four non-delivery departures also
+end a ghost, none of them through those paths:
 
 - **Rejected at acceptance** (interrupt fence, empty input, queue-revision
   conflict): the record moves to the recovery store, out of the projection
@@ -220,6 +243,10 @@ also end a ghost, none of them through those paths:
   reflection. The recovery row's QueueStrip home is the follow-up surface.
 - **Canceled by Stop** (a still-`submitting` steer): the canceled row's
   QueueStrip home, same silent leave.
+- **Blocked as delivery-uncertain** (an unknown send outcome with
+  `persistenceUnavailable` or a blocked retry: `markUnknown` →
+  `blockedUnknown`): the blockedUnknown row's QueueStrip home, same silent
+  leave — the stack's exclusion already covers it.
 - **Failed at delivery** (a skill-bearing steer whose selection fails
   preparation: `recordFailedSteeringSelection` retires the execution before
   any injected event, and the only wire trace is the error path's bare
@@ -229,7 +256,10 @@ also end a ghost, none of them through those paths:
   it, and the ghost persists indefinitely promising delivery. That stuck
   record is a pre-existing defect (today a pending chip sticks beside the
   composer the same way); the ghost inherits it, and fixing it needs a
-  daemon-side failure notification — see Non-goals.
+  daemon-side failure notification — see Non-goals. In both the vanished and
+  the stuck case there is no QueueStrip row: the departure announcement is
+  the message's only trace, and the failed turn's error surface is the
+  explanation.
 
 Each non-delivery departure is announced once (§2); the delivered path needs
 no departure announcement because the delivered item replaces the ghost in
@@ -270,7 +300,11 @@ for real recovery regressions.
 
 The chip strip keeps `send` only. Steer/drain/promote chips are removed — the
 ghost is the single surface for held steering (one surface, no double-read).
-Blocked/canceled durable rows keep their QueueStrip homes, unchanged.
+Blocked/canceled durable rows keep their QueueStrip homes, unchanged. Known
+window, accepted: on a not-yet-live surface (app boot before the first
+hydrate) neither the removed chips nor the live-gated ghost render, so a
+durable held steer is invisible for the seconds until the first hydrate loads
+the session — the same window in which the chips were the only surface today.
 
 ## Non-goals
 
@@ -293,9 +327,9 @@ provider). Component and unit tests, all vitest:
 - `HeldSteerStack.test.tsx` — renders steer/drain/promote entries in order
   (known-`createdAt` ascending, unknown-`createdAt` after, hydrate order
   within, `intentSequence` tie-break); excludes `queue`/`send`; caption per
-  state table (including the accepted-no-turn arm, the `[image]`
-  placeholder, and the `[queued messages]` fallback the stack itself adds
-  for a blank composed body); a skill-only entry renders the skill marker,
+  state table (including both no-turn arms — accepted and submitting — the
+  `[image]` placeholder, and the `[queued messages]` fallback the stack itself
+  adds for a blank composed body); a skill-only entry renders the skill marker,
   not an empty bubble; the drain ghost's text refines to the authoritative
   combined input at the next hydrate; excludes `blockedUnknown`/`canceled`;
   disappears when the transcript reflects the id; a failed-delivery vanish
@@ -310,7 +344,8 @@ provider). Component and unit tests, all vitest:
   image-bearing entries; the id → `createdAt` carrier survives the hydrate
   settle within a page session (the durable record is gone; map reads
   still resolve) and `queueEntryPreviewText` still returns "" for
-  contentless input (matching-key pin).
+  contentless input (matching-key pin); `outboxEntry` populates the new
+  `intentSequence` field for the §4 tie-break.
 - `pendingTurns.test.ts` (package) — `recordSubmittedHere` writes the id →
   `createdAt` map entry; the map is never pruned by the settle that deletes
   the durable record.
@@ -336,10 +371,15 @@ Chrome-capable hosts for geometry, `make lint`, `make vet`.
 ## Files (expected)
 
 - `appwire-client/typescript/state/mutation/pendingEntries.ts` — promote map;
-  `queueEntryPreviewText`/`skillMarkers` reuse for the ghost body
+  `queueEntryPreviewText`/`skillMarkers` reuse for the ghost body;
+  `PendingTurnEntry` gains `intentSequence?` (populated in `outboxEntry`) for
+  the §4 tie-break
 - `appwire-client/typescript/state/mutation/pendingTurns.ts` —
   `submittedHere` set becomes the never-pruned id → `createdAt` map, written
   at `recordSubmittedHere`
+- `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
+  — singleton state sites (durable-read scan, singleton reset) updated for
+  the map type; the test-wipe reset re-initializes the map
 - `cmd/evener-hub/frontend/src/stores/threads.ts` — `promoteQueuedAsSteer`
   signature widened for the display input (payload is hardcoded there today)
 - `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx` —

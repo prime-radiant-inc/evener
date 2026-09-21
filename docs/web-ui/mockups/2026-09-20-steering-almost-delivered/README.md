@@ -74,17 +74,19 @@ The message never moves.
   optimistic items out of the transcript (`PendingChips.tsx` header records
   that call). This direction reverses that ruling deliberately: the vanish
   complaint is exactly the cost of that choice.
-- Multiple held steers stack in submission order — the user sees the queue
-  *as* messages.
+- Multiple held steers stack — this client's in submission order (another
+  client's order is approximate; the spec's §4 says why) — so the user sees
+  the queue *as* messages.
 
 **Tradeoffs.** Strongest: zero ambiguity, nothing to learn — the message is
 simply visibly queued behind the running step. Weakest: it reverses a
 recorded presentation decision, and an optimistic element in the reading
 surface must be unmistakably provisional (dashed + caption) or it reads as
 already-delivered. Reload is a non-issue: the hydrate re-reports the held
-steer in `pendingMutations`, so the ghost re-renders — without its held
-timer (the timer lives only within a page session) — and settles on
-reflection.
+steer in `pendingMutations`, so the ghost re-renders — with its held timer if
+the durable record is still in storage (before the first hydrate settled
+it), without it once the in-memory carrier is all that remains — and settles
+on reflection.
 
 ## Idea B — Held at the boundary (an explicit steering queue)
 
