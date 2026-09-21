@@ -270,6 +270,55 @@ func TestRetirementDelegateRealIdleSource(t *testing.T) {
 	}
 }
 
+// TestRetirementAfterIdleReleaseCoversReleasedMember: whole-tree retirement
+// must claim and commit over a member whose runtime the idle release already
+// released — production's shape after the grace period, which the fixtures
+// that keep children warm otherwise hide. The released member must not block
+// the claim, must keep its durable identity, and must not be torn down a
+// second time.
+func TestRetirementAfterIdleReleaseCoversReleasedMember(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	result := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	live := tree.live[result.DelegateID]
+	tree.mu.Unlock()
+	if live == nil || live.runtime == nil {
+		t.Fatal("fixture delegate is not resident before the idle release")
+	}
+	runtime := live.runtime
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("idle release refused the terminal fixture delegate")
+	}
+
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("whole-tree retirement refused over a released member: %+v %v", state, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = c.Abort(claim, "")
+		}
+	}()
+	if err := c.Commit(claim); err != nil {
+		t.Fatalf("commit whole-tree retirement over a released member: %v", err)
+	}
+	committed = true
+
+	tree.mu.Lock()
+	aggregate := tree.durable[result.DelegateID]
+	tree.mu.Unlock()
+	if aggregate == nil {
+		t.Fatal("released member lost its durable identity at retirement")
+	}
+	// The idle release already spent this runtime's one teardown pass;
+	// retirement over the released member must not have needed another.
+	if err := runtime.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("released runtime teardown pass after retirement: err = %v, want errRetirementTeardownSpent", err)
+	}
+}
+
 func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 	for name, enter := range map[string]func(*Session, *delegateTreeController, delegateResult) error{
 		"attention open": func(_ *Session, tree *delegateTreeController, d delegateResult) error {

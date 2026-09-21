@@ -481,6 +481,24 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	}
 }
 
+// TestDelegateIdleReleaseGenerationGuard pins the stale-timer contract: a
+// grace timer stands down once any later generation has started or finalized,
+// so an earlier generation's pending fire can never cut the newer
+// generation's grace short.
+func TestDelegateIdleReleaseGenerationGuard(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateReclaimRuntime(t, c, "dlg_target", "", time.Unix(10, 0).UTC(), false, false)
+	if !c.idleReleaseGenerationCurrent("dlg_target", 1) {
+		t.Fatal("guard rejected the generation whose finalize armed it")
+	}
+	if c.idleReleaseGenerationCurrent("dlg_target", 2) {
+		t.Fatal("guard accepted a superseding generation")
+	}
+	if c.idleReleaseGenerationCurrent("dlg_missing", 1) {
+		t.Fatal("guard accepted a missing delegate")
+	}
+}
+
 // TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
 // difference between the two kinds of pending steering admission.
 //

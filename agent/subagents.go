@@ -2024,7 +2024,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		// after the follow-up grace; the retention rationale and the fixture
 		// opt-out live on the seam's field comment.
 		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
-			a.sess.scheduleIdleRuntimeRelease()
+			a.sess.scheduleIdleRuntimeRelease(lease.generation)
 		}
 	}
 }

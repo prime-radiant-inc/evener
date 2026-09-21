@@ -49,6 +49,14 @@ type delegateRuntimeReclamationCandidate struct {
 // to admit required new resident runtimes. The durable delegate tree is not
 // mutated; the claim only fences process-local runtime ownership while callers
 // close the selected sessions outside the controller mutex.
+//
+// Unlike the idle release, capacity reclamation deliberately does not refuse
+// a subtree that owns a shared task store: eviction here is terminal, closing
+// the resumability of every member it tears down. A resolver elsewhere in the
+// tree that names an evicted member as its shared-store owner fails its
+// owner-residency check on the next resume — eviction behavior this path
+// has always had — which the idle release's non-terminal teardown must not
+// reproduce, hence the guard there and not here.
 func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegateRuntimeReclamationClaim, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
@@ -531,17 +539,24 @@ func (c *delegateTreeController) subtreeOwnsSharedTaskStoreLocked(entries []dele
 //
 // It returns false — leaving the runtime warm — when any gate fails, and
 // never forces: a refused delegate retries at its next finalize or through
-// the capacity reclamation backstop. A root session (no owning delegate
-// identity) hosts the tree and must stay resident; a non-stable child has no
-// cold-restore path, so it is out of scope by construction (its parent is a
-// stable delegate, and releasing that parent drains it as a subtree member).
+// the capacity reclamation backstop. Refusals never schedule a retry of
+// their own, so residue that settles only after the refusal leaves the
+// runtime warm until one of those paths runs. A root session (no owning
+// delegate identity) hosts the tree and must stay resident; a non-stable
+// child has no cold-restore path, so it is out of scope by construction (its
+// parent is a stable delegate, and releasing that parent drains it as a
+// subtree member).
 func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return false
 	}
 	claim, err := s.delegateController.ClaimIdleRuntimeRelease(s.owningDelegateID)
 	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+		// A closing controller is the one expected refusal: a grace timer
+		// deliberately outlives its tree's Close, and that fire must not warn.
+		if !errors.Is(err, errDelegateTargetBusy) {
+			s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+		}
 		return false
 	}
 	if claim == nil {
@@ -578,8 +593,13 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	// non-resident idle delegate and cold-restore a fresh runtime, exactly as
 	// it would after a daemon restart, instead of being refused target_busy by
 	// the fence. CompleteRuntimeReclamation clears only the exact pointers this
-	// claim captured, so a replacement runtime installed by such a racing send
-	// survives.
+	//	claim captured, so a replacement runtime installed by such a racing send
+	//	survives. Work a callback registers between the pre-gate snapshot and the
+	//	teardown is the one race this ordering accepts: it lands on a runtime
+	//	whose release is already committed and gets the same refusals and
+	//	settlement warnings any abandoned work gets. Joining every callback
+	//	source first would put unbounded waits back into a bounded release,
+	//	which the retirement teardown's close budget exists to avoid.
 	closed := make(map[string]*Session, len(claim.entries))
 	for _, entry := range claim.entries {
 		closed[entry.delegateID] = entry.runtime
@@ -610,22 +630,44 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 // every delayed callback uses — so clock-controlled tests observe the
 // scheduled release like any other timer.
 //
+// finalizedGeneration guards staleness: a later generation that starts or
+// finalizes before this timer fires supersedes it — that generation's own
+// finalize tail arms a fresh timer — so the stale fire stands down instead
+// of cutting the newer generation's grace short. Grace is measured from the
+// most recent finalize, never from an earlier one.
+//
 // The timer is deliberately NOT tracked by any WaitGroup a session's Close
 // joins: Close's bounded joins must never wait out a grace period, and a
 // timer that fires after the session or tree has closed is harmless — the
-// release claim refuses on a closing controller, a re-running generation, or
-// an already-released runtime, and every gate re-checks state at fire time.
-// A delegate that runs again within the grace simply finds the release
-// refused on its current state (the claim requires terminal-idle members),
-// so no cancellation path is needed.
-func (s *Session) scheduleIdleRuntimeRelease() {
+// stale-generation guard and the release claim refuse on a closing
+// controller, a superseded generation, or an already-released runtime, and
+// every gate re-checks state at fire time. A delegate that runs again within
+// the grace supersedes this timer with its own finalize's, so no
+// cancellation path is needed.
+func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
+	if s == nil || s.delegateController == nil {
+		return
+	}
 	delay := delegateIdleReleaseDelayDefault
 	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
 		delay = *override
 	}
 	s.sclock().AfterFunc(delay, func() {
+		if !s.delegateController.idleReleaseGenerationCurrent(s.owningDelegateID, finalizedGeneration) {
+			return
+		}
 		_ = s.releaseIdleRuntimeAfterFinalize()
 	})
+}
+
+// idleReleaseGenerationCurrent reports whether the delegate's durable
+// generation is still the one whose finalize armed a pending idle-release
+// timer — false once any later generation has started or finalized.
+func (c *delegateTreeController) idleReleaseGenerationCurrent(delegateID string, generation uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	return aggregate != nil && aggregate.Generation == generation
 }
 
 // idleReleasePregatesClear reports whether every precondition that must hold
