@@ -650,7 +650,10 @@ const TOOLTIP_PALETTE_RE = /--tooltip-/;
 const TOOLTIP_PALETTE_ALLOWED = new Set(["styles/tokens.css", "widgets/tooltip/tooltip.module.css"]);
 
 function tooltipPaletteViolations(css: string): boolean {
-  return TOOLTIP_PALETTE_RE.test(css);
+  // Comments stripped first, the same shape requireclass-contract.test.ts's
+  // COMMENT_RE removes: the law bans real reachability, and prose explaining
+  // the ban is not a borrowing.
+  return TOOLTIP_PALETTE_RE.test(css.replace(/\/\*[\s\S]*?\*\//g, " "));
 }
 
 test("tooltipPaletteViolations flags a stylesheet that borrows the tooltip palette", () => {
@@ -659,6 +662,14 @@ test("tooltipPaletteViolations flags a stylesheet that borrows the tooltip palet
 
 test("tooltipPaletteViolations is silent for a stylesheet on the surface family", () => {
   expect(tooltipPaletteViolations(".panel { background: var(--surface-1); }")).toBe(false);
+});
+
+test("tooltipPaletteViolations ignores a comment that names the palette it bans", () => {
+  // The law targets real reachability, not prose: a stylesheet explaining why
+  // it does NOT borrow --tooltip-bg (this very rule's rationale, say) must
+  // not fail its own gate. Block comments only - CSS comments are always
+  // /* */, the same shape requireclass-contract.test.ts strips.
+  expect(tooltipPaletteViolations("/* never use --tooltip-bg here */ .card { color: red; }")).toBe(false);
 });
 
 test("the tooltip palette's allowlist is exactly the token definitions and the tooltip itself", () => {

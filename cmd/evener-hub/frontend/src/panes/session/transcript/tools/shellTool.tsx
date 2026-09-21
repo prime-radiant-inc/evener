@@ -78,6 +78,30 @@ function shellExitCode(item: ItemModel): number | undefined {
   return item.exitCode ?? parseShellExitCode(item.output ?? "");
 }
 
+// The buffered-env trailer's exact full-line shape (agent/session_tools_
+// shell.go's runBufferedShell ends the output in this bare line).
+const BUFFERED_TRAILER_RE = /\bexit_code=(-?\d+) duration_ms=\d+ timed_out=(?:true|false)$/;
+
+// exitTrailerCode reads the output's own TERMINAL exit trailer, shape-aware:
+// the daemon's bracketed "[… exit N …]" final segment (trailingBracketFooter
+// already returns only the last bracketed segment), or the buffered-env
+// trailer as the output's final non-empty line. Never a bare "exit_code=N"
+// token echoed mid-stream by the command's own stdout (a test runner printing
+// that string is not a trailer), which parseShellExitCode's whole-output
+// fallback scan accepts - this stricter read exists for the body's
+// synthesized-footer gate below, where a false positive would suppress the
+// number's only authoritative copy.
+function exitTrailerCode(output: string): number | undefined {
+  const footer = trailingBracketFooter(output);
+  if (footer !== undefined) {
+    const bracketed = /\bexit (-?\d+)\b/.exec(footer);
+    if (bracketed) return Number(bracketed[1]);
+  }
+  const finalLine = output.trimEnd().split("\n").pop() ?? "";
+  const buffered = BUFFERED_TRAILER_RE.exec(finalLine);
+  return buffered ? Number(buffered[1]) : undefined;
+}
+
 // The row summary owns collapsed command presentation. The expanded body owns
 // a readable formatted command block and the output block independently.
 function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
@@ -103,9 +127,17 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   // buffered path that lost its line). With the row's hover title retired, the
   // body is the number's only home, so it synthesizes the daemon's own footer
   // shape for exactly that gap - display-only, like the truncated-tail notice
-  // below, so Copy output keeps the raw evidence.
+  // below, so Copy output keeps the raw evidence. Two guards keep the
+  // synthesis honest: the -1 sentinel of a signalled job (job-control.md:1012
+  // - "not a shell code"; formatShellResult omits it from the footer for the
+  // same reason) never fabricates an exit line, and an output trailer only
+  // suppresses the synthesis when its code AGREES with the typed value, so a
+  // trailer that disagrees leaves the authoritative typed footer standing
+  // beside the verbatim raw text.
   const exitFooter =
-    item.exitCode !== undefined && parseShellExitCode(output) === undefined ? `[exit ${item.exitCode}]` : undefined;
+    item.exitCode !== undefined && item.exitCode >= 0 && exitTrailerCode(output) !== item.exitCode
+      ? `[exit ${item.exitCode}]`
+      : undefined;
   const renderedOutput =
     tail.renderedText === "" && output === ""
       ? exitFooter

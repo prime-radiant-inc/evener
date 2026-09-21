@@ -222,6 +222,64 @@ test("body's synthesized exit footer is display-only - Copy output keeps the raw
   expect(writeText).toHaveBeenCalledExactlyOnceWith("boom");
 });
 
+// job-control.md:1012 - a signalled job (cancelled/stopped/run_timeout) carries
+// exit_code -1 as a SENTINEL, "not a shell code", and formatShellResult
+// deliberately omits it from the footer for exactly that reason. The synthesis
+// must respect the same line: a runtime-limited stop is told by its own footer
+// words, never fabricated as an ordinary exit.
+test("body never fabricates a footer for the -1 sentinel of a signalled job", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("make build", { output: "partial output", exitCode: -1 })} live={false} />,
+  );
+  expect(container.textContent).toContain("partial output");
+  expect(container.textContent).not.toContain("exit -1");
+});
+
+// A command's own stdout can print "exit_code=N" mid-stream (a test runner
+// echoing its result token, say); that is not a trailer, and the shape-aware
+// gate must not let it suppress the authoritative typed footer.
+test("body still synthesizes when a bare exit_code= token is only echoed mid-stream", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("false", { output: "checking exit_code=0 ok\nboom", exitCode: 2 })} live={false} />,
+  );
+  expect(container.textContent).toContain("exit_code=0");
+  expect(container.textContent).toContain("[exit 2]");
+});
+
+// The buffered-env trailer counts only as the output's FINAL line. When a
+// genuine one disagrees with the typed code, the raw text stays verbatim AND
+// the authoritative typed footer is synthesized beside it; when they agree,
+// nothing is added.
+test("body treats a genuine buffered trailer on the final line as authoritative only when it matches the typed code", () => {
+  const Body = toolRendererFor("shell").body!;
+  const disagree = render(
+    <Body
+      item={withCommand("false", {
+        output: "stdout here\nexit_code=0 duration_ms=15 timed_out=false",
+        exitCode: 2,
+      })}
+      live={false}
+    />,
+  );
+  expect(disagree.container.textContent).toContain("exit_code=0");
+  expect(disagree.container.textContent).toContain("[exit 2]");
+  disagree.unmount();
+
+  const agree = render(
+    <Body
+      item={withCommand("false", {
+        output: "stdout here\nexit_code=2 duration_ms=15 timed_out=false",
+        exitCode: 2,
+      })}
+      live={false}
+    />,
+  );
+  expect(agree.container.textContent).toContain("exit_code=2");
+  expect(agree.container.textContent).not.toContain("[exit 2]");
+});
+
 test("body copies the exact raw command", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
