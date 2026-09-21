@@ -775,6 +775,20 @@ _(no fields)_
 | `features` | `*appwire.FeatureSet` | yes |  |
 
 
+### `HostEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `address` | `string` |  |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+
+
 ### `HostForwardedResult`
 
 _(no fields)_
