@@ -3551,6 +3551,7 @@ test("mergeTurnHistory keeps a fresh completed call ahead of an older partial re
     status: "completed",
     completedAt: new Date(20).toISOString(),
   });
+  expect(merged.olderCoverage).toBe(false);
 });
 
 test("mergeTurnHistory keeps a fresh result ahead of an older call", () => {
@@ -3582,6 +3583,31 @@ test("mergeTurnHistory keeps a fresh result ahead of an older call", () => {
     completedAt: new Date(20).toISOString(),
     startedAt: new Date(10).toISOString(),
   });
+  expect(merged.olderCoverage).toBe(true);
+});
+
+test("mergeTurnHistory counts an older result field the fresh call does not supply", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-public-C", {
+        id: "item_tool_result_0_0",
+        callId: "call-public-C",
+        output: "older output",
+        exitCode: 0,
+      }),
+    ],
+    [
+      toolModelTurn("turn-public-C", {
+        id: "item_tool_1_0",
+        callId: "call-public-C",
+        output: "fresh output",
+        status: "completed",
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "fresh output", exitCode: 0 });
 });
 
 test("mergeTurnHistory keeps older fallback fields and fragments while fresh fields win", () => {
@@ -4033,6 +4059,17 @@ test("mergeTurnHistory does not count a spread-overwritten transcript index as c
 
   expect(merged.olderCoverage).toBe(false);
   expect(merged.turns[0]?.items[0]?.transcriptEntryIndex).toBeUndefined();
+});
+
+test("mergeTurnHistory counts older position a fresh undefined does not overwrite", () => {
+  const item = { id: "item-1", turnId: "turn-1", type: "agentMessage", text: "shared", status: "completed" };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-1", status: "completed", items: [{ ...item, position: { entry: 2, item: 0 } }] }],
+    [{ id: "turn-1", status: "completed", items: [{ ...item, position: undefined }] }],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns[0]?.items[0]?.position).toEqual({ entry: 2, item: 0 });
 });
 
 test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {

@@ -500,15 +500,17 @@ function appendToolItemCandidates(
   }
 }
 
-type ToolResultField =
-  | "output"
-  | "error"
-  | "prevalOnly"
-  | "exitCode"
-  | "completedAt"
-  | "status"
-  | "outputImages"
-  | "raw";
+const toolResultFields = [
+  "output",
+  "error",
+  "prevalOnly",
+  "exitCode",
+  "completedAt",
+  "status",
+  "outputImages",
+  "raw",
+] as const;
+type ToolResultField = (typeof toolResultFields)[number];
 
 function collectToolCandidates(
   normalizedTurns: TurnModel[],
@@ -1060,14 +1062,16 @@ const itemNonCoverageFields = new Set([
   "observedCompletedAt",
 ]);
 
-// The item fields mergePageItem merges with `??`: a null on the fresh side
-// falls through to the older side's value, so a fresh null cannot hide older
-// data the merged result keeps, and an older null carries no data of its own —
-// coverage reads both null and undefined as absent for these. Every other
-// field the coverage walk reaches is spread-merged ({ ...older, ...newer };
-// the fresh side's explicit null overwrites the older value), where undefined
-// alone remains the absence marker.
+// The item fields the page merge preserves through `??` — mergePageItem's
+// per-field list, plus position, which mergeItemIdentityMetadata keeps the
+// same way: a null or undefined on the fresh side falls through to the older
+// side's value, so a fresh nullish cannot hide older data the merged result
+// keeps, and an older nullish carries no data of its own. Every other field
+// the coverage walk reaches is spread-merged ({ ...older, ...newer }; the
+// fresh side's own property wins, even when its value is undefined), where
+// the property's presence — read below — is the absence marker.
 const itemNullishMergedFields = new Set([
+  "position",
   "toolName",
   "callId",
   "argumentsJSON",
@@ -1109,8 +1113,35 @@ function olderItemContributes(older: ItemModel, newer: ItemModel): boolean {
   return !sameModelFields(merged, newer) || itemTextPresence(merged) !== itemTextPresence(newer);
 }
 
-function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean {
-  if (matches.length === 0) return true;
+// The fold (mergeToolCallsByCallId) removes an older tool RESULT from the
+// merged items entirely, folding its toolResultFields into the surviving call
+// by source precedence; every other field it carried goes with it. A result
+// whose every foldable field the fresh side already supplies is therefore
+// fully superseded — the merged output retains nothing from it, so it must
+// not claim persisted coverage. A result with no fresh counterpart for its
+// callId keeps its own item, or folds into an older call that keeps its
+// fields, so it still claims.
+function fullySupersededToolResult(older: ItemModel, freshToolCandidates: Map<string, ToolCandidates> | undefined) {
+  if (freshToolCandidates === undefined || older.callId === undefined || !isToolResultId(older.id)) return false;
+  const fresh = freshToolCandidates.get(older.callId);
+  if (fresh === undefined) return false;
+  for (const field of toolResultFields) {
+    const value = (older as unknown as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    const freshSupplies = [...fresh.results, ...fresh.calls].some(
+      (item) => (item as unknown as Record<string, unknown>)[field] !== undefined,
+    );
+    if (!freshSupplies) return false;
+  }
+  return true;
+}
+
+function olderItemAddsCoverage(
+  older: ItemModel,
+  matches: ItemModel[],
+  freshToolCandidates?: Map<string, ToolCandidates>,
+): boolean {
+  if (matches.length === 0) return !fullySupersededToolResult(older, freshToolCandidates);
   if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
     return true;
   }
@@ -1134,7 +1165,11 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
   });
 }
 
-function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
+function olderTurnAddsCoverage(
+  older: TurnModel,
+  matches: TurnModel[],
+  freshToolCandidates?: Map<string, ToolCandidates>,
+): boolean {
   if (
     turnCoverageFields.some(
       (field) =>
@@ -1147,7 +1182,7 @@ function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean 
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
     const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
-    return olderItemAddsCoverage(olderItem, matchingItems);
+    return olderItemAddsCoverage(olderItem, matchingItems, freshToolCandidates);
   });
 }
 
@@ -1177,6 +1212,7 @@ function mergeTurnHistoryWithContext(
   let olderContributed = false;
   let olderCoverage = false;
   let transcriptOverlap = false;
+  const freshToolCandidates = collectDirectToolCandidates(newer);
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
@@ -1192,7 +1228,7 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns)) olderCoverage = true;
+      if (olderTurnAddsCoverage(turn, freshTurns, freshToolCandidates)) olderCoverage = true;
     }
 
     if (group.olderIndexes.length === 0) continue;
