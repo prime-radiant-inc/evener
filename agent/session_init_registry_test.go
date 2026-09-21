@@ -126,12 +126,12 @@ func TestNewSessionCanonicalizesRelativeStateDir(t *testing.T) {
 func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
 	t.Parallel()
 	work := t.TempDir()
-	real := filepath.Join(work, "real-state")
-	if err := os.Mkdir(real, 0o700); err != nil {
+	physical := filepath.Join(work, "real-state")
+	if err := os.Mkdir(physical, 0o700); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	link := filepath.Join(work, "link-state")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(physical, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
 	c := llm.NewClient()
@@ -141,8 +141,8 @@ func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	if sess.stateDir != real {
-		t.Fatalf("session stateDir=%q, want the physical path %q (a symlinked StateDir must resolve at construction)", sess.stateDir, real)
+	if sess.stateDir != physical {
+		t.Fatalf("session stateDir=%q, want the physical path %q (a symlinked StateDir must resolve at construction)", sess.stateDir, physical)
 	}
 }
 
