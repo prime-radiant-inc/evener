@@ -25,7 +25,7 @@ place, until it is delivered.
 The held steering message renders in the transcript, as the message it will
 become, in a provisional register — dashed accent edge, reduced opacity, and a
 caption in the timestamp slot reading `Delivers when this step finishes ·
-held 0:42`. This reverses the recorded ruling that kept optimistic items out
+held 42s`. This reverses the recorded ruling that kept optimistic items out
 of the transcript (`PendingChips.tsx`'s header), in the same shape the AskDock
 already blessed: a named trailing row the session pane owns, rendered after
 the turn rows — never a fake item inside a turn's wire data.
@@ -52,19 +52,22 @@ below it when both exist. Rendered only while the session is live (not for
 
 Companion change, mandatory: `Session.tsx`'s `renderedRowCount` — the count
 every end-targeted scroll path reads (currently
-`renderRows.length + (askPending ? 1 : 0)`) — gains the same
-`(askPending || heldSteers.length > 0)` condition. Its own comment warns that
-an uncounted trailing row "lands one row short, leaving the answering surface
-below the viewport"; without this, jump-to-bottom and append-follow leave the
-ghost partially below the fold — the feature's payload, invisible in exactly
-the documented failure mode.
+`renderRows.length + (askPending ? 1 : 0)`) — derives from the row it hands
+the list: hoist the trailingRow into a const and count
+`renderRows.length + (trailingRow !== undefined ? 1 : 0)` (the form
+TranscriptBody itself uses), so the count and the row are one predicate and
+cannot drift. Its own comment warns that an uncounted trailing row "lands one
+row short, leaving the answering surface below the viewport"; without this,
+jump-to-bottom and append-follow leave the ghost partially below the fold —
+the feature's payload, invisible in exactly the documented failure mode.
 
 Second companion change, same reasoning that produced the AskDock's signals:
 a ghost appearing while the reader is scrolled away must fire the new-content
 pill, but the pill's edge detector keys off turn and item shape primitives and
-never sees a trailing row appear. Session.tsx therefore feeds the pill two
-explicit signals — a `heldCount` and a `heldEpoch` — mirroring `askDockPending`
-/ `askDockActivationEpoch`. As with that epoch, arrival is the only edge:
+never sees a trailing row appear. Session.tsx therefore feeds the pill one
+explicit signal — a `heldEpoch` — mirroring `askDockActivationEpoch` (the
+ask's needs-you boolean has no held analogue; the epoch alone is the edge).
+As with that epoch, arrival is the only edge:
 `heldEpoch` bumps when held steering appears (a new id joins the stack) and
 never on removal — departures are surfaced by the announce-once region below,
 not by a "new content" bump. (So a canceled or rejected departure — which
@@ -83,14 +86,16 @@ that own QueueStrip rows (`blockedUnknown`, `canceled`; PendingChips filters
 the same states today), one per row, each reusing the user-message structure
 via `UserMessageView`. Stack order: §4.
 
-- **`UserMessageView` gains one optional prop**: `provisionalMeta?: string`,
-  rendered in the timestamp slot instead of the item time. No other change to
-  that component; delivered messages render exactly as today.
-- The ghost's provisional styling is a `variant="provisional"` of
-  `UserMessageView` (one more optional prop, applying a class from
-  `usermessageitem.module.css`): dashed `--accent` bubble edge, the stack at
-  `opacity: 0.78`, and the dashed left railmark from mockup A. Tokens only —
-  no new colors, so no token-contract allowlist work.
+- **`UserMessageView` gains one optional prop**: `provisional?: string`. Its
+  presence does both provisional jobs at once — it renders in the timestamp
+  slot instead of the item time, and it applies the provisional class from
+  `usermessageitem.module.css` (dashed `--accent` bubble edge, the stack at
+  `opacity: 0.78`, and the dashed left railmark from mockup A). No other
+  change to that component; absent prop renders exactly today's output, so
+  delivered messages are untouched. Every caption arm produces a string, so
+  caption presence and provisional styling are the same bit — one prop, no
+  representable-but-impossible state. Tokens only — no new colors, so no
+  token-contract allowlist work.
 - `opensExchange` is always false: a held steer joins work under way.
 - **Scope — every client's held steering renders.** All of it lands in this
   shared transcript, so the stack shows `pendingTurnEntries` for the session,
@@ -164,10 +169,10 @@ via `UserMessageView`. Stack order: §4.
 
 | Entry state | Session state | Caption |
 |---|---|---|
-| `submitting` | turn running | `Joining this turn · 0:00` |
-| `submitting` | no turn (dispatch straddled the turn boundary, stalled, or an idle drain of a parked queue) | `Delivers with the next turn · 0:00` |
-| `accepted` | turn running | `Delivers when this step finishes · held m:ss` |
-| `accepted` | no turn (turn ended while held; the daemon opens the steering-carrier turn on the next run — a Stop parks steering behind the `SteeringHeld` gate until a user-initiated run clears it) | `Delivers with the next turn · held m:ss` |
+| `submitting` | turn running | `Joining this turn · 0s` |
+| `submitting` | no turn (dispatch straddled the turn boundary, stalled, or an idle drain of a parked queue) | `Delivers with the next turn · 0s` |
+| `accepted` | turn running | `Delivers when this step finishes · held 42s` |
+| `accepted` | no turn (turn ended while held; the daemon opens the steering-carrier turn on the next run — a Stop parks steering behind the `SteeringHeld` gate until a user-initiated run clears it) | `Delivers with the next turn · held 42s` |
 
 Steering entries never enter the `claimed` state: the daemon keeps a client
 steer `accepted` until its transcript append lands
@@ -184,14 +189,16 @@ follows: status alone, never the id). The turn-running arm is status
 `active` (the package's `isTurnActive` predicate); the no-turn arms are
 everything else.
 
-`m:ss` is computed from `createdAt` against the transcript's existing
-`SessionNowContext` cadence — 3 s granularity, accepted: the caption reads
-the same clock the liveness line does, no per-second machinery re-renders the
-virtualized row, and it is never an `aria-live` region that ticks. The
-formatter is the existing one, not a new hand-rolled format: hoist the
-loader's module-local m:ss elapsed helper (`widgets/loader` — it carries the
-clock-skew clamp that backs this section's "never a false `0:00`" promise)
-into a shared module and call it from the caption.
+One timer rule for all four arms: the count is elapsed time from `createdAt`,
+formatted with the package's exported `formatElapsed` (the same format the
+delegate clocks read — `42s`, `1m05s`), ticked against the transcript's
+existing `SessionNowContext` cadence — 3 s granularity, accepted: the caption
+reads the same clock the liveness line does, no per-second machinery
+re-renders the virtualized row, and it is never an `aria-live` region that
+ticks. The submitting arms show the same ticking count the accepted arms do
+(at press it reads `0s`, and a stalled dispatch reads honestly); the count is
+omitted entirely when no `createdAt` is known — never `NaN`, never a false
+`0s`.
 
 `createdAt` survival across hydrate: a published hydrate settles the outbox
 record — `settleApplied` deletes it from durable storage — and replaces it
@@ -212,7 +219,7 @@ page lifetime, the accepted cost of keeping `recordSubmittedHere`'s
 reload before the first post-acceptance hydrate, where the durable read
 re-discovers the record with its `createdAt` — or (b) the map holds the id
 (post-settle, same page session). A reload after the settle loses it: the
-caption omits `held m:ss` entirely — never `NaN`, never a false `0:00` —
+caption omits the held count entirely — never `NaN`, never a false `0s` —
 and the entry falls into the unknown-`createdAt` bucket below.
 
 Stack order: entries with a known `createdAt` sort first, ascending; entries
@@ -224,16 +231,14 @@ arrive only through `pendingMutations`, keep no client-side timestamp, and
 take the array order of the current hydrate — the daemon sorts
 `pendingMutations` lexicographically by mutation id, which is itself no
 submission order, so their relative order is stable within a snapshot and
-not guaranteed across snapshots. Same-millisecond submissions tie-break by
-`intentSequence`: `PendingTurnEntry` gains `intentSequence?: number`,
-populated in `outboxEntry` from the durable record (authoritative entries
-have none and degrade to the hydrate order above — only a sub-millisecond
-double-submit is affected). This entry-model change is listed in Files. One
-home for the rule: the ordering is a comparator exported from
-`pendingEntries` that the stack applies — `reconcilePendingEntries`' own
-sort (which places unknown-`createdAt` entries first and serves the queue
-rows and chips) is unchanged. A wire timestamp (or sequence) on
-`PendingMutation` would pin cross-client order and is a non-goal here. The
+not guaranteed across snapshots. One home for the rule, shared by every
+consumer: `reconcilePendingEntries`' own sort becomes this known-first rule —
+today it sorts unknown-`createdAt` entries first, so queue rows and chips
+inherit the new ordering along with the ghost, accepted. The stable sort
+keeps array order for equal `createdAt`: a same-millisecond double-submit
+keeps submission order in-session and hydrate order otherwise — a corner
+the spec accepts rather than widening the entry model (a wire timestamp or
+sequence on `PendingMutation` would pin it and is a non-goal here). The
 reload-mid-hold pins live in Testing.
 
 ### 5. Settle semantics — unchanged, and the race, documented
@@ -335,8 +340,8 @@ Per `docs/developing-evener/testing.md` (TDD; deterministic; no live
 provider). Component and unit tests, all vitest:
 
 - `HeldSteerStack.test.tsx` — renders steer/drain/promote entries in order
-  (known-`createdAt` ascending, unknown-`createdAt` after, hydrate order
-  within, `intentSequence` tie-break); excludes `queue`/`send`; caption per
+  (known-`createdAt` ascending, unknown-`createdAt` after — the shared sort's
+  own rule, §4); excludes `queue`/`send`; caption per
   state table (including both no-turn arms — accepted and submitting — the
   `[image]` placeholder, and the `[queued messages]` fallback the stack itself
   adds for a blank composed body); a skill-only entry renders the skill marker,
@@ -346,7 +351,7 @@ provider). Component and unit tests, all vitest:
   (post-settle hydrate lacks the id) unmounts the ghost with one departure
   announcement; renders under the AskDock when both are present; another
   client's authoritative entry renders.
-- `UserMessageItem.test.tsx` — `provisionalMeta` renders in the meta slot;
+- `UserMessageItem.test.tsx` — `provisional` renders in the meta slot;
   absent prop renders exactly the current output (regression pin).
 - `pendingEntries.test.ts` (package) — promote maps to `promote`; promote
   display input flows into the entry preview;
@@ -354,8 +359,9 @@ provider). Component and unit tests, all vitest:
   image-bearing entries; the id → `createdAt` carrier survives the hydrate
   settle within a page session (the durable record is gone; map reads
   still resolve) and `queueEntryPreviewText` still returns "" for
-  contentless input (matching-key pin); `outboxEntry` populates the new
-  `intentSequence` field for the §4 tie-break.
+  contentless input (matching-key pin); `reconcilePendingEntries`' sort
+  places known-`createdAt` entries first, ascending (the shared §4
+  ordering).
 - `pendingTurns.test.ts` (package) — `recordSubmittedHere` writes the id →
   `createdAt` map entry; the map is never pruned by the settle that deletes
   the durable record.
@@ -368,7 +374,7 @@ provider). Component and unit tests, all vitest:
   `askPending`, when held steers exist, and when neither; `renderedRowCount`
   counts the ghost-only row so end-targeted scrolls land on it
   (steers-without-ask geometry, the one-row-short regression); a
-  reload-mid-hold pass pins the degraded caption (no `held m:ss` after a
+  reload-mid-hold pass pins the degraded caption (no held count after a
   post-settle reload) and the unknown-`createdAt`-last rule, and the
   pre-settle reload's re-discovered `createdAt`; the new-content pill fires
   on ghost appearance for a scrolled-away reader (`heldEpoch` arrival bump)
@@ -386,11 +392,10 @@ Chrome-capable hosts for geometry, `make lint`, `make vet`.
 
 - `appwire-client/typescript/state/mutation/pendingEntries.ts` — promote map;
   the shared entry-body helper (§2) extracted here (chips and stack both
-  call it); the §4 ordering comparator exported here;
-  `PendingTurnEntry` gains `intentSequence?` (populated in `outboxEntry`) for
-  the §4 tie-break; `reconcilePendingEntries` reads the id → `createdAt`
-  carrier into authoritative entries (the post-settle §4 join), and its
-  `submittedHere` parameter widens from a set to the map
+  call it); `reconcilePendingEntries`' sort becomes the §4 known-first
+  ordering (queue rows and chips inherit it), and it reads the id →
+  `createdAt` carrier into authoritative entries (the post-settle §4 join);
+  its `submittedHere` parameter widens from a set to the map
 - `appwire-client/typescript/state/mutation/pendingTurns.ts` —
   `submittedHere` set becomes the never-pruned id → `createdAt` map, written
   at `recordSubmittedHere`
@@ -402,20 +407,16 @@ Chrome-capable hosts for geometry, `make lint`, `make vet`.
 - `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx` —
   promote display input (text + preview fallback)
 - `cmd/evener-hub/frontend/src/panes/session/Session.tsx` — trailing row
-  composition + `renderedRowCount` condition + `heldCount`/`heldEpoch` pill
-  signals
+  composition + the derived `renderedRowCount` + the `heldEpoch` pill signal
 - `cmd/evener-hub/frontend/src/panes/session/transcript/messages/HeldSteerStack.tsx`
   + `.module.css` — new; owns the `[queued messages]` fallback label
 - `cmd/evener-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.tsx`
-  — `provisionalMeta` prop + `variant="provisional"` styling prop
+  — `provisional` prop (caption text and provisional styling, one bit)
 - `cmd/evener-hub/frontend/src/panes/session/transcript/messages/HeldSteerAnnouncements.tsx`
   — new; the announce-once live region outside the virtual list
   (AskDockAnnouncements pattern; §2). If extracting the announce-once
   primitive out of AskDock is clean at implementation time, prefer that —
   the pattern has no shared form today
-- `cmd/evener-hub/frontend/src/widgets/loader/index.tsx` — its module-local
-  m:ss elapsed formatter (clock-skew clamp included) is hoisted/exported
-  for the §4 caption
 - `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx` —
   send-only
 - the matching test files

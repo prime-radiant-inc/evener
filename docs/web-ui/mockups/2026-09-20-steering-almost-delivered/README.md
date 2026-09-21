@@ -71,7 +71,7 @@ running tool call — the precise slot the daemon will upsert into
 (`item_steering_live_<turn>_<n>` is appended to the active turn's items). It is
 the exact component it will become — avatar, "You" header, serif accent
 bubble — but dashed accent edge, reduced opacity, and where the timestamp
-would go: `Delivers when this step finishes · held 0:42`. On
+would go: `Delivers when this step finishes · held 42s`. On
 `evener/steering/injected` the ghost unmounts and the real item renders in
 the same place, in the same shape — a plain swap, no transition machinery.
 The message never moves.
@@ -153,6 +153,6 @@ either way.
 - `idea-c-boundary-beacon.html`
 
 Each is a self-contained 1440×900 dark frame of the *same* session state (two
-steers held behind a running `rg` tool call, held 0:42 and 0:07), rendered with
+steers held behind a running `rg` tool call, 42 and 7 seconds in), rendered with
 the product's real tokens, plus a three-frame storyboard of the lifecycle:
 pressed → held → delivered.
