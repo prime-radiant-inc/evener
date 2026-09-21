@@ -105,9 +105,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   // shape for exactly that gap - display-only, like the truncated-tail notice
   // below, so Copy output keeps the raw evidence.
   const exitFooter =
-    item.exitCode !== undefined && parseShellExitCode(output) === undefined
-      ? `[exit ${item.exitCode}]`
-      : undefined;
+    item.exitCode !== undefined && parseShellExitCode(output) === undefined ? `[exit ${item.exitCode}]` : undefined;
   const renderedOutput =
     tail.renderedText === "" && output === ""
       ? exitFooter
@@ -122,9 +120,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
-      {renderedOutput !== undefined && (
-        <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />
-      )}
+      {renderedOutput !== undefined && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
     </>
   );
 }
