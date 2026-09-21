@@ -125,6 +125,11 @@ type toolDeps struct {
 	// the registered one.
 	actionFusion bool
 
+	// checkpointReminder runs the checkpoint compaction reminder gate at one
+	// task-list step-completion boundary (Session.onTaskStepCompletion): the
+	// remaining-step count is the only input the handler owns.
+	checkpointReminder func(remaining int) error
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -337,6 +342,7 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		actionFusion:           s.cfg.ActionFusion,
+		checkpointReminder:     s.onTaskStepCompletion,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

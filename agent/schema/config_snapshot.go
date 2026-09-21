@@ -46,6 +46,7 @@ type ConfigSnapshot struct {
 	VisionModel                 string                     `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
 	ObservationPacking          bool                       `json:"observation_packing,omitempty"`           // archive tool results over 10 KiB and pack them into artifact handles after two full request looks
 	ActionFusion                bool                       `json:"action_fusion,omitempty"`                 // optional run_after shell command fused into file-mutation tool calls
+	CheckpointReminder          bool                       `json:"checkpoint_reminder,omitempty"`           // cost-gated compaction-available steering reminder at task step completion boundaries
 }
 
 // Clone returns an independently mutable copy of the persisted configuration.
