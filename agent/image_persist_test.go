@@ -82,32 +82,74 @@ func findSystemNotificationPart(msg llm.Message) (string, bool) {
 	return "", false
 }
 
-// lastTurnOfKind returns the most recent history turn of the given kind.
-func lastTurnOfKind(t *testing.T, sess *Session, kind schema.TurnKind) schema.Turn {
+// historyTurnsWhere returns every history turn matching pred, copied by
+// value under the session lock so callers never hold references into
+// history past the unlock.
+func historyTurnsWhere(t *testing.T, sess *Session, pred func(schema.Turn) bool) []schema.Turn {
 	t.Helper()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for _, turn := range slices.Backward(sess.history) {
-		if turn.Kind == kind {
-			return turn
+	var out []schema.Turn
+	for _, turn := range sess.history {
+		if pred(turn) {
+			out = append(out, turn)
 		}
 	}
-	t.Fatalf("no %s turn in history (len=%d)", kind, len(sess.history))
-	return schema.Turn{}
+	return out
+}
+
+// lastTurnOfKind returns the most recent history turn of the given kind.
+func lastTurnOfKind(t *testing.T, sess *Session, kind schema.TurnKind) schema.Turn {
+	t.Helper()
+	turns := historyTurnsWhere(t, sess, func(turn schema.Turn) bool { return turn.Kind == kind })
+	if len(turns) == 0 {
+		t.Fatalf("no %s turn in history", kind)
+	}
+	return turns[len(turns)-1]
 }
 
 // hasImagePart reports whether the message carries any ContentImage part.
 func hasImagePart(msg llm.Message) bool {
-	for _, p := range msg.Content {
-		if p.Kind == llm.ContentImage {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(msg.Content, func(p llm.ContentPart) bool { return p.Kind == llm.ContentImage })
 }
 
 func replyStep(message string) func(req llm.Request) llm.Response {
 	return func(req llm.Request) llm.Response { return finalResponse(message) }
+}
+
+// collectWarnings drains the session's event stream in the background,
+// forwarding warning events to the returned channel.
+func collectWarnings(sess *Session) <-chan events.SessionEvent {
+	warnCh := make(chan events.SessionEvent, 16)
+	go func() {
+		for event := range sess.Events() {
+			if event.Kind == events.EventWarning {
+				warnCh <- event
+			}
+		}
+	}()
+	return warnCh
+}
+
+// awaitWarningNaming blocks until a warning naming want arrives on ch.
+// The channel receive is the await; the bound is a tripwire for a genuine
+// hang, never the mechanism.
+func awaitWarningNaming(t *testing.T, ch <-chan events.SessionEvent, want string) {
+	t.Helper()
+	select {
+	case event := <-ch:
+		data, ok := event.Data.(events.WarningData)
+		if !ok {
+			t.Fatalf("EventWarning data is %T, want events.WarningData", event.Data)
+		}
+		if !strings.Contains(data.Message, want) {
+			t.Errorf("warning does not name %q: %q", want, data.Message)
+		}
+	// TRIPWIRE: warnings are emitted synchronously during the turn, so the
+	// receive above is the await; 30s only fires on a hang.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("no diagnostic warning naming %q was emitted", want)
+	}
 }
 
 // TestProcessInput_PersistsImageAttachmentToDisk pins the core contract:
@@ -211,17 +253,8 @@ func TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation(t *test
 	if err := os.WriteFile(blocking, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-
-	// Collect warning events continuously while the turn runs; the receive
-	// below is the awaitable completion, so no polling is needed.
-	warnCh := make(chan events.SessionEvent, 16)
-	go func() {
-		for event := range sess.Events() {
-			if event.Kind == events.EventWarning {
-				warnCh <- event
-			}
-		}
-	}()
+	wantDir := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
+	warnCh := collectWarnings(sess)
 
 	png := validPNGFixture(t)
 	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
@@ -236,24 +269,9 @@ func TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation(t *test
 	if _, ok := findSystemNotificationPart(turn.Message); ok {
 		t.Errorf("turn announced a stored path despite the failed write: %+v", turn.Message.Content)
 	}
-	// The failed write is visible: a warning naming the attachment was
-	// emitted while the turn ran. The 30s bound is a tripwire for a genuine
-	// hang, not the mechanism — the channel receive is the await.
-	select {
-	case event := <-warnCh:
-		data, ok := event.Data.(events.WarningData)
-		if !ok {
-			t.Fatalf("EventWarning data is %T, want events.WarningData", event.Data)
-		}
-		wantDir := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
-		if !strings.Contains(data.Message, wantDir) {
-			t.Errorf("warning does not name the blocked attachments dir %q: %q", wantDir, data.Message)
-		}
-	// TRIPWIRE: the warning is emitted synchronously during ProcessInput, so
-	// the channel receive above is the await; 30s only fires on a hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("no diagnostic warning was emitted for the failed attachment write")
-	}
+	// The failed write is visible: a warning naming the blocked attachments
+	// directory was emitted while the turn ran.
+	awaitWarningNaming(t, warnCh, wantDir)
 }
 
 // TestProcessInput_BlockedAttachmentFile_DegradesWithoutAnnotation pins the
@@ -272,15 +290,7 @@ func TestProcessInput_BlockedAttachmentFile_DegradesWithoutAnnotation(t *testing
 	if err := os.MkdirAll(expectedAttachmentPath(t, stateDir, sess.ID(), img), 0o700); err != nil {
 		t.Fatalf("block attachment path: %v", err)
 	}
-
-	warnCh := make(chan events.SessionEvent, 16)
-	go func() {
-		for event := range sess.Events() {
-			if event.Kind == events.EventWarning {
-				warnCh <- event
-			}
-		}
-	}()
+	warnCh := collectWarnings(sess)
 
 	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
 		t.Fatalf("ProcessInput with blocked attachment file: %v", err)
@@ -293,20 +303,7 @@ func TestProcessInput_BlockedAttachmentFile_DegradesWithoutAnnotation(t *testing
 	if _, ok := findSystemNotificationPart(turn.Message); ok {
 		t.Errorf("turn announced a stored path despite the failed write: %+v", turn.Message.Content)
 	}
-	select {
-	case event := <-warnCh:
-		data, ok := event.Data.(events.WarningData)
-		if !ok {
-			t.Fatalf("EventWarning data is %T, want events.WarningData", event.Data)
-		}
-		if !strings.Contains(data.Message, "shot.png") {
-			t.Errorf("warning does not name the failed attachment: %q", data.Message)
-		}
-	// TRIPWIRE: the warning is emitted synchronously during ProcessInput, so
-	// the channel receive above is the await; 30s only fires on a hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("no diagnostic warning was emitted for the failed attachment write")
-	}
+	awaitWarningNaming(t, warnCh, "shot.png")
 }
 
 // TestEnqueueWithImages_DrainPersistsAttachment pins the queue path: an
@@ -335,14 +332,7 @@ func TestEnqueueWithImages_DrainPersistsAttachment(t *testing.T) {
 		t.Fatalf("queued attachment not persisted at %s: %v", wantPath, err)
 	}
 	// The drained queue entry is the second user turn in history.
-	sess.mu.Lock()
-	var userTurns []schema.Turn
-	for _, tr := range sess.history {
-		if tr.Kind == schema.TurnUserInput {
-			userTurns = append(userTurns, tr)
-		}
-	}
-	sess.mu.Unlock()
+	userTurns := historyTurnsWhere(t, sess, func(turn schema.Turn) bool { return turn.Kind == schema.TurnUserInput })
 	if len(userTurns) != 2 {
 		t.Fatalf("user turns: got %d, want 2", len(userTurns))
 	}
@@ -426,18 +416,13 @@ func TestFailedClientMutationStart_PersistsAttachmentOnRecordedTurn(t *testing.T
 	if got, err := os.ReadFile(wantPath); err != nil || !bytes.Equal(got, png) {
 		t.Fatalf("failed start's attachment not persisted at %s: %v", wantPath, err)
 	}
-	sess.mu.Lock()
-	var recorded *schema.Turn
-	for i := range sess.history {
-		turn := sess.history[i]
-		if turn.Kind == schema.TurnUserInput && turn.ClientMutationID == params.ClientMutationID {
-			recorded = &sess.history[i]
-		}
-	}
-	sess.mu.Unlock()
-	if recorded == nil {
+	recordedTurns := historyTurnsWhere(t, sess, func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnUserInput && turn.ClientMutationID == params.ClientMutationID
+	})
+	if len(recordedTurns) == 0 {
 		t.Fatal("no recorded user turn for the failed start")
 	}
+	recorded := recordedTurns[len(recordedTurns)-1]
 	note, ok := findSystemNotificationPart(recorded.Message)
 	if !ok || !strings.Contains(note, wantPath) {
 		t.Errorf("recorded failed-start turn's system-notification part missing or wrong path: %q", note)

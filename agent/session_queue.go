@@ -1257,8 +1257,8 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
 	}
-	// Persist the steering's image attachments before the turn is built so
-	// the recorded message can name their durable paths (agent/image_persist.go).
+	// Persist the steering's attachments before its turn is built so the
+	// message can name their durable paths (agent/image_persist.go).
 	msg.Images = s.persistInputImages(msg.Images)
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source

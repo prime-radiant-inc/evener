@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -47,15 +48,14 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
-	out := make([]ImageAttachment, len(images))
-	copy(out, images)
+	out := slices.Clone(images)
 	for i := range out {
 		if out[i].Path != "" {
 			continue // already persisted by an earlier build of the same input
 		}
 		name := sanitizeAttachmentName(out[i])
 		sum := sha256.Sum256(out[i].Data)
-		path := filepath.Join(dir, hex.EncodeToString(sum[:])[:attachmentPathPrefixLen]+"-"+name)
+		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
 		if err := os.WriteFile(path, out[i].Data, 0o600); err != nil {
 			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue

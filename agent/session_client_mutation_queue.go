@@ -1528,11 +1528,6 @@ func (s *Session) recordClientMutationFailure(
 ) error {
 	items := s.clientMutationTranscriptItems(clientMutationID, pending.TurnID)
 	queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
-	// Persist the failed start's image attachments before the turn is built
-	// so the recorded message can name their durable paths
-	// (agent/image_persist.go). Idempotent by content: a first attempt that
-	// already wrote the bytes rewrites the same path.
-	queued.Images = s.persistInputImages(queued.Images)
 	if !items.User {
 		if err := s.clientMutationFailureFault("before_user"); err != nil {
 			return err
@@ -1540,6 +1535,11 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.appendEnvironmentContext(publishEnvironment); err != nil {
 			return fmt.Errorf("append environment context: %w", err)
 		}
+		// Persist the failed start's attachments before its turn is built so
+		// the message can name their durable paths (agent/image_persist.go);
+		// idempotent by content, so a first attempt that already wrote the
+		// bytes rewrites the same path.
+		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID

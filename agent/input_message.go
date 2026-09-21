@@ -16,9 +16,12 @@ type ImageAttachment struct {
 	Name      string `json:"name,omitempty"` // original filename, when known
 	// Path is the on-disk location the session persisted these bytes to
 	// (agent/image_persist.go), set only when the session has a state
-	// directory. Local metadata: clients never send it, and the
-	// user-input event projection does not carry it.
-	Path string `json:"path,omitempty"`
+	// directory. In-session-only metadata: clients never send it, the
+	// user-input event projection does not carry it, and json:"-" keeps it
+	// out of the durable queue snapshots, whose restored entries must stay
+	// wire-shaped so a later build re-derives the path for the machine it
+	// runs on.
+	Path string `json:"-"`
 }
 
 // inputHasContent reports whether a durable input's typed parts carry
