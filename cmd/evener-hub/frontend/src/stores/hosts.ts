@@ -1,4 +1,4 @@
-import type { HostRow } from "@evener/appwire-client";
+import type { HostEntry, HostRow } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort } from "./connection";
@@ -27,7 +27,8 @@ interface HostsStoreState {
    * converges instead of sitting on "connecting" forever.
    */
   refresh: () => Promise<void>;
-  add: (params: { name: string; address: string; keyPath?: string }) => Promise<HostRow>;
+  add: (entry: HostEntry) => Promise<HostRow>;
+  update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   resetForTests: () => void;
@@ -36,6 +37,11 @@ interface HostsStoreState {
 // requireClient resolves connectionStore's CURRENT client, labelled by this
 // store - the shared port (stores/connection.ts), not a hand-rolled twin.
 const { requireClient } = connectedClientPort("hosts");
+
+// HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
+// side queues on or holds the per-host gate. A supervisor may hold that gate
+// for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
+const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
@@ -65,6 +71,16 @@ async function listHosts(): Promise<HostRow[]> {
   return res.hosts;
 }
 
+// sameRoots compares two rows' roots as lists, treating an absent value and an
+// empty one as the same: the wire omits empty optional arrays, so the two
+// spellings describe the same host, and neither may make the comparator report a
+// change the publish guard would re-render for.
+function sameRoots(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
 // hostRowEqual compares two rows on every field the wire contract carries;
 // an absent row counts as different, so the poll's skip test can pass a
 // possibly-undefined index result straight through.
@@ -73,7 +89,12 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
     b !== undefined &&
     a.name === b.name &&
     a.address === b.address &&
+    a.user === b.user &&
     a.keyPath === b.keyPath &&
+    a.evenerPath === b.evenerPath &&
+    a.configPath === b.configPath &&
+    a.addr === b.addr &&
+    sameRoots(a.roots, b.roots) &&
     a.origin === b.origin &&
     a.attached === b.attached &&
     a.serverName === b.serverName &&
@@ -193,14 +214,28 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     });
   },
 
-  add: async (params) => {
-    const row = await requireClient().request("evener/host/add", {
-      name: params.name,
-      address: params.address,
-      ...(params.keyPath ? { keyPath: params.keyPath } : {}),
-    });
+  add: async (entry) => {
+    // The wire carries one entry object (component 08 slice 2's shape, the
+    // design record's own), so the store passes what the dialog collected
+    // straight through rather than picking three fields out of it.
+    const row = await requireClient().request("evener/host/add", { entry });
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
+    await reReadAfterMutation();
+    return row;
+  },
+
+  update: async (params) => {
+    // The host being edited is named by the request's own field: name is
+    // immutable, so it is the target rather than a value here (spec §3.1).
+    const { host: row } = await requireClient().request(
+      "evener/host/update",
+      {
+        name: params.name,
+        entry: params.entry,
+      },
+      { timeoutMs: HOST_GATE_TIMEOUT_MS },
+    );
     await reReadAfterMutation();
     return row;
   },
@@ -209,12 +244,12 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // The same fire-and-wait the spawn picker's Connect trigger issues
     // (Spawn.tsx's connectHost): evener/host/attach, then re-read the row.
     // A failure throws to the caller — the row keeps its retry affordance.
-    await requireClient().request("evener/host/attach", { host: name }, { timeoutMs: 35 * 60_000 });
+    await requireClient().request("evener/host/attach", { host: name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
     await reReadAfterMutation();
   },
 
   remove: async (name) => {
-    await requireClient().request("evener/host/remove", { name });
+    await requireClient().request("evener/host/remove", { name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
     await reReadAfterMutation();
   },
 

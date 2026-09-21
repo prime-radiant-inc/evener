@@ -12753,12 +12753,13 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerHostRequest,
 		// Component 06's explicit attach trigger (component 08's Connect).
 		appwire.MethodEvenerHostAttach,
-		// Component 08 slice 1's host registry surface (add/list/status/
-		// remove): controller-local, never dials.
+		// Component 08's host registry surface (add/list/status/remove/update):
+		// controller-local, never dials.
 		appwire.MethodEvenerHostAdd,
 		appwire.MethodEvenerHostList,
 		appwire.MethodEvenerHostStatus,
 		appwire.MethodEvenerHostRemove,
+		appwire.MethodEvenerHostUpdate,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

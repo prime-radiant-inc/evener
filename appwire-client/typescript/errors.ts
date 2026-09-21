@@ -25,6 +25,23 @@ export class WireError extends Error {
   }
 }
 
+// ErrorInvalidHostField is the hub's discriminator for a host mutation's
+// validation refusal, whose data names the input that failed
+// (appwire.ErrorInvalidHostField, appwire/errors.go). It shares its code with
+// every other validation refusal, so the field is only ever read off this
+// discriminant. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorInvalidHostField = "invalidHostField";
+
+// hostFieldError returns the input a host-mutation refusal blames, or undefined
+// for any other rejection — including a refusal that blames the entry as a
+// whole, which carries no field. The returned name is the wire spelling the
+// dialog's own inputs use, so a caller maps it onto an input directly.
+export function hostFieldError(error: unknown): string | undefined {
+  return wireRejectionPayload(error, ErrorInvalidHostField, "field", (value) =>
+    typeof value === "string" && value !== "" ? value : undefined,
+  );
+}
+
 // errorText flattens a rejected value to the text worth showing. It is the
 // one definition of a conversion the whole app needs: every caller that
 // reports a failure to the user starts here.
@@ -59,6 +76,7 @@ export function wireRejectionPayload<T>(
   decode: (value: unknown) => T | undefined,
 ): T | undefined {
   if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  if (!error.data || typeof error.data !== "object") return undefined;
   return decode((error.data as Record<string, unknown>)[key]);
 }
 

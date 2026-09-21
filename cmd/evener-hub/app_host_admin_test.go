@@ -428,15 +428,16 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// and a peer hub must not be able to make this hub attach a new host by
 		// forwarding it.
 		"evener/host/attach": false,
-		// The slice-1 host-management methods are controller-LOCAL like
+		// The host-management methods are controller-LOCAL like
 		// attach: they act on this controller's own config and channels
-		// (add/list/status/remove), so they are never proxied calls. Denied
+		// (add/list/status/remove/update), so they are never proxied calls. Denied
 		// deliberately — see TestHostManageNotForwarded, which pins the same
 		// requirement from the management side.
 		"evener/host/add":        false,
 		"evener/host/list":       false,
 		"evener/host/status":     false,
 		"evener/host/remove":     false,
+		"evener/host/update":     false,
 		"evener/instance/create": true,
 		"evener/instance/edit":   true,
 		"evener/instance/list":   true,
