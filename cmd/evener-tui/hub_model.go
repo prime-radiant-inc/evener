@@ -184,9 +184,17 @@ type hubModel struct {
 	// marketplace removal landed. Reads at or below it were issued before
 	// that landing and are stale by construction; reads above it were issued
 	// after and carry post-removal truth.
-	marketplaceListFloor uint64
-	followupModal        *tuipick.TextInputModal
-	launchOverridesModal *launchconfig.LaunchOverridesModal
+	//
+	// marketplaceListApplied is the generation of the newest read whose
+	// successful response has been accepted. A smaller generation arriving
+	// later was issued before that one and carries a snapshot the applied
+	// read already superseded, so it is rejected however late it arrives -
+	// failures never advance it, so an outstanding reconciliation's success
+	// still settles while a newer request has merely been issued or failed.
+	marketplaceListFloor   uint64
+	marketplaceListApplied uint64
+	followupModal          *tuipick.TextInputModal
+	launchOverridesModal   *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress

@@ -638,6 +638,12 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListFloor {
 		return m, nil
 	}
+	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListApplied {
+		// A read newer than this one has already been applied: this one
+		// was issued before it, and its snapshot was superseded - landing
+		// it late would overwrite the newer list with an older one.
+		return m, nil
+	}
 	// A successful read above the floor was issued after the removal
 	// landed, so it confirms the post-removal state whichever refresh
 	// issued it: an outstanding reconciliation must not be invalidated by
@@ -653,6 +659,9 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	// fence above.
 	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
 		return m, nil
+	}
+	if msg.Err == nil {
+		m.marketplaceListApplied = msg.ReconcileGeneration
 	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(msg)

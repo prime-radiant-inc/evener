@@ -696,6 +696,49 @@ func TestMarketplaceMutateResultMalformedMemberSnapshotStaysFenced(t *testing.T)
 	}
 }
 
+func TestMarketplaceListResultRejectsSuccessOlderThanAnAppliedRead(t *testing.T) {
+	newest := appwire.MarketplaceEntry{Name: "newest", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	older := appwire.MarketplaceEntry{Name: "older", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	// Two reads are in flight on a model whose reads are ordered: the
+	// older one (generation 1) captured the list before another client's
+	// removal, the newer one (generation 2) after it.
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, older, newest),
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           0,
+	}
+
+	// The newer read's response lands first...
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{newest}},
+		ReconcileGeneration: 2,
+	})
+	after := got.(hubModel)
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("newer read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != newest.Name {
+		t.Fatalf("panel row after newer read = %q, want %q", remove.Name, newest.Name)
+	}
+
+	// ...and the older one arrives afterward: it was issued before the
+	// applied read and would restore the snapshot that one superseded.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{older, newest}},
+		ReconcileGeneration: 1,
+	})
+	rejected := got.(hubModel)
+	updated, panelCmd = rejected.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("older read should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != newest.Name {
+		t.Fatalf("older read restored marketplace %q; the applied newer list must survive", remove.Name)
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
