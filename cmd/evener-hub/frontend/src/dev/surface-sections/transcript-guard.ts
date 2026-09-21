@@ -66,8 +66,21 @@ export async function measureEditorialTranscript() {
             return r.left < box.left - 1 || r.right > box.right + 1;
           })
           .map((element) => element.outerHTML.slice(0, 180));
-        const attention = required(statusLines.find((element) => element.dataset.attention === "true"));
-        const attentionVisible = visibleWithin(attention, box);
+        // Anchor on the fixture-owned delegate identity rather than a status
+        // kind a future case could share, so fixture growth cannot silently
+        // re-target the guard. Match the identity span's exact text anywhere
+        // in the card - a prefix match would also catch any future
+        // dlg_editorial_running* case id, and coupling to the card's first
+        // child would break on any future leading node.
+        const anchorCard = required(
+          Array.from(host.querySelectorAll<HTMLElement>('[data-testid="subagent-row"]')).find((card) =>
+            Array.from(card.querySelectorAll<HTMLElement>("span")).some(
+              (span) => span.textContent === "Delegate dlg_editorial_running",
+            ),
+          ),
+        );
+        const anchor = required(anchorCard.querySelector<HTMLElement>('[data-testid="subagent-stats"]'));
+        const anchorVisible = visibleWithin(anchor, box);
         const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
         const userText = required(user.firstElementChild);
         const agent = host.querySelector<HTMLElement>('[data-testid="agent-bubble"] p');
@@ -79,12 +92,12 @@ export async function measureEditorialTranscript() {
           nested: !!button.parentElement?.closest("button"),
         }));
         // Verify lifecycle remains visible when the actual body disclosure closes.
-        const attentionTool = required(attention.closest<HTMLElement>('[data-testid="tool-call-item"]'));
-        const body = required(attentionTool.querySelector<HTMLElement>('[data-testid="tool-call-body"]'));
-        const toggle = required(attentionTool.querySelector<HTMLButtonElement>(`button[aria-controls="${body.id}"]`));
+        const anchorTool = required(anchor.closest<HTMLElement>('[data-testid="tool-call-item"]'));
+        const body = required(anchorTool.querySelector<HTMLElement>('[data-testid="tool-call-body"]'));
+        const toggle = required(anchorTool.querySelector<HTMLButtonElement>(`button[aria-controls="${body.id}"]`));
         flushSync(() => toggle.click());
-        const collapsedAttention = required(
-          attentionTool.querySelector<HTMLElement>('[data-testid="delegate-lifecycle"]'),
+        const collapsedStatusLine = required(
+          anchorTool.querySelector<HTMLElement>('[data-testid="delegate-lifecycle"]'),
         );
         results.push({
           theme,
@@ -95,10 +108,10 @@ export async function measureEditorialTranscript() {
           overflow: host.scrollWidth - host.clientWidth,
           toolCount: tools.length,
           openControls,
-          attentionVisible,
-          collapsedAttentionVisible: visibleWithin(collapsedAttention, box),
-          collapsed: !attentionTool.querySelector('[data-testid="tool-call-body"]'),
-          collapsedAttention: collapsedAttention.textContent,
+          anchorVisible,
+          collapsedStatusVisible: visibleWithin(collapsedStatusLine, box),
+          collapsed: !anchorTool.querySelector('[data-testid="tool-call-body"]'),
+          collapsedStatus: collapsedStatusLine.textContent,
           userFont: getComputedStyle(userText).fontFamily,
           userSize: getComputedStyle(userText).fontSize,
           agentFont: agent && getComputedStyle(agent).fontFamily,
