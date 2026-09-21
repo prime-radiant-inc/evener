@@ -334,3 +334,110 @@ func TestMarketplaceMutateResultRemovedOutcomeReconcilesWithoutLitterWarning(t *
 		t.Fatalf("after reconciliation pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
 	}
 }
+
+func TestMarketplaceReconciliationRetriesThroughPanelReopen(t *testing.T) {
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+	})
+	defer cleanup()
+
+	// The state a marked-but-unconfirmed removal leaves behind once its first
+	// reconciliation read failed: the fence stands and no read is in flight.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, appwire.MarketplaceEntry{Name: "removed"}),
+		marketplaceRemovePending:       "removed",
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 1,
+	}
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		Err:                 errors.New("list read failed"),
+		ReconcileGeneration: 1,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "removed" || !after.marketplaceReconcilePending {
+		t.Fatalf("after failed reconcile pending = %q/%v, want fence standing", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+
+	// Reopening /plugins must re-issue the marketplace read through the
+	// tagged reconciliation path, so its result can settle the fence and
+	// populate the fresh panel; the ordinary untagged read the guard
+	// discards would leave both stuck forever.
+	plugin, ok := hubCommandByName("plugins")
+	if !ok {
+		t.Fatal("registry missing /plugins")
+	}
+	run := plugin.Run(&after, "")
+	if run == nil {
+		t.Fatal("/plugins reopen should issue its initial reads")
+	}
+	var list launchconfig.MarketplaceListResultMsg
+	seen := false
+	for _, c := range run().(tea.BatchMsg) {
+		if msg, ok := c().(launchconfig.MarketplaceListResultMsg); ok {
+			list, seen = msg, true
+		}
+	}
+	if !seen {
+		t.Fatal("/plugins reopen did not issue a marketplace list read")
+	}
+	if list.Err != nil || list.ReconcileGeneration != after.marketplaceReconcileGeneration {
+		t.Fatalf("/plugins reopen read = %+v, want tagged generation %d", list, after.marketplaceReconcileGeneration)
+	}
+
+	got, _ = after.handleMarketplaceListResult(list)
+	recovered := got.(hubModel)
+	if recovered.marketplaceRemovePending != "" || recovered.marketplaceReconcilePending {
+		t.Fatalf("after recovered reconcile pending = %q/%v, want cleared", recovered.marketplaceRemovePending, recovered.marketplaceReconcilePending)
+	}
+	if recovered.pluginsPanel == nil {
+		t.Fatal("recovered read should keep the plugins panel")
+	}
+	updated, panelCmd := recovered.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("recovered read should leave the surviving marketplace removable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != confirmed.Name {
+		t.Fatalf("panel selected marketplace after recovery = %q, want %q", remove.Name, confirmed.Name)
+	}
+}
+
+func TestMarketplaceReconciliationRetriesThroughNotificationRefresh(t *testing.T) {
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, appwire.MarketplaceEntry{Name: "removed"}),
+		marketplaceRemovePending:       "removed",
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 4,
+	}
+	var list launchconfig.MarketplaceListResultMsg
+	seen := false
+	for _, c := range m.refreshPluginsPanel()().(tea.BatchMsg) {
+		if msg, ok := c().(launchconfig.MarketplaceListResultMsg); ok {
+			list, seen = msg, true
+		}
+	}
+	if !seen {
+		t.Fatal("notification refresh did not issue a marketplace list read")
+	}
+	if list.Err != nil || list.ReconcileGeneration != m.marketplaceReconcileGeneration {
+		t.Fatalf("notification refresh read = %+v, want tagged generation %d", list, m.marketplaceReconcileGeneration)
+	}
+
+	got, _ := m.handleMarketplaceListResult(list)
+	recovered := got.(hubModel)
+	if recovered.marketplaceRemovePending != "" || recovered.marketplaceReconcilePending {
+		t.Fatalf("after recovered reconcile pending = %q/%v, want cleared", recovered.marketplaceRemovePending, recovered.marketplaceReconcilePending)
+	}
+}

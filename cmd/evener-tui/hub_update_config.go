@@ -645,6 +645,24 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	return m, nil
 }
 
+// marketplaceListRead returns the marketplace-list read this model should
+// issue for a user- or notification-driven refetch. While a removal's
+// post-removal state is unconfirmed the read must carry the reconciliation
+// generation: handleMarketplaceListResult discards untagged reads until the
+// fence settles, so an ordinary read could neither recover a failed
+// reconciliation nor settle the fence - it would leave the fresh panel
+// waiting forever. The generation is reused rather than bumped: every
+// tagged read is issued after the removal landed, so any tagged read's
+// success is a legitimate confirmation, and a still-in-flight earlier
+// tagged read stays settleable too. The duplicate-remove fence is
+// untouched here; only a successful tagged read clears it.
+func (m hubModel) marketplaceListRead() tea.Cmd {
+	if m.marketplaceReconcilePending {
+		return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+	}
+	return launchconfig.CmdMarketplaceList(m.client)
+}
+
 func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
 		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
