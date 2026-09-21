@@ -1118,11 +1118,20 @@ function olderItemContributes(older: ItemModel, newer: ItemModel): boolean {
 // by source precedence; every other field it carried goes with it. A result
 // whose every foldable field the fresh side already supplies is therefore
 // fully superseded — the merged output retains nothing from it, so it must
-// not claim persisted coverage. A result with no fresh counterpart for its
-// callId keeps its own item, or folds into an older call that keeps its
-// fields, so it still claims.
-function fullySupersededToolResult(older: ItemModel, freshToolCandidates: Map<string, ToolCandidates> | undefined) {
-  if (freshToolCandidates === undefined || older.callId === undefined || !isToolResultId(older.id)) return false;
+// not claim persisted coverage. The fold removes a result only when a CALL
+// item for its callId exists somewhere (fresh or older — the fold collects
+// call ids from call items alone); without one the result survives as its own
+// item. A result with no fresh counterpart for its callId, with or without
+// that call, keeps its fields on its own item or on the surviving older call.
+// Both still claim.
+function fullySupersededToolResult(
+  older: ItemModel,
+  freshToolCandidates: Map<string, ToolCandidates> | undefined,
+  toolCallCallIds: Set<string> | undefined,
+) {
+  if (freshToolCandidates === undefined || toolCallCallIds === undefined) return false;
+  if (older.callId === undefined || !isToolResultId(older.id)) return false;
+  if (!toolCallCallIds.has(older.callId)) return false;
   const fresh = freshToolCandidates.get(older.callId);
   if (fresh === undefined) return false;
   for (const field of toolResultFields) {
@@ -1140,8 +1149,9 @@ function olderItemAddsCoverage(
   older: ItemModel,
   matches: ItemModel[],
   freshToolCandidates?: Map<string, ToolCandidates>,
+  toolCallCallIds?: Set<string>,
 ): boolean {
-  if (matches.length === 0) return !fullySupersededToolResult(older, freshToolCandidates);
+  if (matches.length === 0) return !fullySupersededToolResult(older, freshToolCandidates, toolCallCallIds);
   if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
     return true;
   }
@@ -1169,6 +1179,7 @@ function olderTurnAddsCoverage(
   older: TurnModel,
   matches: TurnModel[],
   freshToolCandidates?: Map<string, ToolCandidates>,
+  toolCallCallIds?: Set<string>,
 ): boolean {
   if (
     turnCoverageFields.some(
@@ -1178,11 +1189,22 @@ function olderTurnAddsCoverage(
   ) {
     return true;
   }
-  if (matches.length === 0) return older.items.length === 0 || older.items.some((item) => item.type !== "warning");
+  // The fold is global across turns: an older result in a turn that matches
+  // nothing can still be superseded by a fresh call living in another turn,
+  // so the unmatched-turn claim runs the same per-item check instead of
+  // taking every non-warning item on faith.
+  if (matches.length === 0) {
+    return (
+      older.items.length === 0 ||
+      older.items.some(
+        (item) => item.type !== "warning" && olderItemAddsCoverage(item, [], freshToolCandidates, toolCallCallIds),
+      )
+    );
+  }
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
     const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
-    return olderItemAddsCoverage(olderItem, matchingItems, freshToolCandidates);
+    return olderItemAddsCoverage(olderItem, matchingItems, freshToolCandidates, toolCallCallIds);
   });
 }
 
@@ -1213,6 +1235,14 @@ function mergeTurnHistoryWithContext(
   let olderCoverage = false;
   let transcriptOverlap = false;
   const freshToolCandidates = collectDirectToolCandidates(newer);
+  // The fold collects call ids from CALL items alone, on either side, so a
+  // result is only removable where its call survives somewhere in the merge.
+  const toolCallCallIds = new Set<string>();
+  for (const turn of [...older, ...newer]) {
+    for (const item of turn.items) {
+      if (item.callId && isToolCallId(item.id)) toolCallCallIds.add(item.callId);
+    }
+  }
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
@@ -1228,7 +1258,7 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns, freshToolCandidates)) olderCoverage = true;
+      if (olderTurnAddsCoverage(turn, freshTurns, freshToolCandidates, toolCallCallIds)) olderCoverage = true;
     }
 
     if (group.olderIndexes.length === 0) continue;

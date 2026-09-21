@@ -3610,6 +3610,56 @@ test("mergeTurnHistory counts an older result field the fresh call does not supp
   expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "fresh output", exitCode: 0 });
 });
 
+test("mergeTurnHistory does not count a result a fresh call in another turn supersedes", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-older-result", {
+        id: "item_tool_result_0_0",
+        callId: "call-cross-turn",
+        output: "older output",
+        completedAt: new Date(10).toISOString(),
+      }),
+    ],
+    [
+      toolModelTurn("turn-fresh-call", {
+        id: "item_tool_1_0",
+        callId: "call-cross-turn",
+        output: "fresh output",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "fresh output" });
+});
+
+test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
+  const merged = mergeTurnHistory(
+    [
+      toolModelTurn("turn-shared", {
+        id: "item_tool_result_0_0",
+        callId: "call-results-only",
+        output: "older output",
+      }),
+    ],
+    [
+      toolModelTurn("turn-shared", {
+        id: "item_tool_result_2_0",
+        callId: "call-results-only",
+        output: "fresh result",
+        status: "completed",
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items).toHaveLength(2);
+});
+
 test("mergeTurnHistory keeps older fallback fields and fragments while fresh fields win", () => {
   const older: TurnModel[] = [
     {
