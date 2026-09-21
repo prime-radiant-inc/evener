@@ -39,6 +39,7 @@ var daemonRetirementAccessKinds = map[string]string{
 	appwire.MethodThreadShutdown:                 "control",
 	appwire.MethodEvenerDaemonStatus:             "control",
 	appwire.MethodEvenerDaemonRetire:             "control",
+	appwire.MethodEvenerDaemonIdleTimeoutSet:     "control",
 }
 
 func daemonRetirementAccess(method string) (kind string, ok bool) {

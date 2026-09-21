@@ -13,7 +13,13 @@ const (
 type ErrorInfo string
 
 const (
-	ErrorInvalidParams             ErrorInfo = "invalidParams"
+	ErrorInvalidParams ErrorInfo = "invalidParams"
+	// ErrorInvalidHostField marks a host mutation's validation refusal, whose
+	// data names the input that failed (HostFieldErrorData.Field, spelled the
+	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
+	// plain validation refusals, so a client that wants to place a message on
+	// an input must match this discriminant, never the code.
+	ErrorInvalidHostField          ErrorInfo = "invalidHostField"
 	ErrorResourceNotFound          ErrorInfo = "resourceNotFound"
 	ErrorMethodNotFound            ErrorInfo = "methodNotFound"
 	ErrorProviderUnavailable       ErrorInfo = "providerUnavailable"
@@ -103,6 +109,33 @@ type ErrorData struct {
 	MutationOutcome  MutationOutcome  `json:"mutationOutcome,omitempty"`
 	RetryDisposition RetryDisposition `json:"retryDisposition,omitempty"`
 	Cause            string           `json:"cause,omitempty"`
+}
+
+// HostFieldErrorData is a host mutation's validation-refusal data (component 08
+// slice 2): the standard ErrorData plus the input the refusal blames, spelled
+// the way the wire names that input (HostEntry's json tags) so a dialog places
+// the message without parsing prose. A refusal that blames the entry as a
+// whole — a cycle — leaves Field empty and the client shows it form-level. Same
+// composition as LifecycleErrorData: the embedded ErrorData keeps every
+// consumer that only reads evenerErrorInfo working.
+type HostFieldErrorData struct {
+	ErrorData
+	Field string `json:"field,omitempty"`
+}
+
+// InvalidHostField is the validation refusal for a host mutation that blames one
+// input. field is HostEntry's wire spelling of that input; an empty field means
+// the refusal blames the entry as a whole. message is the hub's own prose,
+// unchanged.
+func InvalidHostField(field, message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data: HostFieldErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorInvalidHostField},
+			Field:     field,
+		},
+	}
 }
 
 type WireError struct {

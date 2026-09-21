@@ -157,6 +157,7 @@ export {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
@@ -164,6 +165,7 @@ export {
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
+  hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
@@ -494,6 +496,9 @@ export type {
   TranscriptDisplayStoreFields,
   TranscriptDisplayStoreState,
   TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export type {

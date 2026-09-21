@@ -174,9 +174,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // tool whose failure shows up only in the shape of its output.
   const failed = toolCallFailed(item);
   const showErrorText = hasErrorText(item);
-  // Rendered in TWO places, deliberately: the collapsed row's hover title (a
-  // glance) and the expanded body as real text (the keyboard-reachable copy).
-  const detail = descriptor.detail?.(item);
 
   // summarySuffix (kata h70z) reads the FULL thread model, not just this
   // item - ask_user's "— answered: ..." recap lives in a separate, LATER
@@ -365,7 +362,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           expanded={false}
           trailing={trailingControls}
           trailingAfter={trailingAfter}
-          title={detail}
         />
         {statusLine}
       </div>
@@ -421,7 +417,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryFallback)}
         trailing={trailingVisible ? trailingControls : null}
         trailingAfter={trailingVisible ? trailingAfter : undefined}
-        title={detail}
         bodyId={bodyId}
       />
       {statusLine}
@@ -431,16 +426,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
         <div id={bodyId} className={CLASS.body} data-testid="tool-call-body">
-          {/* descriptor.detail() (currently only shell's exit code) rides the
-              collapsed row's hover title ONLY (see `title={detail}` above) - it
-              is not echoed here as a second copy. A title alone is mouse-only,
-              but for shell that is not a reachability gap: the daemon bakes the
-              same "[exit N]" fact into the captured output itself
-              (agent/session_tools_shell.go's formatShellResult - the model
-              reads that same text as its tool result), so it is already real,
-              keyboard/screen-reader-reachable text at the tail of the body
-              below. Echoing detail() here too duplicated that fact on screen
-              (kata wksf) instead of adding a second way to reach it. */}
           {showErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />

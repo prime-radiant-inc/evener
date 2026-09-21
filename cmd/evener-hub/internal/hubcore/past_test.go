@@ -1980,6 +1980,32 @@ func fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN(t *testing.T) 
 	}
 }
 
+// fuzzScenarioPastIndex_RecentModels_SkipsSubagentSessions pins the machinery
+// filter: a delegate session's (provider, model) pair never surfaces in
+// RecentModels, and a delegate-only pair must not consume one of the limit
+// slots — mirroring RecentProjectDirs' IsSubagent skip. A delegate's model is
+// inherited or overridden at spawn, never chosen in the picker, so it is
+// recents noise, not recents signal.
+func fuzzScenarioPastIndex_RecentModels_SkipsSubagentSessions(t *testing.T) {
+	idx := NewPastIndex("")
+	now := time.Now().UTC()
+	idx.SeedForTest([]schema.SessionMeta{
+		{ID: "02wMz5Txv3Kz7RbQ9pXwLd", ProfileID: "lunaroute", Model: "glm-5.3-flash", IsSubagent: true, UpdatedAt: now.Add(-1 * time.Minute)},
+		{ID: "02wMz5Txv4Nq2WsE8vYuMa", ProfileID: "zai", Model: "glm-5.3", UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "02wMz5Txv5Tc6XgR1mZbPf", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: now.Add(-3 * time.Minute)},
+	})
+	// limit 2: without the skip the delegate pair takes slot 1 and pushes the
+	// oldest genuine picker choice out of the group.
+	got := idx.RecentModels(2)
+	want := []appwire.ModelDescriptor{
+		{Provider: "zai", Model: "glm-5.3"},
+		{Provider: "openai", Model: "gpt-5.2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RecentModels(2) = %+v, want %+v (delegate pair skipped without consuming a slot)", got, want)
+	}
+}
+
 // TestPastIndex_RefreshOneRereadsChangedMetaAndReorders is the regression test
 // for the sidebar-ordering-freshness bug: a session's on-disk meta.json can be
 // rewritten out-of-process (the daemon's own maybeAutoSave) between the

@@ -33,8 +33,8 @@ type WebServer struct {
 	// the sshconn attach-event path so an EventAttached rebinds a
 	// backoff-sleeping fan-out immediately.
 	hostAdmin *hubHostAdminController
-	// hostManage is the slice-1 host-management controller (add/list/status/
-	// remove). main.go binds its event recorder to the same sshconn lifecycle
+	// hostManage is the host-management controller (add/list/status/remove/
+	// update). main.go binds its event recorder to the same sshconn lifecycle
 	// path, so host rows retain attach state from the manager's events.
 	hostManage *hubHostManager
 
@@ -179,7 +179,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
+	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {

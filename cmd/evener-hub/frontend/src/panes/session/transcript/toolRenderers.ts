@@ -107,10 +107,6 @@ export interface ToolRendererDescriptor {
   // glyph for. Mirrors the legacy renderer's own toolLooksGood, which likewise
   // treated a nonzero exit_code as not-good (renderer-format.js:593).
   failed?(item: ItemModel): boolean;
-  // detail is secondary fact the row must keep REACHABLE without making it the
-  // headline - rendered as the row's hover title. The shell exit code is the
-  // motivating case (A2: "exit 1" stops being the failure signal, the glyph is).
-  detail?(item: ItemModel): string | undefined;
   // suppress removes the whole tool-call row from the transcript when true -
   // no summary, no body, nothing (ToolCallItem renders null). Used for a
   // task_list `action:"view"` (a read that legacy renders nothing for) and a

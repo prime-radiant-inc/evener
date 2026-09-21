@@ -36,11 +36,14 @@
 
 /* The steering diamond rails with the thought/tool kind icons (Jesse's
  * unification call: a run row with an empty rail reads as "weirdly
- * indented"). Same geometry as toolcallitem.module.css's .rowIcon: an
- * --speaker-avatar-size slot centred on the avatar column at 50% opacity,
- * with the margin-right eating the row's own gap so slot (24) + margin (2)
- * + row gap (8) = one speaker-gutter (34) and the label lands exactly on
- * the content edge. */
+ * indented"). The same avatar-column slot geometry the shared rail seat
+ * declares (styles/railseat.module.css) - the --speaker-avatar-size width,
+ * the centered flex slot, the gap-netting margin-right, 50% opacity - held
+ * as a deliberate VARIANT rather than composed, the same stance ThinkBlock's
+ * bulb takes: this is a single-line, centered row (align-self: center, no
+ * 1lh pinning or font-size matching) whose pull rides the .summary container
+ * below, so composing .seat would reseat the diamond.
+ * railseat.contract.test.ts pins the stance. */
 .railIcon {
   flex: none;
   align-self: center;

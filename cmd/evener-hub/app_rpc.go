@@ -119,13 +119,16 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:         item.Entry,
-			SessionID:     item.SessionID,
-			Status:        item.Status,
-			PendingAsk:    item.PendingAsk,
-			RunningJobs:   item.RunningJobs,
-			CompletedJobs: item.CompletedJobs,
-			Watches:       item.Watches,
+			Entry:             item.Entry,
+			SessionID:         item.SessionID,
+			Status:            item.Status,
+			PendingAsk:        item.PendingAsk,
+			PendingEscalation: item.PendingEscalation,
+			RunningJobs:       item.RunningJobs,
+			CompletedJobs:     item.CompletedJobs,
+			Watches:           item.Watches,
+			Capabilities:      item.Capabilities,
+			CapabilitiesKnown: item.CapabilitiesKnown,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -592,7 +595,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
-	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
@@ -601,9 +604,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
-	// Component 08 slice 1: the host registry surface (add/list/status/
-	// remove). Controller-local, never dials; add/remove invalidate the
-	// manifest's sources so the picker converges without a refresh tick.
+	// Component 08's host registry surface (add/list/status/remove from slice
+	// 1; update from slice 2). Controller-local, never dials; add and remove
+	// invalidate the manifest's sources, and an edit that changes the roots
+	// retires and re-registers them, so the picker converges without a refresh
+	// tick.
 	// The manager, the live host registry, and the selected hub.toml path all
 	// come from cfg — main.go threads the real sshconn.Manager, the one
 	// registry shared with the attach handler, and the config path whose

@@ -9,10 +9,21 @@
 .body {
   padding: 0;
   min-height: 0;
+  /* The browser row fills a bounded body instead of growing it: at the
+   * panel's height cap each column scrolls inside the row (the .recents and
+   * .browse rules below), so a full 15-item recents list (~930px of
+   * single-line rows) cannot make the whole body scroll while the sidebar's
+   * own scrollbar never engages. A viewport too short for the 340px row
+   * floor scrolls the body itself - auto, not hidden, so that fallback
+   * stays reachable instead of clipping the row. */
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
 }
 
 .browser {
   display: flex;
+  flex: 1;
   min-height: 340px;
 }
 .recents {
@@ -21,6 +32,10 @@
   padding: var(--space-3);
   background: var(--surface-inset);
   border-right: 1px solid var(--edge);
+  /* Stretches to the browser row's height, which the bounded .body above
+   * caps at the panel's height limit; a long recents list scrolls here
+   * instead of stretching the dialog. */
+  overflow-y: auto;
 }
 .recents h3 {
   margin: var(--space-3) 0 var(--space-2);
@@ -33,6 +48,7 @@
   flex: 1;
   min-width: 0;
   padding: var(--space-4);
+  overflow-y: auto;
 }
 .navigation {
   display: flex;
@@ -124,13 +140,30 @@
 :where(.recents) .row {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  /* Stretch, not flex-start: a column flex item with flex-start sizes itself
+   * to fit-content, and a long path or unbreakable basename then escapes the
+   * 180px sidebar and runs across the browse column. Stretch pins each line
+   * to the row's width so the truncation below can do its work; the full path
+   * rides on the row's title for hover. */
+  align-items: stretch;
   gap: var(--space-1);
+  overflow: hidden;
 }
 .path {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
   overflow-wrap: anywhere;
+}
+
+/* Scoped after the shared .path rule so the override wins: the recents
+ * sidebar truncates each line to fit its 180px column, while the footer
+ * destination's .path keeps its overflow-wrap wrapping. */
+:where(.recents) .row strong,
+:where(.recents) .row .path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .footer {
   display: flex;
@@ -195,6 +228,10 @@
     width: auto;
     border-right: 0;
     border-top: 1px solid var(--edge);
+    /* Shrink below content and scroll (overflow-y:auto above) instead of
+     * forcing the full list height and collapsing the browse pane above. */
+    flex: 0 1 auto;
+    min-height: 0;
   }
   .browse {
     padding: var(--space-3);

@@ -7,13 +7,13 @@ import {
 } from "@evener/appwire-client";
 import { transitionTranscriptViews } from "../../panes/session/transcript/flow/transcriptViewRegistry";
 
-export interface EffectiveLayers {
+interface EffectiveLayers {
   viewport: ViewportClass;
   local: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
   hub: Partial<Record<ViewportClass, { revision: number; config: TranscriptDisplayConfigV1 }>>;
 }
 
-export function effectiveForLayers(layers: EffectiveLayers, layout: ViewportClass): TranscriptDisplayConfigV1 {
+function effectiveForLayers(layers: EffectiveLayers, layout: ViewportClass): TranscriptDisplayConfigV1 {
   return resolveEffectiveConfig({
     local: layers.local[layout],
     hub: layers.hub[layout],

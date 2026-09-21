@@ -100,9 +100,11 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  *    though the call still rejects, the same way keybindingsStore's
  *    rejectionPayload reads a post-rename durable failure's applied state.
  *    A recognized marker with missing, unavailable, or malformed applied
- *    data is still an applied-but-unconfirmed outcome: the unregister
- *    already landed, but callers must reconcile rather than treat the zero
- *    value as an authoritative empty list.
+ *    data - a list whose members do not each decode as an
+ *    appwire.MarketplaceEntry counts as malformed - is still an
+ *    applied-but-unconfirmed outcome: the unregister already landed, but
+ *    callers must reconcile rather than treat the zero value as an
+ *    authoritative empty list.
  *  - marketplaceRemoveApplied (appwire.MarketplaceRemoveAppliedData): the
  *    removal and its clone cleanup completed, but the fresh list read
  *    failed - removed, with no clone litter to warn about.
@@ -111,6 +113,31 @@ export type MarketplaceRemovalOutcome =
   | { kind: "applied"; marketplaces: MarketplaceEntry[] }
   | { kind: "unavailable" }
   | { kind: "removed" };
+
+/** Structural check for one applied-list member: appwire.MarketplaceEntry's
+ * wire shape, as generated into types.gen.ts - name a string, lastUpdated a
+ * number, installLocation a string when present, and source an object whose
+ * kind is a string (every other source field is omitempty, so each is checked
+ * only when present, the same string-or-absent rule fromWireOverrides applies
+ * to loadError). The hub's own validation already ran; this is the
+ * trust-boundary re-check, so a malformed member degrades the whole payload to
+ * the applied-but-unconfirmed outcome instead of being miscast into the one
+ * list this failure path publishes as authoritative. */
+function isMarketplaceEntry(value: unknown): value is MarketplaceEntry {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.name !== "string") return false;
+  if (typeof entry.lastUpdated !== "number") return false;
+  if (entry.installLocation !== undefined && typeof entry.installLocation !== "string") return false;
+  const source = entry.source;
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
+  const candidate = source as Record<string, unknown>;
+  if (typeof candidate.kind !== "string") return false;
+  for (const field of ["repo", "url", "path", "ref", "sha"] as const) {
+    if (candidate[field] !== undefined && typeof candidate[field] !== "string") return false;
+  }
+  return true;
+}
 
 /** Classifies the hub's post-apply marketplace removal rejections for UI
  * consumers; each marker's reconcile rule is documented on
@@ -127,7 +154,7 @@ export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOut
   if (data.appliedUnavailable) return { kind: "unavailable" };
   if (!data.applied || typeof data.applied !== "object") return { kind: "unavailable" };
   const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
-  return Array.isArray(marketplaces)
+  return Array.isArray(marketplaces) && marketplaces.every(isMarketplaceEntry)
     ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
     : { kind: "unavailable" };
 }

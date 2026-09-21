@@ -8,6 +8,8 @@ export function steeringNoticeLabel(item: Notice): string | undefined {
 	switch (item.steeringKind) {
 		case "interrupted":
 			return "Interrupted";
+		case "interrupted-salvage":
+			return "Interrupted draft";
 		case "tasks-done":
 			return "Tasks complete";
 		case "task-nudge":
@@ -38,7 +40,8 @@ export function isCriticalNotice(item: Notice): boolean {
 export function isInterruptedNotice(item: Notice): boolean {
 	return (
 		item.origin === "steering" &&
-		item.steeringKind === "interrupted" &&
+		(item.steeringKind === "interrupted" ||
+			item.steeringKind === "interrupted-salvage") &&
 		item.tone !== "warning"
 	);
 }

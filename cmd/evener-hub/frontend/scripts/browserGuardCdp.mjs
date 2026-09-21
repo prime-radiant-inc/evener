@@ -282,15 +282,87 @@ export async function connectPage(endpoint) {
   return { ws, send, close: () => ws.close() };
 }
 
+// The bounded re-navigation budget navigateTo's boot options use: a harness
+// page that loaded but never booted is re-navigated at most this many times.
+export const BOOT_RETRY_LIMIT = 2;
+
+// The pause between those re-navigations, giving a transient network change
+// time to settle before the burst is asked for again.
+export const BOOT_RETRY_DELAY_MS = 250;
+
+/**
+ * layoutguard's half of the boot seam, exported so the wire tests can call it
+ * against a stub document. It runs in the page via toString(), so it must not
+ * close over anything outside its own body: the documents come from the page's
+ * own globals and the answer is a plain boolean.
+ *
+ * A layoutguard case has no entry module that could leave a boot global -
+ * harness.html is static and window.measure comes from an inline script that
+ * always runs - so the case's boot contract is that every stylesheet link
+ * actually loaded, one document at a time (the top document's tokens.css and
+ * resolved.css, plus whatever any same-origin srcdoc fixture iframe links for
+ * itself): a request the burst died on leaves link.sheet null, and a page
+ * whose stylesheets died measures a fontless, unstyled page. A document that
+ * links NO stylesheet at all is not a booted case either - [].every(...) is
+ * vacuously true, so that shape has to be refused explicitly or an error page
+ * would pass as booted and die in waitForFonts as the fonts misfire.
+ */
+export function harnessStylesheetsLoadedInPage() {
+  const docs = [document];
+  for (const frame of document.querySelectorAll("iframe")) {
+    try {
+      if (frame.contentDocument) docs.push(frame.contentDocument);
+    } catch {}
+  }
+  return docs.every((doc) => {
+    const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"]'));
+    if (links.length === 0) return false;
+    return links.every((link) => link.sheet !== null);
+  });
+}
+
+/**
+ * Group the Network.loadingFailed events captured during one attempt's boot
+ * window by what failed and how often, so the terminal error reports the
+ * burst ("Script net::ERR_NETWORK_CHANGED x3") instead of 40
+ * near-identical lines.
+ */
+function summarizeLoadingFailures(failures) {
+  if (failures.length === 0) return null;
+  const counts = new Map();
+  for (const failure of failures) {
+    const kind = `${failure?.type ?? "Unknown"} ${failure?.errorText ?? "(no error text)"}`;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([kind, count]) => (count === 1 ? kind : `${kind} x${count}`)).join("; ");
+}
+
+// The error texts that name a host network-state change - the flake this seam
+// exists for (a Tailscale interface flap announces itself to Chrome as
+// ERR_NETWORK_CHANGED; the interface's own outage arrives as
+// ERR_INTERNET_DISCONNECTED). Anything else that fails on the wire - a
+// blocked request, an ERR_FAILED resource the harness itself caused - is
+// deterministic evidence about the harness: reported, but never counted as
+// the network-change signature that earns the environment framing. Extending
+// this set is a diagnosis decision, not a catch-all: a text added here lets
+// every guard's boot-death attribution claim an environment cause.
+const NETWORK_CHANGE_FAILURE_TEXTS = ["net::ERR_NETWORK_CHANGED", "net::ERR_INTERNET_DISCONNECTED"];
+
+function isNetworkChangeFailure(failure) {
+  return NETWORK_CHANGE_FAILURE_TEXTS.includes(failure?.errorText ?? "");
+}
+
 /**
  * Page.enable, navigate, and await the load event - the triple every guard
- * re-wrote.
+ * re-wrote. Resolves to the navigation's loaderId - the document identity the
+ * boot seam correlates request evidence by - or null when the response does
+ * not report one; the legacy two-argument callers ignore the return value.
  *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
  * every later CDP message on a socket the guards reuse across cases.
  */
-export async function navigateTo({ ws, send }, url) {
+async function navigateToOnce({ ws, send }, url) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
@@ -308,12 +380,237 @@ export async function navigateTo({ ws, send }, url) {
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    await Promise.all([loaded, withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate")]);
+    const [, navigated] = await Promise.all([
+      loaded,
+      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
+    ]);
+    return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
     // its listener/timer) without replacing the error Promise.all observed.
     abandonLoad();
     await Promise.allSettled([loaded]);
+  }
+}
+
+/**
+ * Navigate, and on a boot-checked harness page prove the harness actually ran.
+ *
+ * THE UNBOOTED-PAGE FLAKE THIS ABSORBS: a transient network change on the
+ * host (measured on this machine: bursts of net::ERR_NETWORK_CHANGED, on
+ * 127.0.0.1 loopback requests too, whenever a Tailscale interface flaps)
+ * kills the Vite dev-server module burst mid-boot. The page still parses and
+ * fires its load event - document.readyState "complete", both script tags in
+ * the DOM - but the harness entry module never runs: its boot global is
+ * missing and no injected stylesheet arrives. Every guard then walked into
+ * waitForFonts on that dead page and reported the environment flake as "the
+ * top document declares no web fonts".
+ *
+ * THE SEAM: callers pass `bootExpression`, an in-page expression that is
+ * truthy exactly when the harness booted - for the tsx-entry harnesses, the
+ * module-scope global their entry assigns (window.settled and friends); for
+ * layoutguard's static case pages, that every stylesheet link actually loaded
+ * (a dead burst leaves link.sheet null). It is evaluated AFTER the load event:
+ * module scripts block the load event until their whole static import tree
+ * has evaluated, so at load time a marker that will ever exist already does.
+ * An unbooted page is re-navigated, bounded by BOOT_RETRY_LIMIT, and one that
+ * never recovers fails with the boot cause - never the fonts error - plus the
+ * Network.loadingFailed evidence captured inside the window.
+ *
+ * THE ATTRIBUTION IS EARNED, NOT ASSUMED: a missing boot marker alone does
+ * not name the cause. A harness entry whose module-init path throws at top
+ * level, a bad script href, or a broken import graph all leave the marker
+ * unset while every request succeeds - a deterministic code failure. Only a
+ * boot death whose FINAL attempt owned recognized network-change failures is
+ * framed as the environment flake. Evidence is scoped by DOCUMENT IDENTITY,
+ * never by the attempt counter or arrival time: each navigation's
+ * Page.navigate response names its loaderId, every request is tagged with
+ * the loaderId it reported (Network.requestWillBeSent, first writer wins -
+ * redirects re-emit under the same pair), and each loadingFailed resolves
+ * through its request's loaderId to the attempt that committed that
+ * document. An unseen send anchors to the last COMMITTED navigation - the
+ * document that is live when the failure arrives, which in the gap between
+ * a new navigation's issue and its response is still the previous one; the
+ * attempt counter advances at loop top and must never name an event's owner.
+ * When Chrome reports no loaderId at all, no identity exists to honor and
+ * attribution degrades to the arrival counter. The terminal attribution
+ * reads only the final attempt's failures, so a flap that killed an earlier
+ * attempt cannot launder a deterministic death on the final one.
+ * Navigation-induced aborts
+ * are never recorded at all. A final window that captured BOTH
+ * network-change and other failures is reported as INCONCLUSIVE with both
+ * summaries rather than issuing a definitive verdict either way; any other
+ * captured failure is reported under the harness diagnosis rather than
+ * flipping it.
+ *
+ * The legacy two-argument call is unchanged: no boot options, no Network
+ * domain, no extra evaluate - skillguard's driver and editorial-preview keep
+ * exactly the behavior they had.
+ *
+ * @param {{ws: object, send: Function}} page - the connected CDP page
+ * @param {string} url - where to navigate
+ * @param {object} [options]
+ * @param {string} [options.bootExpression] - in-page expression, truthy when booted
+ * @param {string} [options.bootLabel] - human name of the marker for errors and logs
+ * @param {number} [options.retryDelayMs] - pause before each re-navigation
+ */
+export async function navigateTo(
+  page,
+  url,
+  { bootExpression = null, bootLabel = null, retryDelayMs = BOOT_RETRY_DELAY_MS } = {},
+) {
+  if (!bootExpression) return navigateToOnce(page, url);
+  const { ws, send } = page;
+  // EVIDENCE IS SCOPED BY DOCUMENT IDENTITY, never by the attempt counter or
+  // arrival time: each navigation's Page.navigate response names its
+  // loaderId, requests are tagged with the loaderId they reported, and each
+  // loadingFailed resolves through that loaderId to the attempt that
+  // committed the document. The terminal attribution reads only the final
+  // attempt's bucket, so a flap that killed an earlier attempt cannot
+  // launder a deterministic death on the final one however late its
+  // failures are delivered.
+  const requestLoaderIds = new Map();
+  const loaderAttempts = new Map();
+  const failuresByAttempt = new Map();
+  // The last navigation whose response has COMMITTED. It advances only when
+  // a navigateToOnce resolves - never when the counter increments - so in
+  // the gap between attempts++ and the new navigate's response this still
+  // names the PREVIOUS document: the document that is live and emitting.
+  let currentLoaderId = null;
+  const onLoadingFailed = (event) => {
+    // This handler sits on the guards' shared CDP socket, which other
+    // listeners (connectPage's pending-command resolver, the load tripwire)
+    // share: a frame it cannot parse, or an event without params, must be
+    // skipped, never thrown - an exception here breaks the dispatch of every
+    // later event on the socket.
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (!message?.params) return;
+    if (message.method === "Network.requestWillBeSent") {
+      // Tag by the event's OWN loaderId - the identity of the document that
+      // sent it - never by the counter: an old document can still emit while
+      // the counter already points at the new attempt. First writer wins: a
+      // request's redirects re-emit requestWillBeSent under the SAME
+      // requestId and loaderId, and the document that started the request
+      // owns its whole lifecycle. A loaderId reported before its navigate
+      // response lands resolves at attribution time, once the mapping is
+      // built.
+      if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
+        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
+      }
+      return;
+    }
+    if (message.method !== "Network.loadingFailed") return;
+    // A re-navigation ABORTS the previous attempt's in-flight requests, so
+    // canceled:true / net::ERR_ABORTED arrivals are the seam's own doing, and
+    // a harness aborting its own request is equally deterministic. Neither is
+    // a wire death, so neither is recorded: evidence must be failures that
+    // happened to requests the page wanted kept alive.
+    if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
+    // Resolve by identity, degrading only when identity is unavailable: a
+    // seen request resolves through its loaderId; an unseen send anchors to
+    // the last COMMITTED navigation (currentLoaderId - the document that is
+    // live when the failure arrives, which in the navigate gap is still the
+    // previous one); and a loaderId that was never mapped - a navigate
+    // response that reported none - has no identity to honor, so the arrival
+    // counter is the only anchor left.
+    const requestLoaderId = requestLoaderIds.get(message.params.requestId) ?? currentLoaderId;
+    const owner = loaderAttempts.get(requestLoaderId) ?? attempts;
+    const bucket = failuresByAttempt.get(owner) ?? [];
+    bucket.push(message.params);
+    failuresByAttempt.set(owner, bucket);
+  };
+  ws.addEventListener("message", onLoadingFailed);
+  let attempts = 0;
+  try {
+    // Network events only flow while the domain is enabled, and only this
+    // window needs them. The enable sits inside the SAME cleanup scope as the
+    // loop: a command whose response times out may still have been applied by
+    // Chrome, and the guards reuse this page for every later case, so the
+    // disable must go out on every path - including the enable never
+    // answering.
+    await withTimeout(send("Network.enable"), 30000, "Network.enable");
+    for (;;) {
+      attempts++;
+      const loaderId = await navigateToOnce(page, url);
+      if (loaderId) loaderAttempts.set(loaderId, attempts);
+      // Identity for the navigation that just committed. currentLoaderId
+      // advances only HERE - never at the counter increment above - so the
+      // gap between the two still belongs to the previous document.
+      currentLoaderId = loaderId;
+      if (await evaluate(send, bootExpression)) return;
+      if (attempts > BOOT_RETRY_LIMIT) {
+        const budget =
+          `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
+          `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
+        const verdict =
+          `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
+          `so the page is a dead document no measurement can read`;
+        // Only the FINAL attempt's owned failures name the cause: earlier
+        // attempts' buckets exist but are never read here.
+        const finalFailures = failuresByAttempt.get(attempts) ?? [];
+        const networkEvidence = summarizeLoadingFailures(finalFailures.filter(isNetworkChangeFailure));
+        const otherEvidence = summarizeLoadingFailures(
+          finalFailures.filter((failure) => !isNetworkChangeFailure(failure)),
+        );
+        let diagnosis;
+        if (networkEvidence && otherEvidence) {
+          // A window holding BOTH a network change and deterministic failures
+          // cannot be named from the wire alone: either verdict would discard
+          // live evidence. Report both and let the reader judge.
+          diagnosis =
+            `inconclusive boot failure - the final attempt's window captured BOTH a network change and ` +
+            `deterministic failures, so the wire evidence alone cannot name the cause: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these network-change failures during ` +
+            `the boot window: ${networkEvidence}. It also reported these deterministic failures: ` +
+            `${otherEvidence}. If the network-change failures explain the death (the transient change this ` +
+            `seam exists for - net::ERR_NETWORK_CHANGED is its signature), treat the run as an environment ` +
+            `flake and retry the gate; if the deterministic failures point at the harness, check what the ` +
+            `boot check measures - the harness entry and the product modules it imports (a top-level throw in ` +
+            `module init, a bad script href, or a broken import graph all leave the boot marker unset), or ` +
+            `the case's own stylesheet links.`;
+        } else if (networkEvidence) {
+          diagnosis =
+            `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
+            `${verdict}. Chrome reported these failed requests during the boot window: ${networkEvidence}. A ` +
+            `burst dying on the wire like that is the transient network change this seam exists for ` +
+            `(net::ERR_NETWORK_CHANGED is its signature) - an environment flake, not a test case regression.`;
+        } else if (otherEvidence) {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these failed requests during the boot ` +
+            `window: ${otherEvidence} - none of them the wire-death signature of the network-change flake this ` +
+            `seam exists for, so no host network change explains the missing marker: check what the boot check ` +
+            `measures - the harness entry and the product modules it imports (a top-level throw in module init, ` +
+            `a bad script href, or a broken import graph all leave the boot marker unset), or the case's own ` +
+            `stylesheet links.`;
+        } else {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. No request failures were captured during the boot ` +
+            `window, so no request died on the wire: check what the boot check measures - the harness entry and ` +
+            `the product modules it imports (a top-level throw in module init, a bad script href, or a broken ` +
+            `import graph all leave the boot marker unset without reporting a failed request), or the case's ` +
+            `own stylesheet links.`;
+        }
+        throw new Error(diagnosis);
+      }
+      const captured = failuresByAttempt.get(attempts)?.length ?? 0;
+      console.error(
+        `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
+          `${bootLabel ?? bootExpression} is missing` +
+          (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
+          ") - re-navigating",
+      );
+      await delay(retryDelayMs);
+    }
+  } finally {
+    await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});
+    ws.removeEventListener("message", onLoadingFailed);
   }
 }
 
@@ -420,7 +717,7 @@ export async function collectFontStatusInPage({ pollMs, readyMs }) {
   for (let index = 0; index < frames.length; index++) {
     try {
       const doc = frames[index].contentDocument;
-      if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
+      if (doc) found.push({ label: `iframe #${index} (${frames[index].className || "no class"})`, doc });
     } catch {
       // Cross-origin: not reachable, and not something a guard builds.
     }
@@ -445,7 +742,9 @@ export async function collectFontStatusInPage({ pollMs, readyMs }) {
     stalled: !settled,
     documents: found.map(({ label, doc }) => {
       const faces = [];
-      doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
+      doc.fonts.forEach((face) => {
+        faces.push({ family: face.family, status: face.status });
+      });
       return { label, faces };
     }),
   };

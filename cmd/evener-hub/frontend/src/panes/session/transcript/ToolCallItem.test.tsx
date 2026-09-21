@@ -638,10 +638,10 @@ test("a descriptor's own failed() predicate marks the row even with no wire erro
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
 });
 
-test("a descriptor's detail() becomes the row's hover title, never its headline text", () => {
-  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false", detail: () => "exit 1" });
+test("a descriptor's summary stays the row's only hover-visible text - no row-level native title", () => {
+  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "tci_detail" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe("exit 1");
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
