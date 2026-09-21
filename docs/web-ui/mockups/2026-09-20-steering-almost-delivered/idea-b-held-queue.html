@@ -27,6 +27,7 @@
     --danger: #EE5C61;
     --accent: #3D9AFF;
     --accent-ink: #459EFF;
+    --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --font-prose: "Source Serif 4", Georgia, "Times New Roman", serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -87,7 +88,7 @@
   .speakerhead { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
   .speakerhead .name { font-weight: 600; }
   .speakerhead .time { font-size: 13px; color: var(--ink-mid); }
-  .bubble { width: fit-content; max-width: 100%; padding: 8px 12px; background: rgba(61, 154, 255, 0.15); border-radius: var(--radius-control); }
+  .bubble { width: fit-content; max-width: 100%; padding: 8px 12px; background: var(--accent-bg); border-radius: var(--radius-control); }
   .bubble .btext { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); white-space: pre-wrap; overflow-wrap: break-word; }
   .prose { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); }
 
@@ -152,7 +153,6 @@
     width: 17px; height: 17px; display: grid; place-items: center;
   }
 
-  .steeringword { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-low); font-weight: 500; margin-bottom: 10px; }
 
   /* ---- storyboard ---- */
   .storyboard { width: 1440px; }

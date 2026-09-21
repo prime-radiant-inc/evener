@@ -13,7 +13,7 @@ on a slow tool call or a long thinking block.
 
 What the UI shows during that window has real gaps:
 
-- **Direct steer** (composer Steer button): a dimmed `Steering …` chip beside
+- **Direct steer** (composer Steer button): a dimmed `Steering` chip beside
   the composer (`PendingChips`, optimistic record state `accepted`). It exists,
   but reads as "sending in progress," not "waiting for a boundary," and is easy
   to miss when the eye is on the transcript.
@@ -35,8 +35,11 @@ What the frontend already receives (all three ideas build only on this — no
 wire changes):
 
 1. The pending entry itself: method `steer`/`drain`, state
-   `submitting` → `accepted`, with text, skill markers, `createdAt`.
-   (Steering never enters `claimed` — the daemon keeps a client steer
+   `submitting` → `accepted`, with text and skill markers.
+   (`createdAt` rides the client's own durable record; the daemon's
+   authoritative `pendingMutations` entry carries no timestamp — the
+   chosen direction's spec §4 carries the timer's full story. Steering
+   never enters `claimed` — the daemon keeps a client steer
    `accepted` until its transcript append lands; `claimed` belongs to the
    start/queue methods only.)
 2. The active turn's live items — the running tool call's name and status, the
@@ -48,8 +51,9 @@ wire changes):
 
 ## Shared foundation (required by all three)
 
-Every path that puts a message into steering — direct steer, promote, drain,
-recovery resend — must produce a pending artifact this client owns, settled
+Every path that puts a message into steering — direct steer, promote, drain
+(a recovery resend rides the same steer record) — must produce a pending
+artifact this client owns, settled
 only by transcript reflection. That closes the true vanish (promote/drain) and
 gives all three directions the same input. It is frontend-only work: seed the
 local pending record from the action's own knowledge; the daemon already
