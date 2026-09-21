@@ -754,8 +754,27 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     externalPayloadLanded(applyHubDefault(change.layout, { revision: change.revision, config }));
   }
 
+  /** A draft port that failed gets one more restore attempt; reports whether
+   * the hub read may proceed. The read waits only on a port that could not
+   * be READ FROM, so an edit cannot compose against a confirmed payload with
+   * the draft unknown. An unreadable RECORD is not that: the draft is simply
+   * absent, and holding the section's defaults hostage to it would lock a
+   * user out of settings they never edited. */
+  function recoverDraftPort(): boolean {
+    if (!getState().storageUnavailable) return true;
+    setState(reloadDraft(getState()));
+    return !getState().storageUnavailable || getState().draftUnreadable;
+  }
+
   async function refreshFor(generation: number): Promise<void> {
     if (!fence.liveHub(generation)) return;
+    // Automatic refreshes - support arriving, a malformed change
+    // notification - wait on the same recovery gate an explicit one does:
+    // landing `loaded` with the checkpoint, possibly an uncertain saved
+    // write, still unread on the port would open the direct-write path with
+    // the draft unknown. recoverDraftPort no-ops when an explicit
+    // refreshHubDefaults already reloaded.
+    if (!recoverDraftPort()) return;
     const serial = fence.claimRead();
     const writeSerialAtStart = fence.writeToken;
     const savingAtReadStart = getState().saving;
@@ -780,16 +799,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   }
 
   async function refreshHubDefaults(): Promise<void> {
-    // A draft port that failed gets one more restore attempt per refresh. The
-    // hub read waits only on a port that could not be READ FROM, so an edit
-    // cannot compose against a confirmed payload with the draft unknown. An
-    // unreadable RECORD is not that: the draft is simply absent, and holding
-    // the section's defaults hostage to it would lock a user out of settings
-    // they never edited.
-    if (getState().storageUnavailable) {
-      setState(reloadDraft(getState()));
-      if (getState().storageUnavailable && !getState().draftUnreadable) return;
-    }
+    // One more restore attempt per explicit refresh, even before any ready
+    // generation exists to carry the hub read.
+    if (!recoverDraftPort()) return;
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
   }

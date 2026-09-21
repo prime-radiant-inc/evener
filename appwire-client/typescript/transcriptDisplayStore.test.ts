@@ -1556,6 +1556,36 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draftConflict).toBe(true);
   });
 
+  test("a failed draft restore gates the support-driven refresh until the port recovers", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.failLoad();
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().storageUnavailable).toBe(true);
+
+    // Generation begins before support does. The support-driven refresh must
+    // carry the same draft-port recovery gate an explicit one does, or its
+    // read would land `loaded` with the checkpoint - possibly an uncertain
+    // saved write - still unread on the port, opening the direct-write path
+    // with the draft unknown.
+    store.beginReadyGeneration();
+    store.setSupport("supported");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(0);
+    expect(store.getState().loaded).toBe(false);
+    await expect(store.getState().patchHubDefault("mobile", mobileConfig)).rejects.toThrow(/unavailable/);
+
+    // Once the port recovers, a refresh re-reads the checkpoint (absent here)
+    // and the hub read proceeds.
+    drafts.failLoad(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toBeNull();
+  });
+
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
