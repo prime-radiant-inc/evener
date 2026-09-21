@@ -113,18 +113,18 @@ func expectedAttachmentPath(t *testing.T, stateDir, sessionID string, img ImageA
 // trap, in miniature).
 func TestExpectedAttachmentPathUsesCanonicalStateDir(t *testing.T) {
 	t.Parallel()
-	real := t.TempDir()
-	if err := os.Mkdir(filepath.Join(real, "s"), 0o700); err != nil {
+	physical := t.TempDir()
+	if err := os.Mkdir(filepath.Join(physical, "s"), 0o700); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	linkParent := t.TempDir()
 	link := filepath.Join(linkParent, "alias")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(physical, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
 
 	img := ImageAttachment{MediaType: "image/png", Data: []byte("png-bytes"), Name: "shot.png"}
-	want := expectedAttachmentPath(t, filepath.Join(real, "s"), "sess-1", img)
+	want := expectedAttachmentPath(t, filepath.Join(physical, "s"), "sess-1", img)
 	got := expectedAttachmentPath(t, filepath.Join(link, "s"), "sess-1", img)
 	if got != want {
 		t.Fatalf("expectedAttachmentPath through symlinked state dir = %q, want the canonical %q", got, want)
