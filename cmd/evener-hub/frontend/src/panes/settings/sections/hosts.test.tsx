@@ -182,7 +182,14 @@ test("a validation refusal lands on the input the hub blamed", async () => {
 
   // The message is the address row's own: the refusal named the wire field the
   // input is labelled for, so the operator sees it where the fix belongs.
-  expect(await within(dialog).findByText(/missing ssh destination/)).toBeTruthy();
+  const addressInput = within(dialog).getByLabelText("SSH address");
+  const addressLabel = within(dialog).getByText("SSH address", { selector: "label" });
+  const addressRow = addressLabel.parentElement;
+  if (addressRow === null) throw new Error("SSH address label has no FormRow parent");
+  expect(within(addressRow).getByLabelText("SSH address")).toBe(addressInput);
+  const inlineError = await within(addressRow).findByRole("alert");
+  expect(inlineError.textContent).toMatch(/missing ssh destination/);
+  expect(inlineError.id).toBe(`${addressInput.id}-error`);
   expect(within(dialog).queryByText(/Something went wrong/)).toBeNull();
 });
 

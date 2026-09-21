@@ -223,10 +223,14 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   update: async (params) => {
     // The host being edited is named by the request's own field: name is
     // immutable, so it is the target rather than a value here (spec §3.1).
-    const { host: row } = await requireClient().request("evener/host/update", {
-      name: params.name,
-      entry: params.entry,
-    });
+    const { host: row } = await requireClient().request(
+      "evener/host/update",
+      {
+        name: params.name,
+        entry: params.entry,
+      },
+      { timeoutMs: 35 * 60_000 },
+    );
     await reReadAfterMutation();
     return row;
   },

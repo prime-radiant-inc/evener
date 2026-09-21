@@ -5,9 +5,10 @@
 // Pattern mirrors daemonResidents.test.ts: each test resets store +
 // connection in beforeEach.
 
-import type { HostListResponse, HostRow } from "@evener/appwire-client";
+import { AppwireClient, type HostListResponse, type HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { beforeEach, describe, expect, test } from "vitest";
+import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { hostsStore } from "./hosts";
 
@@ -108,6 +109,60 @@ describe("fetch", () => {
 });
 
 describe("mutations", () => {
+  test("update remains pending past the ordinary RPC deadline and ultimately resolves", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
+    try {
+      const ready = client.connect();
+      socket.open();
+      await ready;
+      // Prove the transport remains live independently of the mutation under
+      // test while the hub is legitimately waiting on the host gate.
+      await client.request("ping", {});
+      expect(client.state).toBe("ready");
+      connectionStore.getState().connect(client);
+
+      const updatedRow = { ...row("side"), address: "edited.example" };
+      let outcome: { status: "resolved"; row: HostRow } | { status: "rejected"; error: unknown } | undefined;
+      const done = hostsStore
+        .getState()
+        .update({ name: "side", entry: { address: "edited.example" } })
+        .then(
+          (result) => {
+            outcome = { status: "resolved", row: result };
+          },
+          (error: unknown) => {
+            outcome = { status: "rejected", error };
+          },
+        );
+      const updateRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/update");
+      if (typeof updateRequest?.id !== "number") throw new Error("missing evener/host/update request id");
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(client.state).toBe("ready");
+      expect(outcome, "Update must keep waiting under the same minutes-long budget as Connect").toBeUndefined();
+
+      // The held update now succeeds, then its quiet list re-read succeeds too:
+      // the store promise must resolve rather than merely avoiding the 30s error.
+      socket.receive({ id: updateRequest.id, result: { host: updatedRow } });
+      await vi.advanceTimersByTimeAsync(0);
+      const listRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/list");
+      if (typeof listRequest?.id !== "number") throw new Error("missing post-update evener/host/list request id");
+      socket.receive({ id: listRequest.id, result: { hosts: [updatedRow] } });
+      await done;
+      expect(outcome).toEqual({ status: "resolved", row: updatedRow });
+    } finally {
+      client.close();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      vi.useRealTimers();
+    }
+  });
+
   test("update sends the target name and the entry, then re-reads quietly", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
@@ -162,8 +217,12 @@ describe("mutations", () => {
       { addr: "127.0.0.1:9180" },
       { roots: ["/srv/one"] },
     ];
+    const accumulated: Partial<HostRow> = {};
     for (const change of changes) {
-      fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), ...change }] }));
+      Object.assign(accumulated, change);
+      // Keep every previous change in both the published row and the next
+      // response, so the field added by this iteration is their only difference.
+      fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), ...accumulated }] }));
       await hostsStore.getState().refresh();
       const load = hostsStore.getState().load;
       expect(load.phase).toBe("ready");
