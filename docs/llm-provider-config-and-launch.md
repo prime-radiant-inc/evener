@@ -100,6 +100,48 @@ layer, keyed by instance name; every environment lookup — the provider's
 the registry's own job, in the order [`llm-providers.md`](llm-providers.md#credential-resolution-order)
 documents. The store never sees a separate lookup table for it.
 
+## Command expressions in credential values
+
+Wherever a provider value accepts an environment-variable reference —
+`api_key`, `credential_headers`, `headers`, and `vars` — it also accepts a
+command expression, `$(...)`: the command runs through your shell and its
+whitespace-trimmed stdout becomes the value. This is how a gateway whose
+credentials live outside evener gets used: the key stays in your password
+manager, or a short-lived token gets minted per request.
+
+```toml
+# An API key stored in Apple Passwords (Keychain), not in the file:
+[providers.anthropic-keychain]
+base = "anthropic"
+api_key = '''$(security find-generic-password -s "Anthropic" -w)'''
+
+# Any password-store CLI works the same way:
+[providers.pass-store]
+base = "openai"
+api_key = '''$(pass show llm-gateway/token)'''
+```
+
+If your command prints more than the value, pipe it down to what you want
+first — the trimmed stdout is the value, verbatim. MCP server config
+(`mcp.json`) accepts the same forms in the fields it expands (command,
+args, env, url, headers).
+
+The rules that matter in practice:
+
+- A variable that is unset or empty counts as missing, and `${NAME:-default}`
+  fills a missing one (POSIX `:-` semantics); `$$` writes a literal `$`.
+- Commands run with the process environment, no TTY, a closed stdin, and a
+  30-second timeout; results are cached per command (until a token's JWT
+  `exp` is a minute away, else five minutes), so an agent loop mints once
+  and reuses.
+- A failed command behaves like an unset variable: the credential resolves
+  to nothing, the warning carries the command's own stderr, and the next
+  request retries it.
+- The output is a credential: it is never logged. A failing command's
+  error carries its exit status and stderr line, never its output.
+- Command expressions are hand-authored in `providers.toml`; the hub's
+  credential forms only write `$VARIABLE` references.
+
 ## Environment-variable reference
 
 The complete list — API keys and base URLs together — lives in

@@ -1790,17 +1790,19 @@ Rules, enforced at load with errors that name the instance and key:
   `registry` restates rather than importing from `llm` — `llm` imports
   `registry`, and the clamp passes an unrankable level through untouched, so
   an unchecked typo would reach the provider
-- `$ENV` expansion in `api_key`, `credential_headers`, and `vars` uses
-  today's `$NAME` / `${NAME}` / `$$` rules and happens at resolve time, so one
-  instance's missing variable never blocks another. An unset variable in
-  `api_key` or `credential_headers` yields an empty `Credential` with
-  `Warnings: no credential (<NAME> unset)` and the first-request error
-  (§5.2, so `inspect` keeps working); an unset variable in `vars` or a
-  template yields `Warnings: unresolved variable <NAME>` and the
-  first-request error (§4.2). In `headers` an unset variable **drops the header**
-  (that is how the optional `OpenAI-Organization`/`OpenAI-Project` headers
-  work; today it is an error, `apikey.go:261-276`); an empty-string value
-  removes an inherited header of that name.
+- `$ENV` expansion in `api_key`, `credential_headers`, `headers`, and
+  `vars` uses the $-expression grammar in §10.1 and happens at resolve
+  time, so one instance's missing expression never blocks another. A
+  missing variable in `api_key` or `credential_headers` yields an empty
+  `Credential` with `Warnings: no credential (<NAME> unset)` and the
+  first-request error (§5.2, so `inspect` keeps working); a missing
+  variable in `vars` or a template yields `Warnings: unresolved variable
+  <NAME>` and the first-request error (§4.2). In `headers` an unresolved
+  expression **drops the header** (that is how the optional
+  `OpenAI-Organization`/`OpenAI-Project` headers work); in
+  `credential_headers` it drops the header with a warning naming it, so an
+  auth failure has a local explanation. An empty-string value removes an
+  inherited header of that name.
 - **credential inheritance stops at the endpoint**: an instance that sets
   a literal `base_url` different from its base's `base_url` (compared after
   substituting the curated defaults, so copying the default URL verbatim
@@ -1842,6 +1844,70 @@ the environment and the store; the hub no longer injects the launched
 instance's key into the child (`env.go:56-60`, deleted with the roster).
 The remedy is by hand: edit the file or move it aside; the hub never
 rewrites or deletes it.
+
+### 10.1 The $-expression grammar
+
+One parser owns the grammar — `internal/valueexpr` — and every config
+surface that expands `$` expressions uses it: `api_key`,
+`credential_headers`, `headers`, and `vars` here, and every field MCP
+server config expands (command, args, env values, url, headers). That is
+why providers.toml and MCP config accept the same forms.
+
+The forms:
+
+- `$NAME` and `${NAME}` — an environment variable reference. A variable
+  that is unset or empty-but-set counts as missing: an empty credential
+  never resolves as a present one.
+- `${NAME:-default}` — a reference with a default, POSIX `:-` semantics:
+  the default fills a missing (unset or empty) variable, and is literal
+  text, never re-expanded.
+- `$(command)` — a command expression. The interior is opaque to the
+  parser — the shell owns its syntax at run time — and the command's
+  whitespace-trimmed stdout is the value, verbatim: extracting the exact
+  value is the command's job, which is why a gateway's "run this to get a
+  token" recipe pipes through what it needs.
+- `$$` — a literal `$`.
+
+Evaluation. References and commands expand when the value's other
+expressions expand: at resolve time, per request on the agent path. A
+command runs through the host shell with the process environment, no TTY,
+a closed stdin (a prompting command reads EOF instead of hanging), and a
+30-second timeout that kills the whole process group. Results are cached
+per command text — instances sharing a command share one mint — until a
+JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
+five-minute TTL; concurrent callers single-flight onto one run.
+
+Failure. A failed command behaves like an unset variable: the value
+resolves to nothing and the warning carries the command's exit status and
+first stderr line, so an auth failure has a local explanation; the next
+resolution retries, nothing is negatively cached.
+
+Security. A command's output is a credential: it is cached in memory
+exactly like a resolved key, never logged, never serialized. A failure
+carries the exit status and the command's own stderr — never its stdout,
+and never the command text. Commands run with the evener process's
+environment and privileges, not under a session sandbox: the config file
+is trusted input, the same trust as an `api_key` line, and that includes
+a sandboxed session's token command running unsandboxed.
+
+Authoring. The hub's authoring surfaces accept only `$VARIABLE`
+references, plus a single auth-scheme word ahead of one and an
+auth-scheme word as a reference's default; command expressions are
+hand-authored in providers.toml, never written through an authoring
+surface.
+
+Compatibility (amended 2026-09-21, with the shared parser):
+
+- `$` followed by `(` used to be silently literal in every value; it is
+  a command expression now. Escape with `$$`: `$$(echo)` writes a literal
+  `$(echo)`.
+- `${NAME:-default}` used to be a load error in providers.toml; it is a
+  reference form now.
+- MCP config: a bare `$NAME` used to pass through as literal text and now
+  expands; an unterminated `${` used to pass through as literal text and
+  is a load error now; a `:-` default filled only an unset variable and
+  now fills an empty one too (POSIX `:-`).
+- Both files gain the `$$` escape.
 
 Credential resolution order, for every scheme that takes a key: the
 instance's own `api_key` (a literal or `$VAR`, today's
