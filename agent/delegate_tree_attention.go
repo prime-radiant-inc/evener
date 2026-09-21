@@ -480,6 +480,38 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 	}
 }
 
+// holdAttentionRestore marks delegateID as owned by an attention wake pass:
+// its runtime was restored cold and the pass is between that restore and its
+// reservation decision. Release claims must not reap the runtime inside that
+// span — the reservation would commit against a husk and the wake retry would
+// pay a second cold restore. The pass releases the hold at exit, whichever way
+// it decides.
+func (c *delegateTreeController) holdAttentionRestore(delegateID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.attentionRestoreHolds == nil {
+		c.attentionRestoreHolds = make(map[string]struct{})
+	}
+	c.attentionRestoreHolds[delegateID] = struct{}{}
+}
+
+// releaseAttentionRestoreHold clears the wake pass's hold. Clearing an
+// unheld delegate is a no-op, so a declined or failed pass cannot leak the
+// hold by clearing twice or out of order.
+func (c *delegateTreeController) releaseAttentionRestoreHold(delegateID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.attentionRestoreHolds, delegateID)
+}
+
+// attentionRestoreHeldLocked reports whether an attention wake pass holds
+// delegateID between its cold restore and its reservation decision. Callers
+// must hold c.mu.
+func (c *delegateTreeController) attentionRestoreHeldLocked(delegateID string) bool {
+	_, held := c.attentionRestoreHolds[delegateID]
+	return held
+}
+
 // armColdDelegateAttention admits a wake only after re-folding the exact cold
 // receiver transcript. It publishes directly into the controller's one
 // unresolved-ID set; the caller retains responsibility for retrying a failed

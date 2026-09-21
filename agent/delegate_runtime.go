@@ -1105,11 +1105,22 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	if !pending {
 		return escalated
 	}
+	// Hold the restored runtime off release claims for the whole
+	// restore-to-decision span: a grace timer firing into it would reap the
+	// runtime the reservation is about to commit against, and the wake retry
+	// would pay a second cold restore. The defer releases the hold on every
+	// pass exit — reservation committed or drive declined — so it can never
+	// pin the runtime warm.
+	s.delegateController.holdAttentionRestore(delegateID)
+	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("restore delegate attention", err))
 		s.scheduleStableDelegateAttentionRetry()
 		return true
+	}
+	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
+		hook(delegateID, sub)
 	}
 	owner.driveStableDelegateAttention(sub)
 	if s.delegateController.hasPendingDelegateAttention() {

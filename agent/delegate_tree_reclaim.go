@@ -80,7 +80,10 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 	// moment it completes, so admission must not fail loudly for capacity that
 	// is about to appear: count only what no claim is currently settling. An
 	// aborted claim restores residency and a later spawn recomputes, so an
-	// over-promise self-heals rather than stranding the spawn.
+	// over-promise self-heals rather than stranding the spawn. Serializing
+	// admission until the settling claim completes was rejected: it would put
+	// a retirement-mutation wait on the spawn path, trading this self-healing
+	// over-admission for a new refusal mode.
 	resident := 0
 	for id, aggregate := range c.durable {
 		if !c.isResidentTerminalRuntimeLocked(id, aggregate) {
@@ -246,6 +249,11 @@ func (c *delegateTreeController) isResidentTerminalRuntimeLocked(id string, aggr
 	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
 		return false
 	}
+	if c.attentionRestoreHeldLocked(id) {
+		// An attention wake pass owns this runtime between its cold restore
+		// and its reservation decision; it is not plain terminal-idle yet.
+		return false
+	}
 	live := c.live[id]
 	return live != nil && live.binding == nil && live.runtime != nil
 }
@@ -270,7 +278,7 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			// the bail below is subtree-wide, so it would pin every sibling too:
 			// one stopped-and-forgotten delegate burning a maxRetainedTerminal
 			// slot for the life of the process.
-			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
+			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil || c.attentionRestoreHeldLocked(id) {
 				return nil, false
 			}
 			if live.runtime != nil {
@@ -491,6 +499,12 @@ func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*de
 	defer c.mu.Unlock()
 	if c.closing {
 		return nil, false, errDelegateTargetBusy
+	}
+	// A wake pass holds the runtime it just restored until its reservation
+	// commits or the pass declines; that span is transient, so the grace
+	// timer re-arms one more window instead of losing the release.
+	if c.attentionRestoreHeldLocked(delegateID) {
+		return nil, true, nil
 	}
 	aggregate := c.durable[delegateID]
 	if aggregate == nil || !c.isResidentTerminalRuntimeLocked(delegateID, aggregate) {

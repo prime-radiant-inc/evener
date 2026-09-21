@@ -835,6 +835,118 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	})
 }
 
+// TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake pins the one window
+// a grace timer can reap a runtime the attention wake is about to use: a cold
+// restoration installs the runtime with no generation advance, so until the
+// reservation commits the runtime reads as plain terminal-idle to the release
+// claims. The wake pass must hold the delegate off ClaimIdleRuntimeRelease for
+// the whole restore-to-decision span — a claim landing first commits the
+// reservation against a husk and the wake retry pays a second cold restore —
+// and must release the hold at pass exit, declined or not, so a declined wake
+// leaves the restored runtime reapable instead of pinned warm forever.
+func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	fake := agenttest.NewFakeClock()
+	var wakeHook func(delegateID string, restored *subagent)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		clock:            fake,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
+			afterDelegateAttentionRestore: func(delegateID string, restored *subagent) {
+				if wakeHook != nil {
+					wakeHook(delegateID, restored)
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{Task: "idle sentinel"})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	sub := sess.subagents.get(res.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("delegate missing from manager: %+v", res)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("delegate runner did not finish")
+	}
+	runtime := sub.sess
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("fixture: idle release refused; setup broken")
+	}
+	tree := sess.delegateController
+	if _, err := tree.openDelegateAttention(res.DelegateID, "delegate:mid-wake-sentinel"); err != nil {
+		t.Fatalf("open delegate attention: %v", err)
+	}
+
+	hookFired := false
+	var restoredSub *subagent
+	wakeHook = func(delegateID string, restored *subagent) {
+		hookFired = true
+		restoredSub = restored
+		if delegateID != res.DelegateID {
+			t.Errorf("wake pass restored %q, want %q", delegateID, res.DelegateID)
+		}
+		// The mid-wake claim must refuse: the wake pass owns this runtime
+		// until it reserves or declines.
+		claim, _, err := tree.ClaimIdleRuntimeRelease(res.DelegateID)
+		if err != nil {
+			t.Fatalf("claim during attention wake: %v", err)
+		}
+		if claim != nil {
+			_ = tree.AbortRuntimeReclamation(claim)
+			t.Fatalf("idle release claimed a runtime mid attention wake; the pass must hold the delegate until the wake decides")
+		}
+		// Decline the drive so the pass exits without a reservation; the
+		// pending attention stays durable for the wake retry to re-drive.
+		restored.mu.Lock()
+		restored.running = true
+		restored.mu.Unlock()
+	}
+	sess.drivePendingStableDelegateAttention()
+	if !hookFired {
+		t.Fatal("wake pass restored nothing; fixture setup broken")
+	}
+	if restoredSub == nil {
+		t.Fatal("wake pass reported no restored subagent")
+	}
+	restoredSub.mu.Lock()
+	restoredSub.running = false
+	restoredSub.mu.Unlock()
+
+	// The declined pass must have released its hold: the restored runtime is
+	// plain terminal-idle again, so the claim succeeds and the abort hands
+	// residency straight back.
+	claim, _, err := tree.ClaimIdleRuntimeRelease(res.DelegateID)
+	if err != nil {
+		t.Fatalf("claim after declined wake: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("declined wake pass pinned the restored runtime; the hold must release at pass exit")
+	}
+	_ = tree.AbortRuntimeReclamation(claim)
+}
+
 // TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
 // difference between the two kinds of pending steering admission.
 //
