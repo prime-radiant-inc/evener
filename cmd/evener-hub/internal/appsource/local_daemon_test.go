@@ -656,6 +656,42 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListAdvertisesSkillInput guards the roster path the
+// same way the shared-notes pin does: every current daemon wires all four
+// input-bearing turn mutations, so a live local session's harness supports
+// skill selections and ListThreads must advertise the capability instead of
+// making list-derived models report it unsupported until hydration. The
+// hub's own mutation gates re-verify against the live daemon, so a daemon
+// that genuinely lacks the support still refuses each selection honestly.
+func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Evener.Capabilities
+	}
+	for _, id := range []string{"th_idle", "th_processing"} {
+		if !capsByID[id].SkillInput {
+			t.Fatalf("%s did not advertise the skillInput capability: %+v", id, capsByID[id])
+		}
+	}
+	// A closed row keeps the capability for the same reason the daemon's read
+	// does, while the actions that would carry a selection stay withheld.
+	if !capsByID["th_closed"].SkillInput {
+		t.Fatalf("closed entry withheld skillInput: %+v", capsByID["th_closed"])
+	}
+}
+
 // TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
 // 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
 // on a LocalDaemonEntry, threadFromEntry must carry it through to

@@ -126,6 +126,30 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	}
 }
 
+// TestPastThreadReadAdvertisesSkillInputAlongsideCatalog pins the pair the
+// composer's skill gate reads: a past read that attaches the session's skill
+// catalog must also advertise skillInput. The set already promises Send (a
+// send resumes the session), and a resumed daemon runs current code that
+// consumes skill selections; the hub re-verifies the capability against the
+// live daemon on every input-bearing mutation (ensureSkillInputSupport and
+// the relay's prepareRelay recheck), so the advertisement is harness-support
+// truth while each mutation stays fail-closed. Withholding it made the web
+// composer offer the catalog's skills and then refuse them for sessions that
+// support skills the moment they are live again.
+func TestPastThreadReadAdvertisesSkillInputAlongsideCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Skills) == 0 {
+		t.Fatalf("past thread skill catalog = %+v, want the fixture catalog", thread.Evener.Diagnostics)
+	}
+	if !thread.Evener.Capabilities.SkillInput {
+		t.Fatalf("past thread capabilities = %+v, want skillInput so the composer's gate matches the catalog it serves", thread.Evener.Capabilities)
+	}
+}
+
 func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	response, ok, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
@@ -1176,10 +1200,12 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
 // (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename) are true; steer, interrupt and queue are false
-// because the hub cannot carry them out for a thread with no daemon — it
-// resumes on send alone, so a cold set advertising them would promise a turn
-// action nothing is there to take.
+// (send, fork, goal, rename, skill input) are true: a resumed daemon runs
+// current code and consumes skill selections, re-verified per mutation against
+// the live daemon. Steer, interrupt and queue are false because the hub cannot
+// carry them out for a thread with no daemon — it resumes on send alone, so a
+// cold set advertising them would promise a turn action nothing is there to
+// take.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -1221,6 +1247,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		Goal:              true,
 		SharedNotes:       true,
 		Rename:            true,
+		SkillInput:        true,
 		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
 		// active turn on a cold exited session.
 	}

@@ -1130,6 +1130,18 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Goal:        true,
 				SharedNotes: !item.ReadOnlyAlias,
 				Rename:      true,
+				// SkillInput follows the harness-support rule Steer, Interrupt
+				// and Queue follow (#1375, #1840): every current daemon wires all
+				// four input-bearing turn mutations, so a live local session's
+				// list row must not understate it until a read hydrates. It is
+				// deliberately not closed-gated, because the daemon's own
+				// advertisement is not either (appCapabilitiesLocked's
+				// skillInputSupportedLocked) — the actions that could carry a
+				// selection are the ones `!closed` withholds. The hub's mutation
+				// gates re-verify against the live daemon, so a daemon that
+				// genuinely lacks the support still refuses each selection
+				// honestly.
+				SkillInput: true,
 			},
 			AskPending: item.PendingAsk,
 		},
