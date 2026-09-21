@@ -145,6 +145,20 @@ type Options struct {
 	// an update can be observed swapping an entry it did not capture, and to
 	// assert the state a gate-free row build would observe in that window.
 	beforeUpdateHostSwap func(name string)
+	// AfterUpdateHostSwap, when set, runs inside UpdateHost's gate hold after a
+	// successful registry swap and after the onRetire hook, immediately before the
+	// gate is released. That is the window a caller's next read sits in once the
+	// swap is committed: the registry already holds the new entry and the retired
+	// identity is retired, but no concurrent attach can have started, because the
+	// gate this call still holds is the one Ensure and a supervisor contend for.
+	// Tests use it to interleave a directly driven registry change — the only
+	// writer that can race the gate-free finish-phase reread — into the window
+	// between a committed swap and the caller's next read, without a sleep. It is
+	// never run on a refusal: there is no committed swap to observe then. Unlike
+	// the seams above it is exported, because the hub package's own tests (which
+	// drive this Manager through Options) must install it just as they install
+	// Runner and OnEvent.
+	AfterUpdateHostSwap func(name string)
 	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
 	// the link drop and before it contends for the host gate. Tests use it to park
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
@@ -1353,6 +1367,15 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// identity this call retired to hand over, and it does not run.
 	if onRetire != nil && hadCaptured {
 		onRetire(before)
+	}
+	// The post-swap seam runs last in the hold, so the window it exposes is
+	// exactly "the swap and the caller's retirement are done, the gate is still
+	// ours": a directly driven registry change made here lands after the committed
+	// swap and the retirement, inside the same gate hold, and before any gate-free
+	// reread the caller makes. It runs only down this path — a refusal returned
+	// above — so a test can key it to a swap that actually happened.
+	if m.opts.AfterUpdateHostSwap != nil {
+		m.opts.AfterUpdateHostSwap(name)
 	}
 	lock.Unlock()
 	// The reap runs after the lock is released, exactly as DetachHost's and

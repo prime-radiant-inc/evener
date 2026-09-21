@@ -423,23 +423,26 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 }
 
 // TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes drives the defensive
-// finish arm that only a directly driven registry can reach: UpdateHost swaps
-// successfully, then its synchronous Detached observer removes that new entry
-// before the hub can reread it. The failed hub update must remove its committed
-// store row and file entry too, so re-adding the name cannot persist a duplicate.
+// finish arm that only a directly driven registry can reach: UpdateHost commits
+// its swap, and a directly driven registry then removes that new entry inside the
+// same gate hold — after the committed swap and the caller's retirement, and so
+// before the hub's gate-free finish-phase reread. The failed hub update must
+// remove its committed store row and file entry too, so re-adding the name cannot
+// persist a duplicate.
 func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 	f := newUpdateFixture(t)
 	removed := make(chan error, 1)
 	manager := sshconn.New(f.hosts, sshconn.Options{
-		Runner: &attachedUpdateRunner{},
-		OnEvent: func(ev sshconn.Event) {
-			f.m.observeEvent(ev)
-			if ev.Host == "side" && ev.Kind == sshconn.EventDetached {
-				// OnEvent runs synchronously after UpdateHost's registry swap. Drive
-				// the registry directly, bypassing the hub mutation mark, to make the
-				// finish-phase reread observe the vanished live entry.
-				removed <- f.hosts.Remove(ev.Host)
-			}
+		Runner:  &attachedUpdateRunner{},
+		OnEvent: func(ev sshconn.Event) { f.m.observeEvent(ev) },
+		// The removal lands inside UpdateHost's gate hold, after the committed swap
+		// and the caller's retirement, and therefore before the hub's gate-free
+		// finish-phase reread: drive the registry directly, bypassing the hub
+		// mutation mark, to make that reread observe the vanished live entry. The
+		// seam is the window itself rather than a sleep-biased race, so the
+		// interleaving is exact.
+		AfterUpdateHostSwap: func(name string) {
+			removed <- f.hosts.Remove(name)
 		},
 	})
 	t.Cleanup(func() { _ = manager.Close() })
@@ -540,13 +543,14 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 }
 
 // TestHostManageUpdateVanishedEntryRetiresDerivedState pins the finish-phase
-// vanished arm's cleanup: when a directly driven registry drops the name after a
-// successful live phase, the committed store row and file entry go — and so does
-// the name's derived state, exactly as Remove retires it: the source
-// registration, the name-keyed attach record, the remote-thread cache entry
-// (generation included), and the retained last-known-good list. Pre-fix the arm
-// dropped only the store row, so the tree kept rendering sessions for a name the
-// live registry no longer had.
+// vanished arm's cleanup: when a directly driven registry drops the name inside
+// the same gate hold as a successful live phase — after the committed swap and the
+// retirement, before the hub rereads the live entry — the committed store row and
+// file entry go, and so does the name's derived state, exactly as Remove retires
+// it: the source registration, the name-keyed attach record, the remote-thread
+// cache entry (generation included), and the retained last-known-good list.
+// Pre-fix the arm dropped only the store row, so the tree kept rendering sessions
+// for a name the live registry no longer had.
 func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
@@ -584,17 +588,16 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 	}, hostFactsValidity{handshake: true}, seeded.Generation)
 	m.cfg.mu.Unlock()
 
-	// Drive the finish-phase vanished arm: the live phase swaps successfully, then
-	// its synchronous Detached observer removes the new entry directly, bypassing
-	// the hub mutation mark, before the hub can reread it.
+	// Drive the finish-phase vanished arm: the live phase commits its swap, then a
+	// directly driven registry change removes the new entry inside the same gate
+	// hold — after the committed swap and the retirement, before the hub's
+	// gate-free finish-phase reread — bypassing the hub mutation mark.
 	removed := make(chan error, 1)
 	manager := sshconn.New(hosts, sshconn.Options{
-		Runner: &attachedUpdateRunner{},
-		OnEvent: func(ev sshconn.Event) {
-			m.observeEvent(ev)
-			if ev.Host == "side" && ev.Kind == sshconn.EventDetached {
-				removed <- hosts.Remove(ev.Host)
-			}
+		Runner:  &attachedUpdateRunner{},
+		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
+		AfterUpdateHostSwap: func(name string) {
+			removed <- hosts.Remove(name)
 		},
 	})
 	t.Cleanup(func() { _ = manager.Close() })
