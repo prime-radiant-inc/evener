@@ -34,7 +34,6 @@ export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 // client through its own instance, so the two never contend over one shared
 // registration slot.
 const readyGenerationCallback = createReadyGenerationCallback();
-export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
 type ConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
 type HubByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
 type PackageClient = Pick<AppwireClientLike, "request" | "onNotification">;
@@ -592,10 +591,6 @@ export function resetTranscriptDisplayStoreForTests(): void {
   detachPackageStore();
   transcriptDisplayStore.setState({ ...initialState() });
   setSupportFromConnection();
-}
-
-export function useEffectiveTranscriptDisplay(layout?: ViewportClass): TranscriptDisplayConfigV1 {
-  return useStore(transcriptDisplayStore, (state) => state.effective(layout));
 }
 
 export function useTranscriptDisplayStore(): TranscriptDisplayStoreState;
