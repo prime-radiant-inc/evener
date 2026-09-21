@@ -499,6 +499,151 @@ func TestDelegateIdleReleaseGenerationGuard(t *testing.T) {
 	}
 }
 
+// TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm: the pre-gates
+// exist so a mid-release refusal can never strand an already-spent teardown
+// pass, so a refusal must leave everything untouched — the runtime resident,
+// the record hooked, no claim held — and the same entrypoint must succeed
+// once the residue settles. The fixture disables the scheduled release, so
+// the refusal here cannot re-arm a retry timer behind the test's back.
+func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	result := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	live := tree.live[result.DelegateID]
+	tree.mu.Unlock()
+	if live == nil || live.runtime == nil {
+		t.Fatal("fixture delegate is not resident before the release")
+	}
+	runtime := live.runtime
+
+	// Plant exactly the residue the first pre-gate refuses on: a queued job
+	// notification no turn has accepted yet.
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = append(runtime.pendingJobNotifs, jobNotification{
+		Kind:   jobNotificationKindTerminal,
+		JobID:  "job-residue-sentinel",
+		Status: "completed",
+	})
+	runtime.pendingJobNotifsMu.Unlock()
+
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded with queued residue; the pre-gate must refuse")
+	}
+	tree.mu.Lock()
+	stillResident := tree.live[result.DelegateID].runtime
+	held := len(tree.reclaiming)
+	tree.mu.Unlock()
+	if stillResident != runtime {
+		t.Fatalf("refused release changed residency: got %p, want the exact warm runtime %p", stillResident, runtime)
+	}
+	if held != 0 {
+		t.Fatalf("refused release left %d claim(s) held", held)
+	}
+	if got := root.subagents.get(result.ChildSessionID); got == nil || got.sess != runtime {
+		t.Fatal("refused release unhooked the delegate record")
+	}
+
+	// Once the residue settles, the same entrypoint releases the runtime.
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = nil
+	runtime.pendingJobNotifsMu.Unlock()
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release refused after residue settled")
+	}
+	tree.mu.Lock()
+	released := tree.live[result.DelegateID].runtime
+	tree.mu.Unlock()
+	if released != nil {
+		t.Fatal("release after residue settled left the runtime resident")
+	}
+}
+
+// TestDelegateIdleRelease_RetriesAfterPregateRefusal: a grace timer that
+// fires into residue must not lose the release to a one-shot refusal — the
+// refusal re-arms one more grace window, and the retry, not any caller,
+// releases the runtime once the residue settles.
+func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	grace := 1 * time.Second
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		testOnly: testConfig{
+			skipGitSnapshot:          true,
+			minimalSystemPrompt:      true,
+			sandboxProber:            bwrapCapableProber(workspace),
+			delegateIdleReleaseDelay: &grace,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{Task: "idle sentinel"})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	sub := sess.subagents.get(res.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("delegate missing from manager: %+v", res)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("delegate runner did not finish")
+	}
+	tree := sess.delegateController
+
+	// Plant the residue, then force the refusal through the same entrypoint
+	// the timer fires into: the refusal itself re-arms the retry, so the
+	// test never races the first timer's fire — under a loaded suite the
+	// auto-armed grace may fire into the residue or after the clear, and the
+	// re-arm machinery under test is identical either way.
+	runtime := sub.sess
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = append(runtime.pendingJobNotifs, jobNotification{
+		Kind:   jobNotificationKindTerminal,
+		JobID:  "job-residue-sentinel",
+		Status: "completed",
+	})
+	runtime.pendingJobNotifsMu.Unlock()
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded with queued residue; the pre-gate must refuse")
+	}
+	tree.mu.Lock()
+	stillResident := tree.live[res.DelegateID].runtime
+	tree.mu.Unlock()
+	if stillResident == nil {
+		t.Fatal("refused release released the runtime anyway")
+	}
+
+	// The residue settles; the re-armed retry — not this test — must do the
+	// release.
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = nil
+	runtime.pendingJobNotifsMu.Unlock()
+	// TRIPWIRE: the retry re-arms with the same 1s grace, so the release
+	// normally lands about a second after the refusal; 15s only bounds a
+	// genuine hang.
+	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after residue settled", func() bool {
+		tree.mu.Lock()
+		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
+		tree.mu.Unlock()
+		return released
+	})
+}
+
 // TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
 // difference between the two kinds of pending steering admission.
 //

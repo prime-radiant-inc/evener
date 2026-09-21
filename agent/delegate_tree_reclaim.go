@@ -538,23 +538,33 @@ func (c *delegateTreeController) subtreeOwnsSharedTaskStoreLocked(entries []dele
 // would leave a half-settled runtime that can never be warm-resumed.
 //
 // It returns false — leaving the runtime warm — when any gate fails, and
-// never forces: a refused delegate retries at its next finalize or through
-// the capacity reclamation backstop. Refusals never schedule a retry of
-// their own, so residue that settles only after the refusal leaves the
-// runtime warm until one of those paths runs. A root session (no owning
-// delegate identity) hosts the tree and must stay resident; a non-stable
-// child has no cold-restore path, so it is out of scope by construction (its
-// parent is a stable delegate, and releasing that parent drains it as a
-// subtree member).
+// never forces. Eligibility refusals (a nil claim) retry only at the
+// delegate's next finalize or through the capacity reclamation backstop;
+// the transient kinds — pre-gate residue that has not settled, a whole-tree
+// retirement that has not decided — re-arm one more grace window so a
+// one-shot refusal cannot lose the release. A closing controller is final
+// and never retried. A root session (no owning delegate identity) hosts the
+// tree and must stay resident; a non-stable child has no cold-restore path,
+// so it is out of scope by construction (its parent is a stable delegate,
+// and releasing that parent drains it as a subtree member).
 func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return false
 	}
 	claim, err := s.delegateController.ClaimIdleRuntimeRelease(s.owningDelegateID)
 	if err != nil {
-		// A closing controller is the one expected refusal: a grace timer
-		// deliberately outlives its tree's Close, and that fire must not warn.
-		if !errors.Is(err, errDelegateTargetBusy) {
+		switch {
+		case errors.Is(err, errDelegateTargetBusy):
+			// Closing is final: the tree's own teardown owns everything now,
+			// and a grace timer deliberately outlives the Close, so this
+			// expected fire stays silent.
+		case errors.Is(err, ErrRetirementUnavailable):
+			// A whole-tree retirement owns this delegate's runtime while it
+			// holds. If it commits, the tree's release settles everything;
+			// if it aborts, the re-armed retry below picks the idle release
+			// back up.
+			s.rescheduleIdleRuntimeReleaseRetry()
+		default:
 			s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
 		}
 		return false
@@ -582,6 +592,11 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	// so no member needs a nil skip.
 	for _, entry := range claim.entries {
 		if !entry.runtime.idleReleasePregatesClear() {
+			// The residue a pre-gate refuses on is transient by definition —
+			// it settles when its consumer runs — so one more grace window
+			// bounds the retry instead of leaving the runtime warm until an
+			// unrelated finalize or capacity pressure.
+			s.rescheduleIdleRuntimeReleaseRetry()
 			return false
 		}
 	}
@@ -668,6 +683,30 @@ func (c *delegateTreeController) idleReleaseGenerationCurrent(delegateID string,
 	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]
 	return aggregate != nil && aggregate.Generation == generation
+}
+
+// currentDelegateGeneration returns the delegate's current durable
+// generation, zero when it has no aggregate. A retry timer armed with it
+// stands down as soon as any newer generation finalizes — that finalize tail
+// armed a fresh timer of its own.
+func (c *delegateTreeController) currentDelegateGeneration(delegateID string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if aggregate := c.durable[delegateID]; aggregate != nil {
+		return aggregate.Generation
+	}
+	return 0
+}
+
+// rescheduleIdleRuntimeReleaseRetry re-arms the idle release after a refusal
+// that is transient by construction: pre-gate residue that has not settled,
+// or a whole-tree retirement that has not decided. The fixtures that opt out
+// of the release entirely opt out of its retries too.
+func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
+	if s.cfg.testOnly.disableDelegateIdleRelease {
+		return
+	}
+	s.scheduleIdleRuntimeRelease(s.delegateController.currentDelegateGeneration(s.owningDelegateID))
 }
 
 // idleReleasePregatesClear reports whether every precondition that must hold
