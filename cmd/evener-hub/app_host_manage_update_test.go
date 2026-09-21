@@ -1161,6 +1161,60 @@ func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
 	}
 }
 
+// TestHostManageUpdateHoldsRetainedStateOutOfAnInFlightMutation pins the row
+// interleaving the mutation mark exists for: an update has committed its swap
+// (the new, higher-generation entry is visible) but has not yet run its
+// retirement, with the mutation mutex released between the two. A concurrent,
+// gate-free row that snapshots the new entry passes hostEntryCurrent and still
+// sees gen > retiredThrough, so it would fold the retired identity's midAttach,
+// lastAttachError, and last-known facts unless the name's in-flight mark fences
+// it out. hostRow must therefore fold and record nothing while the mark is
+// held. The mark's lifetime is what makes this exactly the window: it is taken
+// in the update's commit phase and cleared in its finish phase (Update), so it
+// spans the commit-to-retire gap and nothing beyond it — which is why clearing
+// the mark must fold the retained state back, not mute it forever.
+func TestHostManageUpdateHoldsRetainedStateOutOfAnInFlightMutation(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retain the identity state an edit must retire, the way the manager's
+	// lifecycle events and attached rows do: a failure carrying the error, the
+	// state event that marks the host in-progress without clearing it, and the
+	// last-known facts of an attached row.
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
+	live, _ := f.hosts.Get("side")
+	f.m.cfg.mu.Lock()
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true}, live.Generation)
+	// Take the mark the update path takes, in the same commit-phase hold.
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+
+	held, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status with the mutation mark held: %v", err)
+	}
+	if held.Host.MidAttach || held.Host.LastAttachErr != "" || held.Host.ServerName != "" ||
+		held.Host.ServerVersion != "" || held.Host.HubVersion != "" || held.Host.OS != "" || held.Host.Arch != "" {
+		t.Fatalf("row = %+v, want none of the retained state while the name is marked in flight", held.Host)
+	}
+
+	// Clear the mark the way the finish phase does; the retained state must fold
+	// back, proving the suppression is the window and not a permanent mute.
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+
+	released, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the mark cleared: %v", err)
+	}
+	if !released.Host.MidAttach || released.Host.LastAttachErr != "dial refused" || released.Host.HubVersion != "9.9.9" {
+		t.Fatalf("row = %+v, want the retained attach state folded back once the mark cleared", released.Host)
+	}
+}
+
 // TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange pins criterion 10's
 // both halves: a roots edit drops the host's derived rows and its last-good
 // retention and registers the source afresh — the source's identity owns what it

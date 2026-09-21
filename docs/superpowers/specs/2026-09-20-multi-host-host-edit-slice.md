@@ -389,6 +389,14 @@ reversal.
     load-bearing on this side — an input and a refusal have to match — so
     aligning it with the record later is a rename across the wire, the
     generated client and the pane, not a shape change.
+13. **The reshaped `HostAddParams` keeps `ProtocolVersion` v5** (§3.1), even
+    though it changes the wire shape from flat fields to a nested `entry`. The
+    constant is compared exactly at the handshake so a mixed pair of released
+    binaries fails once, loudly, at initialize — the flagday rule the constant's
+    own comment in `appwire/types.go` states — and a shape change under a shared
+    version is exactly what that rule forbids. No bump is needed here because v5
+    was never shipped to customers, so there is no mixed pair of released
+    binaries to protect; a spoke/released pair that had to agree would need one.
 
 ## 7. Tests and acceptance criteria
 

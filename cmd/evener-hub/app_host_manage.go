@@ -923,8 +923,27 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 	// drop deletes its record, and a row that loses sees the moved or missing
 	// generation and records nothing. Either order leaves the re-added name's
 	// record exactly as clean as its own commit left it.
+	//
+	// The fence also excludes a name whose retained state is in flight. A
+	// mutation holds the name's mark from its commit phase to its finish
+	// phase, and that span covers the window where an update's new entry is
+	// already visible in the registry but its retirement has not run — the
+	// swap and the retire hook are adjacent only inside the per-host gate,
+	// with the mutation mutex released between them. A concurrent, gate-free
+	// row that snapshots the new, higher-generation entry in that window still
+	// passes hostEntryCurrent, and gen > retiredThrough still holds because
+	// the retire has not run, so without this condition the row would fold the
+	// retired identity's midAttach, lastAttachError, and last-known facts.
+	// Suppressing both the fold and the record for the whole mark means no row
+	// can fold a retired identity's state, and the rows render honestly blank
+	// until the mutation's finish phase, after which the next row build folds
+	// whatever the mutation left behind. Two consequences are deliberate:
+	// during a removal window the host's own row also renders without its
+	// retained state — the destination state of a removal anyway — and an
+	// attached host's facts lookup that succeeds during the window is simply
+	// re-recorded on the next row build.
 	m.cfg.mu.Lock()
-	if m.hostEntryCurrent(host) {
+	if m.hostEntryCurrent(host) && !m.isMutating(host.Name) {
 		m.cfg.state.apply(&row, host.Generation)
 		if row.Attached {
 			m.cfg.state.recordKnown(row, validity, host.Generation)
