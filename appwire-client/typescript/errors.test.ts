@@ -2,10 +2,12 @@
 
 import { describe, expect, test } from "vitest";
 import appwireErrorsGo from "../../appwire/errors.go?raw";
+import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
   ErrorEndpointConflict,
+  ErrorInvalidHostField,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
   ErrorMarketplaceRemoveApplied,
@@ -13,6 +15,7 @@ import {
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
+  hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
   sessionActionError,
@@ -52,6 +55,30 @@ function goErrorInfo(name: string): string {
   if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
   return match[1]!;
 }
+
+test("hostFieldError reads the blamed input off the hub's own discriminant", () => {
+  // The binding: the Go constant's value is what this module matches on.
+  expect(appwireErrorsGo).toMatch(new RegExp(`ErrorInvalidHostField\\s+ErrorInfo\\s*=\\s*"${ErrorInvalidHostField}"`));
+  const blamed = new WireError("host \"m4\": missing ssh destination", -32602, {
+    evenerErrorInfo: ErrorInvalidHostField,
+    field: "address",
+  });
+  expect(hostFieldError(blamed)).toBe("address");
+  // A plain validation refusal carries no field, a form-level refusal carries an
+  // empty one, and a non-WireError carries nothing at all.
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: "invalidParams" }))).toBeUndefined();
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: ErrorInvalidHostField }))).toBeUndefined();
+  expect(hostFieldError(new Error("boom"))).toBeUndefined();
+});
+
+test("the host entry's wire spellings are the ones refusals and inputs share", () => {
+  // The dialog's inputs and a refusal's field are the same strings because both
+  // are HostEntry's json names; this pins that vocabulary against the Go tags so
+  // a rename on one side cannot leave the other looking for a missing input.
+  for (const name of ["address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
+    expect(appwireTypesGo).toContain(`json:"${name}`);
+  }
+});
 
 // The persisted rename discriminator (a rename that stood in the config but
 // could not finish) is the one place a client decides whether to report a

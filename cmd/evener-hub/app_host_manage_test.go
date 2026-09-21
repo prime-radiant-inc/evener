@@ -76,6 +76,44 @@ func TestHostManageAddValidation(t *testing.T) {
 	}
 }
 
+// TestHostManageValidationRefusalsNameTheInput pins the mapping: each refusal
+// the add path can raise names the input the operator can fix, in the spelling
+// the dialog's own inputs use (HostEntry's wire fields) — so a message lands on
+// the right control without anyone parsing prose. Add-only fields (name) are
+// named too, because the edit dialog has no name input to land on.
+func TestHostManageValidationRefusalsNameTheInput(t *testing.T) {
+	m := testHostManager(nil, nil)
+	for _, tc := range []struct {
+		entry appwire.HostEntry
+		field string
+	}{
+		{appwire.HostEntry{Name: "m4", Address: "   "}, "address"},
+		{appwire.HostEntry{Name: "m4", Address: "u@h.example", User: "bob"}, "user"},
+		{appwire.HostEntry{Name: "m4", Address: "h.example", Roots: []string{"  "}}, "roots"},
+		{appwire.HostEntry{Name: "bad name", Address: "h.example"}, "name"},
+		{appwire.HostEntry{Name: "local", Address: "h.example"}, "name"},
+	} {
+		_, err := m.Add(context.Background(), appwire.HostAddParams{Entry: tc.entry})
+		if err == nil {
+			t.Errorf("Add(%+v) accepted, want a validation refusal", tc.entry)
+			continue
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Errorf("Add(%+v) error = %v, want a WireError", tc.entry, err)
+			continue
+		}
+		data, ok := wire.Data.(appwire.HostFieldErrorData)
+		if !ok {
+			t.Errorf("Add(%+v) data = %T, want HostFieldErrorData", tc.entry, wire.Data)
+			continue
+		}
+		if data.EvenerErrorInfo != appwire.ErrorInvalidHostField || data.Field != tc.field {
+			t.Errorf("Add(%+v) blamed %q (%s), want %q", tc.entry, data.Field, data.EvenerErrorInfo, tc.field)
+		}
+	}
+}
+
 // TestHostManageAddCarriesEveryEntryField pins the apply half of the wire
 // reshape: the add request's entry is stored whole — the seven HostConfig
 // fields under the wire's spellings plus the slice-1 key path — and the row

@@ -913,6 +913,41 @@ func (m *hubHostManager) rowOrigin(name string) string {
 	return hostOriginHubTOML
 }
 
+// hostEntryField maps a hostreg validation refusal to the input it blames, in
+// the wire spelling the dialog's own inputs use (HostEntry's fields), so a
+// message lands on the control the operator can fix. A refusal that blames the
+// entry as a whole — a cycle — returns "" and the caller raises it form-level.
+func hostEntryField(err error) string {
+	switch {
+	case errors.Is(err, hostreg.ErrMissingSSH):
+		return "address"
+	case errors.Is(err, hostreg.ErrAmbiguousSSHUser):
+		// The field that made the destination ambiguous: user is set while ssh
+		// already carries one, and the message says so.
+		return "user"
+	case errors.Is(err, hostreg.ErrEmptyRoot):
+		return "roots"
+	case errors.Is(err, hostreg.ErrInvalidName), errors.Is(err, hostreg.ErrReservedName):
+		// Add only: the edit dialog has no name input, so this field is what the
+		// add form places.
+		return "name"
+	default:
+		// ErrHostCycle and anything else blame the entry as a whole.
+		return ""
+	}
+}
+
+// hostValidationRefusal turns a hostreg validation refusal into the wire
+// refusal: the field-carrying shape when the refusal blames one input, a plain
+// InvalidParams when it blames the entry as a whole.
+func hostValidationRefusal(name string, err error) error {
+	message := fmt.Sprintf("host %q: %v", name, err)
+	if field := hostEntryField(err); field != "" {
+		return appwire.InvalidHostField(field, message)
+	}
+	return appwire.InvalidParams(message)
+}
+
 // Add registers one sidecar host entry: name + SSH address + key path. It
 // validates exactly like hub.toml loading (component-03 rules) and refuses a
 // name hub.toml or the live set already holds — the duplicate refusal applies
@@ -956,7 +991,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// user/ssh agreement, non-empty roots) over this one entry without touching
 	// live state, so nothing is exposed before the durable save below.
 	if err := hostreg.ValidateEntry(entry); err != nil {
-		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", entry.Name, err))
+		return appwire.HostRow{}, hostValidationRefusal(entry.Name, err)
 	}
 	// The commit below is the read-modify-write cycle the mutation mutex
 	// exists for; the mutex is released before the response row's facts read,
