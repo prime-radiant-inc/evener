@@ -20,9 +20,10 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 import { textAround } from "./transcriptTestUtils";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
-// (its failed()/detail() hooks are the whole point of A2), so this file has to
-// register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
-// those assertions test nothing. Same precedent as ToolCallItem.test.tsx.
+// (its failed() hook is the A2 signal, and the exit code's one home is the raw
+// output's own trailing footer), so this file has to register it - without
+// this import "shell" resolves to DEFAULT_DESCRIPTOR and those assertions
+// test nothing. Same precedent as ToolCallItem.test.tsx.
 import "./tools/shellTool";
 
 afterEach(() => {
@@ -83,9 +84,11 @@ test("an intent-bearing row stacks: intent on line 1, demoted summary on line 2 
   // No em-dash composition separator: the two spans are separate lines (the
   // one-line compose was tried in tiered density and reverted on review).
   expect(row.textContent).toBe("Running the foo testsnpm test -- src/foo");
-  // The demoted second line ellipsis-clamps, so the full summary rides the
-  // hover title; the unclamped intent needs none.
-  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe("npm test -- src/foo");
+  // The demoted second line ellipsis-clamps, but the summary carries no
+  // native title: the full text is one disclosure away, and summary text can
+  // embed entity refs whose hover cards are the only floating surface the
+  // row may show. A title would fire both at once.
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
   expect(screen.getByTestId("tool-row-intent").getAttribute("title")).toBe(null);
 });
 
@@ -128,8 +131,36 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
   expect(tail.textContent?.length).toBeGreaterThan(0);
   expect(tail.textContent).toBe(summary.slice(-(tail.textContent?.length ?? 0)));
   expect(summary.endsWith(tail.textContent ?? "")).toBe(true);
-  // The full text also rides the hover title.
-  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(summary);
+  // The clamp visually clips under CSS pressure, but drops nothing from the
+  // DOM (the assert above pins the head+tail pair to the whole string), so
+  // screen-reader and copy access stay complete - and no native title carries
+  // a second copy: the summary disclosure shows it in place, and entity
+  // hover cards inside the line must not compete with an OS-styled tooltip.
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
+});
+
+// A non-expandable clamped row (a summary-only rendering: no body, no images,
+// no error - job_watch clears and terminal catch-ups) has no disclosure that
+// could reveal its full summary in place - so the clamp's DOM completeness
+// is the one thing keeping screen-reader and copy access complete, and the
+// test above's disclosure rationale does not apply. No native title rides
+// this line either: these rows' summaries embed exactly the entity ids whose
+// hover cards are the one floating surface the row may show.
+test("a non-expandable clamped row keeps its whole summary in the DOM with no native title", () => {
+  const summary = "Watch on job_034RuaCB8iWz0J1XBOUm1A_mftMIW5WFX2e fired on terminal scan - completed";
+  render(
+    <ToolRow
+      summary={summary}
+      intent="Confirming the watch landed"
+      failed={false}
+      expandable={false}
+      expanded={false}
+    />,
+  );
+  const head = screen.getByTestId("tool-row-summary-head");
+  const tail = screen.getByTestId("tool-row-summary-tail");
+  expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
 });
 
 test("an expanded row drops the clamp entirely - the full call wraps, no head/tail split", () => {
@@ -464,7 +495,7 @@ test("a shell call that exited 0 gets no failure glyph", () => {
   expect(screen.queryByTestId("failure-glyph")).toBe(null);
 });
 
-test("the exit code stops being the headline: it is reachable via the row's title, not its text", () => {
+test("the exit code stops being the headline and no longer rides the row's hover title", () => {
   render(
     <ToolCallItem
       item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), exitCode: 1 })}
@@ -475,9 +506,13 @@ test("the exit code stops being the headline: it is reachable via the row's titl
   // A failed shell row auto-expands, and an expanded shell row drops its
   // summary (the body's pretty-printed block is the single copy of the
   // command) - so assert the intent directly: the exit code is nowhere in
-  // the row's TEXT, only on its hover title.
+  // the row's TEXT, and the row carries no native title at all - the exit
+  // code's one home is the raw output's own trailing footer in the expanded
+  // body (see the test below), and a row-level title would fire an
+  // OS-styled tooltip over any hover of a row whose summary can embed
+  // entity hover cards.
   expect(screen.getByTestId("tool-row").textContent).not.toContain("exit 1");
-  expect(screen.getByTestId("tool-row").getAttribute("title")).toContain("exit 1");
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
 });
 
 // A title alone is mouse-only: no keyboard path, uneven screen-reader support.
