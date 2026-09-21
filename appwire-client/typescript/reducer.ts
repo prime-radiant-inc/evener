@@ -1302,7 +1302,14 @@ function olderItemAddsCoverage(
   view: ToolFoldView,
   context?: ToolItemMergeContext,
 ): boolean {
-  if (matches.length === 0) return !fullySupersededToolResult(older, view);
+  if (matches.length === 0) {
+    // An item with no fresh match may still have coalesced with another older
+    // fragment's item, and the fold judges the merged host, not the original:
+    // an older call folded into a shared-transcriptKey result is removable
+    // exactly like that result is, fields and all.
+    const host = matchedItemHost(older, groupTurn, context);
+    return !fullySupersededToolResult(host, view);
+  }
   const host = matchedItemHost(older, groupTurn, context);
   const chain = contributorChain(host, older, matches, context);
   const selfIndex = chain.indexOf(older);

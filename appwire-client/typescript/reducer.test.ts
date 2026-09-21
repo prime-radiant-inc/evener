@@ -4018,6 +4018,61 @@ test("mergeTurnHistory counts a turn status the rank merge retains", () => {
   expect(merged.turns[0]?.status).toBe("completed");
 });
 
+test("mergeTurnHistory does not count an older call a coalesced result supersedes", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-call",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_1",
+            turnId: "turn-call",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-x",
+            transcriptKey: "shared-key",
+            text: "",
+            argumentsJSON: "older args",
+          },
+        ],
+      },
+      {
+        id: "turn-result",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_result_2",
+            turnId: "turn-result",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-x",
+            transcriptKey: "shared-key",
+            text: "",
+            output: "older output",
+            status: "completed",
+            completedAt: new Date(10).toISOString(),
+          },
+        ],
+      },
+    ],
+    [
+      toolModelTurn("turn-fresh-call", {
+        id: "item_tool_9_0",
+        callId: "call-x",
+        output: "fresh output",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-fresh-call");
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_9_0", output: "fresh output" });
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [
