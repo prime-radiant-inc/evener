@@ -82,6 +82,23 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 	})
 }
 
+// resolvedPath is EvalSymlinks over a fixture path that must exist, for
+// building expectations that must match what the session records:
+// canonicalStateDir resolves the state dir to its physical path, and on macOS
+// t.TempDir() is reached through /var or /tmp symlinks, so a raw fixture path
+// and the canonical spelling are two names for one file there, and only the
+// resolved spelling matches. On Linux the two spellings are identical and
+// this is a no-op, which is why CI never sees it (skillFixtureRoot documents
+// the same trap for skill discovery).
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", path, err)
+	}
+	return resolved
+}
+
 // TestNewSessionCanonicalizesRelativeStateDir pins the path contract of a
 // relative --state-dir: attachment paths recorded into transcripts name an
 // absolute location, and the model's file tools resolve paths against their
@@ -112,7 +129,7 @@ func TestNewSessionCanonicalizesRelativeStateDir(t *testing.T) {
 	}
 	defer sess.Close()
 
-	want := filepath.Join(work, "state")
+	want := filepath.Join(resolvedPath(t, work), "state")
 	if sess.stateDir != want {
 		t.Fatalf("session stateDir=%q, want %q (a relative StateDir must resolve against the process working directory at construction)", sess.stateDir, want)
 	}
@@ -141,7 +158,7 @@ func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	if sess.stateDir != physical {
+	if sess.stateDir != resolvedPath(t, physical) {
 		t.Fatalf("session stateDir=%q, want the physical path %q (a symlinked StateDir must resolve at construction)", sess.stateDir, physical)
 	}
 }
@@ -167,7 +184,7 @@ func TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath(t *testing.T) {
 	}
 
 	fresh := filepath.Join(link, "never", "created")
-	want := filepath.Join(physical, "never", "created")
+	want := filepath.Join(resolvedPath(t, physical), "never", "created")
 	if got := canonicalStateDir(fresh); got != want {
 		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a symlinked ancestor must resolve even when the state dir does not exist yet)", fresh, got, want)
 	}
@@ -220,7 +237,7 @@ func TestRestoreSessionCanonicalizesRelativeStateDir(t *testing.T) {
 	}
 	defer restored.Close()
 
-	if restored.stateDir != stateDir {
+	if restored.stateDir != resolvedPath(t, stateDir) {
 		t.Fatalf("restored stateDir=%q, want %q (a relative restore StateDir must resolve against the process working directory at construction)", restored.stateDir, stateDir)
 	}
 }

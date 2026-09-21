@@ -95,8 +95,40 @@ func newSandboxedImagePersistenceSession(t *testing.T, stateDir string, policy s
 // <stateDir>/sessions/<sessionID>/attachments/.
 func expectedAttachmentPath(t *testing.T, stateDir, sessionID string, img ImageAttachment) string {
 	t.Helper()
+	// The session records canonicalStateDir's resolution of the state dir, so
+	// the note names the canonical spelling; expectations must match it (see
+	// TestExpectedAttachmentPathUsesCanonicalStateDir).
+	stateDir = resolvedPath(t, stateDir)
 	sum := sha256.Sum256(img.Data)
 	return filepath.Join(stateDir, "sessions", sessionID, "attachments", hex.EncodeToString(sum[:])[:16]+"-"+sanitizeAttachmentName(img))
+}
+
+// TestExpectedAttachmentPathUsesCanonicalStateDir pins the fixture helper
+// itself: attachment-path expectations must use the canonical
+// (symlink-resolved) state-dir spelling, because the session records
+// canonicalStateDir's resolution and the announced note names that path. A
+// raw fixture spelling compares two names for one file and fails on hosts
+// whose temp roots sit behind symlinks (macOS /var, /tmp) — on Linux the two
+// spellings are identical, which is why CI never sees it (the skillFixtureRoot
+// trap, in miniature).
+func TestExpectedAttachmentPathUsesCanonicalStateDir(t *testing.T) {
+	t.Parallel()
+	real := t.TempDir()
+	if err := os.Mkdir(filepath.Join(real, "s"), 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	linkParent := t.TempDir()
+	link := filepath.Join(linkParent, "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	img := ImageAttachment{MediaType: "image/png", Data: []byte("png-bytes"), Name: "shot.png"}
+	want := expectedAttachmentPath(t, filepath.Join(real, "s"), "sess-1", img)
+	got := expectedAttachmentPath(t, filepath.Join(link, "s"), "sess-1", img)
+	if got != want {
+		t.Fatalf("expectedAttachmentPath through symlinked state dir = %q, want the canonical %q", got, want)
+	}
 }
 
 // findSystemNotificationPart returns the first text part wrapped in the
@@ -309,7 +341,10 @@ func TestProcessInput_RestrictedSandbox_UnreadableStateDir_OmitsAttachmentNote(t
 func TestProcessInput_RestrictedSandbox_ExtraReadRootStateDir_AnnouncesAttachmentNote(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sess := newSandboxedImagePersistenceSession(t, stateDir, sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{stateDir}}, replyStep("reply"))
+	// The roots must carry the canonical spelling too: the announced path is
+	// built from the resolved state dir, and a raw root is a different name
+	// for the same directory on symlinked-temp hosts.
+	sess := newSandboxedImagePersistenceSession(t, stateDir, sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{resolvedPath(t, stateDir)}}, replyStep("reply"))
 	png := validPNGFixture(t)
 	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
 
