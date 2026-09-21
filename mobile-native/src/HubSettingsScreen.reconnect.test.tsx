@@ -14,10 +14,20 @@ import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import { nativeModuleMock, render, renderedText } from "./renderNative.testkit";
+import type { UpgradeState } from "./hubUpgrade";
+import {
+	alertRequests,
+	nativeModuleMock,
+	render,
+	renderedText,
+} from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 const reconciles = vi.hoisted(() => ({ count: 0 }));
+const starts = vi.hoisted(() => ({ count: 0 }));
+const upgrade = vi.hoisted(() => ({
+	snapshot: { kind: "idle" } as UpgradeState,
+}));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	RefreshControl: "RefreshControl",
@@ -33,22 +43,22 @@ vi.mock("@react-navigation/native", async () => {
 });
 vi.mock("./nativeHubUpgrade", () => ({ nativeHubUpgradeStorage: {} }));
 vi.mock("./hubUpgrade", () => ({
-	createHubUpgradeController: () => {
-		// useSyncExternalStore re-checks getSnapshot after every render; a
-		// fresh object each call reads as a store that never stops changing.
-		const idle = { kind: "idle" };
-		return {
-			subscribe: () => () => {},
-			getSnapshot: () => idle,
-			start: async () => {},
-			reconcileAfterReconnect: () => {
-				reconciles.count += 1;
-			},
-			reviewAnotherUpdate: async () => null,
-			rearm: () => {},
-			dispose: () => {},
-		};
-	},
+	// useSyncExternalStore re-checks getSnapshot after every render, so the
+	// snapshot must be one stable reference until a test swaps it; a fresh
+	// object each call reads as a store that never stops changing.
+	createHubUpgradeController: () => ({
+		subscribe: () => () => {},
+		getSnapshot: () => upgrade.snapshot,
+		start: () => {
+			starts.count += 1;
+		},
+		reconcileAfterReconnect: () => {
+			reconciles.count += 1;
+		},
+		reviewAnotherUpdate: async () => null,
+		rearm: () => {},
+		dispose: () => {},
+	}),
 }));
 
 const props = {
@@ -137,4 +147,97 @@ it("reads through a replacement client once its connection is ready", async () =
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 9.9.9");
 	expect(reconciles.count).toBeGreaterThan(0);
+});
+
+it("gates the upgrade start while the connection is away, not the recovery reads", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	// The controls exist only behind a banner - a flap the screen survived
+	// after showing something - so each tree mounts ready, opens the hub
+	// update section (it starts collapsed, per Section's own state), and
+	// only then drops to reconnecting.
+	async function mountFlapping() {
+		harness.connection = connection(hub, "ready");
+		const tree = render(<HubSettingsScreen {...props} />);
+		await act(async () => {});
+		const section = tree.root.find(
+			(node) => node.props.accessibilityLabel === "Hub update",
+		);
+		act(() => {
+			section.props.onPress();
+		});
+		harness.connection = connection(hub, "reconnecting");
+		await act(async () => {
+			tree.update(<HubSettingsScreen {...props} />);
+		});
+		return tree;
+	}
+	const tree = await mountFlapping();
+
+	// The start is the one control that persists a checkpoint before its RPC
+	// (hubUpgrade.ts's start): pressed while the connection is away, it
+	// strands a false "uncertain" upgrade in storage - the RPC never had a
+	// chance to reach the hub, and only a manual refresh recovers it.
+	const start = tree.root.find(
+		(node) => node.props.accessibilityLabel === "Upgrade hub",
+	);
+	expect(start.props.disabled).toBe(true);
+
+	// The reads stay pressable: they fail honestly while away, and the
+	// refresh is reconcileAfterReconnect - the remedy path itself.
+	upgrade.snapshot = {
+		kind: "uncertain",
+		message: "An upgrade may have been installed. Reconnect and verify.",
+	};
+	const remedies = await mountFlapping();
+	for (const label of ["Refresh running version", "Review another update"]) {
+		const control = remedies.root.find(
+			(node) => node.props.accessibilityLabel === label,
+		);
+		expect(control.props.disabled).toBe(false);
+	}
+	upgrade.snapshot = { kind: "idle" };
+});
+
+it("refuses an upgrade confirmation that outlives the connection it was opened on", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	starts.count = 0;
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	const section = tree.root.find(
+		(node) => node.props.accessibilityLabel === "Hub update",
+	);
+	act(() => {
+		section.props.onPress();
+	});
+	const open = tree.root.find(
+		(node) => node.props.accessibilityLabel === "Upgrade hub",
+	);
+	act(() => {
+		open.props.onPress();
+	});
+
+	// The connection drops while the confirmation is still open. The alert
+	// holds the callback it was opened with, but that callback must read
+	// readiness when it fires, not when the alert opened - or confirming now
+	// persists a checkpoint for an RPC that cannot reach the hub
+	// (hubUpgrade.ts start).
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	const request = alertRequests.at(-1);
+	const confirm = request?.buttons?.find((button) => button.text === "Upgrade");
+	const confirmPress = confirm?.onPress;
+	if (!confirmPress) throw new Error("the upgrade confirmation was not opened");
+	act(() => {
+		confirmPress();
+	});
+	expect(starts.count).toBe(0);
 });

@@ -188,6 +188,16 @@ function HubSettings({
 	}, [connectionState, model, upgrade]);
 	const data = state.data;
 	const hub = data?.hub;
+	// The upgrade confirmation can outlive the connection it was opened
+	// on, so the callback its alert captured must read readiness when it
+	// fires, not through the render that captured it (the PluginsScreen
+	// lastClient pattern: a ref mutated during render that never
+	// re-renders on its own) - or confirming after a drop persists a
+	// checkpoint for an RPC that cannot reach the hub (hubUpgrade.ts's
+	// start). A replaced client needs no ref: the old callback reaches the
+	// old controller, which the client swap's effect cleanup disposed.
+	const readiness = useRef(connectionState);
+	readiness.current = connectionState;
 	return (
 		<SafeAreaView
 			edges={["bottom", "left", "right"]}
@@ -217,7 +227,13 @@ function HubSettings({
 						state={upgradeState}
 						hubName={hubName}
 						runningIdentity={hub}
+						// The start persists its checkpoint before the RPC leaves
+						// (hubUpgrade.ts), so while the connection is away it must
+						// not be pressable; the reads it leaves enabled are the
+						// recovery path.
+						disabled={connectionState !== "ready"}
 						onStart={() => {
+							if (readiness.current !== "ready") return;
 							void upgrade.start();
 						}}
 						onRefresh={() => {
