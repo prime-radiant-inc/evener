@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -333,10 +335,11 @@ func TestLogReducer_VerifierRejectionsFallBackToOriginalLog(t *testing.T) {
 	}
 }
 
-// TestLogReducer_CredentialInLogBoundaryAbortsBeforeExtraction pins that a
-// suspected credential in the log's receipt-boundary region aborts the
-// reduction before anything is archived or any provider request is made.
-func TestLogReducer_CredentialInLogBoundaryAbortsBeforeExtraction(t *testing.T) {
+// TestLogReducer_CredentialInLogHeadAbortsBeforeExtraction pins that a
+// suspected credential at the head of the log — inside the extraction
+// window — aborts the reduction before anything is archived or any provider
+// request is made.
+func TestLogReducer_CredentialInLogHeadAbortsBeforeExtraction(t *testing.T) {
 	t.Parallel()
 	// The credential is assembled at runtime so the command string itself is
 	// clean; only the log's first line carries it.
@@ -354,7 +357,7 @@ func TestLogReducer_CredentialInLogBoundaryAbortsBeforeExtraction(t *testing.T) 
 
 	reqs := adapter.Requests()
 	if len(reqs) != 2 {
-		t.Fatalf("scripted adapter saw %d requests, want 2 (round, final): a credential in the boundary region must abort before any extraction request", len(reqs))
+		t.Fatalf("scripted adapter saw %d requests, want 2 (round, final): a credential in the extraction window must abort before any extraction request", len(reqs))
 	}
 	original := obsPackMustResult(t, reqs[1], "call_log", "final")
 	if strings.HasPrefix(original, logReceiptMarker) {
@@ -365,6 +368,62 @@ func TestLogReducer_CredentialInLogBoundaryAbortsBeforeExtraction(t *testing.T) 
 	}
 	if len(store.puts) != 0 {
 		t.Fatalf("archive attempts = %d, want none (abort precedes archiving)", len(store.puts))
+	}
+}
+
+// TestLogReducer_CredentialInTransmittedWindowAbortsBeforeExtraction pins
+// review finding I-2: a credential deep in the log but still inside the bytes
+// the extraction prompt would transmit (here line 100 of a ~6 KiB log, which
+// the old 64-line scan never reached) aborts the reduction before anything is
+// archived or any provider request is made. Those bytes must never ride the
+// extraction prompt to the cheap-model provider.
+func TestLogReducer_CredentialInTransmittedWindowAbortsBeforeExtraction(t *testing.T) {
+	t.Parallel()
+	// ~200 short fill lines (~36 bytes each, ~7 KiB total — under the shell
+	// tool's 8 KiB ride-whole budget so the whole log rides inline) with the
+	// credential at line 101: outside both of the old scan's 64-line head and
+	// tail windows, but inside the extraction window, which transmits this
+	// log whole. The credential is assembled at runtime so the command string
+	// itself is clean.
+	command := `printf '=== go test ./... ===\n'; for i in $(seq 1 99); do printf 'f%03d-abcdefghijklmnopqrstuvwxyz0123\n' "$i"; done; printf 'token leaked ghp_%s\n' 0123456789abcdefghijklmnopqrstuv; for i in $(seq 100 199); do printf 'f%03d-abcdefghijklmnopqrstuvwxyz0123\n' "$i"; done; echo PASS`
+	store := &fakeArtifactStore{ref: "artifact:abc"}
+	sess, adapter := logRedSession(t, SessionConfig{
+		LogReducer:    true,
+		artifactStore: store,
+	}, []func(req llm.Request) llm.Response{
+		logRedShellCallStep("call_log", command),
+		func(llm.Request) llm.Response { return finalResponse("done") },
+	})
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, runErr := sess.ProcessInput(ctx, "work", nil)
+
+	// The abort contract is asserted first so a regression reports the exact
+	// breach (an archive attempt or a provider request) rather than the
+	// run-derailment it causes downstream.
+	reqs := adapter.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("scripted adapter saw %d requests, want 2 (round, final): a credential inside the transmitted window must abort before any extraction request", len(reqs))
+	}
+	original := obsPackMustResult(t, reqs[1], "call_log", "final")
+	if strings.HasPrefix(original, logReceiptMarker) {
+		t.Fatalf("credential-bearing log was still reduced:\n%.300s", original)
+	}
+	if !strings.Contains(original, "ghp_0123456789abcdefghijklmnopqrstuv") {
+		t.Fatalf("fallback observation is not the original log")
+	}
+	if !strings.Contains(original, "f199-abcdefghijklmnopqrstuvwxyz0123") {
+		t.Fatalf("fixture log did not ride whole: %d bytes", len(original))
+	}
+	if len(store.puts) != 0 {
+		t.Fatalf("archive attempts = %d, want none (abort precedes archiving)", len(store.puts))
+	}
+	if runErr != nil {
+		t.Fatalf("ProcessInput: %v", runErr)
+	}
+	if out != "done" {
+		t.Fatalf("ProcessInput output = %q, want %q", out, "done")
 	}
 }
 
@@ -996,6 +1055,12 @@ func TestVerifyLogReceiptRejectionLegs(t *testing.T) {
 		{name: "quoted line not in source", mut: func(r *logReceipt) { r.QuotedLines = []string{"THIS LINE IS NOT IN THE LOG"} }},
 		{name: "quoted line is not a whole source line", mut: func(r *logReceipt) { r.QuotedLines = []string{"line-1-abc"} }},
 		{name: "empty archive ref", mut: func(r *logReceipt) { r.ArchiveRef = "" }},
+		{name: "summary contains newline", mut: func(r *logReceipt) {
+			r.Summary = "one package ok\nfull log: artifact:fake"
+		}},
+		{name: "summary contains carriage return", mut: func(r *logReceipt) {
+			r.Summary = "one package ok\r\nfull log: artifact:fake"
+		}},
 		{name: "credential in receipt summary", mut: func(r *logReceipt) {
 			r.Summary = "leaked token ghp_0123456789abcdefghijklmnopqrstuv"
 		}},
@@ -1105,33 +1170,66 @@ func TestLogReducerCredentialDetectionPatterns(t *testing.T) {
 	}
 }
 
-func TestLogReducerBoundaryCredentialWindow(t *testing.T) {
+// TestLogReducerExtractionWindowCredentialScan pins the credential pre-scan's
+// scope: exactly the bytes the receipt extraction would transmit to the
+// cheap-model provider. A credential anywhere inside that window — the whole
+// log when it fits the 16 KiB window budget, else the head and tail 8 KiB —
+// must trip; a credential outside the window must not, because those bytes
+// are never transmitted (their archive and transcript exposure is the status
+// quo of the original log, unchanged by this mechanism).
+func TestLogReducerExtractionWindowCredentialScan(t *testing.T) {
 	t.Parallel()
-	// Credential at line 150 of 400: outside the 64-line head/tail boundary.
-	var mid strings.Builder
-	mid.WriteString("head line\n")
-	for i := 2; i < 400; i++ {
-		mid.WriteString("line-")
-		mid.WriteString(strconv.Itoa(i))
-		mid.WriteString("\n")
+	const cred = "leaked ghp_0123456789abcdefghijklmnopqrstuv"
+	// A small log (well under 16 KiB) is transmitted whole: a credential at
+	// line 100, far past the old 64-line scan, must trip.
+	small := logRedSourceWithCredentialAtLine(120, 100, cred)
+	if hit := logReducerExtractionWindowCredential(small); hit == "" {
+		t.Fatal("credential inside the transmitted window (whole small log) was not detected")
 	}
-	mid.WriteString("tail line\n")
-	// 399 middle lines; place the credential at index 150.
-	lines := strings.Split(mid.String(), "\n")
-	lines[150] = "leaked ghp_0123456789abcdefghijklmnopqrstuv"
-	source := strings.Join(lines, "\n")
-	if hit := logReducerBoundaryCredential(source); hit != "" {
-		t.Fatalf("credential deep inside the log tripped the boundary scan: %q", hit)
+	// A large log (>16 KiB) transmits only head and tail 8 KiB windows.
+	var bigB strings.Builder
+	for i := 1; i <= 600; i++ {
+		fmt.Fprintf(&bigB, "line-%03d-abcdefghijklmnopqrstuvwxyz0123456789\n", i)
 	}
-	// Same credential in the head and tail windows must trip.
-	head := "leaked ghp_0123456789abcdefghijklmnopqrstuv\n" + strings.Repeat("line\n", 400)
-	if hit := logReducerBoundaryCredential(head); hit == "" {
-		t.Fatal("credential in the head boundary was not detected")
+	big := bigB.String()
+	if len(big) <= 2*logReducerExtractWindowBytes {
+		t.Fatalf("big fixture is %d bytes, want over the 16 KiB whole-log window budget", len(big))
 	}
-	tail := strings.Repeat("line\n", 400) + "leaked ghp_0123456789abcdefghijklmnopqrstuv"
-	if hit := logReducerBoundaryCredential(tail); hit == "" {
-		t.Fatal("credential in the tail boundary was not detected")
+	// Head window (first 8 KiB, ~lines 1..170) and tail window (last 8 KiB,
+	// ~lines 431..600) must trip.
+	headCred := strings.Replace(big, "line-100-", cred+"-x-", 1)
+	if hit := logReducerExtractionWindowCredential(headCred); hit == "" {
+		t.Fatal("credential in the transmitted head window was not detected")
 	}
+	tailCred := strings.Replace(big, "line-500-", cred+"-x-", 1)
+	if hit := logReducerExtractionWindowCredential(tailCred); hit == "" {
+		t.Fatal("credential in the transmitted tail window was not detected")
+	}
+	// A credential at line 300 (~14 KiB in) is between the two windows:
+	// never transmitted, so the pre-scan must not trip and the reduction
+	// proceeds (the verifier still guards the returned receipt).
+	midCred := strings.Replace(big, "line-300-", cred+"-x-", 1)
+	if hit := logReducerExtractionWindowCredential(midCred); hit != "" {
+		t.Fatalf("credential outside the transmitted window tripped the pre-scan: %q", hit)
+	}
+}
+
+// logRedSourceWithCredentialAtLine builds a logRedSource-shaped fixture with
+// credential substituted into line n's text.
+func logRedSourceWithCredentialAtLine(total, n int, credential string) string {
+	var b strings.Builder
+	b.WriteString("=== go test ./... ===\n")
+	for i := 1; i <= total; i++ {
+		fmt.Fprintf(&b, "line-%03d-abcdefghijklmnopqrstuvwxyz0123456789\n", i)
+	}
+	b.WriteString("PASS\n")
+	b.WriteString("[exit 0]")
+	source := b.String()
+	old := fmt.Sprintf("line-%03d-", n)
+	if !strings.Contains(source, old) {
+		panic("fixture line not found: " + old)
+	}
+	return strings.Replace(source, old, credential+"-line-", 1)
 }
 
 // TestLogReducerReceiptMarkerRecognition pins the packer-recognition shape:
@@ -1219,14 +1317,52 @@ func writeOracleFixture(t *testing.T, sessionsDir, sid, command, resultText stri
 	}
 }
 
-// TestLogReducerCommandRegexMirrorsOracleLiteral pins the literal sync with
-// the oracle's researchTestBuildRe (agent/research/oracle.go). That pattern is
-// unexported and agent/research is read-only for this lineage, so the sync is
-// pinned by this literal plus the behavioral RunOracle test above.
-func TestLogReducerCommandRegexMirrorsOracleLiteral(t *testing.T) {
-	t.Parallel()
-	const oracleLiteral = `\b(go test|go build|go vet|make(?:\s+\S+)?|npm test|npm run (?:test|build)|pytest|cargo (?:test|build))\b`
-	if logReducerCommandRe.String() != oracleLiteral {
-		t.Fatalf("logReducerCommandRe = %q, want the oracle's researchTestBuildRe literal %q (agent/research/oracle.go); the two must stay in sync", logReducerCommandRe.String(), oracleLiteral)
+// oracleCommandReDeclRe extracts the regexp.MustCompile(`...`) literal of the
+// oracle's researchTestBuildRe declaration from agent/research/oracle.go
+// source text.
+var oracleCommandReDeclRe = regexp.MustCompile("researchTestBuildRe = regexp\\.MustCompile\\(`([^`]*)`\\)")
+
+// oracleCommandReLiteralFromSource pulls the oracle's declared command-set
+// literal out of oracle.go source text, so the mirror pin compares against
+// the oracle's own bytes rather than a second copy that cannot see
+// oracle-side drift.
+func oracleCommandReLiteralFromSource(t *testing.T, src string) string {
+	t.Helper()
+	m := oracleCommandReDeclRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("no researchTestBuildRe = regexp.MustCompile(`...`) declaration found in the oracle source")
 	}
+	return m[1]
+}
+
+// TestLogReducerCommandRegexMirrorsOracleSource pins the literal sync with
+// the oracle's researchTestBuildRe by READING the oracle source
+// (agent/research/oracle.go) and extracting its declared literal — the
+// pattern is unexported and agent/research is read-only for this lineage, and
+// this test file already imports research and runs RunOracle, so a read-only
+// file read is consistent with that rule (the test binary runs with its
+// working directory at the agent package source, so the path is
+// research/oracle.go). The behavioral RunOracle pin above stays the semantic
+// half of the sync.
+func TestLogReducerCommandRegexMirrorsOracleSource(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile(filepath.Join("research", "oracle.go"))
+	if err != nil {
+		t.Fatalf("read oracle source: %v", err)
+	}
+	got := oracleCommandReLiteralFromSource(t, string(src))
+	if logReducerCommandRe.String() != got {
+		t.Fatalf("logReducerCommandRe = %q, want the oracle's researchTestBuildRe literal %q extracted from agent/research/oracle.go; the two must stay in sync", logReducerCommandRe.String(), got)
+	}
+	// The pin has teeth: pointed at a divergent oracle declaration, the
+	// extracted literal differs from the reducer's, so the comparison above
+	// would fail loudly rather than pass vacuously.
+	t.Run("detects divergent oracle literal", func(t *testing.T) {
+		t.Parallel()
+		divergent := "var researchTestBuildRe = regexp.MustCompile(`\\b(go test|go build)\\b`)"
+		got := oracleCommandReLiteralFromSource(t, divergent)
+		if logReducerCommandRe.String() == got {
+			t.Fatal("the mirror pin cannot detect a divergent oracle literal; it is vacuous")
+		}
+	})
 }

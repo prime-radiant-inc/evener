@@ -29,7 +29,7 @@ import (
 // its source hash against the full log, that every quoted line appears
 // verbatim in the log, that it carries no suspected credentials, and that it
 // is strictly smaller than the log. Any failure, suspected credentials (in
-// the receipt, the command, or the log's receipt-boundary region), or no size
+// the receipt, the command, or the log's extraction window), or no size
 // reduction falls back to the original log, byte-identical.
 //
 // The seam is record-time: persistToolResults calls reduceLogObservation while
@@ -63,18 +63,12 @@ const (
 	logReducerMaxQuotedLineBytes = 512
 	// logReducerMaxSummaryRunes caps the receipt summary.
 	logReducerMaxSummaryRunes = 600
-	// logReducerBoundaryLines is the receipt-boundary region: the head and
-	// tail line windows of the log that receipts quote evidence from. A
-	// suspected credential anywhere in these windows aborts the reduction —
-	// it could ride into the receipt or sit next to its quoted evidence.
-	// Middle-of-log lines cannot reach the model: the verifier guarantees the
-	// receipt carries only quoted source lines plus the summary, and both are
-	// credential-scanned in full.
-	logReducerBoundaryLines = 64
 	// logReducerExtractWindowBytes is the head and tail byte window of the
 	// log sent to the cheap model for extraction. A quoted line from the
 	// elided middle would fail verification and fall back, so the window
-	// bounds the extraction cost without bounding honesty.
+	// bounds the extraction cost without bounding honesty. The credential
+	// pre-scan covers exactly these bytes: what is transmitted is what is
+	// scanned (logReducerExtractionWindowCredential).
 	logReducerExtractWindowBytes = 8 * 1024
 )
 
@@ -129,18 +123,16 @@ func logReducerCredentialHit(s string) string {
 	return ""
 }
 
-// logReducerBoundaryCredential scans the log's receipt-boundary region — the
-// head and tail logReducerBoundaryLines-line windows receipts quote evidence
-// from — for suspected credentials, returning the pattern name of a hit or "".
-func logReducerBoundaryCredential(source string) string {
-	lines := strings.Split(source, "\n")
-	if len(lines) <= 2*logReducerBoundaryLines {
-		return logReducerCredentialHit(source)
-	}
-	if hit := logReducerCredentialHit(strings.Join(lines[:logReducerBoundaryLines], "\n")); hit != "" {
-		return hit
-	}
-	return logReducerCredentialHit(strings.Join(lines[len(lines)-logReducerBoundaryLines:], "\n"))
+// logReducerExtractionWindowCredential scans exactly the bytes the receipt
+// extraction would transmit to the cheap-model provider — the whole log when
+// it fits in the 16 KiB window budget, else the head and tail 8 KiB — for
+// suspected credentials, returning the pattern name of a hit or "". A hit
+// aborts the reduction before anything is archived or requested, so
+// credential bytes never ride the extraction prompt. Bytes outside the
+// window are never transmitted: their archive and transcript exposure is
+// the status quo of the original log the model already saw.
+func logReducerExtractionWindowCredential(source string) string {
+	return logReducerCredentialHit(logReceiptExtractionWindow(source))
 }
 
 // logReceiptExtraction is the cheap model's answer: the evidence it chose and
@@ -221,6 +213,13 @@ func verifyLogReceipt(r *logReceipt, source, command string, exitStatus int) err
 	}
 	if strings.TrimSpace(r.Summary) == "" {
 		return errors.New("log reducer: receipt summary is empty")
+	}
+	// A line break in the summary would let model-provided text inject
+	// pseudo-field lines (a bogus "full log:" or "read with:" line, say)
+	// into the rendered receipt. Quoted lines cannot do this: an embedded
+	// newline can never match a whole source line.
+	if strings.ContainsAny(r.Summary, "\n\r") {
+		return errors.New("log reducer: receipt summary contains a line break")
 	}
 	if utf8.RuneCountInString(r.Summary) > logReducerMaxSummaryRunes {
 		return errors.New("log reducer: receipt summary exceeds the rune cap")
@@ -313,10 +312,11 @@ func logReducerCandidate(call llm.ToolCallData, res tool.ExecResult) (command st
 
 // reduceLogObservation runs the reducer for one tool result and returns the
 // rendered receipt, or "" to fall back to the original log. The order is the
-// safety order: credential aborts (command, then the log's boundary region)
-// happen before anything is archived or any provider request is made; the
-// archive precedes the extraction so a verified receipt always has a
-// retrievable original behind it.
+// safety order: credential aborts (the command, then the log's extraction
+// window — exactly the bytes the extraction prompt would transmit) happen
+// before anything is archived or any provider request is made; the archive
+// precedes the extraction so a verified receipt always has a retrievable
+// original behind it.
 func (s *Session) reduceLogObservation(ctx context.Context, call llm.ToolCallData, res tool.ExecResult) string {
 	if !s.cfg.LogReducer {
 		return ""
@@ -329,8 +329,8 @@ func (s *Session) reduceLogObservation(ctx context.Context, call llm.ToolCallDat
 		s.warnLogReducerFallback("the command carries a suspected credential: " + hit)
 		return ""
 	}
-	if hit := logReducerBoundaryCredential(res.Output); hit != "" {
-		s.warnLogReducerFallback("the log's receipt-boundary region carries a suspected credential: " + hit)
+	if hit := logReducerExtractionWindowCredential(res.Output); hit != "" {
+		s.warnLogReducerFallback("the log's extraction window carries a suspected credential: " + hit)
 		return ""
 	}
 	profile := s.currentProfile()
