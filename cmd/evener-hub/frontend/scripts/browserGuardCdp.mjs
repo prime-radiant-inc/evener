@@ -415,12 +415,20 @@ async function navigateToOnce({ ws, send }, url) {
  * not name the cause. A harness entry whose module-init path throws at top
  * level, a bad script href, or a broken import graph all leave the marker
  * unset while every request succeeds - a deterministic code failure. Only a
- * boot death whose FINAL attempt captured recognized network-change failures
- * is framed as the environment flake. Evidence never outlives the attempt
- * that captured it (each attempt opens a clean window, so a flap that killed
- * an early attempt cannot launder a deterministic death on the final one),
- * navigation-induced aborts are never recorded at all, and any other captured
- * failure is reported under the harness diagnosis rather than flipping it.
+ * boot death whose FINAL attempt owned recognized network-change failures is
+ * framed as the environment flake. Evidence is scoped by REQUEST OWNERSHIP,
+ * not arrival: every request is tagged with the attempt that sent it
+ * (Network.requestWillBeSent), each loadingFailed is recorded under the
+ * attempt that owned its request (an unseen send is pinned to the attempt
+ * the failure arrives in - the only honest owner), and the terminal
+ * attribution reads only the final attempt's failures - so a flap that
+ * killed an early attempt cannot launder a deterministic death on the final
+ * one, however late its failures are delivered. Navigation-induced aborts
+ * are never recorded at all. A final window that captured BOTH
+ * network-change and other failures is reported as INCONCLUSIVE with both
+ * summaries rather than issuing a definitive verdict either way; any other
+ * captured failure is reported under the harness diagnosis rather than
+ * flipping it.
  *
  * The legacy two-argument call is unchanged: no boot options, no Network
  * domain, no extra evaluate - skillguard's driver and editorial-preview keep
@@ -440,7 +448,14 @@ export async function navigateTo(
 ) {
   if (!bootExpression) return navigateToOnce(page, url);
   const { ws, send } = page;
-  const loadingFailures = [];
+  // EVIDENCE IS SCOPED BY REQUEST OWNERSHIP, not by arrival time: every
+  // request is tagged with the attempt that SENT it, and each loadingFailed
+  // is recorded under the attempt that owned its request. The terminal
+  // attribution reads only the final attempt's bucket, so a flap that killed
+  // an earlier attempt cannot launder a deterministic death on the final one
+  // however late its failures are delivered.
+  const requestAttempts = new Map();
+  const failuresByAttempt = new Map();
   const onLoadingFailed = (event) => {
     // This handler sits on the guards' shared CDP socket, which other
     // listeners (connectPage's pending-command resolver, the load tripwire)
@@ -453,14 +468,32 @@ export async function navigateTo(
     } catch {
       return;
     }
-    if (message?.method !== "Network.loadingFailed" || !message.params) return;
+    if (!message?.params) return;
+    if (message.method === "Network.requestWillBeSent") {
+      // First writer wins: a request's redirects re-emit requestWillBeSent
+      // under the SAME requestId, and the attempt that started the request
+      // owns its whole lifecycle.
+      if (message.params.requestId && !requestAttempts.has(message.params.requestId)) {
+        requestAttempts.set(message.params.requestId, attempts);
+      }
+      return;
+    }
+    if (message.method !== "Network.loadingFailed") return;
     // A re-navigation ABORTS the previous attempt's in-flight requests, so
     // canceled:true / net::ERR_ABORTED arrivals are the seam's own doing, and
     // a harness aborting its own request is equally deterministic. Neither is
     // a wire death, so neither is recorded: evidence must be failures that
     // happened to requests the page wanted kept alive.
     if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
-    loadingFailures.push(message.params);
+    // A loadingFailed whose send was never seen cannot be pinned to any
+    // attempt earlier than the one it arrives in - the listener attaches
+    // before Network.enable, so an unseen send means the event stream skipped
+    // it, and dropping it would lose real evidence. The arrival attempt is
+    // the only honest owner.
+    const owner = requestAttempts.get(message.params.requestId) ?? attempts;
+    const bucket = failuresByAttempt.get(owner) ?? [];
+    bucket.push(message.params);
+    failuresByAttempt.set(owner, bucket);
   };
   ws.addEventListener("message", onLoadingFailed);
   let attempts = 0;
@@ -473,12 +506,6 @@ export async function navigateTo(
     // answering.
     await withTimeout(send("Network.enable"), 30000, "Network.enable");
     for (;;) {
-      // EVIDENCE IS SCOPED TO ONE ATTEMPT: the terminal attribution must
-      // describe the boot death that decided the run - the final attempt's -
-      // so each attempt opens a clean window. A network flap that killed
-      // attempt 1 must not launder a deterministic harness bug that killed
-      // the final attempt as an environment problem.
-      loadingFailures.length = 0;
       attempts++;
       await navigateToOnce(page, url);
       if (await evaluate(send, bootExpression)) return;
@@ -489,12 +516,30 @@ export async function navigateTo(
         const verdict =
           `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
           `so the page is a dead document no measurement can read`;
-        const networkEvidence = summarizeLoadingFailures(loadingFailures.filter(isNetworkChangeFailure));
+        // Only the FINAL attempt's owned failures name the cause: earlier
+        // attempts' buckets exist but are never read here.
+        const finalFailures = failuresByAttempt.get(attempts) ?? [];
+        const networkEvidence = summarizeLoadingFailures(finalFailures.filter(isNetworkChangeFailure));
         const otherEvidence = summarizeLoadingFailures(
-          loadingFailures.filter((failure) => !isNetworkChangeFailure(failure)),
+          finalFailures.filter((failure) => !isNetworkChangeFailure(failure)),
         );
         let diagnosis;
-        if (networkEvidence) {
+        if (networkEvidence && otherEvidence) {
+          // A window holding BOTH a network change and deterministic failures
+          // cannot be named from the wire alone: either verdict would discard
+          // live evidence. Report both and let the reader judge.
+          diagnosis =
+            `inconclusive boot failure - the final attempt's window captured BOTH a network change and ` +
+            `deterministic failures, so the wire evidence alone cannot name the cause: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these network-change failures during ` +
+            `the boot window: ${networkEvidence}. It also reported these deterministic failures: ` +
+            `${otherEvidence}. If the network-change failures explain the death (the transient change this ` +
+            `seam exists for - net::ERR_NETWORK_CHANGED is its signature), treat the run as an environment ` +
+            `flake and retry the gate; if the deterministic failures point at the harness, check what the ` +
+            `boot check measures - the harness entry and the product modules it imports (a top-level throw in ` +
+            `module init, a bad script href, or a broken import graph all leave the boot marker unset), or ` +
+            `the case's own stylesheet links.`;
+        } else if (networkEvidence) {
           diagnosis =
             `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
             `${verdict}. Chrome reported these failed requests during the boot window: ${networkEvidence}. A ` +
@@ -520,7 +565,7 @@ export async function navigateTo(
         }
         throw new Error(diagnosis);
       }
-      const captured = loadingFailures.length;
+      const captured = failuresByAttempt.get(attempts)?.length ?? 0;
       console.error(
         `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
           `${bootLabel ?? bootExpression} is missing` +

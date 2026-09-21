@@ -917,6 +917,188 @@ test("a deterministic request failure is reported but never flips the attributio
   assert.equal(socket.listenerCount("message"), 0);
 });
 
+// Mixed evidence (review round 4, F1): a final window that captured BOTH a
+// recognized network-change failure AND a deterministic one cannot be named
+// from the wire alone. Issuing the environment verdict would silently discard
+// the deterministic evidence; issuing the regression verdict would discard the
+// flap. The diagnosis must report the window as inconclusive and include BOTH
+// summaries so the reader can judge.
+test("a mixed final window is inconclusive and reports both kinds of evidence", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        for (const errorText of ["net::ERR_NETWORK_CHANGED", "net::ERR_FAILED"]) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: `req-${navigations}-${errorText}`, type: "Script", errorText },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /inconclusive/);
+        // Neither verdict may be issued as fact.
+        assert.doesNotMatch(error.message, /environment problem, not a test case failure/);
+        assert.doesNotMatch(error.message, /an environment flake, not a test case regression/);
+        // Both kinds of evidence are included, so the reader can judge.
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        assert.match(error.message, /net::ERR_FAILED/);
+        assert.match(error.message, /network-change failures/);
+        assert.match(error.message, /deterministic failures/);
+        assert.doesNotMatch(error.message, /font/i);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// Request-ownership scoping (review round 4, F2): evidence is scoped by the
+// attempt that OWNED the request, not by arrival time. A flap death for a
+// request attempt 1 sent, delivered late - after the final attempt started -
+// belongs to attempt 1 and must not flip the final attribution.
+test("a late failure for an earlier attempt's request does not flip the final attribution", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  let enables = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.enable":
+        enables++;
+        // Attempt 1's request dies on the wire, but the failure is delivered
+        // late - inside the FINAL attempt's window, in the gap before its own
+        // requests exist (so the abort filter cannot cover it).
+        if (enables === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-early", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return {};
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1) {
+          // Attempt 1 sends the request whose death arrives late.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-early" },
+            }),
+          });
+        }
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /harness boot failure - likely a test case regression/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// The unmatched-requestId edge is a decided rule, not an accident: a
+// loadingFailed whose requestWillBeSent was never seen cannot be pinned to any
+// attempt earlier than the one it arrives in (the listener attaches before
+// Network.enable, so an unseen send means the event stream skipped it), and
+// dropping it would lose real evidence. It is attributed to the ARRIVAL
+// attempt - so a death arriving in the final window with no seen send still
+// counts as the final attempt's evidence.
+test("a loadingFailed whose send was never seen counts for the attempt it arrives in", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-unseen", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+        bootExpression: "typeof window.settledShell !== 'undefined'",
+        bootLabel: "the shellguard entry global window.settledShell",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
 // layoutguard's boot predicate (review M2): [].every(...) is vacuously true,
 // so a document that links NO stylesheet at all - an error page, a wrong-page
 // harness, a stripped document - used to pass the boot check and walk into
