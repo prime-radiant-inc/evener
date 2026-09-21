@@ -413,7 +413,12 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// moves the fingerprint without anyone having to remember this site.
 		capsV := reflect.ValueOf(bySess[id].Capabilities)
 		for _, fieldValue := range capsV.Fields() {
-			if fieldValue.Bool() {
+			// Hash every field whatever its kind: Bool() would panic on a
+			// future non-bool ThreadCapabilities field, and skipping a field
+			// would silently drop it from the fingerprint.
+			if fieldValue.Kind() != reflect.Bool {
+				_, _ = fmt.Fprintf(h, "%v", fieldValue.Interface())
+			} else if fieldValue.Bool() {
 				_, _ = h.Write([]byte{1})
 			}
 			_, _ = h.Write([]byte{0})

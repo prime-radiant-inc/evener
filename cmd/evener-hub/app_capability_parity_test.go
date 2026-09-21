@@ -20,14 +20,14 @@ import (
 	daemonserver "primeradiant.com/evener/server"
 )
 
-// daemonIdleCapabilities wires a server.Server the production way
+// daemonCapabilitiesAtState wires a server.Server the production way
 // (hubtest.WireCapabilitySeams) and returns the capability set it answers
-// thread/read with at idle.
-func daemonIdleCapabilities(t *testing.T) appwire.ThreadCapabilities {
+// thread/read with at the given state.
+func daemonCapabilitiesAtState(t *testing.T, state string) appwire.ThreadCapabilities {
 	t.Helper()
 	srv := daemonserver.NewServer(daemonserver.ServerConfig{})
 	srv.SetAppIdentity("local", "th_parity_oracle")
-	srv.SetState("idle")
+	srv.SetState(state)
 	hubtest.WireCapabilitySeams(srv)
 
 	// The in-process connection is the same appserver request path a
@@ -65,7 +65,11 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 	typ := daemonV.Type()
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
-		d, g := daemonV.Field(i).Bool(), gotV.Field(i).Bool()
+		fieldValue := daemonV.Field(i)
+		if fieldValue.Kind() != reflect.Bool {
+			t.Fatalf("%s: ThreadCapabilities.%s is not a bool (%v) — the parity oracle walks bool bits only; teach it the field's real shape", projection, name, fieldValue.Kind())
+		}
+		d, g := fieldValue.Bool(), gotV.Field(i).Bool()
 		if reason, listed := differ[name]; listed {
 			if d == g {
 				t.Errorf("%s: %s is in the differ ledger (%s) but the projections agree (%v) — remove the stale entry", projection, name, reason, g)
@@ -97,7 +101,7 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 }
 
 func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
-	daemon := daemonIdleCapabilities(t)
+	daemon := daemonCapabilitiesAtState(t, appwire.ThreadStatusIdle)
 
 	// The cold set a session with no daemon reads through: send resumes it,
 	// and the hub's mutation gates re-verify every action against the daemon
@@ -139,6 +143,40 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			t.Fatalf("list rows = %+v, want the %s fixture row", rows, projection)
 		}
 		assertCapabilityParity(t, projection, daemon, caps, nil, rowAgreeOnFalse)
+	}
+
+	// Probed rows mirror the daemon verbatim at every status, not just idle:
+	// the set rides the same probe cut as the row's status, so the bits the
+	// daemon folds out of state — Send folds activity, Clear folds its
+	// blocked reason, and closed withholds the whole `!closed` family —
+	// must read exactly as the daemon answered. This is the pin against
+	// status-gating creeping back into the probed path (the pre-#1375
+	// Queue-folding regression).
+	for _, state := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
+		daemonAt := daemonCapabilitiesAtState(t, state)
+		// Guard the fixture, not the projection: the mirror assertions below
+		// compare against whatever the daemon answered, so a state that did
+		// not take effect would leave them comparing idle against idle.
+		if state == appwire.ThreadStatusActive && (daemonAt.Send || !daemonAt.Queue) {
+			t.Fatalf("active daemon fixture = %+v, want Send folded out by activity with Queue still advertised", daemonAt)
+		}
+		if state == appwire.ThreadStatusClosed && (daemonAt.Send || !daemonAt.SkillInput) {
+			t.Fatalf("closed daemon fixture = %+v, want Send withheld by closed while skillInput stays advertised", daemonAt)
+		}
+		rows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
+			return []appsource.LocalDaemonEntry{{
+				Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed_" + state, SessionID: "sess_probed_" + state},
+				Status:            state,
+				Capabilities:      daemonAt,
+				CapabilitiesKnown: true,
+			}}
+		})
+		if len(rows) != 1 {
+			t.Fatalf("list rows = %+v, want the probed %s fixture row", rows, state)
+		}
+		if rows[0].Evener.Capabilities != daemonAt {
+			t.Fatalf("probed %s row = %+v, want the daemon's %s answer mirrored verbatim %+v", state, rows[0].Evener.Capabilities, state, daemonAt)
+		}
 	}
 
 	// The oracle audit, hoisted so an unwired seam fails once instead of once
