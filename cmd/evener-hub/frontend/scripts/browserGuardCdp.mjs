@@ -354,7 +354,9 @@ function isNetworkChangeFailure(failure) {
 
 /**
  * Page.enable, navigate, and await the load event - the triple every guard
- * re-wrote.
+ * re-wrote. Resolves to the navigation's loaderId - the document identity the
+ * boot seam correlates request evidence by - or null when the response does
+ * not report one; the legacy two-argument callers ignore the return value.
  *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
@@ -378,7 +380,11 @@ async function navigateToOnce({ ws, send }, url) {
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    await Promise.all([loaded, withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate")]);
+    const [, navigated] = await Promise.all([
+      loaded,
+      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
+    ]);
+    return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
     // its listener/timer) without replacing the error Promise.all observed.
@@ -416,14 +422,21 @@ async function navigateToOnce({ ws, send }, url) {
  * level, a bad script href, or a broken import graph all leave the marker
  * unset while every request succeeds - a deterministic code failure. Only a
  * boot death whose FINAL attempt owned recognized network-change failures is
- * framed as the environment flake. Evidence is scoped by REQUEST OWNERSHIP,
- * not arrival: every request is tagged with the attempt that sent it
- * (Network.requestWillBeSent), each loadingFailed is recorded under the
- * attempt that owned its request (an unseen send is pinned to the attempt
- * the failure arrives in - the only honest owner), and the terminal
- * attribution reads only the final attempt's failures - so a flap that
- * killed an early attempt cannot launder a deterministic death on the final
- * one, however late its failures are delivered. Navigation-induced aborts
+ * framed as the environment flake. Evidence is scoped by DOCUMENT IDENTITY,
+ * never by the attempt counter or arrival time: each navigation's
+ * Page.navigate response names its loaderId, every request is tagged with
+ * the loaderId it reported (Network.requestWillBeSent, first writer wins -
+ * redirects re-emit under the same pair), and each loadingFailed resolves
+ * through its request's loaderId to the attempt that committed that
+ * document. An unseen send anchors to the last COMMITTED navigation - the
+ * document that is live when the failure arrives, which in the gap between
+ * a new navigation's issue and its response is still the previous one; the
+ * attempt counter advances at loop top and must never name an event's owner.
+ * When Chrome reports no loaderId at all, no identity exists to honor and
+ * attribution degrades to the arrival counter. The terminal attribution
+ * reads only the final attempt's failures, so a flap that killed an earlier
+ * attempt cannot launder a deterministic death on the final one.
+ * Navigation-induced aborts
  * are never recorded at all. A final window that captured BOTH
  * network-change and other failures is reported as INCONCLUSIVE with both
  * summaries rather than issuing a definitive verdict either way; any other
@@ -448,14 +461,22 @@ export async function navigateTo(
 ) {
   if (!bootExpression) return navigateToOnce(page, url);
   const { ws, send } = page;
-  // EVIDENCE IS SCOPED BY REQUEST OWNERSHIP, not by arrival time: every
-  // request is tagged with the attempt that SENT it, and each loadingFailed
-  // is recorded under the attempt that owned its request. The terminal
-  // attribution reads only the final attempt's bucket, so a flap that killed
-  // an earlier attempt cannot launder a deterministic death on the final one
-  // however late its failures are delivered.
-  const requestAttempts = new Map();
+  // EVIDENCE IS SCOPED BY DOCUMENT IDENTITY, never by the attempt counter or
+  // arrival time: each navigation's Page.navigate response names its
+  // loaderId, requests are tagged with the loaderId they reported, and each
+  // loadingFailed resolves through that loaderId to the attempt that
+  // committed the document. The terminal attribution reads only the final
+  // attempt's bucket, so a flap that killed an earlier attempt cannot
+  // launder a deterministic death on the final one however late its
+  // failures are delivered.
+  const requestLoaderIds = new Map();
+  const loaderAttempts = new Map();
   const failuresByAttempt = new Map();
+  // The last navigation whose response has COMMITTED. It advances only when
+  // a navigateToOnce resolves - never when the counter increments - so in
+  // the gap between attempts++ and the new navigate's response this still
+  // names the PREVIOUS document: the document that is live and emitting.
+  let currentLoaderId = null;
   const onLoadingFailed = (event) => {
     // This handler sits on the guards' shared CDP socket, which other
     // listeners (connectPage's pending-command resolver, the load tripwire)
@@ -470,11 +491,16 @@ export async function navigateTo(
     }
     if (!message?.params) return;
     if (message.method === "Network.requestWillBeSent") {
-      // First writer wins: a request's redirects re-emit requestWillBeSent
-      // under the SAME requestId, and the attempt that started the request
-      // owns its whole lifecycle.
-      if (message.params.requestId && !requestAttempts.has(message.params.requestId)) {
-        requestAttempts.set(message.params.requestId, attempts);
+      // Tag by the event's OWN loaderId - the identity of the document that
+      // sent it - never by the counter: an old document can still emit while
+      // the counter already points at the new attempt. First writer wins: a
+      // request's redirects re-emit requestWillBeSent under the SAME
+      // requestId and loaderId, and the document that started the request
+      // owns its whole lifecycle. A loaderId reported before its navigate
+      // response lands resolves at attribution time, once the mapping is
+      // built.
+      if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
+        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
       }
       return;
     }
@@ -485,12 +511,15 @@ export async function navigateTo(
     // a wire death, so neither is recorded: evidence must be failures that
     // happened to requests the page wanted kept alive.
     if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
-    // A loadingFailed whose send was never seen cannot be pinned to any
-    // attempt earlier than the one it arrives in - the listener attaches
-    // before Network.enable, so an unseen send means the event stream skipped
-    // it, and dropping it would lose real evidence. The arrival attempt is
-    // the only honest owner.
-    const owner = requestAttempts.get(message.params.requestId) ?? attempts;
+    // Resolve by identity, degrading only when identity is unavailable: a
+    // seen request resolves through its loaderId; an unseen send anchors to
+    // the last COMMITTED navigation (currentLoaderId - the document that is
+    // live when the failure arrives, which in the navigate gap is still the
+    // previous one); and a loaderId that was never mapped - a navigate
+    // response that reported none - has no identity to honor, so the arrival
+    // counter is the only anchor left.
+    const requestLoaderId = requestLoaderIds.get(message.params.requestId) ?? currentLoaderId;
+    const owner = loaderAttempts.get(requestLoaderId) ?? attempts;
     const bucket = failuresByAttempt.get(owner) ?? [];
     bucket.push(message.params);
     failuresByAttempt.set(owner, bucket);
@@ -507,7 +536,12 @@ export async function navigateTo(
     await withTimeout(send("Network.enable"), 30000, "Network.enable");
     for (;;) {
       attempts++;
-      await navigateToOnce(page, url);
+      const loaderId = await navigateToOnce(page, url);
+      if (loaderId) loaderAttempts.set(loaderId, attempts);
+      // Identity for the navigation that just committed. currentLoaderId
+      // advances only HERE - never at the counter increment above - so the
+      // gap between the two still belongs to the previous document.
+      currentLoaderId = loaderId;
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
         const budget =

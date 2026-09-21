@@ -1009,12 +1009,12 @@ test("a late failure for an earlier attempt's request does not flip the final at
           socket.dispatch("message", {
             data: JSON.stringify({
               method: "Network.requestWillBeSent",
-              params: { requestId: "req-early" },
+              params: { requestId: "req-early", loaderId: "loader-1" },
             }),
           });
         }
         socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-        return { result: { frameId: "fixture-frame" } };
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
       case "Runtime.evaluate":
         return { result: { result: { value: false } } };
       default:
@@ -1047,13 +1047,13 @@ test("a late failure for an earlier attempt's request does not flip the final at
 });
 
 // The unmatched-requestId edge is a decided rule, not an accident: a
-// loadingFailed whose requestWillBeSent was never seen cannot be pinned to any
-// attempt earlier than the one it arrives in (the listener attaches before
-// Network.enable, so an unseen send means the event stream skipped it), and
-// dropping it would lose real evidence. It is attributed to the ARRIVAL
-// attempt - so a death arriving in the final window with no seen send still
-// counts as the final attempt's evidence.
-test("a loadingFailed whose send was never seen counts for the attempt it arrives in", async () => {
+// loadingFailed whose requestWillBeSent was never seen has no request
+// identity, so it is anchored to the last COMMITTED navigation - the document
+// that is live when the failure arrives. In the gap before a new navigation's
+// response lands that is still the PREVIOUS document (the gap tests below pin
+// that side); once the final navigation has committed, a death arriving with
+// no seen send counts for that final attempt.
+test("a loadingFailed whose send was never seen counts for the navigation that is live when it arrives", async () => {
   const socket = fakeSocket();
   let navigations = 0;
   const send = async (method) => {
@@ -1061,6 +1061,11 @@ test("a loadingFailed whose send was never seen counts for the attempt it arrive
       case "Page.navigate":
         navigations++;
         socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        // The final navigation has COMMITTED by the time its boot check runs,
+        // so its document is the live one an unseen failure arriving now
+        // belongs to.
         if (navigations === 1 + BOOT_RETRY_LIMIT) {
           socket.dispatch("message", {
             data: JSON.stringify({
@@ -1069,8 +1074,232 @@ test("a loadingFailed whose send was never seen counts for the attempt it arrive
             }),
           });
         }
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+        bootExpression: "typeof window.settledShell !== 'undefined'",
+        bootLabel: "the shellguard entry global window.settledShell",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// The navigate gap (review round 5): the attempt counter advances at loop
+// top, BEFORE the new navigation's response commits - and in that gap the
+// OLD document still owns the socket and can still emit events. Tagging by
+// the counter files them under the new attempt; tagging is by the event's
+// OWN loaderId, so a request belongs to the document that actually sent it
+// and its death cannot land in the final attempt's bucket.
+test("an old document's request emitted in the navigate gap is not filed under the new attempt", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // The counter already points at the final attempt, but this
+          // navigation's response has not landed: the live document is still
+          // attempt 2's (loader-2), and it emits a request here.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-old-doc", loaderId: `loader-${navigations - 1}` },
+            }),
+          });
+        }
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-old-doc", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The death belongs to attempt 2's document; the final attempt's
+        // bucket is empty, so the final diagnosis is the regression framing.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+test("an unseen failure arriving in the navigate gap belongs to the previous navigation", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // In the gap: the counter already says the final attempt, but the
+          // final navigation has not committed - the live document is still
+          // attempt 2's. An unseen death arriving here belongs to that
+          // document, not to the final attempt the counter names.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-unseen-gap", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// Redirects re-emit requestWillBeSent under the SAME requestId and the same
+// loaderId, possibly during a LATER attempt's window; first-writer-wins keeps
+// the request owned by the document that started it.
+test("a redirected request re-emitted in a later window stays owned by its first document", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 || navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-redirect", loaderId: "loader-1" },
+            }),
+          });
+        }
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-redirect", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/transcriptscrollguard.html", {
+        bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
+        bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// The residual identity-less case, decided explicitly: a Page.navigate
+// response that reports no loaderId leaves its document with no identity to
+// honor, so an unseen death in its window degrades to the ARRIVAL COUNTER -
+// the round-4 semantics, because no better anchor exists in that mode.
+test("without a reported loaderId, attribution degrades to the arrival counter", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        // No loaderId in any navigate response: identity is unavailable.
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-no-identity", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
         return { result: { result: { value: false } } };
       default:
         return {};
