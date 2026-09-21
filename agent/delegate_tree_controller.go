@@ -72,7 +72,7 @@ type delegateTreeController struct {
 	deliveryClaims        map[string]*delegateDeliveryClaim
 	quietClaims           map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs      map[string]map[string]struct{}
-	attentionRestoreHolds map[string]struct{}
+	attentionRestoreHolds map[string]int
 	watchEnqueues         map[uint64]*delegateWatchReceipt
 	watchDeliveries       map[uint64]*delegateWatchReceipt
 	reclamations          map[uint64]*delegateRuntimeReclamationClaim

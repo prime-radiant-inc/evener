@@ -269,6 +269,14 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 		if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
 			return nil, false
 		}
+		if c.attentionRestoreHeldLocked(id) {
+			// A wake pass holds this member between its cold restore and its
+			// reservation decision. Held members refuse the subtree before
+			// the live-entry check: a member mid cold restore has no live
+			// entry yet, and its absence must not let a claim sweep the
+			// restored parent the chain restore is still using.
+			return nil, false
+		}
 		if live := c.live[id]; live != nil {
 			// Only steering a LIVE generation still owes counts as work in
 			// flight. An admission carried across a covering stop is a parcel
@@ -278,7 +286,7 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			// the bail below is subtree-wide, so it would pin every sibling too:
 			// one stopped-and-forgotten delegate burning a maxRetainedTerminal
 			// slot for the life of the process.
-			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil || c.attentionRestoreHeldLocked(id) {
+			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
 				return nil, false
 			}
 			if live.runtime != nil {

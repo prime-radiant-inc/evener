@@ -1101,17 +1101,15 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 		return false
 	}
 	escalated := s.escalateUnreachableDelegateAttention()
-	delegateID, _, pending := s.delegateController.nextIdleDelegateAttention()
+	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
 	if !pending {
 		return escalated
 	}
-	// Hold the restored runtime off release claims for the whole
-	// restore-to-decision span: a grace timer firing into it would reap the
-	// runtime the reservation is about to commit against, and the wake retry
-	// would pay a second cold restore. The defer releases the hold on every
-	// pass exit — reservation committed or drive declined — so it can never
-	// pin the runtime warm.
-	s.delegateController.holdAttentionRestore(delegateID)
+	// The selection already took this pass's hold under the controller lock,
+	// closing the selection-to-hold gap a release claim could slip through.
+	// The defer releases it on every pass exit — reservation committed or
+	// drive declined — so it can never pin the runtime warm, and overlapping
+	// passes each keep their own reference.
 	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {

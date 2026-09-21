@@ -393,6 +393,32 @@ func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bo
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.nextIdleDelegateAttentionLocked()
+}
+
+// selectDelegateAttentionWake is the wake driver's selection: it returns the
+// next eligible delegate with pending attention and takes this pass's hold
+// in one critical section, so no release claim can slip between selection
+// and hold. The pass MUST release the hold on every exit; overlapping passes
+// each hold their own reference.
+func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, bool) {
+	if c == nil {
+		return "", "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delegateID, attentionID, pending := c.nextIdleDelegateAttentionLocked()
+	if !pending {
+		return "", "", false
+	}
+	if c.attentionRestoreHolds == nil {
+		c.attentionRestoreHolds = make(map[string]int)
+	}
+	c.attentionRestoreHolds[delegateID]++
+	return delegateID, attentionID, true
+}
+
+func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
 	delegateIDs := make([]string, 0, len(c.attentionWakeIDs))
 	for delegateID, ids := range c.attentionWakeIDs {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
@@ -485,31 +511,36 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 // reservation decision. Release claims must not reap the runtime inside that
 // span — the reservation would commit against a husk and the wake retry would
 // pay a second cold restore. The pass releases the hold at exit, whichever way
-// it decides.
+// it decides. Holds count, so overlapping wake passes each keep their own
+// reference and one pass's exit cannot drop another's hold.
 func (c *delegateTreeController) holdAttentionRestore(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.attentionRestoreHolds == nil {
-		c.attentionRestoreHolds = make(map[string]struct{})
+		c.attentionRestoreHolds = make(map[string]int)
 	}
-	c.attentionRestoreHolds[delegateID] = struct{}{}
+	c.attentionRestoreHolds[delegateID]++
 }
 
-// releaseAttentionRestoreHold clears the wake pass's hold. Clearing an
+// releaseAttentionRestoreHold drops this wake pass's hold. Releasing an
 // unheld delegate is a no-op, so a declined or failed pass cannot leak the
-// hold by clearing twice or out of order.
+// hold by clearing twice or out of order, and the last reference out clears
+// the delegate for claims again.
 func (c *delegateTreeController) releaseAttentionRestoreHold(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.attentionRestoreHolds, delegateID)
+	if c.attentionRestoreHolds[delegateID] <= 1 {
+		delete(c.attentionRestoreHolds, delegateID)
+		return
+	}
+	c.attentionRestoreHolds[delegateID]--
 }
 
 // attentionRestoreHeldLocked reports whether an attention wake pass holds
 // delegateID between its cold restore and its reservation decision. Callers
 // must hold c.mu.
 func (c *delegateTreeController) attentionRestoreHeldLocked(delegateID string) bool {
-	_, held := c.attentionRestoreHolds[delegateID]
-	return held
+	return c.attentionRestoreHolds[delegateID] > 0
 }
 
 // armColdDelegateAttention admits a wake only after re-folding the exact cold

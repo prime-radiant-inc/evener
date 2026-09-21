@@ -922,6 +922,9 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		restored.mu.Lock()
 		restored.running = true
 		restored.mu.Unlock()
+		// A second, overlapping wake pass selects the same delegate: holds
+		// must count, so this pass's exit cannot drop the other pass's hold.
+		tree.holdAttentionRestore(res.DelegateID)
 	}
 	sess.drivePendingStableDelegateAttention()
 	if !hookFired {
@@ -934,17 +937,118 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 	restoredSub.running = false
 	restoredSub.mu.Unlock()
 
-	// The declined pass must have released its hold: the restored runtime is
-	// plain terminal-idle again, so the claim succeeds and the abort hands
-	// residency straight back.
+	// This pass exited, but the overlapping pass still holds the delegate:
+	// the claim must keep refusing.
 	claim, _, err := tree.ClaimIdleRuntimeRelease(res.DelegateID)
 	if err != nil {
-		t.Fatalf("claim after declined wake: %v", err)
+		t.Fatalf("claim while an overlapping wake pass still holds: %v", err)
+	}
+	if claim != nil {
+		_ = tree.AbortRuntimeReclamation(claim)
+		t.Fatal("a pass exit dropped an overlapping pass's hold; holds must count")
+	}
+	// The overlapping pass finishes: its release reopens the claim window,
+	// so the restored runtime is plain terminal-idle again and the claim
+	// succeeds; the abort hands residency straight back.
+	tree.releaseAttentionRestoreHold(res.DelegateID)
+	claim, _, err = tree.ClaimIdleRuntimeRelease(res.DelegateID)
+	if err != nil {
+		t.Fatalf("claim after the last overlapping pass exited: %v", err)
 	}
 	if claim == nil {
-		t.Fatal("declined wake pass pinned the restored runtime; the hold must release at pass exit")
+		t.Fatal("released holds left the delegate unclaimable; the last pass's exit must reopen the claim window")
 	}
 	_ = tree.AbortRuntimeReclamation(claim)
+}
+
+// TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry: a held
+// delegate with no live entry yet — a cold restore mid-install, before the
+// runtime publishes — must still refuse reclamation of any subtree
+// containing it, so the restored parent a chain restore is still using
+// cannot be swept by a grace timer while the child install is in flight.
+func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parent", "")
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
+	// The child's generation must run under a live parent, so interleave:
+	// start the parent, finish the child, then finish the parent.
+	parentReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_parent")
+	if err != nil {
+		t.Fatalf("reserve parent start: %v", err)
+	}
+	parentStarted, err := c.CommitStart(parentReservation)
+	if err != nil {
+		t.Fatalf("commit parent start: %v", err)
+	}
+	if err := c.AttachRuntime(parentStarted.lease, &Session{}); err != nil {
+		t.Fatalf("attach parent runtime: %v", err)
+	}
+	if _, err := c.AdmitStartInput(parentStarted.lease, func() error { return nil }); err != nil {
+		t.Fatalf("admit parent input: %v", err)
+	}
+	finishHarnessDelegateGeneration(t, c, delegateActor{lease: &parentStarted.lease}, "dlg_child")
+	if _, err := c.FinishGeneration(parentStarted.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "fixture"}); err != nil {
+		t.Fatalf("finish parent generation: %v", err)
+	}
+	// The parent is now genuinely resident terminal-idle: one finished
+	// generation, a published runtime, no run binding. The harness finishes
+	// leave the terminal-packet deliveries unaccepted; abort them so the
+	// fixture is plain idle. The child is mid cold restore: its durable
+	// generation finished terminal-idle, and its previous runtime was
+	// released — the pre-install span, before the restored runtime publishes
+	// to the live map.
+	c.mu.Lock()
+	tokens := make([]delegateDeliveryToken, 0, len(c.deliveries))
+	for _, receipt := range c.deliveries {
+		tokens = append(tokens, receipt.token)
+	}
+	c.mu.Unlock()
+	for _, token := range tokens {
+		if _, err := c.CompleteDelivery(token, false); err != nil {
+			t.Fatalf("abort harness delivery: %v", err)
+		}
+	}
+	c.mu.Lock()
+	c.live["dlg_child"] = nil
+	// The harness has no parent pump to consume the terminal-packet
+	// delivery admissions its direct FinishGeneration calls create; drop
+	// them to simulate the delivered state.
+	c.deliveryClaims = nil
+	c.mu.Unlock()
+	c.holdAttentionRestore("dlg_child")
+	defer c.releaseAttentionRestoreHold("dlg_child")
+	claim, _, err := c.ClaimIdleRuntimeRelease("dlg_parent")
+	if err != nil {
+		t.Fatalf("claim parent subtree with held child: %v", err)
+	}
+	if claim != nil {
+		_ = c.AbortRuntimeReclamation(claim)
+		t.Fatal("claim swept a subtree whose member is held mid cold restore; the hold must refuse before the live-entry check")
+	}
+}
+
+// finishHarnessDelegateGeneration drives one harness delegate through a
+// completed generation — reserve, commit, attach, admit, finish — leaving it
+// durable terminal-idle with a published live runtime.
+func finishHarnessDelegateGeneration(t *testing.T, c *delegateTreeController, actor delegateActor, id string) {
+	t.Helper()
+	reservation, err := c.ReserveStart(actor, id)
+	if err != nil {
+		t.Fatalf("reserve %s start: %v", id, err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("commit %s start: %v", id, err)
+	}
+	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+		t.Fatalf("attach %s runtime: %v", id, err)
+	}
+	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
+		t.Fatalf("admit %s input: %v", id, err)
+	}
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "fixture"}); err != nil {
+		t.Fatalf("finish %s generation: %v", id, err)
+	}
 }
 
 // TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
