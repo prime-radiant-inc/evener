@@ -52,13 +52,22 @@ deviation and what the pipeline slice inherits.
   reshaping it a second time. This revises slice 1's flat
   `{name, address, keyPath}` params, and the regenerated client and the pane's
   store follow.
-- `entry` carries the six mutable `HostConfig` fields under slice 1's wire
-  spellings, with the schema mapping stated so nobody has to guess: `address`
-  (schema `ssh`), `user`, `evenerPath` (schema `evener_path`), `configPath`
-  (schema `config_path`), `addr`, `roots`, and `keyPath` (schema `key_path`).
-  The schema has seven fields; six are mutable. `add`'s entry also carries
-  `name`, which is required there and absent from the update entry because the
-  update's target name is the request's own field.
+- `entry` carries the record's six mutable `HostConfig` fields under slice 1's
+  wire spellings — `address` (schema `ssh`), `user`, `evenerPath` (schema
+  `evener_path`), `configPath` (schema `config_path`), `addr`, `roots` — plus
+  the one field slice 1 added that the schema does not have: `keyPath`.
+  `keyPath` is **not** a `HostConfig` field: `config.go`'s schema has no key,
+  `hostreg`'s own comment says hub.toml has no key field, and the record's
+  update entry is "the six non-name fields". Slice 1 invented the wire field
+  because the dial needs one, and this slice keeps it and round-trips it —
+  dropping it would zero a stored key path on every edit, which the
+  no-regression criterion forbids. §6 records the extension.
+- `add`'s entry also carries `name`, which is required there and absent from
+  the update entry because the update's target name is the request's own
+  field.
+- The dialog therefore carries the record's seven inputs — `name`, `ssh`,
+  `user`, `evener_path`, `config_path`, `addr`, `roots` — plus the Key path
+  control slice 1 shipped: eight inputs in all, with `name` read-only on edit.
 - `HostUpdateParams.name` is the immutable target: it identifies which host to
   edit, and nothing in the request can rename one.
 - `HostUpdateResponse` is `{host: HostRow}`, mirroring remove's shape: the
@@ -72,12 +81,18 @@ deviation and what the pipeline slice inherits.
 
 ### 3.2 `hostreg.Registry.Update(entry Host) error` (`internal/hostreg`)
 
-- Normalizes and validates with the same rules `AddWithUpstreams` runs
-  (`validateEntry`, the name grammar, the reserved name, the cycle check),
-  preserving the name's existing upstream edges. It runs **no host-count cap**:
-  the registry enforces no cap today — the cap lives only at config load, and
-  moving it onto `New`/`Add`/`Update` is the design record's outstanding [03]
-  item, not this slice's (§6).
+- Normalizes (`hostreg.Normalize`) and validates with the same rules
+  `AddWithUpstreams` runs (`validateEntry`, the name grammar, the reserved
+  name, the cycle check), preserving the name's existing upstream edges.
+- It runs **no host-count cap**, and neither does anything else on this path:
+  the registry has no count check, config load has none, and the only 64-source
+  limit in the tree today lives in the navigation projection. The record's §4
+  and §14 do assign the cap to the registry's `Add`/`Update` (over-cap failing
+  `ErrTooManyHosts`), §16 requires its test, and the design document's
+  follow-up ledger carries it as its [03] item. This slice records the drop
+  instead of pretending to satisfy it, and states the consequence plainly: a
+  live set pushed past 63 sources fails navigation for the whole hub, not just
+  the extra host.
 - Replaces the entry in place and assigns a fresh generation from the
   registry-wide counter. That generation is the identity fence: `SameRegistration`
   and the manager's channel fence read it, so a parked `Ensure` that captured the
@@ -94,13 +109,19 @@ deviation and what the pipeline slice inherits.
 
 ### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host) error`
 
-- One hold of the per-host gate: the registry `Update`, then — when a
-  dial-relevant field changed — the same teardown body `RemoveHost` and
-  `DetachHost` already share (stop the supervisor, drop the channel, clear the
-  per-host caches), with the gate released last.
-- *Dial-relevant* means the fields the dial, preflight, deploy or health probe
-  read: `ssh`, `user`, `keyPath`, `evenerPath`, `configPath`, `addr`. `roots`
-  is not dial-relevant; neither is the name, which cannot change.
+- One hold of the per-host gate: the registry `Update`, then the same teardown
+  body `RemoveHost` and `DetachHost` already share (stop the supervisor, drop
+  the channel, clear the per-host caches), with the gate released last.
+- **Every update tears the channel down**, not only the edits that change a
+  field the dial reads. The reason is the fence, not the dial: a supervisor
+  captures the entry it supervises when it starts, and `reconnectOnce` refuses
+  to publish a replacement when `SameRegistration` no longer matches that
+  capture — so an update that advanced the generation while leaving the channel
+  up would leave its supervisor unable to reconnect it, and the host would go
+  dark on the next link drop with nothing to bring it back. Retiring the
+  channel with the identity keeps one rule instead of a rebind path. The record
+  allows either ("rebinds them to the new entry (or tears them down)"); §6
+  records that this slice always tears down.
 - A parked `Ensure` that captured the pre-edit entry fails its
   `SameRegistration` recheck and refuses; a parked update and a parked remove
   cannot both win, because they take the same gate. Slice 1's fences supply
@@ -126,11 +147,21 @@ and the compensation paths in one shape:
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
-- **Live, mutex-free.** `manager.UpdateHost(entry)` when a manager is wired;
-  otherwise the registry's own `Update`, mirroring how remove falls back when
-  no manager is wired (tests, embedders). The registry re-runs the same
-  validation under its own lock; the commit phase's check is what keeps an
-  invalid entry out of the file, and is not a substitute for it.
+- **Live, mutex-free, in this order.** When any of the dial-relevant fields
+  changed — `address`, `user`, `keyPath`, `evenerPath`, `configPath`, `addr`
+  compared old against new — drop the name's attach record **before** the
+  teardown: the record describes the identity being retired, and resetting
+  ahead of the teardown means everything recorded afterwards belongs to the new
+  identity, including a record an attach that lands during this phase writes.
+  Resetting after the teardown would erase exactly that. The comparison is on
+  the fields, not on whether a channel happened to exist: an offline host whose
+  address changed is the motivating case, and its stale attach error and
+  last-known facts must go too. Then `manager.UpdateHost(entry)` when a manager
+  is wired; otherwise the registry's own `Update`, mirroring how remove falls
+  back when no manager is wired (tests, embedders). The registry re-runs the
+  same validation under its own lock; the commit phase's check is what keeps an
+  invalid or unnormalized entry out of the file, and is not a substitute for
+  it.
 - **Finish, under the mutex.** Clear the mark. On success:
   - when `roots` changed, drop the host's derived rows **first** — the
     remote-thread cache's source entry and the last-good retention, the two
@@ -142,35 +173,34 @@ and the compensation paths in one shape:
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
-  - reset the host's attach record **only when the edit is what invalidated
-    it** — when a dial-relevant change tore the channel down in the live phase.
-    Resetting unconditionally would erase the record an attach that landed
-    during the live phase just wrote; the entry stays visible throughout an
-    update, so unlike `add` there is no pre-visibility window to reset inside.
   On failure, roll the sidecar back to the live set and return the error, so a
-  host is never durable-but-unlive.
+  host is never durable-but-unlive. The attach record is not touched here: it
+  was reset in the live phase, ahead of the teardown, for the reason given
+  there.
 
 ### 3.5 Frontend
 
 - `stores/hosts.ts`: an `update(params)` call that issues `evener/host/update`
-  and then the existing quiet re-read (`reReadAfterMutation`); `add` extends to
-  the seven fields. Errors keep remove's posture — thrown to the caller, shown
-  by the dialog, never silently swallowed.
-- One `HostEntryDialog` serves Add and Edit: the seven fields, `name` rendered
-  read-only on edit (per §13, Edit does not offer it), submit disabled while in
-  flight, and each field's message placed inline (§5).
+  and then the existing quiet re-read (`reReadAfterMutation`); `add` takes the
+  same entry. Errors keep remove's posture — thrown to the caller, shown by the
+  dialog, never silently swallowed.
+- One `HostEntryDialog` serves Add and Edit: the record's seven fields plus
+  slice 1's Key path control, `name` rendered read-only on edit (per §13, Edit
+  does not offer it), submit disabled while in flight, and each field's message
+  placed inline (§5).
 - Row actions: **Edit** for sidecar, non-removed rows. `hub.toml` rows keep the
   read-only explanation the pane's help text already gives; removed rows keep
   their removed posture.
-- **Skew marker.** The row compares the host's real installed build with the
-  controller's. The host side is the facts-owned `hubVersion` — the remote
-  hub's own build, from the preflight facts — and never `serverVersion`, which
-  is the attach handshake's constant: the controller reports the same constant
-  about itself, so comparing those two would agree with itself in production
-  and the marker would never fire. The controller side is the build the shell
-  already polls from `/api/health` (`stores/hubUpdate.ts`), which is the hub's
-  real `buildinfo.Version()`, again not the connection's `serverInfo`. Both
-  values already reach the browser, so this needs no wire change.
+- **No skew marker in this slice.** §13 wants the row to show the host's
+  installed build beside the controller's, and this slice cannot honestly build
+  it: the row's `hubVersion` is `buildinfo.Version()` *of the controller*, by
+  design — the attach ladder redeploys the controller's build on a mismatch, so
+  a successful attach means the host runs the controller's build, and the facts
+  say so deliberately. Comparing that with the controller's own health version
+  compares one string with itself. The record puts the verified post-operation
+  facts refresh in the pipeline slice, which is where a truthful build signal
+  belongs; §6 and §8 record the deferral rather than pinning a marker that
+  cannot fire.
 - `hostRowEqual` gains the new fields. The publish guard skips its `setState`
   when every row compares equal, and the comparator's field list is slice 1's:
   without extending it, an edit that changes only `user`, `evenerPath`,
@@ -182,10 +212,13 @@ and the compensation paths in one shape:
 - Update targets a live sidecar entry. `name` is immutable. The entry's
   effective values are what the row, the source and the attach path read: there
   is no second copy to drift.
-- **The attached-edit rule.** An edit that changes a dial-relevant field while
-  the host is attached lands, drops the channel, and leaves the row offline
-  with Connect available. An edit that touches no dial-relevant field leaves
-  the channel up. Both halves are asserted (§7).
+- **The attached-edit rule.** Any edit to a host that is attached lands, drops
+  the channel, and leaves the row offline with Connect available: the identity
+  changed, so the channel goes with it. This is simpler than the dial-relevant
+  split it replaces, and §3.3 gives the reason that split was unsafe — a
+  supervisor's capture is generation-fenced, so a channel kept across an update
+  could not be reconnected by the supervisor that owns it. §7 asserts the drop
+  and the re-attach for an attached host and for an offline one.
 - An edit never dials, never deploys, never attaches and never starts a
   session. Its live effects are exactly: the registry replacement, the
   conditional teardown, and — only when `roots` changed — the drop of the
@@ -224,16 +257,21 @@ reversal.
    update matches its siblings rather than leading them.
 2. **No busy refusal.** Update waits for the per-host gate, as add and remove
    do today. §4's typed busy refusal arrives with the guards.
-3. **`status` keeps its single-row response.** `controllerBuild` and the plan
-   inputs stay in the pipeline slice; this slice's skew signal reads the
-   health endpoint and the row's facts instead (§3.5).
+3. **`status` keeps its single-row response**, and this slice ships no build
+   signal on the row: `controllerBuild` and the plan inputs stay with the
+   pipeline slice, and the row's `hubVersion` is the controller's own build by
+   construction, so a marker built from it would compare a string with itself
+   (§3.5, §6.11).
 4. **Refusal classes follow slice 1's pattern** — `InvalidParams` with the host
    named — rather than §12's final discriminator vocabulary. The field-carrying
    validation refusal is the seed the pipeline slice aligns to §12.
-5. **No host-count cap.** The registry enforces none today — the cap sits at
-   config load — so this slice neither adds one nor claims one. Moving it onto
-   `New`/`Add`/`Update` is the design record's outstanding [03] item, and it
-   lands with that work rather than here.
+5. **No host-count cap.** The registry has no count check, config load has
+   none, and this slice adds none; the only 64-source limit in the tree today
+   is the navigation projection's. The record assigns the cap to the registry's
+   `Add`/`Update` (§4, §14, with §16's test) and the design document's
+   follow-up ledger tracks it as its [03] item. This slice records the drop and
+   its consequence — a live set pushed past 63 sources fails navigation for the
+   whole hub — rather than claiming a check it does not run.
 6. **The handler, catalog row and regenerated client land here.** §2's table
    places them in the pipeline PR, but slice 1 already registered
    `add`/`remove`/`list`/`status`, and a mutation whose method is not routed is
@@ -243,6 +281,20 @@ reversal.
    arrives with them.
 8. **The params adopt §11's nested `entry`** and revise slice 1's flat add
    params, so the guards can be added later without a second wire change.
+9. **`keyPath` is a slice-1 extension, not a schema field.** The record's
+   `HostConfig` has no key field and §13's dialog is its seven inputs; slice 1
+   shipped the wire field and the Key path control because the dial needs one.
+   This slice keeps both, round-trips the field, and records the extension here
+   instead of hiding a schema field or dropping the control.
+10. **Every update tears the channel down** (§3.3). The record allows either
+    rebinding live resources to the new entry or tearing them down; this slice
+    always tears down, because a supervisor's capture is generation-fenced and
+    a channel kept across an update could not be reconnected by the supervisor
+    that owns it.
+11. **No build signal on the row** (§3.5). The value slice 1's row carries is
+    the controller's own build, so the installed-versus-controller comparison
+    §13 implies cannot be built from it. It belongs with the pipeline slice's
+    verified post-operation facts refresh.
 
 ## 7. Tests and acceptance criteria
 
@@ -267,10 +319,13 @@ Every item is pinned by a test in this slice's PR.
 6. Every update advances the generation — two successive updates give strictly
    increasing generations — and a captured pre-edit entry stops matching
    `SameRegistration`.
-7. Attached plus a dial-relevant edit: the edit lands, the channel drops, the
-   row reads offline, and a following Connect attaches the new address. Pinned
-   with the gate-contention technique slice 1's tests use, not a sleep.
-8. Attached plus a non-dial edit (a `roots` change): the channel survives.
+7. An attached host edited: the edit lands, the channel drops, the row reads
+   offline, and a following Connect attaches the edited entry. Pinned with the
+   gate-contention technique slice 1's tests use, not a sleep.
+8. Every edit drops the channel, attached or offline. For an attached host the
+   row reads offline with Connect available and a following Connect re-attaches
+   the edited entry; for an offline host whose address changed, the stale attach
+   error and last-known facts are gone with the record.
 9. A parked `Ensure` refuses across an update swap; a parked update and a
    parked remove cannot both commit.
 10. A `roots` edit drops the host's retained rows and the cache entry, then
@@ -279,13 +334,12 @@ Every item is pinned by a test in this slice's PR.
 11. Per-field validation lands on the right field, in wire spelling: a missing
     ssh destination on `address`, an empty root on `roots`, a malformed name on
     `name` (add).
-12. The row's skew marker renders when the host's facts-reported build and the
-    controller's health-reported build disagree, and stays quiet when they
-    match — both sides fixtured, since neither is a constant in the test.
-13. An invalid entry never reaches the sidecar: the refusal leaves the file
-    bytes unchanged, and a reload of the sidecar is clean.
-14. No regression to slice 1: the existing add/Connect/remove tests pass
-    unchanged, and `list`/`status` still never dial.
+12. An invalid entry never reaches the sidecar: the refusal leaves the file
+    bytes unchanged, a reload of the sidecar is clean, and a padded input is
+    stored trimmed — the file and the live set cannot drift.
+13. No regression to slice 1: the existing add/Connect/remove tests pass
+    unchanged, `list`/`status` still never dial, and an edit round-trips a
+    stored `keyPath` rather than clearing it.
 
 **Verification, not new code:** adding a host, connecting it, and starting a
 session on it makes no discovery call that bypasses `evener/host/request`.
@@ -307,7 +361,10 @@ is the user-facing path — a plan the operator sees, a deploy and restart they
 confirm, and an honest report of what landed — plus an answer for the host
 whose platform the controller has no binary for. That belongs with the
 pipeline slice's plan/deploy/restart work, and this pin is here so it is not
-lost.
+lost. The same work owns the build signal §13 wants on the row: the verified
+post-operation facts refresh is what makes "the host is running the build I
+deployed" a fact rather than a restatement of the controller's own version
+(§6.11).
 
 ## 9. Files touched
 
