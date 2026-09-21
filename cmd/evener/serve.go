@@ -1040,7 +1040,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
 		// lands on exactly zero, a success response that silently disabled
 		// automatic retirement.
-		const maxIdleTimeoutMillis = int64(math.MaxInt64 / int64(time.Millisecond))
+		const maxIdleTimeoutMillis = math.MaxInt64 / int64(time.Millisecond)
 		if params.TimeoutMillis > maxIdleTimeoutMillis {
 			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
 		}
