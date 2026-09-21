@@ -182,15 +182,15 @@ and the compensation paths in one shape:
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
   On failure, roll the sidecar back to the live set — one atomic write of the
-  live contents, which puts the file and the in-memory sidecar store back on
-  the same entries in the same order they had before the commit, so a later
-  save cannot resurrect the entry the refusal was supposed to leave in place —
-  clear the mark, and return the error. The host ends the call as it started
-  apart from its attach record, which stays cleared: derived state the next
-  attach repopulates, and the only part of the call deliberately not
-  compensated. The caller may retry, because nothing is half-applied: the
-  entry, the file, the store row and the live registry all agree on the old
-  entry, or on the new one.
+  live set as it stands now, not a pre-commit copy: a concurrent add or removal
+  that committed in this window must survive — which puts the file and the
+  in-memory sidecar store back on the same entries in the same order, clear the
+  mark, and return the error. The host ends the call as it started apart from
+  its attach record, which stays cleared: derived state the next attach
+  repopulates, and the only part of the call deliberately not compensated. The
+  caller may retry, because nothing is half-applied: the entry, the file, the
+  store row and the live registry all agree on the old entry, or on the new
+  one.
 
 ### 3.5 Frontend
 
@@ -366,7 +366,9 @@ Every item is pinned by a test in this slice's PR.
     same conflict a removal in flight produces today — the mark's add arm
     included, since the mark now guards every mutation on the name.
 15. An edit neither dials, deploys nor attaches: no new SSH dial appears during
-    an update, and the row changes only as the teardown's own events describe.
+    an update, and the row's live state changes only as the teardown's own
+    events describe — its configured values come from the edited entry, which
+    is what criterion 1 asserts.
 16. A failed live phase leaves the file, the in-memory store row and the live
     registry all describing the old entry — the row's attach-derived facts are
     the one part deliberately not compensated, so they may be cleared — and a
