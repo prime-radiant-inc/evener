@@ -2359,7 +2359,20 @@ func (m *Manager) Attached(name string) bool {
 // publishChannel records ch as name's channel unless Close already ran, in which
 // case nothing would ever supervise it: the caller reaps ch and reports
 // ErrManagerClosed instead.
+//
+// It captures ch's registration here — the registry entry name resolves to now,
+// which the caller has just revalidated under the host lock — so identity
+// pairing reads the entry as the registry holds it, never the dial copy
+// ensureOnce folded this Manager's resolved executable path into.
 func (m *Manager) publishChannel(name string, ch *Channel) bool {
+	// Read the registration before taking the manager mutex: Registry.Get is a
+	// leaf (its own lock, no callback into the manager), and keeping the two
+	// locks unnested preserves the manager's existing lock order.
+	if m.reg != nil {
+		if host, ok := m.reg.Get(name); ok {
+			ch.reg = host
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -2596,7 +2609,17 @@ func (m *Manager) failedEvent(name string, err error) {
 
 // Channel is one owned SSH channel plus the AppWire client over it.
 type Channel struct {
-	host  hostreg.Host
+	host hostreg.Host
+	// reg is the registration this channel was published for: the registry
+	// entry name resolved to when publishChannel captured it, before
+	// ensureOnce folded this Manager's resolved executable path
+	// (applyResolvedTarget) into the copy of the host it dialed. Identity
+	// pairing (MatchesRegistration) compares reg, not host: a host that
+	// configured no evener_path never carries the resolved path in the
+	// registry, so comparing host refused the common case. It is written once,
+	// under the host lock at publish and before the channel is visible through
+	// the map, and never mutated.
+	reg   hostreg.Host
 	facts Preflight
 	// handshake is the InitializeResponse the attach's own initialize captured.
 	// It is published once, before the channel is visible through the map, and
@@ -2650,12 +2673,16 @@ func (c *Channel) Host() hostreg.Host {
 }
 
 // MatchesRegistration reports whether entry is the registration this channel
-// was built from: content and generation both, the same predicate
-// hostreg.SameRegistration wraps. It compares the channel's captured host in
-// place, so a caller pairing a live channel with the entry it renders — and
-// only comparing — need not clone the host and its roots.
+// was published for: content and generation both, the same predicate
+// hostreg.SameRegistration wraps. It compares the registration captured at
+// publish (reg), not the host the bridge was dialed with (host): that copy
+// carries the executable path this Manager resolved for a host that configured
+// no evener_path, which the registry entry never does, so comparing it refused
+// the common case. It compares in place, so a caller pairing a live channel
+// with the entry it renders — and only comparing — need not clone the host and
+// its roots.
 func (c *Channel) MatchesRegistration(entry hostreg.Host) bool {
-	return hostreg.SameRegistration(c.host, entry)
+	return hostreg.SameRegistration(c.reg, entry)
 }
 
 // Close kills the ssh child and closes the stream. It is idempotent and

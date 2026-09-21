@@ -810,11 +810,10 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 
 // hostOnline reports whether host currently has a live channel. It reads the
 // attached-only signal without spawning SSH: the dial seam belongs to
-// evener/host/attach alone. A true here is necessary but not sufficient for a
-// row to render Attached — hostRow also requires the attached-only client
-// lookup to confirm a live channel, so the source registry's fail-open
-// default (Online() true with no signal wired) cannot mark a host attached
-// that nothing dialed.
+// evener/host/attach alone. It is the gate on the no-manager fallback only: a
+// manager-backed row never consults it, because attachedClient confirms the
+// live channel itself, so the source registry's fail-open default (Online()
+// true with no signal wired) cannot mark a host attached that nothing dialed.
 func (m *hubHostManager) hostOnline(host string) bool {
 	if m.cfg.online != nil {
 		return m.cfg.online(host)
@@ -987,17 +986,19 @@ func (m *hubHostManager) hostEntryCurrent(host hostreg.Host) bool {
 // attachedClient resolves the live client one row may use for entry, pairing
 // the channel with the entry the row renders. It reads the manager's
 // ChannelIfAttached once and returns that channel's client only while the
-// channel's own captured registration is the entry being rendered — content
-// and generation both, the predicate hostreg.SameRegistration states and
-// sshconn.Channel.MatchesRegistration applies to the channel. A host's live
+// registration the channel was published for is the entry being rendered —
+// content and generation both, the predicate hostreg.SameRegistration states
+// and sshconn.Channel.MatchesRegistration applies to the channel. A host's live
 // state is keyed by name, and the name outlives the registration it names, so
 // a row that snapshotted its entry outside the mutation mutex (so a parked
 // facts read holds up no commit) must not adopt a channel built from another
-// one's attached state and facts; a mismatch renders the row offline. With no
-// manager wired (tests, embedders) there is no registration to compare, so the
-// row falls back to the name-only clientIfAttached seam, whose callers own
-// whatever pairing they built. The slice spec's §3.6 carries the rationale in
-// full.
+// one's attached state and facts; a mismatch renders the row offline. The facts
+// and handshake seams it enables still resolve the channel by name, so a
+// channel swapped inside that window leaves a row that reports attached with
+// empty facts until the next build. With no manager wired (tests, embedders)
+// there is no registration to compare, so the row falls back to the name-only
+// clientIfAttached seam, whose callers own whatever pairing they built. The
+// slice spec's §3.6 carries the rationale in full.
 func (m *hubHostManager) attachedClient(entry hostreg.Host) (*appwire.Client, bool) {
 	if m.cfg.manager != nil {
 		ch, ok := m.cfg.manager.ChannelIfAttached(entry.Name)
