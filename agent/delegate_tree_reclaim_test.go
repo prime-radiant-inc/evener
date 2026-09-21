@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
 )
 
 func TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048(t *testing.T) {
@@ -322,6 +325,166 @@ func reclamationRootIDs(claim *delegateRuntimeReclamationClaim) []string {
 		ids = append(ids, root.delegateID)
 	}
 	return ids
+}
+
+// TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst pins the depth-2
+// contract of the idle release: a terminal delegate whose own child delegate
+// is also terminal must release BOTH resident runtimes. The release enumerates
+// the subtree itself because the parent's retirement teardown deliberately
+// never drains its own children (session_lifecycle's !retirement guards), so a
+// release touching only the delegate's own session would strand the
+// grandchild's process-local resources — stdio MCP servers included — for the
+// life of the daemon. That was the reviews' worst finding against a naive
+// option B, and both assertions here fail against it: the claim entries would
+// be the delegate alone, and the grandchild's teardown pass would still be
+// unspent.
+//
+// Teardown itself is asserted through the single-pass contract: a runtime
+// already released under releaseRetirement answers a second
+// releaseRuntime(releaseRetirement) with errRetirementTeardownSpent.
+//
+// The finalize tail's scheduling hook is disabled through the testOnly seam so
+// this test drives releaseIdleRuntimeAfterFinalize directly and observes the
+// two-member claim deterministically instead of racing a grace timer; the
+// scheduled path end to end is TestIntg_DelegateIdleReleasesStdioMCPServer.
+func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		// The parent delegate's turn: spawn its own child delegate.
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID:        "call_spawn_child",
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"prompt":"grandchild sentinel task"}`),
+				Type:      "function",
+			})
+		},
+		// The grandchild's turn: finish.
+		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
+		// The parent's follow-up turn, after the grandchild's tool result: finish.
+		func(llm.Request) llm.Response { return finalResponse("parent done") },
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		testOnly: testConfig{
+			skipGitSnapshot:            true,
+			minimalSystemPrompt:        true,
+			sandboxProber:              bwrapCapableProber(workspace),
+			disableDelegateIdleRelease: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	one := 1
+	parentRes := sess.createDelegate(context.Background(), delegateArgs{
+		Task:                "spawn one child delegate, then finish",
+		DelegationAllowance: &one,
+	})
+	if parentRes.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", parentRes.Err, parentRes.Status, parentRes.Reason)
+	}
+	sub := sess.subagents.get(parentRes.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("parent delegate missing from root manager: %+v", parentRes)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("parent delegate runner did not finish")
+	}
+
+	tree := sess.delegateController
+	tree.mu.Lock()
+	var grandchildID, grandchildChildID string
+	children := 0
+	for id, agg := range tree.durable {
+		if agg.Descriptor.ParentDelegateID == parentRes.DelegateID {
+			children++
+			grandchildID, grandchildChildID = id, agg.Descriptor.ChildSessionID
+		}
+	}
+	parentLive := tree.live[parentRes.DelegateID]
+	grandchildLive := tree.live[grandchildID]
+	tree.mu.Unlock()
+	if children != 1 {
+		t.Fatalf("parent delegate has %d child delegates, want exactly 1 (fixture script derailed)", children)
+	}
+	if parentLive == nil || parentLive.runtime == nil || grandchildLive == nil || grandchildLive.runtime == nil {
+		t.Fatal("expected both subtree runtimes resident before the release")
+	}
+	parentSess, grandchildSess := parentLive.runtime, grandchildLive.runtime
+	if got := parentSess.subagents.get(grandchildChildID); got == nil {
+		t.Fatal("grandchild record missing from the parent runtime's manager before the release")
+	}
+
+	// The claim refuses until every member is terminal-idle; poll rather than
+	// assume the finalize tail has fully settled.
+	claimDeadline := time.Now().Add(15 * time.Second)
+	var claim *delegateRuntimeReclamationClaim
+	for {
+		claim, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
+		if err != nil {
+			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
+		}
+		if claim != nil {
+			break
+		}
+		if time.Now().After(claimDeadline) {
+			t.Fatalf("terminal subtree of %s never became claimable", parentRes.DelegateID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got, want := reclamationDelegateIDs(claim), []string{grandchildID, parentRes.DelegateID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claim entries = %v, want leaf-first %v", got, want)
+	}
+	if err := tree.AbortRuntimeReclamation(claim); err != nil {
+		t.Fatalf("AbortRuntimeReclamation: %v", err)
+	}
+
+	// The production entrypoint: the parent runtime's own finalize-tail call.
+	if !parentSess.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("releaseIdleRuntimeAfterFinalize refused the terminal two-member subtree")
+	}
+
+	if got := sess.subagents.get(parentRes.ChildSessionID); got != nil {
+		t.Fatal("released parent's record still hooked into the root manager")
+	}
+	if got := parentSess.subagents.get(grandchildChildID); got != nil {
+		t.Fatal("released grandchild's record still hooked into the parent runtime's manager")
+	}
+	tree.mu.Lock()
+	parentLive = tree.live[parentRes.DelegateID]
+	grandchildLive = tree.live[grandchildID]
+	aggregates := []*delegatestore.Aggregate{tree.durable[parentRes.DelegateID], tree.durable[grandchildID]}
+	tree.mu.Unlock()
+	if parentLive == nil || parentLive.runtime != nil || grandchildLive == nil || grandchildLive.runtime != nil {
+		t.Fatalf("live runtime pointers after release: parent=%v grandchild=%v", parentLive.runtime, grandchildLive.runtime)
+	}
+	for _, agg := range aggregates {
+		if agg == nil || agg.Phase != delegatestore.PhaseIdle || agg.LatestOutcome == nil {
+			t.Fatalf("released delegate lost durable identity for cold restore: %+v", agg)
+		}
+	}
+	// Both teardown passes spent: the release tore down each member itself,
+	// leaf-first — which the parent's retirement teardown alone never would.
+	if err := parentSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("parent runtime teardown pass after release: err = %v, want errRetirementTeardownSpent", err)
+	}
+	if err := grandchildSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("grandchild runtime teardown pass after release: err = %v, want errRetirementTeardownSpent (a depth-2 release must tear the descendant down itself)", err)
+	}
 }
 
 // TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
