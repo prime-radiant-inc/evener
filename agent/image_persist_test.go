@@ -548,3 +548,79 @@ func TestSanitizeAttachmentName(t *testing.T) {
 		}
 	}
 }
+
+// TestProcessInput_SymlinkedAttachmentPath_NotFollowed pins the write half of
+// the storage contract: a symlink planted at the content-addressed leaf must
+// not be followed — the canary it points at survives untouched, no path is
+// announced, and the failure is reported as a warning like every other
+// attachment write failure.
+func TestProcessInput_SymlinkedAttachmentPath_NotFollowed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	if err := os.MkdirAll(filepath.Dir(wantPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	canary := filepath.Join(t.TempDir(), "canary.txt")
+	if err := os.WriteFile(canary, []byte("canary"), 0o600); err != nil {
+		t.Fatalf("write canary: %v", err)
+	}
+	if err := os.Symlink(canary, wantPath); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+	warnCh := collectWarnings(sess)
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got, err := os.ReadFile(canary); err != nil || string(got) != "canary" {
+		t.Fatalf("canary was followed or disturbed: content=%q err=%v", got, err)
+	}
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if !hasImagePart(turn.Message) {
+		t.Error("image must still ride the turn inline")
+	}
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("a refused (symlinked) attachment path must not be announced: %+v", turn.Message.Content)
+	}
+	awaitWarningNaming(t, warnCh, "shot.png")
+}
+
+// TestProcessInput_PlantedAttachmentFile_NotReplaced pins the
+// existing-entry half: the content-addressed name already holds DIFFERENT
+// bytes (a planted file), so the write must refuse rather than silently
+// replace them, and no path is announced.
+func TestProcessInput_PlantedAttachmentFile_NotReplaced(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	if err := os.MkdirAll(filepath.Dir(wantPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(wantPath, []byte("planted"), 0o644); err != nil {
+		t.Fatalf("plant file: %v", err)
+	}
+	warnCh := collectWarnings(sess)
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got, err := os.ReadFile(wantPath); err != nil || string(got) != "planted" {
+		t.Fatalf("planted file was replaced: content=%q err=%v", got, err)
+	}
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("a planted file's path must not be announced as the attachment: %+v", turn.Message.Content)
+	}
+	awaitWarningNaming(t, warnCh, "shot.png")
+}

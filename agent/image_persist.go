@@ -9,8 +9,10 @@ package agent
 // path.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,7 +63,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		name := sanitizeAttachmentName(out[i])
 		sum := sha256.Sum256(out[i].Data)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
-		if err := os.WriteFile(path, out[i].Data, 0o600); err != nil {
+		if err := s.writeAttachmentFile(path, out[i].Data); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
@@ -71,6 +73,33 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		out[i].Path = path
 	}
 	return out
+}
+
+// writeAttachmentFile stores data at the content-addressed path without
+// following a symlink at the leaf or overwriting an existing entry. An
+// existing entry is the same attachment from an earlier paste exactly when
+// its bytes match, which dedupes to a no-op; anything else there — a planted
+// file, a symlink — is a write failure the caller reports like any other.
+func (s *Session) writeAttachmentFile(path string, data []byte) error {
+	f, err := createAttachmentFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		existing, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if !bytes.Equal(existing, data) {
+			return fmt.Errorf("existing file at %q holds different content", path)
+		}
+		return nil
+	}
+	if _, werr := f.Write(data); werr != nil {
+		_ = f.Close()
+		return werr
+	}
+	return f.Close()
 }
 
 // fileToolsCanRead reports whether the session's in-process file tools — the
